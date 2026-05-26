@@ -25,6 +25,7 @@
 //!   message. The simple `insert_str` strategy here is correct only for
 //!   pure insertions; structural fixes must go through `rustfix` instead.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use fs_err as fs;
@@ -96,6 +97,7 @@ fn apply_to_file(
     }
 
     let source = fs::read_to_string(path)?;
+    let eol = detect_eol(&source);
 
     // Filter out suggestions whose directive already appears in the relevant
     // window — running `--fix` twice should be a no-op.
@@ -122,7 +124,8 @@ fn apply_to_file(
 
     let mut fixed = source.clone();
     for (offset, s) in ordered {
-        fixed.insert_str(offset, &s.replacement);
+        let replacement = normalize_eol(&s.replacement, eol);
+        fixed.insert_str(offset, &replacement);
     }
 
     if fixed != source {
@@ -174,6 +177,37 @@ fn effective_insertion_offset(source: &str, s: &Suggestion) -> usize {
         }
     }
     source.len()
+}
+
+/// Detect the file's dominant line ending. If the file contains any CRLF,
+/// treat it as CRLF; otherwise LF. Replacement strings in this module are
+/// authored with `\n`, so we normalize them to match the host file rather
+/// than writing mixed-line-ending content on Windows checkouts.
+fn detect_eol(source: &str) -> &'static str {
+    if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+/// Rewrite bare `\n` in `s` to `eol`. Existing `\r\n` is left intact so this
+/// is a no-op on already-CRLF input. Avoids allocation when `eol == "\n"`.
+fn normalize_eol<'a>(s: &'a str, eol: &str) -> Cow<'a, str> {
+    if eol == "\n" || !s.contains('\n') {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + s.matches('\n').count());
+    let mut prev = '\0';
+    for ch in s.chars() {
+        if ch == '\n' && prev != '\r' {
+            out.push_str(eol);
+        } else {
+            out.push(ch);
+        }
+        prev = ch;
+    }
+    Cow::Owned(out)
 }
 
 #[cfg(test)]
@@ -437,5 +471,55 @@ mod tests {
             applicability: Applicability::MachineApplicable,
         };
         assert!(!already_silenced(src, &s));
+    }
+
+    #[test]
+    fn detect_eol_picks_crlf_when_present() {
+        assert_eq!(detect_eol("a\r\nb\r\n"), "\r\n");
+        assert_eq!(detect_eol("a\nb\n"), "\n");
+        assert_eq!(detect_eol(""), "\n");
+        // Mixed: any CRLF wins. We won't make the file "more mixed" — every
+        // inserted line will use CRLF, matching the dominant style.
+        assert_eq!(detect_eol("a\r\nb\n"), "\r\n");
+    }
+
+    #[test]
+    fn normalize_eol_lf_is_borrowed_passthrough() {
+        let out = normalize_eol("foo\nbar\n", "\n");
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_eq!(out, "foo\nbar\n");
+    }
+
+    #[test]
+    fn normalize_eol_converts_lf_to_crlf() {
+        let out = normalize_eol("foo\nbar\n", "\r\n");
+        assert_eq!(out, "foo\r\nbar\r\n");
+    }
+
+    #[test]
+    fn normalize_eol_leaves_existing_crlf_alone() {
+        // If a replacement string already had CRLF, don't double it to \r\r\n.
+        let out = normalize_eol("foo\r\nbar\r\n", "\r\n");
+        assert_eq!(out, "foo\r\nbar\r\n");
+    }
+
+    #[test]
+    fn fix_preserves_crlf_line_endings() {
+        // Regression for Windows CI: inserting a directive must not leave the
+        // file with mixed line endings.
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("lib.rs");
+        std::fs::write(&p, "pub fn x() {}\r\npub fn y() {}\r\n").unwrap();
+
+        let modified = run(&[make_file_diag(&p)]);
+        assert_eq!(modified, 1);
+
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            !after.contains("\n") || after.replace("\r\n", "").chars().all(|c| c != '\n'),
+            "patched file must not contain bare LF: {after:?}"
+        );
+        assert!(after.starts_with("workspace_lint::allow!(file_size);\r\n"));
+        assert!(after.contains("pub fn x() {}\r\n"));
     }
 }
