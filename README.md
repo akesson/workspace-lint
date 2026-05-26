@@ -253,8 +253,6 @@ a `workspace-lint::stale-expect` warning if the underlying lint stops firing
 - `workspace-lint --message-format <human|json|github>` — pick the renderer.
 - `workspace-lint --fix` — apply every diagnostic's `MachineApplicable`
   suggestion in place. Currently this is the silence directive next to each
-  finding; structural fixes are planned. **Mutually exclusive with `--watch`.**
-- `workspace-lint --watch` — re-run on file change, debounced 250 ms.
-  Mutually exclusive with `--fix`.
+  finding; structural fixes are planned.
 - `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.
