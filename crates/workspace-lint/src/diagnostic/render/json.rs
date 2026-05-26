@@ -8,6 +8,7 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 
+use super::display_path;
 use crate::diagnostic::{Applicability, Diagnostic, Level, SilenceAnchor, Span, Suggestion};
 
 #[derive(Serialize)]
@@ -133,7 +134,7 @@ fn span_to_out(
     applicability: Option<Applicability>,
 ) -> OutSpan {
     OutSpan {
-        file_name: s.file.display().to_string(),
+        file_name: display_path(&s.file),
         byte_start: s.byte_start,
         byte_end: s.byte_end,
         line_start: s.line_start,

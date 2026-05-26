@@ -8,6 +8,7 @@
 
 use std::io::{self, Write};
 
+use super::display_path;
 use crate::diagnostic::{Diagnostic, Level, SilenceAnchor};
 
 pub fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
@@ -35,17 +36,13 @@ pub fn write_one(d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
 
 fn location(d: &Diagnostic) -> (String, u32, u32) {
     if let Some(span) = &d.primary {
-        return (
-            span.file.display().to_string(),
-            span.line_start,
-            span.col_start,
-        );
+        return (display_path(&span.file), span.line_start, span.col_start);
     }
     match &d.silence_anchor {
-        SilenceAnchor::Line { file, line } => (file.display().to_string(), *line, 1),
-        SilenceAnchor::File { file } => (file.display().to_string(), 1, 1),
+        SilenceAnchor::Line { file, line } => (display_path(file), *line, 1),
+        SilenceAnchor::File { file } => (display_path(file), 1, 1),
         SilenceAnchor::Crate { manifest_dir } => {
-            (manifest_dir.join("Cargo.toml").display().to_string(), 1, 1)
+            (display_path(&manifest_dir.join("Cargo.toml")), 1, 1)
         }
         SilenceAnchor::Workspace => ("Cargo.toml".to_string(), 1, 1),
     }

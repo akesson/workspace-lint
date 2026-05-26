@@ -6,12 +6,28 @@
 //! - [`github`]: GitHub Actions workflow commands for PR annotations.
 
 use std::io::{self, Write};
+use std::path::Path;
 
 use super::Diagnostic;
 
 pub mod github;
 pub mod human;
 pub mod json;
+
+/// Display a `Path` with forward-slash separators regardless of host OS.
+/// Every render backend (human, json, github) feeds paths to consumers that
+/// treat `/` as canonical: GitHub Actions annotation `file=` properties,
+/// editor jump-to-file on rustc-JSON, and the human `file:line:col` header
+/// that gets copy-pasted into terminals. Backslashes from Windows
+/// `Path::display()` would break those — so normalize at the render boundary.
+pub(crate) fn display_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    if std::path::MAIN_SEPARATOR == '\\' {
+        s.replace('\\', "/")
+    } else {
+        s
+    }
+}
 
 /// Output format selected by the `--message-format` flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -64,6 +80,30 @@ mod tests {
         assert_eq!(Format::parse("human"), Ok(Format::Human));
         assert_eq!(Format::parse("json"), Ok(Format::Json));
         assert_eq!(Format::parse("github"), Ok(Format::Github));
+    }
+
+    #[test]
+    fn display_path_uses_forward_slashes_for_relative_path() {
+        // Whatever the host separator is, the rendered string is forward-slash.
+        // Constructing the PathBuf component-by-component keeps the test
+        // independent of which platform runs it.
+        let p: std::path::PathBuf = ["crates", "alpha", "Cargo.toml"].iter().collect();
+        assert_eq!(display_path(&p), "crates/alpha/Cargo.toml");
+    }
+
+    #[test]
+    fn display_path_replaces_backslashes() {
+        // Simulate a path that already carries backslashes (as `Path::display()`
+        // would produce on Windows) — the helper must rewrite them.
+        let p = std::path::PathBuf::from(r"crates\alpha\Cargo.toml");
+        let rendered = display_path(&p);
+        // On Windows this gets normalized; on Unix the backslash is treated as
+        // a literal character in the single component, so `display()` already
+        // yields the input verbatim — either way, no `\` should appear in the
+        // rendered output on platforms where `\` is the separator.
+        if std::path::MAIN_SEPARATOR == '\\' {
+            assert_eq!(rendered, "crates/alpha/Cargo.toml");
+        }
     }
 
     #[test]

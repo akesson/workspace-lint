@@ -21,6 +21,7 @@
 
 use std::io::{self, Write};
 
+use super::display_path;
 use crate::diagnostic::{Diagnostic, Level, SilenceAnchor};
 
 pub fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
@@ -70,16 +71,16 @@ fn location_line(d: &Diagnostic) -> Option<String> {
     if let Some(span) = &d.primary {
         return Some(format!(
             "{}:{}:{}",
-            span.file.display(),
+            display_path(&span.file),
             span.line_start,
             span.col_start
         ));
     }
     match &d.silence_anchor {
-        SilenceAnchor::Line { file, line } => Some(format!("{}:{}:1", file.display(), line)),
-        SilenceAnchor::File { file } => Some(format!("{}:1:1", file.display())),
+        SilenceAnchor::Line { file, line } => Some(format!("{}:{}:1", display_path(file), line)),
+        SilenceAnchor::File { file } => Some(format!("{}:1:1", display_path(file))),
         SilenceAnchor::Crate { manifest_dir } => {
-            Some(format!("{}/Cargo.toml:1:1", manifest_dir.display()))
+            Some(format!("{}/Cargo.toml:1:1", display_path(manifest_dir)))
         }
         SilenceAnchor::Workspace => None,
     }
