@@ -1,3 +1,8 @@
+// Most of this file is unit tests for the TOML schema; the production
+// surface is small. Acknowledge the size with an expect!, and stale-expect
+// will surface here if the test block shrinks back under the limit.
+workspace_lint_marker::expect!(file_size);
+
 use fs_err as fs;
 use serde::Deserialize;
 use std::path::Path;

@@ -1,0 +1,3 @@
+[[file-size.rules]]
+glob = "**/*.rs"
+max-code-lines = 5

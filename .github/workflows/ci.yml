@@ -31,3 +31,6 @@ jobs:
 
       - name: cargo nextest run
         run: cargo nextest run --workspace
+
+      - name: dogfood — workspace-lint on itself
+        run: cargo run -p workspace-lint

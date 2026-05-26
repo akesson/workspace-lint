@@ -1,0 +1,4 @@
+# workspace-lint: allow(crate-size)
+[package]
+name = "alpha"
+version = "0.1.0"

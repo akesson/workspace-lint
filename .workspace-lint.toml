@@ -1,0 +1,38 @@
+# Dogfood config: workspace-lint linting itself.
+#
+# Run via `cargo run -p workspace-lint` (or the CI step in .github/workflows/ci.yml).
+# Any over-limit file gets either a real fix or an `expect!`/`# workspace-lint:
+# expect(...)` directive so the silence is load-bearing — when the file shrinks
+# back under the limit, `stale-expect` nudges us to clean up.
+
+schema = 2
+
+[checks]
+centralized-deps = true
+
+[[file-size.rules]]
+glob = "crates/workspace-lint/src/**/*.rs"
+max-code-lines = 500
+
+[[crate-size.rules]]
+glob = "crates/*"
+max-code-lines = 6000
+
+[unused-deps]
+# Direct deps whose names don't appear in source:
+# - protobuf: needed for the scip-generated types' Message trait.
+# - proc-macro2: needed for the `span-locations` feature that syn re-exports.
+# - cargo-husky: only the build script runs (installs git hooks).
+# - workspace-lint-marker: macros are referenced by path `workspace_lint_marker::`
+#   in src/, so the heuristic in unused-deps that strips the crate name doesn't
+#   see it — false positive worth pinning down rather than acting on.
+ignore = [
+    "protobuf",
+    "proc-macro2",
+    "cargo-husky",
+    "workspace-lint-marker",
+]
+
+# `unused-pub` deliberately omitted: it shells out to rust-analyzer for the
+# SCIP index and CI doesn't install it. The check is exercised separately by
+# the SCIP-fixture-driven unit tests under src/unused_pub/tests/.

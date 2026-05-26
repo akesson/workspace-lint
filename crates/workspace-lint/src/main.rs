@@ -15,6 +15,10 @@ mod file_size;
 mod fix;
 mod freshness;
 #[allow(dead_code)]
+// Constants surface through the integration tests (`tests/lint_coverage.rs`,
+// `tests/fix_fixtures.rs`) but aren't referenced from the binary itself.
+mod lints;
+#[allow(dead_code)]
 // Compiled into the binary only because all module-level tests must be
 // visible to `cargo test`. The `scenarios()` builder is `pub` but the
 // snapshot tests inside `mod tests` are what actually exercise the
@@ -83,12 +87,16 @@ fn parse_format(arg: Option<&str>) -> Format {
 
 /// Scan the workspace for `allow!`/`expect!` directives and use them to
 /// filter the diagnostic stream. Stale `expect` directives are appended as
-/// new diagnostics so the user gets nudged to clean them up.
+/// new diagnostics — these pass back through the suppression map so an
+/// `allow(stale-expect)` directive silences them (e.g. README example code
+/// that mentions an expect directive without intending to fire one).
 fn apply_suppression(diagnostics: &mut Vec<Diagnostic>) {
     let directives_list = directives::scan(std::path::Path::new("."));
     let mut map = suppress::SuppressionMap::from_directives(directives_list);
     suppress::apply(&mut map, diagnostics);
-    diagnostics.extend(map.stale_expects());
+    let mut stale = map.stale_expects();
+    suppress::apply(&mut map, &mut stale);
+    diagnostics.extend(stale);
 }
 
 fn run_all_from_config() -> Vec<Diagnostic> {
