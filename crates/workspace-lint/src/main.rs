@@ -4,14 +4,16 @@ mod cli_crate_version;
 mod config;
 mod crate_size;
 #[allow(dead_code)]
-// Diagnostic types include a few helpers (LintId, SilenceAnchor::{file,line},
-// some Applicability variants, clean_path/clean_pathbuf) that aren't yet
-// referenced; upcoming steps (suppression map, --fix, snapshot tests) will
-// use them. Suppress until then to keep `cargo clippy -D warnings` green.
+// Diagnostic types include a few helpers (LintId, some Applicability
+// variants, clean_path/clean_pathbuf) that aren't yet referenced; upcoming
+// steps (--fix, snapshot tests) will use them. Suppress until then to keep
+// `cargo clippy -D warnings` green.
 mod diagnostic;
+mod directives;
 mod expand;
 mod file_size;
 mod freshness;
+mod suppress;
 mod unused_deps;
 mod unused_pub;
 mod workspace;
@@ -29,7 +31,8 @@ fn main() {
 
     match cli.command {
         None => {
-            let diagnostics = run_all_from_config();
+            let mut diagnostics = run_all_from_config();
+            apply_suppression(&mut diagnostics);
             report_and_exit(diagnostics, format);
         }
         Some(Commands::Done) => {
@@ -39,7 +42,8 @@ fn main() {
             }
         }
         Some(Commands::Check { rule }) => {
-            let diagnostics = run_single_check(rule);
+            let mut diagnostics = run_single_check(rule);
+            apply_suppression(&mut diagnostics);
             report_and_exit(diagnostics, format);
         }
         Some(Commands::Expand {
@@ -62,6 +66,16 @@ fn parse_format(arg: Option<&str>) -> Format {
             std::process::exit(2);
         }),
     }
+}
+
+/// Scan the workspace for `allow!`/`expect!` directives and use them to
+/// filter the diagnostic stream. Stale `expect` directives are appended as
+/// new diagnostics so the user gets nudged to clean them up.
+fn apply_suppression(diagnostics: &mut Vec<Diagnostic>) {
+    let directives_list = directives::scan(std::path::Path::new("."));
+    let mut map = suppress::SuppressionMap::from_directives(directives_list);
+    suppress::apply(&mut map, diagnostics);
+    diagnostics.extend(map.stale_expects());
 }
 
 fn run_all_from_config() -> Vec<Diagnostic> {

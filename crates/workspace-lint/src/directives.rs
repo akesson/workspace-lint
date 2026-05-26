@@ -1,0 +1,430 @@
+//! Parse `workspace_lint::allow!`/`expect!` macro invocations from Rust files
+//! and `# workspace-lint: allow(...)`/`expect(...)` comments from TOML and
+//! Markdown.
+//!
+//! Each directive becomes a [`Directive`] entry in the
+//! [`crate::suppress::SuppressionMap`]. Diagnostics whose lint name and
+//! anchor are contained by a directive's anchor are suppressed before being
+//! rendered.
+
+use crate::diagnostic::SilenceAnchor;
+use fs_err as fs;
+use ignore::WalkBuilder;
+use regex::Regex;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use syn::visit::Visit;
+
+/// One parsed suppression directive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Directive {
+    pub kind: DirectiveKind,
+    /// Kebab-case short lint name (`file-size`, `unused-pub`, …). The map
+    /// stores diagnostics keyed by the same kebab form.
+    pub lint: String,
+    pub anchor: SilenceAnchor,
+    /// Where the directive itself lives — used for the stale-expect
+    /// diagnostic's span.
+    pub origin: DirectiveOrigin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DirectiveKind {
+    Allow,
+    Expect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectiveOrigin {
+    pub file: PathBuf,
+    pub line: u32,
+}
+
+/// Scan the workspace for directives. Walks every file ignoring git-ignored
+/// paths via the `ignore` crate. Per file:
+///
+/// - `.rs` → parse with syn for `allow!`/`expect!` macro invocations.
+/// - `.toml`, `.md` → line-scan for `# workspace-lint: allow|expect(...)`.
+///
+/// The anchor of each parsed directive depends on the file kind:
+///
+/// - `.rs` file-level: [`SilenceAnchor::File`].
+/// - `Cargo.toml` line directive: [`SilenceAnchor::Line`] anchored at the
+///   line *after* the comment (1-3 line lookback when matching).
+/// - Other TOML/MD: [`SilenceAnchor::File`].
+pub fn scan(root: &Path) -> Vec<Directive> {
+    let mut directives = Vec::new();
+    for entry in WalkBuilder::new(root).build().flatten() {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+        match kind_for(&rel) {
+            FileKind::Rust => scan_rust(path, &rel, &mut directives),
+            FileKind::TomlOrMd => scan_text(path, &rel, &mut directives),
+            FileKind::Skip => {}
+        }
+    }
+    directives
+}
+
+#[derive(Copy, Clone)]
+enum FileKind {
+    Rust,
+    TomlOrMd,
+    Skip,
+}
+
+fn kind_for(rel: &Path) -> FileKind {
+    match rel.extension().and_then(|e| e.to_str()) {
+        Some("rs") => FileKind::Rust,
+        Some("toml") | Some("md") => FileKind::TomlOrMd,
+        _ => {
+            // Files literally named Cargo.toml without extension are still
+            // covered by the `toml` arm. CLAUDE.md / README.md etc. ditto.
+            FileKind::Skip
+        }
+    }
+}
+
+fn scan_rust(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
+    let Ok(source) = fs::read_to_string(abs_path) else {
+        return;
+    };
+    let Ok(file) = syn::parse_file(&source) else {
+        return;
+    };
+    let mut visitor = RustVisitor {
+        rel: rel.to_path_buf(),
+        directives: Vec::new(),
+    };
+    visitor.visit_file(&file);
+    out.extend(visitor.directives);
+}
+
+struct RustVisitor {
+    rel: PathBuf,
+    directives: Vec<Directive>,
+}
+
+impl<'ast> Visit<'ast> for RustVisitor {
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let last = match mac.path.segments.last() {
+            Some(seg) => seg.ident.to_string(),
+            None => return,
+        };
+        let kind = match last.as_str() {
+            "allow" => DirectiveKind::Allow,
+            "expect" => DirectiveKind::Expect,
+            _ => return,
+        };
+        // Path must traverse `workspace_lint` (e.g. `workspace_lint::allow`)
+        // OR be just `allow!` after `use workspace_lint::*`. Accept either.
+        let path_str = mac
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        if !path_str.starts_with("workspace_lint") && path_str != "allow" && path_str != "expect" {
+            return;
+        }
+        // Tokens form an arg list of comma-separated idents (the macro's
+        // strict pattern). Parse as a Punctuated<Ident, Comma>.
+        let parsed: Result<syn::punctuated::Punctuated<syn::Ident, syn::Token![,]>, _> =
+            mac.parse_body_with(syn::punctuated::Punctuated::parse_terminated);
+        let Ok(idents) = parsed else { return };
+        let line = mac.path.segments[0].ident.span().start().line as u32;
+        for ident in idents {
+            let lint = ident.to_string().replace('_', "-");
+            self.directives.push(Directive {
+                kind,
+                lint,
+                anchor: SilenceAnchor::File {
+                    file: self.rel.clone(),
+                },
+                origin: DirectiveOrigin {
+                    file: self.rel.clone(),
+                    line: line.max(1),
+                },
+            });
+        }
+    }
+}
+
+fn scan_text(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
+    let Ok(content) = fs::read_to_string(abs_path) else {
+        return;
+    };
+    let re = directive_regex();
+    for (idx, raw) in content.lines().enumerate() {
+        let line_no = (idx + 1) as u32;
+        // Trim the leading comment marker if any.
+        let body = raw
+            .trim_start()
+            .trim_start_matches('#')
+            .trim_start_matches("//")
+            .trim_start_matches("<!--")
+            .trim();
+        let Some(caps) = re.captures(body) else {
+            continue;
+        };
+        let kind = match &caps[1] {
+            "allow" => DirectiveKind::Allow,
+            "expect" => DirectiveKind::Expect,
+            _ => continue,
+        };
+        let lints: Vec<&str> = caps[2].split(',').map(str::trim).collect();
+        // For TOML the natural grain is the dep line right below the comment;
+        // additionally, a comment anywhere in a `<crate>/Cargo.toml` should
+        // suppress diagnostics anchored at that crate (centralized-deps,
+        // unused-deps). For everything else the directive covers the file.
+        let is_cargo_toml = rel.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml");
+        let toml_like = rel.extension().and_then(|e| e.to_str()) == Some("toml");
+        let mut anchors: Vec<SilenceAnchor> = Vec::new();
+        if toml_like {
+            anchors.push(SilenceAnchor::Line {
+                file: rel.to_path_buf(),
+                line: line_no,
+            });
+        } else {
+            anchors.push(SilenceAnchor::File {
+                file: rel.to_path_buf(),
+            });
+        }
+        if is_cargo_toml && let Some(parent) = rel.parent() {
+            anchors.push(SilenceAnchor::Crate {
+                manifest_dir: parent.to_path_buf(),
+            });
+        }
+
+        for lint in lints {
+            if lint.is_empty() {
+                continue;
+            }
+            for anchor in &anchors {
+                out.push(Directive {
+                    kind,
+                    lint: lint.to_string(),
+                    anchor: anchor.clone(),
+                    origin: DirectiveOrigin {
+                        file: rel.to_path_buf(),
+                        line: line_no,
+                    },
+                });
+            }
+        }
+    }
+}
+
+fn directive_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^\s*workspace-lint:\s*(allow|expect)\(([^)]*)\)").expect("static regex")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write(dir: &Path, name: &str, content: &str) {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    // --- Rust file macros ---
+
+    #[test]
+    fn parses_workspace_lint_allow_invocation() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/lib.rs",
+            "workspace_lint::allow!(file_size);\n",
+        );
+        let directives = scan(tmp.path());
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].lint, "file-size");
+        assert_eq!(directives[0].kind, DirectiveKind::Allow);
+        match &directives[0].anchor {
+            SilenceAnchor::File { file } => assert_eq!(file, &PathBuf::from("src/lib.rs")),
+            other => panic!("expected File anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_workspace_lint_expect_invocation() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/lib.rs",
+            "workspace_lint::expect!(unused_pub);\n",
+        );
+        let directives = scan(tmp.path());
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].kind, DirectiveKind::Expect);
+        assert_eq!(directives[0].lint, "unused-pub");
+    }
+
+    #[test]
+    fn parses_comma_separated_lint_list() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/lib.rs",
+            "workspace_lint::allow!(file_size, unused_pub, centralized_deps);\n",
+        );
+        let directives = scan(tmp.path());
+        let mut lints: Vec<&str> = directives.iter().map(|d| d.lint.as_str()).collect();
+        lints.sort();
+        assert_eq!(lints, ["centralized-deps", "file-size", "unused-pub"]);
+    }
+
+    #[test]
+    fn parses_unqualified_allow_after_use() {
+        // Accept `allow!(...)` when the file presumably did `use workspace_lint::*`.
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "src/lib.rs", "allow!(file_size);\n");
+        let directives = scan(tmp.path());
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].lint, "file-size");
+    }
+
+    #[test]
+    fn ignores_other_macros() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/lib.rs",
+            "println!(\"hi\");\nvec![1,2,3];\nformat!(\"x\");\n",
+        );
+        assert!(scan(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn ignores_malformed_macros() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/lib.rs",
+            "workspace_lint::allow!(\"not an ident\");\n",
+        );
+        assert!(scan(tmp.path()).is_empty());
+    }
+
+    // --- TOML comment directives ---
+
+    #[test]
+    fn parses_toml_comment_directive_emits_line_and_crate_anchors() {
+        // For a Cargo.toml directive we emit two anchors (Line at the comment
+        // line, Crate at the parent dir) so the comment naturally silences
+        // either a per-line diagnostic on a nearby dep line or a crate-level
+        // diagnostic like centralized-deps anchored at the manifest dir.
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "crates/foo/Cargo.toml",
+            "[package]\nname = \"foo\"\n\n# workspace-lint: allow(unused-deps)\n[dependencies]\nfoo = \"1\"\n",
+        );
+        let directives = scan(tmp.path());
+        assert_eq!(directives.len(), 2);
+        assert!(directives.iter().any(|d| matches!(
+            &d.anchor,
+            SilenceAnchor::Line { file, line }
+                if file == &PathBuf::from("crates/foo/Cargo.toml") && *line == 4,
+        )));
+        assert!(directives.iter().any(|d| matches!(
+            &d.anchor,
+            SilenceAnchor::Crate { manifest_dir }
+                if manifest_dir == &PathBuf::from("crates/foo"),
+        )));
+        assert!(directives.iter().all(|d| d.lint == "unused-deps"));
+    }
+
+    #[test]
+    fn parses_toml_comma_list() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "non-cargo.toml",
+            "# workspace-lint: allow(unused-deps, centralized-deps)\n",
+        );
+        let directives = scan(tmp.path());
+        // Non-Cargo.toml files only emit one anchor per lint (Line).
+        let mut lints: Vec<&str> = directives.iter().map(|d| d.lint.as_str()).collect();
+        lints.sort();
+        assert_eq!(lints, ["centralized-deps", "unused-deps"]);
+    }
+
+    #[test]
+    fn parses_md_comment_directive() {
+        let tmp = TempDir::new().unwrap();
+        // `// workspace-lint: ...` style in Markdown also accepted.
+        write(
+            tmp.path(),
+            "README.md",
+            "Some text.\n// workspace-lint: allow(freshness)\nMore text.\n",
+        );
+        let directives = scan(tmp.path());
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].lint, "freshness");
+        match &directives[0].anchor {
+            SilenceAnchor::File { file } => assert_eq!(file, &PathBuf::from("README.md")),
+            other => panic!("expected File anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_html_comment_directive() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "README.md",
+            "<!-- workspace-lint: expect(freshness) -->\n",
+        );
+        let directives = scan(tmp.path());
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].kind, DirectiveKind::Expect);
+        assert_eq!(directives[0].lint, "freshness");
+    }
+
+    #[test]
+    fn ignores_unrelated_toml_comments() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "Cargo.toml",
+            "# this is just a comment\n# TODO: something\n",
+        );
+        assert!(scan(tmp.path()).is_empty());
+    }
+
+    // --- Origin info ---
+
+    #[test]
+    fn origin_records_file_and_line() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/lib.rs",
+            "\n\nworkspace_lint::allow!(file_size);\n",
+        );
+        let directives = scan(tmp.path());
+        assert_eq!(directives[0].origin.file, PathBuf::from("src/lib.rs"));
+        assert_eq!(directives[0].origin.line, 3);
+    }
+
+    #[test]
+    fn skips_non_text_extensions() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "data.bin", "anything goes here");
+        assert!(scan(tmp.path()).is_empty());
+    }
+}
