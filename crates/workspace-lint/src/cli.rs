@@ -13,6 +13,14 @@ pub struct Cli {
     /// or `github` (Actions annotations).
     #[arg(long, global = true)]
     pub message_format: Option<String>,
+    /// Apply machine-applicable suggestions in-place (currently just the
+    /// silence directive each diagnostic carries). Mutually exclusive
+    /// with `--watch`.
+    #[arg(long, global = true, default_value_t = false)]
+    pub fix: bool,
+    /// Re-run on file change (debounced 250ms). Mutually exclusive with `--fix`.
+    #[arg(long, global = true, default_value_t = false)]
+    pub watch: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

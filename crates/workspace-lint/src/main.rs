@@ -12,6 +12,7 @@ mod diagnostic;
 mod directives;
 mod expand;
 mod file_size;
+mod fix;
 mod freshness;
 #[allow(dead_code)]
 // Compiled into the binary only because all module-level tests must be
@@ -22,6 +23,7 @@ mod messages;
 mod suppress;
 mod unused_deps;
 mod unused_pub;
+mod watch;
 mod workspace;
 
 use clap::Parser;
@@ -35,10 +37,27 @@ fn main() {
     let cli = Cli::parse();
     let format = parse_format(cli.message_format.as_deref());
 
+    // --watch + --fix would loop forever as the watcher saw its own writes.
+    watch::refuse_if_fixing(cli.watch && cli.fix);
+
+    if cli.watch {
+        let runner = || {
+            let mut diagnostics = run_all_from_config();
+            apply_suppression(&mut diagnostics);
+            let mut stderr = io::stderr().lock();
+            let _ = render(format, &diagnostics, &mut stderr);
+        };
+        watch::run(std::path::Path::new("."), runner);
+        return;
+    }
+
     match cli.command {
         None => {
             let mut diagnostics = run_all_from_config();
             apply_suppression(&mut diagnostics);
+            if cli.fix {
+                fix::run(&diagnostics);
+            }
             report_and_exit(diagnostics, format);
         }
         Some(Commands::Done) => {
@@ -50,6 +69,9 @@ fn main() {
         Some(Commands::Check { rule }) => {
             let mut diagnostics = run_single_check(rule);
             apply_suppression(&mut diagnostics);
+            if cli.fix {
+                fix::run(&diagnostics);
+            }
             report_and_exit(diagnostics, format);
         }
         Some(Commands::Expand {
