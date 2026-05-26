@@ -4,6 +4,12 @@ use std::path::Path;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    /// Config schema version. Missing or `< 2` triggers a one-time migration
+    /// warning when `[unused-pub]` is present without an explicit
+    /// `on-ci-only` setting (the default flipped from `false` to `true`).
+    /// Set `schema = 2` in your config to silence the warning.
+    #[serde(default)]
+    pub schema: Option<u32>,
     #[serde(default)]
     pub checks: Checks,
     #[serde(default, rename = "file-size")]
@@ -63,8 +69,11 @@ pub struct UnusedDepsConfig {
 
 #[derive(Deserialize, Default)]
 pub struct UnusedPubConfig {
+    /// `None` means "not set in the config" — used to detect old configs in
+    /// the schema-migration check. `Some(value)` is an explicit user choice.
+    /// At runtime, treat `None` as `true` (the new default).
     #[serde(default, rename = "on-ci-only")]
-    pub on_ci_only: bool,
+    pub on_ci_only: Option<bool>,
     #[serde(default, rename = "scip-index")]
     pub scip_index: Option<String>,
     #[serde(default, rename = "exclude-crates")]
@@ -77,6 +86,13 @@ pub struct UnusedPubConfig {
     pub exclude_paths: Vec<String>,
     #[serde(default = "CargoFeatures::default_all", rename = "cargo-features")]
     pub cargo_features: CargoFeatures,
+}
+
+impl UnusedPubConfig {
+    /// Effective on-ci-only value after applying the (new) default.
+    pub fn effective_on_ci_only(&self) -> bool {
+        self.on_ci_only.unwrap_or(true)
+    }
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -141,7 +157,7 @@ pub fn load() -> Config {
     let standalone_exists = Path::new(STANDALONE_FILE).exists();
     let cargo_metadata = read_cargo_metadata();
 
-    match (standalone_exists, cargo_metadata) {
+    let config = match (standalone_exists, cargo_metadata) {
         (true, Some(_)) => {
             eprintln!(
                 "error: found both {STANDALONE_FILE} and [workspace.metadata.workspace-lint] in Cargo.toml — use only one"
@@ -162,6 +178,31 @@ pub fn load() -> Config {
             parse_config(&content, STANDALONE_FILE)
         }
         (false, Some(raw)) => parse_config(&raw, "Cargo.toml [workspace.metadata.workspace-lint]"),
+    };
+
+    warn_on_old_schema(&config);
+    config
+}
+
+/// Emit a one-time stderr warning if the user's config predates the schema
+/// flip that made `unused-pub.on-ci-only` default to `true`. They opt out by
+/// setting `schema = 2` (or by explicitly choosing `on-ci-only`).
+fn warn_on_old_schema(config: &Config) {
+    let has_unused_pub_block = config.unused_pub.is_some();
+    let on_ci_only_missing = config
+        .unused_pub
+        .as_ref()
+        .is_some_and(|u| u.on_ci_only.is_none());
+    let schema_old = config.schema.is_none_or(|v| v < 2);
+
+    if has_unused_pub_block && on_ci_only_missing && schema_old {
+        eprintln!(
+            "warning: [unused-pub] is present but `on-ci-only` is not set. \
+             As of schema 2, this check defaults to `on-ci-only = true` (it only runs \
+             when the CI env var is set). To restore the old behavior, set \
+             `on-ci-only = false`. To acknowledge the new default and silence this \
+             warning, add `schema = 2` to your config."
+        );
     }
 }
 
@@ -342,7 +383,10 @@ max-code-lines = 400
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         let up = config.unused_pub.unwrap();
-        assert!(!up.on_ci_only);
+        // `on_ci_only` is None when not specified, but effective_on_ci_only()
+        // returns the new default of true.
+        assert!(up.on_ci_only.is_none());
+        assert!(up.effective_on_ci_only());
         assert!(up.scip_index.is_none());
         assert!(up.exclude_crates.is_empty());
         assert!(up.allowlist.is_empty());
@@ -359,7 +403,27 @@ on-ci-only = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         let up = config.unused_pub.unwrap();
-        assert!(up.on_ci_only);
+        assert_eq!(up.on_ci_only, Some(true));
+        assert!(up.effective_on_ci_only());
+    }
+
+    #[test]
+    fn explicit_on_ci_only_false_is_respected() {
+        let toml = r#"
+[unused-pub]
+on-ci-only = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let up = config.unused_pub.unwrap();
+        assert_eq!(up.on_ci_only, Some(false));
+        assert!(!up.effective_on_ci_only());
+    }
+
+    #[test]
+    fn schema_field_parses() {
+        let toml = "schema = 2\n";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.schema, Some(2));
     }
 
     #[test]

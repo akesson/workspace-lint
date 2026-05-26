@@ -1,10 +1,13 @@
-use crate::Issue;
 use crate::config::FreshnessConfig;
+use crate::diagnostic::Diagnostic;
+use crate::diagnostic::builder::at_file;
 use globset::Glob;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub fn check(config: &FreshnessConfig) -> Vec<Issue> {
+pub const LINT: &str = "workspace-lint::freshness";
+
+pub fn check(config: &FreshnessConfig) -> Vec<Diagnostic> {
     if std::env::var("CI").is_ok() {
         return Vec::new();
     }
@@ -12,8 +15,8 @@ pub fn check(config: &FreshnessConfig) -> Vec<Issue> {
     check_with_root(config, Path::new("."))
 }
 
-fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Issue> {
-    let mut issues = Vec::new();
+fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
 
     for rule in &config.rules {
         let tracked_files = find_files_matching(root, &rule.glob);
@@ -37,21 +40,28 @@ fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Issue> {
             if let Some(newest) = newest_dep
                 && newest > file_mtime
             {
-                issues.push(Issue {
-                    title: format!("Review {}", file.display()),
-                    details: vec![
+                let rel = file.strip_prefix(root).unwrap_or(file).to_path_buf();
+                diagnostics.push(
+                    at_file(
+                        LINT,
                         format!(
-                            "Source files matching {} in subtree are newer",
-                            rule.depends_on
+                            "`{}` is older than source files it depends on",
+                            rel.display()
                         ),
-                        "Run 'workspace-lint done' when done".to_string(),
-                    ],
-                });
+                        rel,
+                    )
+                    .help(format!(
+                        "files matching `{}` in the subtree are newer",
+                        rule.depends_on
+                    ))
+                    .help("run `workspace-lint done` once the tracked file is up to date")
+                    .build(),
+                );
             }
         }
     }
 
-    issues
+    diagnostics
 }
 
 pub fn mark_done(config: &FreshnessConfig) {
@@ -242,7 +252,7 @@ mod tests {
         let config = make_config(vec![("CLAUDE.md", "*.rs")]);
         let issues = check_with_root(&config, tmp.path());
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].title.contains("CLAUDE.md"));
+        assert!(issues[0].message.contains("CLAUDE.md"));
     }
 
     #[test]

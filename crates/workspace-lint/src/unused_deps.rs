@@ -1,12 +1,16 @@
 use crate::config::UnusedDepsConfig;
-use crate::{Issue, workspace};
+use crate::diagnostic::Diagnostic;
+use crate::diagnostic::builder::at_crate;
+use crate::workspace;
 use fs_err as fs;
 use ignore::WalkBuilder;
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-pub fn check(config: &UnusedDepsConfig) -> Vec<Issue> {
+pub const LINT: &str = "workspace-lint::unused-deps";
+
+pub fn check(config: &UnusedDepsConfig) -> Vec<Diagnostic> {
     let root_toml = fs::read_to_string("Cargo.toml").unwrap_or_else(|e| {
         eprintln!("failed to read root Cargo.toml: {e}");
         std::process::exit(1);
@@ -20,7 +24,7 @@ pub fn check(config: &UnusedDepsConfig) -> Vec<Issue> {
     let member_patterns = workspace::extract_member_patterns(&root);
     let member_dirs = workspace::expand_member_patterns(&member_patterns);
 
-    let mut issues = Vec::new();
+    let mut diagnostics = Vec::new();
 
     for dir in &member_dirs {
         let cargo_path = dir.join("Cargo.toml");
@@ -72,27 +76,30 @@ pub fn check(config: &UnusedDepsConfig) -> Vec<Issue> {
             .collect();
 
         if !unused.is_empty() {
-            let mut details: Vec<String> = unused;
-            details.push(String::new());
-            details.push(
-                "Note: proc-macro crates and build.rs-generated code may cause false positives."
-                    .into(),
+            let n = unused.len();
+            let mut builder = at_crate(
+                LINT,
+                format!(
+                    "{n} possibly unused dependenc{} in {}",
+                    if n == 1 { "y" } else { "ies" },
+                    cargo_path.display()
+                ),
+                dir.clone(),
             );
-            details
-                .push("Try removing the flagged deps and run `cargo build --all-targets`.".into());
-            details.push(
-                "If it breaks, add the dep to [unused-deps] ignore in your workspace-lint config."
-                    .into(),
+            for label in unused {
+                builder = builder.help(label);
+            }
+            diagnostics.push(
+                builder
+                    .note("proc-macro crates and build.rs-generated code may cause false positives")
+                    .note("verify by removing the dep and running `cargo build --all-targets`")
+                    .note("if the build breaks, add the dep to [unused-deps] ignore in your config")
+                    .build(),
             );
-
-            issues.push(Issue {
-                title: format!("Possibly unused deps in {}", cargo_path.display()),
-                details,
-            });
         }
     }
 
-    issues
+    diagnostics
 }
 
 #[cfg(test)]

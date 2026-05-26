@@ -9,6 +9,16 @@ use crate::config::{
 #[derive(Parser)]
 #[command(name = "workspace-lint")]
 pub struct Cli {
+    /// Output format: `human` (default, clippy-style), `json` (rustc-compatible),
+    /// or `github` (Actions annotations).
+    #[arg(long, global = true)]
+    pub message_format: Option<String>,
+    /// Apply machine-applicable suggestions in-place. Currently this is the
+    /// silence directive each diagnostic carries (`workspace_lint::allow!`
+    /// macro for `.rs` files, `# workspace-lint: allow(...)` comment for
+    /// `Cargo.toml`/Markdown). Per-lint structural fixes are planned.
+    #[arg(long, global = true, default_value_t = false)]
+    pub fix: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -188,7 +198,7 @@ impl CheckRule {
             CargoFeatures::List(cargo_features)
         };
         UnusedPubConfig {
-            on_ci_only,
+            on_ci_only: Some(on_ci_only),
             scip_index,
             exclude_crates,
             allowlist,

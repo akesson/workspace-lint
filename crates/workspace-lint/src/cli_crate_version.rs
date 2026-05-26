@@ -1,12 +1,15 @@
-use crate::Issue;
 use crate::config::CliCrateVersionConfig;
+use crate::diagnostic::Diagnostic;
+use crate::diagnostic::builder::at_workspace;
 use fs_err as fs;
 use regex::Regex;
 use std::process::Command;
 
-pub fn check(config: &CliCrateVersionConfig) -> Vec<Issue> {
+pub const LINT: &str = "workspace-lint::cli-crate-version";
+
+pub fn check(config: &CliCrateVersionConfig) -> Vec<Diagnostic> {
     let lock_packages = read_lock_packages();
-    let mut issues = Vec::new();
+    let mut diagnostics = Vec::new();
 
     for rule in &config.rules {
         let (program, args) = rule.command.split_first().unwrap_or_else(|| {
@@ -71,16 +74,25 @@ pub fn check(config: &CliCrateVersionConfig) -> Vec<Issue> {
             });
 
         if cli_version != lock_version {
-            issues.push(Issue {
-                title: format!("Fix {} version mismatch", rule.crate_name),
-                details: vec![format!(
-                    "CLI reports {cli_version}, Cargo.lock has {lock_version}"
-                )],
-            });
+            diagnostics.push(
+                at_workspace(
+                    LINT,
+                    format!(
+                        "`{}` CLI version {cli_version} does not match Cargo.lock {lock_version}",
+                        rule.crate_name
+                    ),
+                )
+                .help(format!(
+                    "update or reinstall `{}` to match the workspace version",
+                    rule.crate_name
+                ))
+                .note(format!("ran `{}`", rule.command.join(" ")))
+                .build(),
+            );
         }
     }
 
-    issues
+    diagnostics
 }
 
 fn read_lock_packages() -> Vec<(String, String)> {
@@ -117,21 +129,22 @@ fn compare_version(
     cli_version: &str,
     crate_name: &str,
     lock_packages: &[(String, String)],
-) -> Option<Issue> {
+) -> Option<Diagnostic> {
     let lock_version = lock_packages
         .iter()
         .find(|(name, _)| name == crate_name)
-        .map(|(_, version)| version.as_str());
-
-    let lock_version = lock_version?;
+        .map(|(_, version)| version.as_str())?;
 
     if cli_version != lock_version {
-        Some(Issue {
-            title: format!("Fix {crate_name} version mismatch"),
-            details: vec![format!(
-                "CLI reports {cli_version}, Cargo.lock has {lock_version}"
-            )],
-        })
+        Some(
+            at_workspace(
+                LINT,
+                format!(
+                    "`{crate_name}` CLI version {cli_version} does not match Cargo.lock {lock_version}"
+                ),
+            )
+            .build(),
+        )
     } else {
         None
     }
@@ -202,12 +215,11 @@ version = "1.0"
     #[test]
     fn compare_version_mismatch() {
         let pkgs = vec![("wasm-bindgen".into(), "0.2.90".into())];
-        let issue = compare_version("0.2.89", "wasm-bindgen", &pkgs);
-        assert!(issue.is_some());
-        let issue = issue.unwrap();
-        assert!(issue.title.contains("wasm-bindgen"));
-        assert!(issue.details[0].contains("0.2.89"));
-        assert!(issue.details[0].contains("0.2.90"));
+        let d = compare_version("0.2.89", "wasm-bindgen", &pkgs).unwrap();
+        assert_eq!(d.lint, LINT);
+        assert!(d.message.contains("wasm-bindgen"));
+        assert!(d.message.contains("0.2.89"));
+        assert!(d.message.contains("0.2.90"));
     }
 
     #[test]

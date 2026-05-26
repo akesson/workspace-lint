@@ -1,11 +1,15 @@
-use crate::Issue;
 use crate::config::FileSizeConfig;
+use crate::diagnostic::Diagnostic;
+use crate::diagnostic::builder::{at_file, at_workspace};
 use globset::{Glob, GlobSetBuilder};
 use std::collections::HashMap;
 use std::process::Command;
 use tokei::{Config as TokeiConfig, Languages};
 
-pub fn check(config: &FileSizeConfig) -> Vec<Issue> {
+pub const LINT: &str = "workspace-lint::file-size";
+pub const STALE_GIT_INDEX_LINT: &str = "workspace-lint::stale-git-index";
+
+pub fn check(config: &FileSizeConfig) -> Vec<Diagnostic> {
     // Build glob matchers for each rule
     let mut builder = GlobSetBuilder::new();
     for rule in &config.rules {
@@ -50,43 +54,35 @@ pub fn check(config: &FileSizeConfig) -> Vec<Issue> {
         }
     }
 
-    // Build issues per rule
-    let mut issues = Vec::new();
-    for (rule_idx, mut viols) in violations.into_iter().enumerate() {
-        if viols.is_empty() {
-            continue;
-        }
-        viols.sort_by_key(|v| std::cmp::Reverse(v.1));
-
+    // One Diagnostic per offending file — gives each its own silence anchor.
+    let mut diagnostics = Vec::new();
+    for (rule_idx, viols) in violations.into_iter().enumerate() {
         let rule = &config.rules[rule_idx];
-        let mut details: Vec<String> = viols
-            .iter()
-            .map(|(path, count)| format!("{path}: {count} code lines"))
-            .collect();
-
-        details.push(String::new());
-        details.push("Suggestions:".to_string());
-        details.push("- Move #[cfg(test)] modules to separate test files".to_string());
-        details.push(
-            "- Extract related structs, enums, or trait impls into their own modules".to_string(),
-        );
-
-        issues.push(Issue {
-            title: format!(
-                "Reduce files matching '{}' to ≤ {} code lines",
-                rule.glob, rule.max_code_lines
-            ),
-            details,
-        });
+        for (path, code_lines) in viols {
+            let d = at_file(
+                LINT,
+                format!(
+                    "file exceeds {} code lines ({code_lines})",
+                    rule.max_code_lines
+                ),
+                path,
+            )
+            .help("split #[cfg(test)] modules into separate test files")
+            .help("extract related structs, enums, or trait impls into their own modules")
+            .note(format!(
+                "configured by [[file-size.rules]] glob = \"{}\"",
+                rule.glob
+            ))
+            .build();
+            diagnostics.push(d);
+        }
     }
 
-    // Check for deleted files still tracked by git
-    issues.extend(check_deleted_files());
-
-    issues
+    diagnostics.extend(check_deleted_files());
+    diagnostics
 }
 
-fn check_deleted_files() -> Vec<Issue> {
+fn check_deleted_files() -> Vec<Diagnostic> {
     let output = Command::new("git")
         .args(["ls-files"])
         .output()
@@ -96,20 +92,18 @@ fn check_deleted_files() -> Vec<Issue> {
         });
 
     let files = String::from_utf8_lossy(&output.stdout);
-    let deleted: Vec<String> = files
+    files
         .lines()
         .filter(|path| !std::path::Path::new(path).exists())
-        .map(|s| s.to_string())
-        .collect();
-
-    if deleted.is_empty() {
-        Vec::new()
-    } else {
-        vec![Issue {
-            title: "Stage deleted files with `git rm`".to_string(),
-            details: deleted,
-        }]
-    }
+        .map(|path| {
+            at_workspace(
+                STALE_GIT_INDEX_LINT,
+                format!("deleted file `{path}` is still tracked by git"),
+            )
+            .help(format!("run `git rm {path}` to stage the removal"))
+            .build()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -117,48 +111,38 @@ mod tests {
     use super::*;
     use crate::config::FileSizeRule;
 
-    fn find_violations(file_lines: &HashMap<String, usize>, config: &FileSizeConfig) -> Vec<Issue> {
+    fn find_violations(
+        file_lines: &HashMap<String, usize>,
+        config: &FileSizeConfig,
+    ) -> Vec<Diagnostic> {
         let mut builder = GlobSetBuilder::new();
         for rule in &config.rules {
             builder.add(Glob::new(&rule.glob).unwrap());
         }
         let globset = builder.build().unwrap();
 
-        let mut violations: Vec<Vec<(String, usize)>> = vec![Vec::new(); config.rules.len()];
-
+        let mut diags = Vec::new();
         for (path_str, code_lines) in file_lines {
             let path = std::path::Path::new(path_str);
             let matches = globset.matches(path);
             for &rule_idx in &matches {
-                if *code_lines > config.rules[rule_idx].max_code_lines {
-                    violations[rule_idx].push((path_str.clone(), *code_lines));
+                let rule = &config.rules[rule_idx];
+                if *code_lines > rule.max_code_lines {
+                    diags.push(
+                        at_file(
+                            LINT,
+                            format!(
+                                "file exceeds {} code lines ({code_lines})",
+                                rule.max_code_lines
+                            ),
+                            path_str.clone(),
+                        )
+                        .build(),
+                    );
                 }
             }
         }
-
-        let mut issues = Vec::new();
-        for (rule_idx, mut viols) in violations.into_iter().enumerate() {
-            if viols.is_empty() {
-                continue;
-            }
-            viols.sort_by_key(|v| std::cmp::Reverse(v.1));
-
-            let rule = &config.rules[rule_idx];
-            let details: Vec<String> = viols
-                .iter()
-                .map(|(path, count)| format!("{path}: {count} code lines"))
-                .collect();
-
-            issues.push(Issue {
-                title: format!(
-                    "Reduce files matching '{}' to ≤ {} code lines",
-                    rule.glob, rule.max_code_lines
-                ),
-                details,
-            });
-        }
-
-        issues
+        diags
     }
 
     fn make_config(rules: Vec<(&str, usize)>) -> FileSizeConfig {
@@ -195,24 +179,23 @@ mod tests {
         let mut file_lines = HashMap::new();
         file_lines.insert("src/main.rs".into(), 501);
         file_lines.insert("src/lib.rs".into(), 100);
-        let issues = find_violations(&file_lines, &config);
-        assert_eq!(issues.len(), 1);
-        assert!(issues[0].details[0].contains("src/main.rs"));
-        assert!(issues[0].details[0].contains("501"));
+        let diags = find_violations(&file_lines, &config);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].lint, LINT);
+        assert!(diags[0].message.contains("501"));
+        let span_file = diags[0].primary.as_ref().unwrap().file.to_string_lossy();
+        assert_eq!(span_file, "src/main.rs");
     }
 
     #[test]
-    fn sorted_descending() {
+    fn each_violation_is_its_own_diagnostic() {
         let config = make_config(vec![("**/*.rs", 100)]);
         let mut file_lines = HashMap::new();
         file_lines.insert("a.rs".into(), 200);
         file_lines.insert("b.rs".into(), 500);
         file_lines.insert("c.rs".into(), 300);
-        let issues = find_violations(&file_lines, &config);
-        assert_eq!(issues.len(), 1);
-        assert!(issues[0].details[0].contains("500"));
-        assert!(issues[0].details[1].contains("300"));
-        assert!(issues[0].details[2].contains("200"));
+        let diags = find_violations(&file_lines, &config);
+        assert_eq!(diags.len(), 3);
     }
 
     #[test]
@@ -221,8 +204,8 @@ mod tests {
         let mut file_lines = HashMap::new();
         file_lines.insert("src/main.rs".into(), 600);
         file_lines.insert("src/app.ts".into(), 400);
-        let issues = find_violations(&file_lines, &config);
-        assert_eq!(issues.len(), 2);
+        let diags = find_violations(&file_lines, &config);
+        assert_eq!(diags.len(), 2);
     }
 
     #[test]

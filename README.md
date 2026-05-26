@@ -2,10 +2,21 @@
 
 A Rust CLI that enforces workspace quality standards via configurable lint checks.
 
+Emits clippy-style human output, rustc-compatible JSON, or GitHub Actions
+workflow commands so editor and CI integrations work without glue.
+
 ## Installation
 
 ```sh
-cargo install --path .
+cargo install --path crates/workspace-lint
+```
+
+For per-site silencing, also add the zero-dep marker crate to consumer
+workspaces:
+
+```toml
+[dev-dependencies]
+workspace_lint = { package = "workspace-lint-marker", version = "0.1" }
 ```
 
 ## Quick start
@@ -176,17 +187,72 @@ glob = "**/*.rs"
 max-code-lines = 500
 ```
 
-## Example output
+## Output formats
+
+`--message-format` picks the renderer (default `human`):
+
+**`human`** (clippy-style, written to stderr):
 
 ```
-Workspace lint: 2 issues
+warning: file exceeds 500 code lines (612)
+ --> crates/web-api/src/handler.rs:1:1
+  |
+  = help: split #[cfg(test)] modules into separate test files
+  = help: extract related structs, enums, or trait impls into their own modules
+  = note: configured by [[file-size.rules]] glob = "**/*.rs"
+help: if intentional, silence with:
+  |
+1 + workspace_lint::allow!(file_size);
+  |
+  = note: `#[warn(workspace_lint::file_size)]` on by default
 
-- [ ] crates/web-api/src/handler.rs exceeds 500 code lines (612)
-      Consider splitting this file
-
-- [ ] Review CLAUDE.md
-      Source files matching **/*.rs in subtree are newer
-      Run 'workspace-lint done' when done
-
-Tip: fix each item in a subagent
+workspace-lint: generated 1 warning (run `workspace-lint --fix` to apply 1 suggestion)
 ```
+
+**`json`** (rustc-compatible per-line, written to stdout). Set rust-analyzer's
+`check.overrideCommand` to `["workspace-lint", "--message-format=json", ...]`
+and IDE squiggles + "Apply suggestion" code actions work without further glue.
+
+**`github`** (Actions workflow command, written to stdout):
+
+```
+::warning file=crates/web-api/src/handler.rs,line=1,col=1,title=workspace-lint%3A%3Afile-size::file exceeds 500 code lines (612)
+```
+
+## Silencing diagnostics
+
+Every diagnostic prints the exact text to paste to silence it. Two forms,
+picked automatically by `--fix` or by the user:
+
+**Rust files** — declarative macro from `workspace-lint-marker`:
+
+```rust
+workspace_lint::allow!(file_size);
+workspace_lint::allow!(file_size, unused_pub);   // comma-separated list
+workspace_lint::expect!(unused_pub);             // silence; warn if stale
+```
+
+**`Cargo.toml`, Markdown, anything non-Rust** — comment directive:
+
+```toml
+# workspace-lint: allow(centralized-deps)
+[dependencies]
+serde = "1.0.200"
+
+# workspace-lint: expect(unused-deps)
+```
+
+`expect!` (and its `expect(…)` comment form) silences a diagnostic but emits
+a `workspace-lint::stale-expect` warning if the underlying lint stops firing
+— so silences don't quietly rot.
+
+## CLI flags
+
+- `workspace-lint` — run all configured checks.
+- `workspace-lint check <rule> [opts]` — run a single check.
+- `workspace-lint --message-format <human|json|github>` — pick the renderer.
+- `workspace-lint --fix` — apply every diagnostic's `MachineApplicable`
+  suggestion in place. Currently this is the silence directive next to each
+  finding; structural fixes are planned.
+- `workspace-lint done` — mark `freshness` targets up-to-date.
+- `workspace-lint expand` — substitute command output into marker blocks.

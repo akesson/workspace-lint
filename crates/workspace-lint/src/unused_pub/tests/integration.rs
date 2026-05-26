@@ -19,7 +19,7 @@ fn make_config_with_index(
     kinds: Vec<String>,
 ) -> UnusedPubConfig {
     UnusedPubConfig {
-        on_ci_only: false,
+        on_ci_only: Some(false),
         scip_index: Some(scip_path.to_string()),
         exclude_crates,
         allowlist,
@@ -50,7 +50,7 @@ fn integration_unused_pub_fn_reported() {
     let config = make_config_with_index(tmp.path().to_str().unwrap(), vec![], vec![], vec![]);
     let issues = check(&config);
     assert_eq!(issues.len(), 1);
-    assert!(issues[0].title.contains("mycrate"));
+    assert!(issues[0].message.contains("mycrate"));
 }
 
 #[test]
@@ -77,8 +77,8 @@ fn integration_same_crate_reference_suggests_pub_crate() {
     let config = make_config_with_index(tmp.path().to_str().unwrap(), vec![], vec![], vec![]);
     let issues = check(&config);
     assert_eq!(issues.len(), 1);
-    assert!(issues[0].title.contains("pub(crate)"));
-    assert!(issues[0].details.iter().any(|d| d.contains("`used`")));
+    assert!(issues[0].helps.iter().any(|h| h.contains("pub(crate)")));
+    assert!(issues[0].message.contains("`used`"));
 }
 
 #[test]
@@ -311,8 +311,8 @@ fn integration_kinds_filter() {
     let issues = check(&config);
     assert_eq!(issues.len(), 1);
     // Should only report the struct, not the function
-    assert!(issues[0].details.iter().any(|d| d.contains("UnusedStruct")));
-    assert!(!issues[0].details.iter().any(|d| d.contains("unused_fn")));
+    assert!(issues[0].message.contains("UnusedStruct"));
+    assert!(!issues[0].message.contains("unused_fn"));
 }
 
 #[test]
@@ -346,9 +346,9 @@ fn integration_issues_grouped_by_crate() {
     let issues = check(&config);
     assert_eq!(issues.len(), 2);
 
-    let titles: Vec<&str> = issues.iter().map(|i| i.title.as_str()).collect();
-    assert!(titles.iter().any(|t| t.contains("crate-a")));
-    assert!(titles.iter().any(|t| t.contains("crate-b")));
+    let messages: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
+    assert!(messages.iter().any(|t| t.contains("crate-a")));
+    assert!(messages.iter().any(|t| t.contains("crate-b")));
 }
 
 #[test]
@@ -380,8 +380,12 @@ fn integration_removal_section_listed_before_tighten_section() {
     let config = make_config_with_index(tmp.path().to_str().unwrap(), vec![], vec![], vec![]);
     let issues = check(&config);
     assert_eq!(issues.len(), 2);
-    assert!(issues[0].title.contains("removal candidate"));
-    assert!(issues[1].title.contains("pub(crate)"));
+    // Each diagnostic distinguishes its kind via the help text.
+    let removal_help = "remove the item or its `pub` visibility";
+    let tighten_help = "consider `pub(crate)` to tighten visibility";
+    let helps: Vec<&String> = issues.iter().flat_map(|d| &d.helps).collect();
+    assert!(helps.iter().any(|h| h.contains(removal_help)));
+    assert!(helps.iter().any(|h| h.contains(tighten_help)));
 }
 
 #[test]
@@ -403,7 +407,7 @@ fn integration_exclude_paths_works() {
     let tmp = write_scip_index(&index);
 
     let config = UnusedPubConfig {
-        on_ci_only: false,
+        on_ci_only: Some(false),
         scip_index: Some(tmp.path().to_str().unwrap().to_string()),
         exclude_crates: vec![],
         allowlist: vec![],
@@ -431,7 +435,7 @@ fn on_ci_only_skips_when_ci_not_set() {
     // SAFETY: This test is single-threaded and no other code reads CI concurrently
     unsafe { std::env::remove_var("CI") };
     let config = UnusedPubConfig {
-        on_ci_only: true,
+        on_ci_only: Some(true),
         // No valid scip_index needed — should return early before reading it
         scip_index: Some("/nonexistent/index.scip".to_string()),
         exclude_crates: vec![],
