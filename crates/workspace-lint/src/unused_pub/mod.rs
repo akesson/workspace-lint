@@ -1,3 +1,9 @@
+// The SCIP-driven unused-pub check legitimately needs a lot of code (decl
+// map, marker tracking, syn-based pub item visitor, filter pipeline). If
+// the file ever shrinks back under the file-size threshold, stale-expect
+// will surface here.
+workspace_lint_marker::expect!(file_size);
+
 use crate::config::{CargoFeatures, UnusedPubConfig};
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_line;

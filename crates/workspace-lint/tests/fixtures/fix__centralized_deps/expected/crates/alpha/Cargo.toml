@@ -1,0 +1,7 @@
+# workspace-lint: allow(centralized-deps)
+[package]
+name = "alpha"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0.200"

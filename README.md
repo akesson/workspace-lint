@@ -234,6 +234,13 @@ workspace_lint::expect!(unused_pub);             // silence; warn if stale
 
 **`Cargo.toml`, Markdown, anything non-Rust** — comment directive:
 
+<!--
+The `expect(unused-deps)` line below is illustrative; workspace-lint's own
+scanner would treat it as a real directive against README.md and flag a
+stale-expect on the next run. Silence it for this file:
+workspace-lint: allow(stale-expect)
+-->
+
 ```toml
 # workspace-lint: allow(centralized-deps)
 [dependencies]
@@ -245,6 +252,22 @@ serde = "1.0.200"
 `expect!` (and its `expect(…)` comment form) silences a diagnostic but emits
 a `workspace-lint::stale-expect` warning if the underlying lint stops firing
 — so silences don't quietly rot.
+
+## Updating expected outputs
+
+Two test-data sources have an auto-bless workflow:
+
+```sh
+# Inline diagnostic snapshots in src/messages.rs
+cargo insta accept
+
+# Whole-tree --fix fixtures under tests/fixtures/fix__*/
+WORKSPACE_LINT_BLESS=1 cargo test --test fix_fixtures
+```
+
+Run either after a deliberate change to the rendered output, review the
+diff, commit. The fix-fixture driver wholesale-replaces `expected/` so
+removed files in the post-fix tree propagate correctly.
 
 ## CLI flags
 
