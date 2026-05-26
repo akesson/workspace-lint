@@ -26,11 +26,14 @@ max-code-lines = 6000
 # - workspace-lint-marker: macros are referenced by path `workspace_lint_marker::`
 #   in src/, so the heuristic in unused-deps that strips the crate name doesn't
 #   see it — false positive worth pinning down rather than acting on.
+# - rustfix: pre-added for a planned follow-up that routes non-insertion
+#   suggestions through it (see comments in src/fix.rs). Not imported yet.
 ignore = [
     "protobuf",
     "proc-macro2",
     "cargo-husky",
     "workspace-lint-marker",
+    "rustfix",
 ]
 
 # `unused-pub` deliberately omitted: it shells out to rust-analyzer for the
