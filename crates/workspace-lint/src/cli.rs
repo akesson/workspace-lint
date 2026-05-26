@@ -9,6 +9,10 @@ use crate::config::{
 #[derive(Parser)]
 #[command(name = "workspace-lint")]
 pub struct Cli {
+    /// Output format: `human` (default, clippy-style), `json` (rustc-compatible),
+    /// or `github` (Actions annotations).
+    #[arg(long, global = true)]
+    pub message_format: Option<String>,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

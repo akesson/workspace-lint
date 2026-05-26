@@ -1,11 +1,14 @@
-use crate::Issue;
 use crate::config::CrateSizeConfig;
+use crate::diagnostic::Diagnostic;
+use crate::diagnostic::builder::at_crate;
 use globset::{Glob, GlobSetBuilder};
 use std::path::Path;
 use tokei::{Config as TokeiConfig, Languages};
 
-pub fn check(config: &CrateSizeConfig) -> Vec<Issue> {
-    let mut issues = Vec::new();
+pub const LINT: &str = "workspace-lint::crate-size";
+
+pub fn check(config: &CrateSizeConfig) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
 
     for rule in &config.rules {
         let dirs = expand_glob(&rule.glob);
@@ -19,8 +22,6 @@ pub fn check(config: &CrateSizeConfig) -> Vec<Issue> {
             }
             builder.build().unwrap()
         });
-
-        let mut violations: Vec<(String, usize)> = Vec::new();
 
         for dir in &dirs {
             let mut languages = Languages::new();
@@ -40,29 +41,27 @@ pub fn check(config: &CrateSizeConfig) -> Vec<Issue> {
             }
 
             if total_code > rule.max_code_lines {
-                violations.push((dir.clone(), total_code));
+                diagnostics.push(
+                    at_crate(
+                        LINT,
+                        format!(
+                            "crate exceeds {} code lines ({total_code})",
+                            rule.max_code_lines
+                        ),
+                        dir.clone(),
+                    )
+                    .help("split the crate into smaller, more focused crates")
+                    .note(format!(
+                        "configured by [[crate-size.rules]] glob = \"{}\"",
+                        rule.glob
+                    ))
+                    .build(),
+                );
             }
-        }
-
-        if !violations.is_empty() {
-            violations.sort_by_key(|v| std::cmp::Reverse(v.1));
-
-            let details: Vec<String> = violations
-                .iter()
-                .map(|(dir, count)| format!("{dir}: {count} code lines"))
-                .collect();
-
-            issues.push(Issue {
-                title: format!(
-                    "Reduce crate sizes matching '{}' to ≤ {} code lines",
-                    rule.glob, rule.max_code_lines
-                ),
-                details,
-            });
         }
     }
 
-    issues
+    diagnostics
 }
 
 /// Expand a glob pattern to matching directories.
@@ -116,31 +115,19 @@ mod tests {
     fn find_crate_violations(
         dir_line_counts: &[(String, usize)],
         rule: &CrateSizeRule,
-    ) -> Option<Issue> {
-        let violations: Vec<&(String, usize)> = dir_line_counts
+    ) -> Vec<Diagnostic> {
+        dir_line_counts
             .iter()
             .filter(|(_, count)| *count > rule.max_code_lines)
-            .collect();
-
-        if violations.is_empty() {
-            return None;
-        }
-
-        let mut sorted = violations;
-        sorted.sort_by_key(|v| std::cmp::Reverse(v.1));
-
-        let details: Vec<String> = sorted
-            .iter()
-            .map(|(dir, count)| format!("{dir}: {count} code lines"))
-            .collect();
-
-        Some(Issue {
-            title: format!(
-                "Reduce crate sizes matching '{}' to ≤ {} code lines",
-                rule.glob, rule.max_code_lines
-            ),
-            details,
-        })
+            .map(|(dir, count)| {
+                at_crate(
+                    LINT,
+                    format!("crate exceeds {} code lines ({count})", rule.max_code_lines),
+                    dir.clone(),
+                )
+                .build()
+            })
+            .collect()
     }
 
     fn rule(glob: &str, max: usize) -> CrateSizeRule {
@@ -157,30 +144,33 @@ mod tests {
     fn no_violations_when_all_under_limit() {
         let counts = vec![("crates/a".into(), 100), ("crates/b".into(), 200)];
         let r = rule("crates/*", 500);
-        assert!(find_crate_violations(&counts, &r).is_none());
+        assert!(find_crate_violations(&counts, &r).is_empty());
     }
 
     #[test]
-    fn violation_when_over_limit() {
+    fn one_diagnostic_per_violation() {
         let counts = vec![("crates/a".into(), 600), ("crates/b".into(), 200)];
         let r = rule("crates/*", 500);
-        let issue = find_crate_violations(&counts, &r).unwrap();
-        assert!(issue.details[0].contains("600"));
-        assert_eq!(issue.details.len(), 1);
+        let diags = find_crate_violations(&counts, &r);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("600"));
+        assert_eq!(diags[0].lint, LINT);
     }
 
     #[test]
-    fn violations_sorted_descending() {
+    fn multiple_violations_each_emit_diagnostic() {
         let counts = vec![
             ("crates/a".into(), 600),
             ("crates/b".into(), 900),
             ("crates/c".into(), 700),
         ];
         let r = rule("crates/*", 500);
-        let issue = find_crate_violations(&counts, &r).unwrap();
-        assert!(issue.details[0].contains("900"));
-        assert!(issue.details[1].contains("700"));
-        assert!(issue.details[2].contains("600"));
+        let diags = find_crate_violations(&counts, &r);
+        assert_eq!(diags.len(), 3);
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(messages.iter().any(|m| m.contains("600")));
+        assert!(messages.iter().any(|m| m.contains("900")));
+        assert!(messages.iter().any(|m| m.contains("700")));
     }
 
     // --- expand_glob (tempdir) ---

@@ -4,8 +4,10 @@ mod cli_crate_version;
 mod config;
 mod crate_size;
 #[allow(dead_code)]
-// Diagnostic types are wired in across multiple steps; suppress until checks
-// migrate over.
+// Diagnostic types include a few helpers (LintId, SilenceAnchor::{file,line},
+// some Applicability variants, clean_path/clean_pathbuf) that aren't yet
+// referenced; upcoming steps (suppression map, --fix, snapshot tests) will
+// use them. Suppress until then to keep `cargo clippy -D warnings` green.
 mod diagnostic;
 mod expand;
 mod file_size;
@@ -15,18 +17,21 @@ mod unused_pub;
 mod workspace;
 
 use clap::Parser;
-use cli::{CheckRule, Cli, Commands};
+use std::io::{self, IsTerminal};
 
-pub(crate) struct Issue {
-    pub title: String,
-    pub details: Vec<String>,
-}
+use cli::{CheckRule, Cli, Commands};
+use diagnostic::Diagnostic;
+use diagnostic::render::{Format, render};
 
 fn main() {
     let cli = Cli::parse();
+    let format = parse_format(cli.message_format.as_deref());
 
     match cli.command {
-        None => run_all_from_config(),
+        None => {
+            let diagnostics = run_all_from_config();
+            report_and_exit(diagnostics, format);
+        }
         Some(Commands::Done) => {
             let config = config::load();
             if let Some(ref fc) = config.freshness {
@@ -34,8 +39,8 @@ fn main() {
             }
         }
         Some(Commands::Check { rule }) => {
-            let issues = run_single_check(rule);
-            report_and_exit(issues);
+            let diagnostics = run_single_check(rule);
+            report_and_exit(diagnostics, format);
         }
         Some(Commands::Expand {
             command,
@@ -49,41 +54,51 @@ fn main() {
     }
 }
 
-fn run_all_from_config() {
+fn parse_format(arg: Option<&str>) -> Format {
+    match arg {
+        None => Format::Human,
+        Some(s) => Format::parse(s).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }),
+    }
+}
+
+fn run_all_from_config() -> Vec<Diagnostic> {
     let config = config::load();
 
     if let Some(ref ec) = config.expand {
         expand::run(ec);
     }
 
-    let mut issues = Vec::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     if let Some(ref cv) = config.cli_crate_version {
-        issues.extend(cli_crate_version::check(cv));
+        diagnostics.extend(cli_crate_version::check(cv));
     }
     if config.checks.centralized_deps {
-        issues.extend(centralized_deps::check());
+        diagnostics.extend(centralized_deps::check());
     }
     if let Some(ref fc) = config.freshness {
-        issues.extend(freshness::check(fc));
+        diagnostics.extend(freshness::check(fc));
     }
     if let Some(ref fc) = config.file_size {
-        issues.extend(file_size::check(fc));
+        diagnostics.extend(file_size::check(fc));
     }
     if let Some(ref fc) = config.crate_size {
-        issues.extend(crate_size::check(fc));
+        diagnostics.extend(crate_size::check(fc));
     }
     if let Some(ref uc) = config.unused_deps {
-        issues.extend(unused_deps::check(uc));
+        diagnostics.extend(unused_deps::check(uc));
     }
     if let Some(ref up) = config.unused_pub {
-        issues.extend(unused_pub::check(up));
+        diagnostics.extend(unused_pub::check(up));
     }
 
-    report_and_exit(issues);
+    diagnostics
 }
 
-fn run_single_check(rule: CheckRule) -> Vec<Issue> {
+fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
     match rule {
         CheckRule::CentralizedDeps => centralized_deps::check(),
         CheckRule::FileSize {
@@ -140,26 +155,23 @@ fn run_single_check(rule: CheckRule) -> Vec<Issue> {
     }
 }
 
-fn report_and_exit(issues: Vec<Issue>) {
-    if issues.is_empty() {
-        eprintln!("Workspace lint: all passed");
-    } else {
-        eprintln!(
-            "Workspace lint: {} issue{}",
-            issues.len(),
-            if issues.len() == 1 { "" } else { "s" }
-        );
-        eprintln!();
-        for issue in &issues {
-            eprintln!("- [ ] {}", issue.title);
-            for detail in &issue.details {
-                eprintln!("      {detail}");
-            }
-            eprintln!();
-        }
-        if issues.len() > 1 {
-            eprintln!("Tip: fix each item in a subagent");
-        }
+fn report_and_exit(diagnostics: Vec<Diagnostic>, format: Format) {
+    // Human format goes to stderr (so JSON/GitHub piping is clean); machine
+    // formats go to stdout.
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
+    let out: &mut dyn io::Write = match format {
+        Format::Human => &mut stderr,
+        Format::Json | Format::Github => &mut stdout,
+    };
+    let deny_count = render(format, &diagnostics, out).unwrap_or_else(|e| {
+        let _ = io::stderr().is_terminal(); // ignore
+        eprintln!("error: failed to write diagnostics: {e}");
+        std::process::exit(2);
+    });
+    if deny_count > 0 || (format == Format::Human && !diagnostics.is_empty()) {
+        // For now: any diagnostic flips exit. Once `[lints]` levels are wired
+        // in step 16, only `Deny`-level findings will trip the exit.
         std::process::exit(1);
     }
 }

@@ -1,17 +1,20 @@
-use crate::Issue;
 use crate::config::{CargoFeatures, UnusedPubConfig};
+use crate::diagnostic::Diagnostic;
+use crate::diagnostic::builder::at_line;
 use fs_err as fs;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use protobuf::Message;
 use scip::types::symbol_information::Kind;
 use scip::types::{Index, SymbolRole};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 use syn::Visibility;
 use syn::visit::Visit;
 
-pub fn check(config: &UnusedPubConfig) -> Vec<Issue> {
+pub const LINT: &str = "workspace-lint::unused-pub";
+
+pub fn check(config: &UnusedPubConfig) -> Vec<Diagnostic> {
     if config.on_ci_only && std::env::var("CI").is_err() {
         return Vec::new();
     }
@@ -36,8 +39,7 @@ pub fn check(config: &UnusedPubConfig) -> Vec<Issue> {
     let allowlist = build_allowlist(&config.allowlist);
     let exclude_paths = build_path_filter(&config.exclude_paths);
 
-    let mut removal_by_crate: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut tighten_by_crate: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     for entry in decl_map.values() {
         // Skip items used cross-crate
@@ -106,54 +108,38 @@ pub fn check(config: &UnusedPubConfig) -> Vec<Issue> {
             .unwrap_or("unknown")
             .to_string();
 
-        let line_display = def_line + 1; // convert 0-based to 1-based for display
+        let line_display = (def_line + 1) as u32; // SCIP is 0-based, display is 1-based
         let kind_str = format_kind(entry.kind);
-        let item = format!(
-            "{kind_str} `{}` ({}:{})",
-            entry.display_name, entry.relative_path, line_display
-        );
-        if entry.used_same_crate {
-            tighten_by_crate.entry(crate_name).or_default().push(item);
+
+        let (message, suggestion_help) = if entry.used_same_crate {
+            (
+                format!(
+                    "pub {kind_str} `{}` in crate `{crate_name}` is only used inside the crate",
+                    entry.display_name
+                ),
+                "consider `pub(crate)` to tighten visibility",
+            )
         } else {
-            removal_by_crate.entry(crate_name).or_default().push(item);
-        }
+            (
+                format!(
+                    "pub {kind_str} `{}` in crate `{crate_name}` appears unused — consider removing",
+                    entry.display_name
+                ),
+                "remove the item or its `pub` visibility",
+            )
+        };
+
+        diagnostics.push(
+            at_line(LINT, message, entry.relative_path.clone(), line_display)
+                .help(suggestion_help)
+                .note(
+                    "#[cfg]-gated items, proc-macro usage, and re-exports may cause false positives",
+                )
+                .build(),
+        );
     }
 
-    let note =
-        "Note: #[cfg]-gated items, proc-macro usage, and re-exports may cause false positives.";
-    let mut issues: Vec<Issue> = Vec::new();
-
-    // Removal candidates first — items with no observed references at all.
-    for (crate_name, items) in removal_by_crate {
-        let n = items.len();
-        let mut details = items;
-        details.push(String::new());
-        details.push(note.into());
-        issues.push(Issue {
-            title: format!(
-                "Unused pub items in crate `{crate_name}` — {n} removal candidate{} (appears unused, consider removing)",
-                if n == 1 { "" } else { "s" }
-            ),
-            details,
-        });
-    }
-
-    // Then visibility-tightening candidates — items only used within the same crate.
-    for (crate_name, items) in tighten_by_crate {
-        let n = items.len();
-        let mut details = items;
-        details.push(String::new());
-        details.push(note.into());
-        issues.push(Issue {
-            title: format!(
-                "Unused pub items in crate `{crate_name}` — {n} item{} only used within same crate (consider `pub(crate)`)",
-                if n == 1 { "" } else { "s" }
-            ),
-            details,
-        });
-    }
-
-    issues
+    diagnostics
 }
 
 fn load_index(config: &UnusedPubConfig) -> Index {

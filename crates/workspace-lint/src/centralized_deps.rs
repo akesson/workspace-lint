@@ -1,8 +1,12 @@
-use crate::{Issue, workspace};
+use crate::diagnostic::Diagnostic;
+use crate::diagnostic::builder::at_crate;
+use crate::workspace;
 use fs_err as fs;
 use std::collections::BTreeSet;
 
-pub fn check() -> Vec<Issue> {
+pub const LINT: &str = "workspace-lint::centralized-deps";
+
+pub fn check() -> Vec<Diagnostic> {
     let root_toml = fs::read_to_string("Cargo.toml").unwrap_or_else(|e| {
         eprintln!("failed to read root Cargo.toml: {e}");
         std::process::exit(1);
@@ -17,7 +21,7 @@ pub fn check() -> Vec<Issue> {
     let member_patterns = workspace::extract_member_patterns(&root);
     let member_dirs = workspace::expand_member_patterns(&member_patterns);
 
-    let mut issues = Vec::new();
+    let mut diagnostics = Vec::new();
 
     for dir in &member_dirs {
         let cargo_path = dir.join("Cargo.toml");
@@ -48,14 +52,24 @@ pub fn check() -> Vec<Issue> {
         }
 
         if !crate_errors.is_empty() {
-            issues.push(Issue {
-                title: format!("Fix workspace deps in {}", cargo_path.display()),
-                details: crate_errors,
-            });
+            let n = crate_errors.len();
+            let mut builder = at_crate(
+                LINT,
+                format!(
+                    "{n} dependenc{} in {} should use `workspace = true`",
+                    if n == 1 { "y" } else { "ies" },
+                    cargo_path.display()
+                ),
+                dir.clone(),
+            );
+            for err in crate_errors {
+                builder = builder.help(err);
+            }
+            diagnostics.push(builder.build());
         }
     }
 
-    issues
+    diagnostics
 }
 
 fn check_dep(
