@@ -192,7 +192,7 @@ impl CheckRule {
             CargoFeatures::List(cargo_features)
         };
         UnusedPubConfig {
-            on_ci_only,
+            on_ci_only: Some(on_ci_only),
             scip_index,
             exclude_crates,
             allowlist,

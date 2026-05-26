@@ -15,7 +15,7 @@ use syn::visit::Visit;
 pub const LINT: &str = "workspace-lint::unused-pub";
 
 pub fn check(config: &UnusedPubConfig) -> Vec<Diagnostic> {
-    if config.on_ci_only && std::env::var("CI").is_err() {
+    if config.effective_on_ci_only() && std::env::var("CI").is_err() {
         return Vec::new();
     }
     let index = load_index(config);

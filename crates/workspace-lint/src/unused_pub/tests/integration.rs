@@ -19,7 +19,7 @@ fn make_config_with_index(
     kinds: Vec<String>,
 ) -> UnusedPubConfig {
     UnusedPubConfig {
-        on_ci_only: false,
+        on_ci_only: Some(false),
         scip_index: Some(scip_path.to_string()),
         exclude_crates,
         allowlist,
@@ -407,7 +407,7 @@ fn integration_exclude_paths_works() {
     let tmp = write_scip_index(&index);
 
     let config = UnusedPubConfig {
-        on_ci_only: false,
+        on_ci_only: Some(false),
         scip_index: Some(tmp.path().to_str().unwrap().to_string()),
         exclude_crates: vec![],
         allowlist: vec![],
@@ -435,7 +435,7 @@ fn on_ci_only_skips_when_ci_not_set() {
     // SAFETY: This test is single-threaded and no other code reads CI concurrently
     unsafe { std::env::remove_var("CI") };
     let config = UnusedPubConfig {
-        on_ci_only: true,
+        on_ci_only: Some(true),
         // No valid scip_index needed — should return early before reading it
         scip_index: Some("/nonexistent/index.scip".to_string()),
         exclude_crates: vec![],

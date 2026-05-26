@@ -13,6 +13,12 @@ mod directives;
 mod expand;
 mod file_size;
 mod freshness;
+#[allow(dead_code)]
+// Compiled into the binary only because all module-level tests must be
+// visible to `cargo test`. The `scenarios()` builder is `pub` but the
+// snapshot tests inside `mod tests` are what actually exercise the
+// diagnostics — see the file's module docs.
+mod messages;
 mod suppress;
 mod unused_deps;
 mod unused_pub;
