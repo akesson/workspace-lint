@@ -3,6 +3,10 @@ mod cli;
 mod cli_crate_version;
 mod config;
 mod crate_size;
+#[allow(dead_code)]
+// Diagnostic types are wired in across multiple steps; suppress until checks
+// migrate over.
+mod diagnostic;
 mod expand;
 mod file_size;
 mod freshness;

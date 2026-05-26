@@ -1,0 +1,7 @@
+[package]
+name = "workspace-lint-marker"
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/human-solutions/workspace-lint"
+description = "Zero-dep marker macros used by workspace-lint to silence diagnostics at the call site."
+license = "MIT OR Apache-2.0"
