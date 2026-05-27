@@ -43,6 +43,8 @@ pub struct Checks {
     pub module_tree: bool,
     #[serde(default, rename = "feature-drift")]
     pub feature_drift: bool,
+    #[serde(default)]
+    pub visibility: bool,
 }
 
 #[derive(Deserialize)]
