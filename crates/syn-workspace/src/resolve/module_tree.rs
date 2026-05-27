@@ -18,6 +18,7 @@
 //! - Multi-target crates (libraries + binaries + examples) — currently only
 //!   the primary library or binary root is loaded.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::use_tree::{self, UseBinding};
@@ -87,13 +88,24 @@ fn collect_module_contents(
     parent_canonical: &ResolvedPath,
 ) -> Result<ModuleContents> {
     let scope = scope_from(parent_canonical);
+    // Names declared at this module level. A `use foo::Bar;` whose first
+    // segment matches one of these refers to a crate-local sibling, not an
+    // external crate — see Rust 2018+ path resolution rules. Order in source
+    // doesn't matter, so we collect names in one pass before processing use
+    // statements.
+    let sibling_names: HashSet<String> = syn_items.iter().filter_map(sibling_name).collect();
+
     let mut items = Vec::new();
     let mut submodules = Vec::new();
     let mut use_bindings = Vec::new();
 
     for syn_item in syn_items {
         if let syn::Item::Use(item_use) = syn_item {
-            use_bindings.extend(use_tree::bindings_from_use(item_use, &scope));
+            let mut bindings = use_tree::bindings_from_use(item_use, &scope);
+            for binding in &mut bindings {
+                rewrite_sibling_local(binding, parent_canonical, &sibling_names);
+            }
+            use_bindings.extend(bindings);
         }
 
         if let Some(named) = item_from_syn(syn_item, parent_canonical, parent_file) {
@@ -134,6 +146,45 @@ fn collect_module_contents(
         submodules,
         use_bindings,
     })
+}
+
+/// Names declared at a module's lexical scope — function/struct/enum/etc.
+/// idents plus child module names. Used to distinguish "crate-local sibling"
+/// from "external crate" at the leading segment of a `use` path.
+fn sibling_name(item: &syn::Item) -> Option<String> {
+    match item {
+        syn::Item::Fn(i) => Some(i.sig.ident.to_string()),
+        syn::Item::Struct(i) => Some(i.ident.to_string()),
+        syn::Item::Enum(i) => Some(i.ident.to_string()),
+        syn::Item::Union(i) => Some(i.ident.to_string()),
+        syn::Item::Trait(i) => Some(i.ident.to_string()),
+        syn::Item::Type(i) => Some(i.ident.to_string()),
+        syn::Item::Const(i) => Some(i.ident.to_string()),
+        syn::Item::Static(i) => Some(i.ident.to_string()),
+        syn::Item::Mod(i) => Some(i.ident.to_string()),
+        syn::Item::Macro(i) => i.ident.as_ref().map(ToString::to_string),
+        _ => None,
+    }
+}
+
+/// If `binding`'s canonical path starts with a name that's declared in the
+/// surrounding module (a sibling), prepend the surrounding module's path so
+/// the canonical resolves crate-local instead of being treated as an
+/// external crate.
+fn rewrite_sibling_local(
+    binding: &mut UseBinding,
+    parent_canonical: &ResolvedPath,
+    siblings: &HashSet<String>,
+) {
+    let Some(first) = binding.canonical.segments().first() else {
+        return;
+    };
+    if !siblings.contains(first) {
+        return;
+    }
+    let mut new_segs = parent_canonical.segments().to_vec();
+    new_segs.extend(binding.canonical.segments().iter().cloned());
+    binding.canonical = ResolvedPath::new(new_segs);
 }
 
 fn scope_from(canonical: &ResolvedPath) -> use_tree::Scope {
@@ -279,7 +330,7 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
     Some(Item {
         name,
         kind,
-        visibility: vis_from_syn(vis),
+        visibility: Visibility::from_syn(vis),
         canonical: ResolvedPath::new(canonical),
         source: Some(SourceSpan {
             file: file.to_path_buf(),
@@ -287,22 +338,6 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
             column: 1,
         }),
     })
-}
-
-fn vis_from_syn(v: &syn::Visibility) -> Visibility {
-    match v {
-        syn::Visibility::Public(_) => Visibility::Public,
-        syn::Visibility::Restricted(r) => {
-            if r.path.is_ident("crate") {
-                Visibility::PubCrate
-            } else if r.path.is_ident("super") {
-                Visibility::PubSuper
-            } else {
-                Visibility::PubIn
-            }
-        }
-        syn::Visibility::Inherited => Visibility::Private,
-    }
 }
 
 #[cfg(test)]

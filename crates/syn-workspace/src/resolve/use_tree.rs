@@ -19,18 +19,20 @@
 //! query the canonical path; rename loss would produce false-positive
 //! "unused" reports.
 
-use super::ResolvedPath;
+use super::{ResolvedPath, Visibility};
 
 /// One rename entry produced by walking a `use` declaration.
 ///
 /// `local_name` is what the name binds to in the importing scope (the LHS of
 /// a `Rename` use-tree, or the trailing segment of a `Path`/`Name`).
 /// `canonical` is the fully-qualified path the name refers to at the
-/// definition site.
+/// definition site. `visibility` reflects the `use` declaration's own
+/// visibility — `pub use` produces re-export edges followed by Tier 2.5.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseBinding {
     pub local_name: String,
     pub canonical: ResolvedPath,
+    pub visibility: Visibility,
 }
 
 /// Where in the workspace a file lives, for resolving `crate`/`self`/`super`
@@ -66,6 +68,9 @@ impl Scope {
 }
 
 /// Walk a `use` declaration and emit one [`UseBinding`] per leaf name.
+///
+/// All bindings inherit the visibility of the `use` declaration itself —
+/// `pub use foo::{Bar, Baz};` produces two bindings, both `Public`.
 pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope) -> Vec<UseBinding> {
     let mut prefix: Vec<String> = Vec::new();
     let mut tree: &syn::UseTree = &item.tree;
@@ -74,8 +79,9 @@ pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope) -> Vec<UseBinding> 
         peel_leading_special(&mut tree, &mut prefix, scope);
     }
 
+    let visibility = Visibility::from_syn(&item.vis);
     let mut out = Vec::new();
-    walk(tree, &prefix, &mut out);
+    walk(tree, &prefix, visibility, &mut out);
     out
 }
 
@@ -122,12 +128,12 @@ fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scop
     }
 }
 
-fn walk(tree: &syn::UseTree, prefix: &[String], out: &mut Vec<UseBinding>) {
+fn walk(tree: &syn::UseTree, prefix: &[String], visibility: Visibility, out: &mut Vec<UseBinding>) {
     match tree {
         syn::UseTree::Path(p) => {
             let mut new_prefix = prefix.to_vec();
             new_prefix.push(p.ident.to_string());
-            walk(&p.tree, &new_prefix, out);
+            walk(&p.tree, &new_prefix, visibility, out);
         }
         syn::UseTree::Name(n) => {
             let name = n.ident.to_string();
@@ -136,6 +142,7 @@ fn walk(tree: &syn::UseTree, prefix: &[String], out: &mut Vec<UseBinding>) {
             out.push(UseBinding {
                 local_name: name,
                 canonical: ResolvedPath::new(canon),
+                visibility,
             });
         }
         syn::UseTree::Rename(r) => {
@@ -144,6 +151,7 @@ fn walk(tree: &syn::UseTree, prefix: &[String], out: &mut Vec<UseBinding>) {
             out.push(UseBinding {
                 local_name: r.rename.to_string(),
                 canonical: ResolvedPath::new(canon),
+                visibility,
             });
         }
         syn::UseTree::Glob(_) => {
@@ -154,7 +162,7 @@ fn walk(tree: &syn::UseTree, prefix: &[String], out: &mut Vec<UseBinding>) {
         }
         syn::UseTree::Group(g) => {
             for item in &g.items {
-                walk(item, prefix, out);
+                walk(item, prefix, visibility, out);
             }
         }
     }
@@ -307,5 +315,37 @@ mod tests {
         // `use std;` binds the name `std` to the std crate.
         let s = scope("demo", &[]);
         assert_eq!(bindings("use std;", &s), vec![("std".into(), "std".into())]);
+    }
+
+    #[test]
+    fn private_use_carries_private_visibility() {
+        let s = scope("demo", &[]);
+        let got = bindings_from_use(&parse("use foo::Bar;"), &s);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn pub_use_carries_public_visibility() {
+        let s = scope("demo", &[]);
+        let got = bindings_from_use(&parse("pub use foo::Bar;"), &s);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn pub_crate_use_carries_pub_crate_visibility() {
+        let s = scope("demo", &[]);
+        let got = bindings_from_use(&parse("pub(crate) use foo::Bar;"), &s);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].visibility, Visibility::PubCrate);
+    }
+
+    #[test]
+    fn group_inherits_use_declaration_visibility() {
+        let s = scope("demo", &[]);
+        let got = bindings_from_use(&parse("pub use foo::{Bar, Baz};"), &s);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|b| b.visibility == Visibility::Public));
     }
 }

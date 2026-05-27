@@ -113,6 +113,25 @@ pub enum Visibility {
     Private,
 }
 
+impl Visibility {
+    /// Map a `syn::Visibility` to this crate's normalized vocabulary.
+    pub fn from_syn(v: &syn::Visibility) -> Self {
+        match v {
+            syn::Visibility::Public(_) => Self::Public,
+            syn::Visibility::Restricted(r) => {
+                if r.path.is_ident("crate") {
+                    Self::PubCrate
+                } else if r.path.is_ident("super") {
+                    Self::PubSuper
+                } else {
+                    Self::PubIn
+                }
+            }
+            syn::Visibility::Inherited => Self::Private,
+        }
+    }
+}
+
 /// Kind of a declared item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ItemKind {
@@ -202,20 +221,25 @@ impl Crate {
 pub struct Workspace {
     crates: Vec<Crate>,
     root: PathBuf,
+    re_exports: re_export::ReExportIndex,
 }
 
 impl Workspace {
     /// Load and resolve a workspace at the given root directory.
     ///
-    /// Current implementation populates workspace members only (name,
-    /// version, manifest_dir, empty module root). Resolver tiers (Tier 1
-    /// imports, Tier 2 module trees, Tier 2.5 re-exports) are added in
-    /// follow-up phases; each tier extends `Workspace::load` without
-    /// changing the public signature.
+    /// Builds the full model in one pass: workspace discovery via
+    /// `cargo_metadata`, per-crate module-tree assembly (Tier 2) which
+    /// threads Tier 1 use-bindings into each [`Module`], and a
+    /// workspace-wide `pub use` chain index (Tier 2.5).
     pub fn load(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         let crates = crate::walk::load_members(&root)?;
-        Ok(Self { crates, root })
+        let re_exports = re_export::ReExportIndex::build(&crates);
+        Ok(Self {
+            crates,
+            root,
+            re_exports,
+        })
     }
 
     /// All workspace member crates plus referenced external crates.
@@ -231,6 +255,18 @@ impl Workspace {
     /// Workspace root directory.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Resolve a path through any `pub use` re-export chain to its canonical
+    /// definition site. Returns the path unchanged if no chain applies.
+    pub fn resolve_canonical(&self, path: &ResolvedPath) -> ResolvedPath {
+        self.re_exports.canonical(path)
+    }
+
+    /// Borrow the underlying re-export index — useful for lints that need to
+    /// enumerate all known re-export edges.
+    pub fn re_exports(&self) -> &re_export::ReExportIndex {
+        &self.re_exports
     }
 }
 

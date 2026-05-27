@@ -97,6 +97,22 @@ fn module_tree_is_populated_for_each_member() {
 }
 
 #[test]
+fn re_export_index_chases_self_chain() {
+    let ws = Workspace::load(workspace_root()).expect("load workspace");
+
+    // syn-workspace::lib.rs has `pub use resolve::ResolvedPath`, which Tier 2.5
+    // should chase to the original definition inside the `resolve` submodule.
+    let exported_at_root = syn_workspace::ResolvedPath::new(["syn-workspace", "ResolvedPath"]);
+    let canonical = ws.resolve_canonical(&exported_at_root);
+    assert_eq!(
+        canonical.display(),
+        "syn-workspace::resolve::ResolvedPath",
+        "pub use should chase to the definition site; got {}",
+        canonical.display(),
+    );
+}
+
+#[test]
 fn module_tree_extracts_pub_items() {
     let ws = Workspace::load(workspace_root()).expect("load workspace");
     let me = ws
