@@ -166,7 +166,11 @@ fn normalize_stderr(stderr: &str, tmp: &Path) -> String {
     for s in &spellings {
         out = out.replace(s.as_str(), "<TMP>");
     }
-    out
+    // Normalize line endings: on Windows, git's `core.autocrlf` can rewrite
+    // committed `expected.stderr` to CRLF on checkout while the captured
+    // subprocess output stays LF. Comparing post-normalization keeps the
+    // snapshots cross-platform without requiring a .gitattributes rule.
+    out.replace("\r\n", "\n")
 }
 
 struct Failure {
@@ -220,7 +224,9 @@ fn run_case(lint: &str, kind: Kind, case_dir: &Path, bless: bool) -> Result<(), 
         return Ok(());
     }
 
-    let expected = std::fs::read_to_string(&expected_path).unwrap_or_default();
+    let expected = std::fs::read_to_string(&expected_path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
     let exit_failure_expected = kind.expects_failure_exit();
     let exit_failure_actual = !output.status.success();
 

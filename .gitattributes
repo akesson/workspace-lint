@@ -1,0 +1,3 @@
+# Force LF line endings for snapshot fixtures so Windows CI doesn't
+# fail comparisons after git's autocrlf converts checkouts to CRLF.
+*.stderr text eol=lf
