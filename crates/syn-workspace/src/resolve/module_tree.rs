@@ -25,6 +25,9 @@ use super::use_tree::{self, UseBinding};
 use super::{
     BrokenModDecl, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan, Visibility,
 };
+use crate::macros::annotation::is_expansion_uses;
+use crate::macros::autodetect::extract_macro_paths;
+use crate::macros::dispatch::{dispatch_plugin_refs, matches_known_plugin_macro};
 
 /// Items, submodules, `use` bindings, broken `mod` declarations,
 /// `#[cfg(feature = "...")]` references, `macro_rules!`-body implicit
@@ -289,141 +292,6 @@ fn collect_module_contents(
     })
 }
 
-/// Match `expansion_uses!` (unqualified) or `<crate>::expansion_uses!` where
-/// the leading segment is the `syn-workspace-marker` crate (typically
-/// imported as `workspace_syn` or `syn_workspace_marker`). Restricting the
-/// prefix avoids treating a third-party `foo::expansion_uses!` as a Layer 2
-/// annotation, which would silently feed its body into the implicit-refs
-/// set and corrupt visibility/unused-pub findings.
-fn is_expansion_uses(path: &syn::Path) -> bool {
-    let segs: Vec<&syn::Ident> = path.segments.iter().map(|s| &s.ident).collect();
-    match segs.as_slice() {
-        [single] => *single == "expansion_uses",
-        [krate, name] => {
-            *name == "expansion_uses"
-                && (*krate == "workspace_syn" || *krate == "syn_workspace_marker")
-        }
-        _ => false,
-    }
-}
-
-/// Match invocations of macros that have a built-in
-/// [`crate::plugins::MacroBodyParser`] — currently `quote!`/`quote::quote!`
-/// and `rsx!`/`dioxus::rsx!`. Future built-ins (e.g. `serde_json::json!`)
-/// extend this matcher. Every match triggers [`extract_macro_paths`] (the
-/// token-scan baseline) plus [`dispatch_plugin_refs`] for any parser whose
-/// `references()` walks a real AST.
-fn matches_known_plugin_macro(path: &syn::Path) -> bool {
-    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-    match segs.as_slice() {
-        [single] => single == "quote" || single == "rsx",
-        [a, b] => {
-            (a == "quote" && b == "quote") || (b == "rsx" && (a == "dioxus" || a == "dioxus_core"))
-        }
-        _ => false,
-    }
-}
-
-/// Dispatch a macro invocation to the built-in plugin registry and collect
-/// any references the matching parser emits. Returned paths are in raw
-/// (uncanonicalized) form — the caller runs them through
-/// [`resolve_macro_path`] to apply scope rules.
-///
-/// This is what makes [`crate::plugins::MacroBodyParser::references`] a real
-/// extension point in v1 (the trait method is no longer just a stub). Each
-/// invocation iterates `builtin_parsers()` — the call site is bounded by
-/// macro-invocation density in source, not item count, so the per-call
-/// allocation is fine in practice.
-fn dispatch_plugin_refs(
-    macro_path: &syn::Path,
-    body: &proc_macro2::TokenStream,
-) -> Vec<ResolvedPath> {
-    let segs: Vec<String> = macro_path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect();
-    let mp = ResolvedPath::new(segs);
-    let cx = crate::plugins::ResolveContext::placeholder();
-    let mut out: Vec<ResolvedPath> = Vec::new();
-    for parser in crate::plugins::builtin_parsers() {
-        if parser.matches(&mp) {
-            out.extend(parser.references(body, &cx));
-        }
-    }
-    out
-}
-
-/// Scan a `macro_rules!` body token-stream for path-like sequences
-/// (`Ident :: Ident (:: Ident)*`) and resolve each through the macro's
-/// defining scope. Records the resolved path in `out`.
-///
-/// **Suppression bias — important to understand.** Any multi-segment path
-/// shape *anywhere* inside *any* `macro_rules!` body in the workspace ends
-/// up in the implicit-refs set. That set is union'd across every member
-/// crate (see [`Workspace::macro_implicit_refs`]) and lints like
-/// `visibility` and `unused-pub` skip items whose canonical appears in it.
-///
-/// In other words: a match-arm pattern like `Foo::Bar` or a hand-written
-/// template literal `quote! { Type::method }` will silence visibility
-/// findings for `Foo::Bar` / `Type::method` workspace-wide, regardless of
-/// where the macro lives or whether the call site is anywhere near the
-/// flagged item. This errs strongly toward false-negatives (missed
-/// findings) over false-positives (incorrect findings) — the assumption is
-/// that flagging a public item that is, in fact, referenced by *some*
-/// macro expansion is worse than missing a few unused items.
-///
-/// Single identifiers (parameter names, keywords, etc.) are dropped.
-/// Token groups (`{}`, `()`, `[]`) are recursed into so paths inside
-/// nested groups are still seen. String literals are tokenized as
-/// `Literal` and so do not produce false positives.
-///
-/// [`Workspace::macro_implicit_refs`]: crate::Workspace::macro_implicit_refs
-fn extract_macro_paths(
-    tokens: proc_macro2::TokenStream,
-    scope: &use_tree::Scope,
-    siblings: &HashSet<String>,
-    parent_canonical: &ResolvedPath,
-    out: &mut std::collections::BTreeSet<ResolvedPath>,
-) {
-    let stream: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
-    let mut i = 0;
-    while i < stream.len() {
-        if let proc_macro2::TokenTree::Ident(first) = &stream[i] {
-            let mut segments = vec![first.to_string()];
-            let mut j = i + 1;
-            while let (Some(p1), Some(p2), Some(next)) =
-                (stream.get(j), stream.get(j + 1), stream.get(j + 2))
-            {
-                let (proc_macro2::TokenTree::Punct(a), proc_macro2::TokenTree::Punct(b)) = (p1, p2)
-                else {
-                    break;
-                };
-                if a.as_char() != ':' || b.as_char() != ':' {
-                    break;
-                }
-                let proc_macro2::TokenTree::Ident(next) = next else {
-                    break;
-                };
-                segments.push(next.to_string());
-                j += 3;
-            }
-            if segments.len() >= 2
-                && let Some(resolved) =
-                    resolve_macro_path(segments, scope, siblings, parent_canonical)
-            {
-                out.insert(resolved);
-            }
-            i = j;
-            continue;
-        }
-        if let proc_macro2::TokenTree::Group(group) = &stream[i] {
-            extract_macro_paths(group.stream(), scope, siblings, parent_canonical, out);
-        }
-        i += 1;
-    }
-}
-
 /// Token-scan regular (non-macro) item bodies for path references, with
 /// use-binding substitution applied to the leading segment.
 ///
@@ -497,20 +365,21 @@ fn extract_code_paths(
     }
 }
 
-/// Resolve a code-path's leading segment through (in order):
-/// crate/self/super peeling, use-binding substitution, sibling lookup,
-/// then external-crate fallback. See [`extract_code_paths`] for context.
-fn resolve_code_path(
-    segments: Vec<String>,
+/// Apply `crate::` / `self::` / `super::` prefix peeling to the leading
+/// segments of a path, mutating the iterator in place. The remaining segments
+/// (everything after the last consumed `crate`/`self`/`super`) are left in
+/// the iterator for the caller to handle.
+///
+/// Returns `Some((prefix, started))` where `started` is `true` iff at least
+/// one leading segment was peeled (in which case the resolver should NOT
+/// apply use-binding / sibling lookups to the next segment — those rules
+/// only apply to externally-anchored paths). Returns `None` if a `super::`
+/// would escape the crate root: rustc errors on those, so we drop the
+/// reference rather than mis-attribute it to `crate::remaining`.
+fn peel_path_prefix(
+    iter: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
     scope: &use_tree::Scope,
-    siblings: &HashSet<String>,
-    use_bindings: &[UseBinding],
-    parent_canonical: &ResolvedPath,
-) -> Option<ResolvedPath> {
-    if segments.is_empty() {
-        return None;
-    }
-    let mut iter = segments.into_iter().peekable();
+) -> Option<(Vec<String>, bool)> {
     let mut prefix: Vec<String> = Vec::new();
     let mut started = false;
 
@@ -536,9 +405,6 @@ fn resolve_code_path(
                     started = true;
                 }
                 if prefix.len() <= 1 {
-                    // `super` at the crate root is illegal Rust (rustc
-                    // errors). Drop the reference rather than fabricate
-                    // `crate::remaining` and silently mis-attribute it.
                     return None;
                 }
                 prefix.pop();
@@ -547,6 +413,24 @@ fn resolve_code_path(
             _ => break,
         }
     }
+    Some((prefix, started))
+}
+
+/// Resolve a code-path's leading segment through (in order):
+/// crate/self/super peeling, use-binding substitution, sibling lookup,
+/// then external-crate fallback. See [`extract_code_paths`] for context.
+fn resolve_code_path(
+    segments: Vec<String>,
+    scope: &use_tree::Scope,
+    siblings: &HashSet<String>,
+    use_bindings: &[UseBinding],
+    parent_canonical: &ResolvedPath,
+) -> Option<ResolvedPath> {
+    if segments.is_empty() {
+        return None;
+    }
+    let mut iter = segments.into_iter().peekable();
+    let (mut prefix, started) = peel_path_prefix(&mut iter, scope)?;
     let remaining: Vec<String> = iter.collect();
     if remaining.is_empty() {
         return None;
@@ -580,7 +464,7 @@ fn resolve_code_path(
 
 /// Apply the same crate/self/super peeling and sibling-prepend logic that
 /// `bindings_from_use` does, but for a path extracted from raw tokens.
-fn resolve_macro_path(
+pub(crate) fn resolve_macro_path(
     segments: Vec<String>,
     scope: &use_tree::Scope,
     siblings: &HashSet<String>,
@@ -590,39 +474,7 @@ fn resolve_macro_path(
         return None;
     }
     let mut iter = segments.into_iter().peekable();
-    let mut prefix: Vec<String> = Vec::new();
-    let mut started = false;
-
-    while let Some(head) = iter.peek().cloned() {
-        match head.as_str() {
-            "crate" if !started => {
-                prefix.clear();
-                prefix.push(scope.crate_name.clone());
-                started = true;
-                iter.next();
-            }
-            "self" if !started => {
-                prefix.clear();
-                prefix.push(scope.crate_name.clone());
-                prefix.extend(scope.module_path.iter().cloned());
-                started = true;
-                iter.next();
-            }
-            "super" => {
-                if !started {
-                    prefix.push(scope.crate_name.clone());
-                    prefix.extend(scope.module_path.iter().cloned());
-                    started = true;
-                }
-                if prefix.len() <= 1 {
-                    return None;
-                }
-                prefix.pop();
-                iter.next();
-            }
-            _ => break,
-        }
-    }
+    let (mut prefix, started) = peel_path_prefix(&mut iter, scope)?;
     let remaining: Vec<String> = iter.collect();
     if remaining.is_empty() {
         return None;

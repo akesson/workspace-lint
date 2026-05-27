@@ -28,10 +28,6 @@ pub const LINT: &str = "workspace-lint::visibility";
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let cross_crate_refs = collect_cross_crate_refs(workspace);
-    // Items reachable via macro-rules expansion should not be flagged even
-    // if no `use` binding mentions them — Layer 1 autodetect collects
-    // these workspace-wide.
-    let macro_refs = workspace.macro_implicit_refs();
     let mut diagnostics = Vec::new();
 
     for krate in workspace.crates() {
@@ -39,11 +35,18 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             continue;
         }
         let code_name = krate.code_name();
+        // Items reachable via macro-rules expansion should not be flagged
+        // even if no `use` binding mentions them. Layer 1 autodetect
+        // collects these per defining crate; here we union the refs from
+        // every crate that could plausibly invoke a macro touching this
+        // crate's items (its own macros + macros from every dependent
+        // crate). See `macro_implicit_refs_for` for the full rule.
+        let macro_refs = workspace.macro_implicit_refs_for(krate);
         collect_overpermissive(
             &krate.root,
             &code_name,
             &cross_crate_refs,
-            macro_refs,
+            &macro_refs,
             &mut diagnostics,
         );
     }

@@ -36,7 +36,6 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
     // defining crate). Empty entry means "referenced only intra-crate"; no
     // entry at all means "not referenced anywhere in the workspace".
     let references_by_path = build_reference_index(workspace);
-    let macro_refs = workspace.macro_implicit_refs();
     let kind_filter = parse_kind_filter(&config.kinds);
     let allowlist = build_glob_set(&config.allowlist, "allowlist");
     let exclude_paths = build_glob_set(&config.exclude_paths, "exclude-paths");
@@ -52,11 +51,15 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
         {
             continue;
         }
+        // Macros that could plausibly suppress this crate's items: its own
+        // macros plus macros from every crate that references this one.
+        // See `macro_implicit_refs_for` for the rule.
+        let macro_refs = workspace.macro_implicit_refs_for(krate);
         collect_findings(
             &krate.root,
             &crate_code,
             &references_by_path,
-            macro_refs,
+            &macro_refs,
             kind_filter.as_ref(),
             allowlist.as_ref(),
             exclude_paths.as_ref(),
