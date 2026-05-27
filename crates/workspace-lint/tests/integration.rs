@@ -61,6 +61,8 @@ fn unused_deps_violation_fails() {
         .stderr(predicate::str::contains("rand"));
 }
 
+// architecture tests live in tests/cases.rs (four-kind taxonomy)
+
 // --- config loading ---
 
 #[test]

@@ -1,0 +1,11 @@
+# Architecture rule that should — but doesn't, in v1 — catch the transitive
+# violation: apps-foo imports helper::process, but helper internally touches
+# data-models::internal. Direct-import enforcement only inspects the literal
+# `use` statement in apps-foo, which points to helper (allowed). A future
+# tier of analysis would chase function calls / type signatures to flag this.
+
+[[architecture.rules]]
+name = "apps-no-data-internals"
+from = ["apps-*"]
+deny = ["data-models::internal::**"]
+reason = "Apps must not depend on data internals; use data-models::api instead"

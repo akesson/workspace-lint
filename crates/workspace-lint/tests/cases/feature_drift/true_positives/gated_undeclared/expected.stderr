@@ -1,0 +1,11 @@
+warning: feature `ghost` is gated in source but not declared in `[features]`
+ --> <TMP>/crates/demo/Cargo.toml:1:1
+  |
+  = help: add `ghost = []` to the `[features]` table of `demo/Cargo.toml`, or remove the `cfg(feature = "ghost")` references
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: allow(feature-drift)
+  |
+  = note: `#[warn(workspace_lint::feature_drift)]` on by default
+
+workspace-lint: generated 1 warning

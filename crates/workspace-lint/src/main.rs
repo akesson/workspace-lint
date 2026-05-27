@@ -1,3 +1,4 @@
+mod architecture;
 mod centralized_deps;
 mod cli;
 mod cli_crate_version;
@@ -11,6 +12,7 @@ mod crate_size;
 mod diagnostic;
 mod directives;
 mod expand;
+mod feature_drift;
 mod file_size;
 mod fix;
 mod freshness;
@@ -24,9 +26,11 @@ mod lints;
 // snapshot tests inside `mod tests` are what actually exercise the
 // diagnostics — see the file's module docs.
 mod messages;
+mod module_tree;
 mod suppress;
 mod unused_deps;
 mod unused_pub;
+mod visibility;
 mod workspace;
 
 use clap::Parser;
@@ -129,8 +133,65 @@ fn run_all_from_config() -> Vec<Diagnostic> {
     if let Some(ref up) = config.unused_pub {
         diagnostics.extend(unused_pub::check(up));
     }
+    // syn-workspace-backed checks share a single resolved Workspace so we
+    // pay the cargo_metadata + per-file syn parse once across all of them.
+    let architecture_needed = config
+        .architecture
+        .as_ref()
+        .is_some_and(|ac| !ac.rules.is_empty());
+    let module_tree_needed = config.checks.module_tree;
+    let feature_drift_needed = config.checks.feature_drift;
+    let visibility_needed = config.checks.visibility;
+    if architecture_needed || module_tree_needed || feature_drift_needed || visibility_needed {
+        // Loud-fail: if the resolver can't load the workspace, every
+        // resolver-backed lint would silently produce zero diagnostics. CI
+        // would see green for a broken state. Match the existing
+        // `unused_deps`/`unused_pub` convention and bail with a clear error.
+        let mut ws = syn_workspace::Workspace::load(".").unwrap_or_else(|e| {
+            eprintln!("failed to load workspace for resolver-backed lints: {e}");
+            std::process::exit(1);
+        });
+        // Layer 3: feed external-macro expansion-uses entries from config
+        // into the workspace's implicit-refs set so downstream lints see
+        // items reachable only through e.g. `#[tokio::main]`.
+        if let Some(ref macros) = config.macros {
+            let paths = macros
+                .external
+                .iter()
+                .flat_map(|m| m.expansion_uses.iter().map(|p| canonicalize_user_path(p)));
+            ws.register_external_macro_uses(paths);
+        }
+        if architecture_needed && let Some(ref ac) = config.architecture {
+            diagnostics.extend(architecture::check(ac, &ws));
+        }
+        if module_tree_needed {
+            diagnostics.extend(module_tree::check(&ws));
+        }
+        if feature_drift_needed {
+            diagnostics.extend(feature_drift::check(&ws));
+        }
+        if visibility_needed {
+            diagnostics.extend(visibility::check(&ws));
+        }
+    }
 
     diagnostics
+}
+
+/// Convert a user-facing path string (`tokio::runtime::Builder`,
+/// `data-models::api::User`) into a [`ResolvedPath`]. Hyphens in the leading
+/// segment are normalized to underscores so cargo crate names match the
+/// in-code form the resolver stores. Other segments pass through verbatim.
+fn canonicalize_user_path(path: &str) -> syn_workspace::ResolvedPath {
+    let mut segments: Vec<String> = path
+        .split("::")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if let Some(first) = segments.first_mut() {
+        *first = first.replace('-', "_");
+    }
+    syn_workspace::ResolvedPath::new(segments)
 }
 
 fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {

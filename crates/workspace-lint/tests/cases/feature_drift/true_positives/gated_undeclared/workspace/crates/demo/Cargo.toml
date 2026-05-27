@@ -1,0 +1,9 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+# No [features] section — but lib.rs references `#[cfg(feature = "ghost")]`.

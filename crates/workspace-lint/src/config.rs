@@ -31,12 +31,22 @@ pub struct Config {
     pub unused_deps: Option<UnusedDepsConfig>,
     #[serde(default, rename = "unused-pub")]
     pub unused_pub: Option<UnusedPubConfig>,
+    #[serde(default)]
+    pub architecture: Option<ArchitectureConfig>,
+    #[serde(default)]
+    pub macros: Option<MacrosConfig>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct Checks {
     #[serde(default, rename = "centralized-deps")]
     pub centralized_deps: bool,
+    #[serde(default, rename = "module-tree")]
+    pub module_tree: bool,
+    #[serde(default, rename = "feature-drift")]
+    pub feature_drift: bool,
+    #[serde(default)]
+    pub visibility: bool,
 }
 
 #[derive(Deserialize)]
@@ -98,6 +108,70 @@ impl UnusedPubConfig {
     pub fn effective_on_ci_only(&self) -> bool {
         self.on_ci_only.unwrap_or(true)
     }
+}
+
+#[derive(Deserialize, Default)]
+pub struct MacrosConfig {
+    /// External macros (defined outside the workspace) whose expansion
+    /// references items the resolver can't see from source alone. Each entry
+    /// contributes its `expansion-uses` paths to the workspace-wide
+    /// implicit-refs set consulted by visibility / architecture / etc.
+    #[serde(default)]
+    pub external: Vec<ExternalMacro>,
+}
+
+#[derive(Deserialize)]
+pub struct ExternalMacro {
+    /// Canonical path of the external macro, e.g. `tokio::main` or
+    /// `sqlx::query`. Currently only used for documentation in the config
+    /// — v1 just unions every `expansion-uses` entry into the workspace's
+    /// implicit-refs set regardless of which macro it's attached to. A
+    /// future version will narrow application to actual invocation sites.
+    #[allow(dead_code)]
+    pub path: String,
+    /// Paths the macro's expansion references. Treated as if these items
+    /// were imported at every call site of the macro.
+    #[serde(default, rename = "expansion-uses")]
+    pub expansion_uses: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ArchitectureConfig {
+    #[serde(default)]
+    pub rules: Vec<ArchitectureRule>,
+}
+
+#[derive(Deserialize)]
+pub struct ArchitectureRule {
+    /// Display name surfaced in diagnostics. Optional but recommended.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Crate-name globs the rule applies to (the importing crate). Required;
+    /// empty means the rule never fires.
+    pub from: Vec<String>,
+    /// Canonical-path globs of forbidden targets. Required; empty means the
+    /// rule never fires.
+    pub deny: Vec<String>,
+    /// Specific canonical paths in the deny set that are explicitly allowed
+    /// (per-rule escape hatch). Matched as globs against canonical paths.
+    #[serde(default)]
+    pub exceptions: Vec<String>,
+    #[serde(default)]
+    pub severity: ArchSeverity,
+    /// Free-text explanation surfaced in the diagnostic's `note:` line.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Suggested alternative surfaced in the diagnostic's `help:` line.
+    #[serde(default)]
+    pub suggest: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchSeverity {
+    #[default]
+    Warn,
+    Deny,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]

@@ -21,6 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 strip-ansi-escapes = { workspace = true }
 syn = { workspace = true }
+syn-workspace = { path = "../syn-workspace" }
 tokei = { workspace = true }
 toml = { workspace = true }
 # Zero-dep marker crate; needed at non-test config so the `expect!` macros

@@ -1,0 +1,10 @@
+[package]
+name = "lib-b"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+lib-a = { path = "../lib-a" }
