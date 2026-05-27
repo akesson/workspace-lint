@@ -1,0 +1,13 @@
+warning: import of `data_models::internal::InternalUser` from `apps-foo` violates architecture rule `apps-no-data-internals`
+ --> <TMP>/crates/apps-foo/Cargo.toml:1:1
+  |
+  = help: import via data-models::api::*
+  = note: Apps must not depend on data internals; use data-models::api instead
+  = note: imported in module `apps_foo`
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: allow(architecture)
+  |
+  = note: `#[warn(workspace_lint::architecture)]` on by default
+
+workspace-lint: generated 1 warning
