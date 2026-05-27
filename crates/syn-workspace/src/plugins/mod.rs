@@ -64,11 +64,45 @@ pub trait MacroBodyParser: Send + Sync {
 
 /// All plugins shipped inside `syn-workspace`.
 ///
-/// v1 list is empty until plugin implementations land. Each future entry is
-/// a `Box::new(<Type>)` of a unit struct that implements
-/// [`MacroBodyParser`].
+/// v1 ships one parser: [`QuoteParser`] for `quote!` / `quote::quote!`
+/// invocations. `dioxus_rsx` and `serde_json::json!` are planned follow-ups
+/// (dioxus-rsx needs an external dep pinned to a specific Dioxus version;
+/// serde_json::json! has lower value and is mostly speculative).
 pub fn builtin_parsers() -> Vec<Box<dyn MacroBodyParser>> {
-    Vec::new()
+    vec![Box::new(QuoteParser)]
+}
+
+/// Built-in parser for `quote!` / `quote::quote!` invocations.
+///
+/// `quote!` bodies are token streams that the proc-macro will emit as Rust
+/// source at expansion time. Their contents reference items the caller
+/// will see at the expansion site; treating them like `macro_rules!` bodies
+/// (extract multi-segment path tokens, resolve through the call-site
+/// scope) is a clean reuse of the Layer 1 infrastructure.
+pub struct QuoteParser;
+
+impl MacroBodyParser for QuoteParser {
+    fn matches(&self, macro_path: &ResolvedPath) -> bool {
+        let segs = macro_path.segments();
+        // Match bare `quote!` and `quote::quote!`. Other suffixes
+        // (`quote_spanned!`, `format_ident!`) intentionally don't match —
+        // their body semantics differ.
+        match segs {
+            [single] => single == "quote",
+            [a, b] => a == "quote" && b == "quote",
+            _ => false,
+        }
+    }
+
+    fn references(&self, body: &TokenStream, _cx: &ResolveContext<'_>) -> Vec<ResolvedPath> {
+        // The token-scanning code lives in the module-tree walker; this
+        // method exists for the trait surface but the call site passes
+        // the already-extracted paths back into the resolver pipeline.
+        // For external callers who want to use the trait outside the
+        // resolver, an in-method extraction would go here.
+        let _ = body;
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -100,10 +134,21 @@ mod tests {
     }
 
     #[test]
-    fn builtin_parsers_is_empty_at_v1_scaffold() {
-        assert!(
-            builtin_parsers().is_empty(),
-            "scaffold ships with no plugins; each plugin lands as a follow-up"
-        );
+    fn builtin_parsers_includes_quote() {
+        let parsers = builtin_parsers();
+        assert!(!parsers.is_empty(), "v1 ships at least the quote parser");
+        let quote_path = ResolvedPath::new(["quote"]);
+        let quote_qualified = ResolvedPath::new(["quote", "quote"]);
+        assert!(parsers.iter().any(|p| p.matches(&quote_path)));
+        assert!(parsers.iter().any(|p| p.matches(&quote_qualified)));
+    }
+
+    #[test]
+    fn quote_parser_does_not_match_unrelated_macros() {
+        let parsers = builtin_parsers();
+        let lazy_static = ResolvedPath::new(["lazy_static"]);
+        let rsx = ResolvedPath::new(["dioxus", "rsx"]);
+        assert!(!parsers.iter().any(|p| p.matches(&lazy_static)));
+        assert!(!parsers.iter().any(|p| p.matches(&rsx)));
     }
 }

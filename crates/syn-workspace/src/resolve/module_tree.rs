@@ -151,6 +151,17 @@ fn collect_module_contents(
                     parent_canonical,
                     &mut macro_refs,
                 );
+            } else if matches_known_plugin_macro(&item_macro.mac.path) {
+                // Plugin path: known macro invocations (e.g. `quote!`,
+                // `quote::quote!`) get their bodies scanned the same way
+                // `macro_rules!` bodies are.
+                extract_macro_paths(
+                    item_macro.mac.tokens.clone(),
+                    &scope,
+                    &sibling_names,
+                    parent_canonical,
+                    &mut macro_refs,
+                );
             }
         }
 
@@ -211,6 +222,20 @@ fn is_expansion_uses(path: &syn::Path) -> bool {
     path.segments
         .last()
         .is_some_and(|seg| seg.ident == "expansion_uses")
+}
+
+/// Match invocations of macros that have a built-in
+/// [`crate::plugins::MacroBodyParser`] — currently just `quote!` /
+/// `quote::quote!`. Future built-ins (dioxus-rsx, json!) will extend this
+/// matcher. The actual extraction reuses [`extract_macro_paths`] since the
+/// plugin parsers all reduce to the same token-scan operation in v1.
+fn matches_known_plugin_macro(path: &syn::Path) -> bool {
+    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    match segs.as_slice() {
+        [single] => single == "quote",
+        [a, b] => a == "quote" && b == "quote",
+        _ => false,
+    }
 }
 
 /// Scan a `macro_rules!` body token-stream for path-like sequences
