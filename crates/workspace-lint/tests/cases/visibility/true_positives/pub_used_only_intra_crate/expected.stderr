@@ -3,10 +3,15 @@ error: pub `internal_only` in crate `lib_a` is not referenced from any other wor
   |
   = help: tighten to `pub(crate)` if this item is intentionally crate-internal
   = note: references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked
+help: tighten to `pub(crate)`
+  |
+4 - <existing>
+4 + pub(crate)
+  |
 help: if intentional, silence with:
   |
 4 + workspace_lint::allow!(visibility);
   |
   = note: `#[deny(workspace_lint::visibility)]` on by default
 
-workspace-lint: generated 1 error
+workspace-lint: generated 1 error (run `workspace-lint --fix` to apply 1 suggestion)

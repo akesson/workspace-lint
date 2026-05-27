@@ -128,6 +128,15 @@ pub struct UnusedPubConfig {
     /// "consider `pub(crate)`" suggestions.
     #[serde(default, rename = "suppress-intra-crate")]
     pub suppress_intra_crate: bool,
+    /// When `true`, the structural fix for `appears unused — consider
+    /// removing` becomes *item deletion* instead of `pub(crate)` narrowing.
+    /// Guarded by a git-tracked-clean check: if the containing file is
+    /// untracked or has uncommitted changes, the suggestion is downgraded
+    /// to `MaybeIncorrect` and `--fix` skips it. Default `false`
+    /// (visibility-narrow only — safer when the user can't recover via
+    /// `git checkout`).
+    #[serde(default, rename = "auto-delete")]
+    pub auto_delete: bool,
 }
 
 impl UnusedPubConfig {

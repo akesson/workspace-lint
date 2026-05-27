@@ -192,6 +192,11 @@ impl CheckRule {
             kinds,
             exclude_paths,
             suppress_intra_crate,
+            // `--fix` deletion is opt-in via config only — there's no CLI
+            // override because deletion is irreversible-without-git and
+            // we want the choice to live in the project's config file
+            // (not a forgotten shell history line).
+            auto_delete: false,
         }
     }
 

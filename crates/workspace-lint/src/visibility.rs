@@ -19,9 +19,10 @@
 
 use std::collections::HashSet;
 
-use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace};
+use syn_workspace::{Item, ItemKind, Module, ResolvedPath, SourceSpan, Visibility, Workspace};
 
 use crate::diagnostic::Diagnostic;
+use crate::diagnostic::Suggestion;
 use crate::diagnostic::builder::at_line;
 
 pub const LINT: &str = crate::lints::LintId::Visibility.id();
@@ -89,16 +90,96 @@ fn collect_overpermissive(
             "pub `{}` in crate `{}` is not referenced from any other workspace crate",
             item.name, crate_code_name,
         );
-        out.push(
-            at_line(LINT, msg, span.file.clone(), span.line)
-                .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
-                .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked")
-                .build(),
-        );
+        let mut builder = at_line(LINT, msg, span.file.clone(), span.line)
+            .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
+            .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked");
+        if let Some(s) = build_tighten_suggestion(span) {
+            builder = builder.suggestion(s);
+        }
+        out.push(builder.build());
     }
     for sub in &module.submodules {
         collect_overpermissive(sub, crate_code_name, cross_crate_refs, macro_refs, out);
     }
+}
+
+/// Locate the `pub` token within an item's span and return its byte range,
+/// or `None` if the heuristic can't pin it down. Cases we punt on (and the
+/// silence fallback covers):
+///
+/// - Item starts with `#[...]` attributes — the `pub` keyword is deeper
+///   inside the span and disambiguating it from `#[allow(...)]` or
+///   attribute argument tokens needs syn rather than a string scan.
+/// - The keyword we find is `pub(...)` already (`pub(super)`,
+///   `pub(in path)`) — those are explicit author choices and the lint
+///   shouldn't downgrade them.
+/// - We can't read the source file (deleted on disk, permissions, …).
+pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> {
+    if span.byte_start == 0 && span.byte_end == 0 {
+        return None;
+    }
+    let source = fs_err::read_to_string(&span.file).ok()?;
+    let start = span.byte_start as usize;
+    let end = (span.byte_end as usize).min(source.len());
+    if start >= end {
+        return None;
+    }
+    let slice = source.get(start..end)?;
+    // Bail if the span starts with an outer attribute — the `pub` keyword
+    // is buried among tokens we can't safely identify by string scan.
+    if slice.starts_with('#') {
+        return None;
+    }
+    // Find first `pub` at a word boundary.
+    let pub_offset = find_word_boundary_pub(slice)?;
+    let after_pub = slice.get(pub_offset + 3..)?;
+    // Already `pub(...)` — leave it alone.
+    if after_pub.starts_with('(') {
+        return None;
+    }
+    // Require a whitespace separator after `pub` so we don't grab
+    // identifiers like `public_field`.
+    if !after_pub
+        .chars()
+        .next()
+        .map(char::is_whitespace)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let abs_start = (start + pub_offset) as u32;
+    let abs_end = abs_start + 3;
+    Some(Suggestion {
+        span: crate::diagnostic::Span {
+            file: span.file.clone(),
+            line_start: span.line,
+            line_end: span.line,
+            col_start: 1,
+            col_end: 1,
+            byte_start: abs_start,
+            byte_end: abs_end,
+        },
+        message: "tighten to `pub(crate)`".into(),
+        replacement: "pub(crate)".into(),
+        applicability: crate::diagnostic::Applicability::MachineApplicable,
+    })
+}
+
+/// Find `pub` in `slice` at the first position where it's a standalone
+/// keyword (preceded by whitespace, start of slice, or punctuation —
+/// `pub` cannot follow an identifier character).
+fn find_word_boundary_pub(slice: &str) -> Option<usize> {
+    let bytes = slice.as_bytes();
+    for (i, w) in bytes.windows(3).enumerate() {
+        if w == b"pub" {
+            let before_ok =
+                i == 0 || !matches!(bytes[i - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
+            if before_ok {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 fn checkable(item: &Item) -> bool {

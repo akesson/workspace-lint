@@ -31,7 +31,7 @@ pub mod resolve;
 mod walk;
 
 pub use resolve::{
-    BrokenModDecl, Crate, Error, Item, ItemKind, Module, ResolvedPath, Result, Visibility,
-    Workspace, re_export::ReExportIndex,
+    BrokenModDecl, Crate, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan,
+    Visibility, Workspace, re_export::ReExportIndex,
 };
 pub use walk::member_manifests;
