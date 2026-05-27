@@ -123,20 +123,49 @@ fn walkdir(root: &Path) -> impl Iterator<Item = std::io::Result<PathBuf>> + use<
 }
 
 fn normalize_stderr(stderr: &str, tmp: &Path) -> String {
-    // On macOS, std::env::temp_dir() resolves to `/var/folders/...`, but
-    // canonicalize() returns `/private/var/folders/...`. The diagnostic
-    // pipeline (via `fs::canonicalize` somewhere downstream) emits the
-    // private form. Replace the longer canonical path first so the
-    // shorter symlinked match doesn't leave a stray `/private` prefix.
-    let tmp_canon = tmp
-        .canonicalize()
-        .ok()
-        .and_then(|p| p.to_string_lossy().into_owned().into());
-    let mut out: String = stderr.to_string();
-    if let Some(canon) = tmp_canon {
-        out = out.replace(canon.as_str(), "<TMP>");
+    // Build every reasonable spelling of the tempdir path:
+    //
+    // - `tmp.path()` and `tmp.canonicalize()` to handle macOS' /var → /private/var
+    //   symlink dance, and the short-vs-long-name distinction on Windows
+    //   (`RUNNER~1` vs `runneradmin`).
+    // - Forward-slash forms of both, since the renderer normalizes paths to
+    //   forward-slash on Windows but `Path::to_string_lossy()` still gives us
+    //   backslashes here.
+    // - Verbatim-prefix-stripped (`\\?\`) variants in case `canonicalize` ever
+    //   returns one (currently it doesn't reach our stderr — the renderer
+    //   strips it — but defending against it costs nothing).
+    //
+    // Sort by length descending and replace in that order: longer paths
+    // (e.g. /private/var/folders/...) must consume their content before the
+    // shorter alias (/var/folders/...) gets a chance, otherwise we leave a
+    // stray prefix behind.
+    let mut spellings: Vec<String> = Vec::new();
+    let push = |spellings: &mut Vec<String>, s: String| {
+        if !s.is_empty() && !spellings.contains(&s) {
+            spellings.push(s);
+        }
+    };
+    push(&mut spellings, tmp.to_string_lossy().into_owned());
+    if let Ok(canon) = tmp.canonicalize() {
+        push(&mut spellings, canon.to_string_lossy().into_owned());
     }
-    out = out.replace(tmp.to_string_lossy().as_ref(), "<TMP>");
+    let with_fs: Vec<String> = spellings.iter().map(|s| s.replace('\\', "/")).collect();
+    for s in with_fs {
+        push(&mut spellings, s);
+    }
+    let stripped: Vec<String> = spellings
+        .iter()
+        .filter_map(|s| s.strip_prefix(r"\\?\").map(|t| t.to_string()))
+        .collect();
+    for s in stripped {
+        push(&mut spellings, s);
+    }
+    spellings.sort_by_key(|s| std::cmp::Reverse(s.len()));
+
+    let mut out = stderr.to_string();
+    for s in &spellings {
+        out = out.replace(s.as_str(), "<TMP>");
+    }
     out
 }
 

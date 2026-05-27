@@ -21,6 +21,7 @@ use syn_workspace::{Crate, Module, Workspace};
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::{at_file, at_line};
+use crate::diagnostic::render::display_path;
 
 pub const LINT: &str = "workspace-lint::module-tree";
 
@@ -75,10 +76,13 @@ fn collect_orphan_files(krate: &Crate, out: &mut Vec<Diagnostic>) {
         if in_reachable {
             continue;
         }
+        // Forward-slash normalize so the message body matches the renderer's
+        // header on every platform (Windows otherwise emits `src\orphan.rs`
+        // inside the message while the `--> ...` header is already `src/...`).
         let rel = path
             .strip_prefix(&krate.manifest_dir)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| path.display().to_string());
+            .map(display_path)
+            .unwrap_or_else(|_| display_path(&path));
 
         out.push(
             at_file(LINT, format!("orphan source file `{rel}` is not reachable from any `mod` declaration"), path.clone())
