@@ -33,6 +33,9 @@ macro_rules! allow {
     (unused_deps) => {};
     (unused_pub) => {};
     (stale_expect) => {};
+    (architecture) => {};
+    (module_tree) => {};
+    (stale_git_index) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
         $crate::allow!($first);
         $crate::allow!($($rest),+);
@@ -56,6 +59,9 @@ macro_rules! expect {
     (unused_deps) => {};
     (unused_pub) => {};
     (stale_expect) => {};
+    (architecture) => {};
+    (module_tree) => {};
+    (stale_git_index) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
         $crate::expect!($first);
         $crate::expect!($($rest),+);
@@ -77,6 +83,9 @@ mod tests {
         crate::allow!(unused_deps);
         crate::allow!(unused_pub);
         crate::allow!(stale_expect);
+        crate::allow!(architecture);
+        crate::allow!(module_tree);
+        crate::allow!(stale_git_index);
     }
 
     #[test]
@@ -96,6 +105,9 @@ mod tests {
         crate::expect!(unused_deps);
         crate::expect!(unused_pub);
         crate::expect!(stale_expect);
+        crate::expect!(architecture);
+        crate::expect!(module_tree);
+        crate::expect!(stale_git_index);
     }
 
     #[test]

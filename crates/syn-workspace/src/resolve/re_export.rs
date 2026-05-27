@@ -115,6 +115,7 @@ mod tests {
             items: Vec::new(),
             submodules,
             use_bindings,
+            broken_mod_decls: Vec::new(),
             file: None,
         }
     }

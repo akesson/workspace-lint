@@ -39,6 +39,8 @@ pub struct Config {
 pub struct Checks {
     #[serde(default, rename = "centralized-deps")]
     pub centralized_deps: bool,
+    #[serde(default, rename = "module-tree")]
+    pub module_tree: bool,
 }
 
 #[derive(Deserialize)]

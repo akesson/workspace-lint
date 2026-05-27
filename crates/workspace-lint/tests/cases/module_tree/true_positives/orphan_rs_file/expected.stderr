@@ -1,0 +1,12 @@
+warning: orphan source file `src/orphan.rs` is not reachable from any `mod` declaration
+ --> <TMP>/crates/demo/src/orphan.rs:1:1
+  |
+  = help: add `mod orphan;` (or a `#[path = "src/orphan.rs"] mod ...;`) in the appropriate parent module, or delete the file
+  = note: crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`
+help: if intentional, silence with:
+  |
+1 + workspace_lint::allow!(module_tree);
+  |
+  = note: `#[warn(workspace_lint::module_tree)]` on by default
+
+workspace-lint: generated 1 warning

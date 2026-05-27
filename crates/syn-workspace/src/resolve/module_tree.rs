@@ -22,13 +22,17 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::use_tree::{self, UseBinding};
-use super::{Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan, Visibility};
+use super::{
+    BrokenModDecl, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan, Visibility,
+};
 
-/// Items, submodules, and `use` bindings collected while walking a module.
+/// Items, submodules, `use` bindings, and broken `mod` declarations
+/// collected while walking a module.
 struct ModuleContents {
     items: Vec<Item>,
     submodules: Vec<Module>,
     use_bindings: Vec<UseBinding>,
+    broken_mod_decls: Vec<BrokenModDecl>,
 }
 
 /// Build a fully-populated module tree for one crate.
@@ -55,6 +59,7 @@ fn empty_root(crate_name: &str) -> Module {
         items: Vec::new(),
         submodules: Vec::new(),
         use_bindings: Vec::new(),
+        broken_mod_decls: Vec::new(),
         file: None,
     }
 }
@@ -78,6 +83,7 @@ fn build_module_from_file(
         items: contents.items,
         submodules: contents.submodules,
         use_bindings: contents.use_bindings,
+        broken_mod_decls: contents.broken_mod_decls,
         file: Some(file_path.to_path_buf()),
     })
 }
@@ -98,6 +104,7 @@ fn collect_module_contents(
     let mut items = Vec::new();
     let mut submodules = Vec::new();
     let mut use_bindings = Vec::new();
+    let mut broken_mod_decls = Vec::new();
 
     for syn_item in syn_items {
         if let syn::Item::Use(item_use) = syn_item {
@@ -126,6 +133,7 @@ fn collect_module_contents(
                     items: inline.items,
                     submodules: inline.submodules,
                     use_bindings: inline.use_bindings,
+                    broken_mod_decls: inline.broken_mod_decls,
                     file: Some(parent_file.to_path_buf()),
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, item_mod)? {
@@ -134,10 +142,15 @@ fn collect_module_contents(
                     child_name,
                     child_canonical,
                 )?);
+            } else {
+                // `mod foo;` with neither inline body nor backing file —
+                // record so the module-tree lint can flag it.
+                broken_mod_decls.push(BrokenModDecl {
+                    name: child_name,
+                    declared_in: parent_file.to_path_buf(),
+                    line: item_mod.mod_token.span.start().line as u32,
+                });
             }
-            // If the declaration has no body and no resolvable file, the
-            // `module-tree` lint's `mod_decl_missing_target` case will fire.
-            // We silently drop here so the workspace model stays consistent.
         }
     }
 
@@ -145,6 +158,7 @@ fn collect_module_contents(
         items,
         submodules,
         use_bindings,
+        broken_mod_decls,
     })
 }
 
@@ -427,10 +441,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_mod_target_is_silently_skipped() {
-        // `mod ghost;` with no file should not panic; the module-tree lint
-        // emits a separate `mod_decl_missing_target` diagnostic.
+    fn missing_mod_target_is_recorded_as_broken() {
+        // `mod ghost;` with no file should not panic; the resolver records a
+        // BrokenModDecl entry on the parent module so the module-tree lint
+        // can flag it.
         let root = build_crate_tree(&manifest_dir("missing_mod"), "missing_mod").expect("build");
         assert!(root.submodules.iter().all(|m| m.name != "ghost"));
+        assert!(
+            root.broken_mod_decls.iter().any(|d| d.name == "ghost"),
+            "expected `ghost` to be recorded as a broken mod decl, got: {:?}",
+            root.broken_mod_decls,
+        );
     }
 }

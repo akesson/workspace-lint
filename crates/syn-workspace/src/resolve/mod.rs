@@ -172,6 +172,21 @@ pub struct SourceSpan {
     pub column: u32,
 }
 
+/// A `mod foo;` declaration that didn't resolve to a backing file.
+///
+/// Recorded so downstream lints can flag the mismatch — typically a rename
+/// that left the declaration dangling, or a `#[cfg_attr(..., path = ...)]`
+/// form syn-workspace doesn't yet evaluate.
+#[derive(Debug, Clone)]
+pub struct BrokenModDecl {
+    /// The `mod` name (`foo` in `mod foo;`).
+    pub name: String,
+    /// The file containing the failing declaration.
+    pub declared_in: PathBuf,
+    /// 1-indexed line number of the `mod` keyword within `declared_in`.
+    pub line: u32,
+}
+
 /// A module within a crate. Modules form a tree rooted at the crate's `lib.rs`
 /// or `main.rs`.
 #[derive(Debug, Clone)]
@@ -184,6 +199,10 @@ pub struct Module {
     /// canonical paths). Populated by Tier 1 during the Tier 2 walk; inline
     /// child modules carry their own bindings independently of their parent.
     pub use_bindings: Vec<use_tree::UseBinding>,
+    /// `mod foo;` declarations encountered in this module whose target file
+    /// couldn't be resolved (and which don't have an inline body). Drives
+    /// the module-tree integrity lint.
+    pub broken_mod_decls: Vec<BrokenModDecl>,
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
@@ -328,6 +347,7 @@ mod tests {
             items,
             submodules,
             use_bindings: Vec::new(),
+            broken_mod_decls: Vec::new(),
             file: None,
         }
     }

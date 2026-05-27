@@ -33,6 +33,6 @@ mod walk;
 
 pub use plugins::{MacroBodyParser, ResolveContext, builtin_parsers};
 pub use resolve::{
-    Crate, Error, Item, ItemKind, Module, ResolvedPath, Result, Visibility, Workspace,
-    re_export::ReExportIndex,
+    BrokenModDecl, Crate, Error, Item, ItemKind, Module, ResolvedPath, Result, Visibility,
+    Workspace, re_export::ReExportIndex,
 };

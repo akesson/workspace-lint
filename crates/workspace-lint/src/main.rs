@@ -25,6 +25,7 @@ mod lints;
 // snapshot tests inside `mod tests` are what actually exercise the
 // diagnostics — see the file's module docs.
 mod messages;
+mod module_tree;
 mod suppress;
 mod unused_deps;
 mod unused_pub;
@@ -130,11 +131,22 @@ fn run_all_from_config() -> Vec<Diagnostic> {
     if let Some(ref up) = config.unused_pub {
         diagnostics.extend(unused_pub::check(up));
     }
-    if let Some(ref ac) = config.architecture
-        && !ac.rules.is_empty()
+    // syn-workspace-backed checks share a single resolved Workspace so we
+    // pay the cargo_metadata + per-file syn parse once across all of them.
+    let architecture_needed = config
+        .architecture
+        .as_ref()
+        .is_some_and(|ac| !ac.rules.is_empty());
+    let module_tree_needed = config.checks.module_tree;
+    if (architecture_needed || module_tree_needed)
         && let Ok(ws) = syn_workspace::Workspace::load(".")
     {
-        diagnostics.extend(architecture::check(ac, &ws));
+        if architecture_needed && let Some(ref ac) = config.architecture {
+            diagnostics.extend(architecture::check(ac, &ws));
+        }
+        if module_tree_needed {
+            diagnostics.extend(module_tree::check(&ws));
+        }
     }
 
     diagnostics
