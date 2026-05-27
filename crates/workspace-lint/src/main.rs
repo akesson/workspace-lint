@@ -143,8 +143,18 @@ fn run_all_from_config() -> Vec<Diagnostic> {
     let feature_drift_needed = config.checks.feature_drift;
     let visibility_needed = config.checks.visibility;
     if (architecture_needed || module_tree_needed || feature_drift_needed || visibility_needed)
-        && let Ok(ws) = syn_workspace::Workspace::load(".")
+        && let Ok(mut ws) = syn_workspace::Workspace::load(".")
     {
+        // Layer 3: feed external-macro expansion-uses entries from config
+        // into the workspace's implicit-refs set so downstream lints see
+        // items reachable only through e.g. `#[tokio::main]`.
+        if let Some(ref macros) = config.macros {
+            let paths = macros
+                .external
+                .iter()
+                .flat_map(|m| m.expansion_uses.iter().map(|p| canonicalize_user_path(p)));
+            ws.register_external_macro_uses(paths);
+        }
         if architecture_needed && let Some(ref ac) = config.architecture {
             diagnostics.extend(architecture::check(ac, &ws));
         }
@@ -160,6 +170,22 @@ fn run_all_from_config() -> Vec<Diagnostic> {
     }
 
     diagnostics
+}
+
+/// Convert a user-facing path string (`tokio::runtime::Builder`,
+/// `data-models::api::User`) into a [`ResolvedPath`]. Hyphens in the leading
+/// segment are normalized to underscores so cargo crate names match the
+/// in-code form the resolver stores. Other segments pass through verbatim.
+fn canonicalize_user_path(path: &str) -> syn_workspace::ResolvedPath {
+    let mut segments: Vec<String> = path
+        .split("::")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if let Some(first) = segments.first_mut() {
+        *first = first.replace('-', "_");
+    }
+    syn_workspace::ResolvedPath::new(segments)
 }
 
 fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {

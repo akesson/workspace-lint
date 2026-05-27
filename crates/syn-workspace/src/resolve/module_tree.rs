@@ -129,18 +129,29 @@ fn collect_module_contents(
             use_bindings.extend(bindings);
         }
 
-        if let syn::Item::Macro(item_macro) = syn_item
-            && item_macro.ident.is_some()
-        {
-            // `macro_rules!` definition — scan its body for path-like
-            // token sequences and resolve through this scope.
-            extract_macro_paths(
-                item_macro.mac.tokens.clone(),
-                &scope,
-                &sibling_names,
-                parent_canonical,
-                &mut macro_refs,
-            );
+        if let syn::Item::Macro(item_macro) = syn_item {
+            if item_macro.ident.is_some() {
+                // `macro_rules!` definition — scan its body for path-like
+                // token sequences and resolve through this scope.
+                extract_macro_paths(
+                    item_macro.mac.tokens.clone(),
+                    &scope,
+                    &sibling_names,
+                    parent_canonical,
+                    &mut macro_refs,
+                );
+            } else if is_expansion_uses(&item_macro.mac.path) {
+                // Layer 2: explicit `expansion_uses!(path, path, ...)`
+                // annotation. Each argument resolves through the same
+                // scope rules as a macro_rules! body path.
+                extract_macro_paths(
+                    item_macro.mac.tokens.clone(),
+                    &scope,
+                    &sibling_names,
+                    parent_canonical,
+                    &mut macro_refs,
+                );
+            }
         }
 
         if let Some(named) = item_from_syn(syn_item, parent_canonical, parent_file) {
@@ -192,6 +203,14 @@ fn collect_module_contents(
         cfg_features: cfg_features.into_iter().collect(),
         macro_implicit_refs: macro_refs.into_iter().collect(),
     })
+}
+
+/// Match `expansion_uses!` or `<crate>::expansion_uses!` invocations.
+/// Used to detect the Layer 2 annotation alongside `macro_rules!` defs.
+fn is_expansion_uses(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .is_some_and(|seg| seg.ident == "expansion_uses")
 }
 
 /// Scan a `macro_rules!` body token-stream for path-like sequences

@@ -257,6 +257,9 @@ pub struct Workspace {
     crates: Vec<Crate>,
     root: PathBuf,
     re_exports: re_export::ReExportIndex,
+    /// Layer 3: external-macro implicit references contributed by config
+    /// rather than scanned from source. Populated by callers after `load`.
+    extra_macro_refs: std::collections::HashSet<ResolvedPath>,
 }
 
 impl Workspace {
@@ -274,7 +277,20 @@ impl Workspace {
             crates,
             root,
             re_exports,
+            extra_macro_refs: std::collections::HashSet::new(),
         })
+    }
+
+    /// Register implicit references for macros defined outside the workspace
+    /// (Layer 3 — config-driven). Each call appends; deduplication happens
+    /// in the underlying [`HashSet`]. Typically invoked by the lint harness
+    /// once after [`Workspace::load`], passing entries derived from the
+    /// `[[macros.external]]` table in the config file.
+    pub fn register_external_macro_uses<I>(&mut self, paths: I)
+    where
+        I: IntoIterator<Item = ResolvedPath>,
+    {
+        self.extra_macro_refs.extend(paths);
     }
 
     /// All workspace member crates plus referenced external crates.
@@ -312,6 +328,9 @@ impl Workspace {
         let mut out = std::collections::HashSet::new();
         for krate in &self.crates {
             collect_macro_implicit_refs(&krate.root, &mut out);
+        }
+        for path in &self.extra_macro_refs {
+            out.insert(path.clone());
         }
         out
     }
