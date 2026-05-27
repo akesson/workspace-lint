@@ -168,6 +168,46 @@ fn walk(tree: &syn::UseTree, prefix: &[String], visibility: Visibility, out: &mu
     }
 }
 
+/// Collect the canonical prefix of every glob (`use foo::bar::*;`) in the
+/// given `use` item. Tier 1's [`bindings_from_use`] deliberately skips globs
+/// because there's no specific local name to bind; this companion walker
+/// exists so the references pass can still record what the glob targeted —
+/// without that, `use predicates::prelude::*;` looks like a no-op and
+/// unused-deps false-positives on `predicates`.
+pub fn glob_targets_from_use(item: &syn::ItemUse, scope: &Scope) -> Vec<ResolvedPath> {
+    let mut prefix: Vec<String> = Vec::new();
+    let mut tree: &syn::UseTree = &item.tree;
+    if item.leading_colon.is_none() {
+        peel_leading_special(&mut tree, &mut prefix, scope);
+    }
+    let mut out = Vec::new();
+    walk_globs(tree, &prefix, &mut out);
+    out
+}
+
+fn walk_globs(tree: &syn::UseTree, prefix: &[String], out: &mut Vec<ResolvedPath>) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            let mut new_prefix = prefix.to_vec();
+            new_prefix.push(p.ident.to_string());
+            walk_globs(&p.tree, &new_prefix, out);
+        }
+        syn::UseTree::Glob(_) => {
+            if !prefix.is_empty() {
+                out.push(ResolvedPath::new(prefix.to_vec()));
+            }
+        }
+        syn::UseTree::Group(g) => {
+            for item in &g.items {
+                walk_globs(item, prefix, out);
+            }
+        }
+        syn::UseTree::Name(_) | syn::UseTree::Rename(_) => {
+            // Non-glob leaves are handled by bindings_from_use.
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +387,39 @@ mod tests {
         let got = bindings_from_use(&parse("pub use foo::{Bar, Baz};"), &s);
         assert_eq!(got.len(), 2);
         assert!(got.iter().all(|b| b.visibility == Visibility::Public));
+    }
+
+    // --- glob_targets_from_use ---
+
+    #[test]
+    fn glob_targets_extracts_simple_prefix() {
+        let s = scope("demo", &[]);
+        let targets = glob_targets_from_use(&parse("use foo::bar::*;"), &s);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].display(), "foo::bar");
+    }
+
+    #[test]
+    fn glob_targets_emit_nothing_for_non_glob() {
+        let s = scope("demo", &[]);
+        let targets = glob_targets_from_use(&parse("use foo::Bar;"), &s);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn glob_targets_emit_for_each_glob_in_group() {
+        let s = scope("demo", &[]);
+        let targets = glob_targets_from_use(&parse("use foo::{a::*, b::*};"), &s);
+        let mut displays: Vec<_> = targets.iter().map(|p| p.display()).collect();
+        displays.sort();
+        assert_eq!(displays, vec!["foo::a", "foo::b"]);
+    }
+
+    #[test]
+    fn glob_targets_apply_crate_prefix() {
+        let s = scope("demo", &["sub"]);
+        let targets = glob_targets_from_use(&parse("use crate::inner::*;"), &s);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].display(), "demo::inner");
     }
 }

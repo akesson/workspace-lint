@@ -4,16 +4,21 @@ members = ["crates/*"]
 
 [workspace.dependencies]
 # Bin deps
-cargo_metadata = "0.22"
+cargo_metadata = "0.23"
 clap = { version = "4", features = ["derive"] }
+# Pin the exact patch — dioxus-rsx is an internal Dioxus crate whose
+# public API is unstable. Upgrading: check the changelog, run
+# `cargo test -p syn-workspace` against the dioxus_rsx tests, and
+# update the pinned version here in lockstep with any AST walker
+# adjustments in plugins/dioxus_rsx.rs.
+dioxus-rsx = "=0.7.9"
 fs-err = "3"
 globset = "0.4"
 ignore = "0.4"
 proc-macro2 = { version = "1", features = ["span-locations"] }
-protobuf = "3"
+quote = "1"
 regex = "1"
 rustfix = "0.9"
-scip = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strip-ansi-escapes = "0.2"
