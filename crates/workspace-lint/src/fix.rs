@@ -27,6 +27,13 @@
 //!   structural suggestion and a silence suggestion, only the structural
 //!   one is applied — fixing the issue removes the need to silence it.
 
+// Adding rustfix wiring + structural-fix routing + the directives-backed
+// already_silenced check pushed this file past 500 LOC. Splitting along
+// the (suggestion-classification, file-application, suppression-check)
+// seams would scatter the apply pipeline; keep it colocated. stale-expect
+// will surface here if the file shrinks back.
+workspace_lint_marker::expect!(file_size);
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
@@ -197,26 +204,82 @@ fn already_replaced(source: &str, s: &Suggestion) -> bool {
     source[start..end] == s.replacement
 }
 
-/// `true` if the suggestion's replacement text already appears in the part
-/// of the file we'd insert it into. Window depends on anchor kind:
-/// - file-anchor (`line_start == 1`): first 8 lines.
-/// - line-anchor: `[line_start - 3, line_start + 3]`, mirroring the
-///   suppression-map lookback window.
+/// `true` if a workspace-lint directive of the same lint already covers
+/// the suggestion's target scope.
+///
+/// Implementation: parse the file with the same scanner the main
+/// suppression pipeline uses (`directives::scan_single_file`) — proper
+/// syn/regex parsing instead of substring matching, so directive text
+/// inside string literals or doc comments doesn't yield false positives.
+/// The `source` argument is the read file content; it's used as a quick
+/// pre-filter to avoid re-parsing when no directive marker is present.
 fn already_silenced(source: &str, s: &Suggestion) -> bool {
-    let needle = s.replacement.trim_end();
-    if needle.is_empty() {
+    // Fast path: if no plausible directive marker appears anywhere in the
+    // file, skip the parse. Saves cost on the typical "clean file" case.
+    if !source.contains("workspace_lint::")
+        && !source.contains("workspace-lint:")
+        && !source.contains("allow!")
+        && !source.contains("expect!")
+    {
         return false;
     }
-    let lines: Vec<&str> = source.lines().collect();
-    let (lo, hi) = if s.span.line_start <= 1 {
-        (0usize, 8usize.min(lines.len()))
-    } else {
-        let center = s.span.line_start as usize - 1;
-        let lo = center.saturating_sub(3);
-        let hi = (center + 4).min(lines.len());
-        (lo, hi)
-    };
-    lines[lo..hi].iter().any(|line| line.contains(needle))
+    let lint_short = lint_from_replacement(s);
+    let directives = crate::directives::scan_single_file(&s.span.file);
+    directives.iter().any(|d| {
+        // Match by lint name (kebab form, no `workspace-lint::` prefix).
+        if d.lint != lint_short {
+            return false;
+        }
+        // Target scope reasoning:
+        //  - File-anchor (line_start == 1): any covering directive in the
+        //    same file suffices.
+        //  - Line-anchor: the directive's anchor must contain a synthetic
+        //    Line anchor at the target line, which subsumes file-wide
+        //    directives via SilenceAnchor::contains().
+        let target = if s.span.line_start <= 1 {
+            crate::diagnostic::SilenceAnchor::File {
+                file: s.span.file.clone(),
+            }
+        } else {
+            crate::diagnostic::SilenceAnchor::Line {
+                file: s.span.file.clone(),
+                line: s.span.line_start,
+            }
+        };
+        d.anchor.contains(&target)
+    })
+}
+
+/// Extract the lint's short kebab name from a silence-directive
+/// replacement. We're matching strings like
+/// `workspace_lint::allow!(file_size);\n` or
+/// `# workspace-lint: allow(centralized-deps)\n`. Returns an empty string
+/// when the replacement doesn't look like a directive (in which case
+/// `already_silenced` falls through to "not silenced").
+fn lint_from_replacement(s: &Suggestion) -> String {
+    let r = s.replacement.trim();
+    // Rust macro form.
+    if let Some(inner) = r
+        .strip_prefix("workspace_lint::allow!(")
+        .or_else(|| r.strip_prefix("workspace_lint::expect!("))
+        && let Some(name) = inner.split(['(', ')', ',', ';']).next()
+    {
+        return name.trim().replace('_', "-");
+    }
+    // Comment-directive form (TOML / Markdown).
+    let body = r.trim_start_matches('#').trim();
+    let body = body
+        .trim_start_matches("workspace-lint:")
+        .trim_start_matches("workspace_lint:")
+        .trim();
+    if let Some(rest) = body
+        .strip_prefix("allow(")
+        .or_else(|| body.strip_prefix("expect("))
+        && let Some(name) = rest.split(')').next()
+    {
+        return name.trim().to_string();
+    }
+    String::new()
 }
 
 /// Pick where to insert the directive in the source. The Suggestion carries
@@ -514,22 +577,40 @@ mod tests {
 
     #[test]
     fn already_silenced_detects_macro_at_top() {
-        let src = "workspace_lint::allow!(file_size);\npub fn x() {}\n";
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("lib.rs");
+        std::fs::write(&p, "workspace_lint::allow!(file_size);\npub fn x() {}\n").unwrap();
+        let src = std::fs::read_to_string(&p).unwrap();
         let s = Suggestion {
-            span: Span::file_anchor("x"),
+            span: Span {
+                file: p.clone(),
+                line_start: 1,
+                line_end: 1,
+                col_start: 1,
+                col_end: 1,
+                byte_start: 0,
+                byte_end: 0,
+            },
             message: "m".into(),
             replacement: "workspace_lint::allow!(file_size);\n".into(),
             applicability: Applicability::MachineApplicable,
         };
-        assert!(already_silenced(src, &s));
+        assert!(already_silenced(&src, &s));
     }
 
     #[test]
     fn already_silenced_detects_comment_in_window() {
-        let src = "[package]\nname = \"x\"\n# workspace-lint: allow(unused-deps)\n[dependencies]\nfoo = \"1\"\n";
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &p,
+            "[package]\nname = \"x\"\n# workspace-lint: allow(unused-deps)\n[dependencies]\nfoo = \"1\"\n",
+        )
+        .unwrap();
+        let src = std::fs::read_to_string(&p).unwrap();
         let s = Suggestion {
             span: Span {
-                file: "Cargo.toml".into(),
+                file: p.clone(),
                 line_start: 4,
                 line_end: 4,
                 col_start: 1,
@@ -541,27 +622,32 @@ mod tests {
             replacement: "# workspace-lint: allow(unused-deps)\n".into(),
             applicability: Applicability::MachineApplicable,
         };
-        assert!(already_silenced(src, &s));
+        assert!(already_silenced(&src, &s));
     }
 
     #[test]
-    fn already_silenced_returns_false_when_directive_too_far_away() {
-        let src = "# workspace-lint: allow(unused-deps)\n\n\n\n\n\n\n\n\n\n\n[dependencies]\n";
+    fn already_silenced_returns_false_when_lint_does_not_match() {
+        // A directive for `unused-deps` shouldn't silence a `file-size`
+        // suggestion in the same file. Tests the new lint-name match.
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("lib.rs");
+        std::fs::write(&p, "workspace_lint::allow!(unused_deps);\npub fn x() {}\n").unwrap();
+        let src = std::fs::read_to_string(&p).unwrap();
         let s = Suggestion {
             span: Span {
-                file: "Cargo.toml".into(),
-                line_start: 12,
-                line_end: 12,
+                file: p.clone(),
+                line_start: 1,
+                line_end: 1,
                 col_start: 1,
                 col_end: 1,
                 byte_start: 0,
                 byte_end: 0,
             },
             message: "m".into(),
-            replacement: "# workspace-lint: allow(unused-deps)\n".into(),
+            replacement: "workspace_lint::allow!(file_size);\n".into(),
             applicability: Applicability::MachineApplicable,
         };
-        assert!(!already_silenced(src, &s));
+        assert!(!already_silenced(&src, &s));
     }
 
     #[test]

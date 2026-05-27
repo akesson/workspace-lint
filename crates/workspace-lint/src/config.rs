@@ -253,7 +253,7 @@ pub fn load() -> Config {
     let standalone_exists = Path::new(STANDALONE_FILE).exists();
     let cargo_metadata = read_cargo_metadata();
 
-    let config = match (standalone_exists, cargo_metadata) {
+    match (standalone_exists, cargo_metadata) {
         (true, Some(_)) => {
             eprintln!(
                 "error: found both {STANDALONE_FILE} and [workspace.metadata.workspace-lint] in Cargo.toml — use only one"
@@ -274,10 +274,14 @@ pub fn load() -> Config {
             parse_config(&content, STANDALONE_FILE)
         }
         (false, Some(raw)) => parse_config(&raw, "Cargo.toml [workspace.metadata.workspace-lint]"),
-    };
+    }
+}
 
-    warn_on_old_schema(&config);
-    config
+/// Public wrapper so `main.rs` can emit the schema-migration warning at
+/// the right moment in the pipeline (after the output format is parsed,
+/// so the JSON/GitHub renderers don't get prose mixed into their channel).
+pub fn maybe_warn_on_old_schema(config: &Config) {
+    warn_on_old_schema(config);
 }
 
 /// Best-effort variant of [`load`]: returns `None` (instead of exiting) if

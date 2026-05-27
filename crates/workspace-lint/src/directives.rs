@@ -13,7 +13,6 @@ use ignore::WalkBuilder;
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use syn::visit::Visit;
 
 /// One parsed suppression directive.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +51,20 @@ pub struct DirectiveOrigin {
 /// - `Cargo.toml` line directive: [`SilenceAnchor::Line`] anchored at the
 ///   line *after* the comment (1-3 line lookback when matching).
 /// - Other TOML/MD: [`SilenceAnchor::File`].
+///
+/// Workspace-wide directive scan.
+///
+/// **Performance note** (planned optimization): we currently `syn::parse_file`
+/// each `.rs` file in the walker, even though `syn-workspace::Workspace::load`
+/// already parsed them once during module-tree assembly. The two passes are
+/// independent today because `syn-workspace` discards the parsed
+/// `syn::File` ASTs after extracting items / use-bindings / refs. A future
+/// change can plumb the parsed File (or just the workspace-lint directive
+/// macros it contains) through a new `Module::directive_macros: Vec<...>`
+/// or `Rc<syn::File>` so this function reuses that work and drops the
+/// duplicate parse. The current implementation is correct and fast enough
+/// for workspaces under a few hundred crates; revisit if profiling shows it
+/// dominating end-to-end run time.
 pub fn scan(root: &Path) -> Vec<Directive> {
     let mut directives = Vec::new();
     for entry in WalkBuilder::new(root).build().flatten() {
@@ -88,6 +101,21 @@ fn kind_for(rel: &Path) -> FileKind {
     }
 }
 
+/// Scan a single file's directives (Rust or text). Used by `fix.rs` to
+/// detect whether a silence directive is already present in the target
+/// file — text matching is too fragile (false-positives inside string
+/// literals or doc comments).
+pub fn scan_single_file(abs_path: &Path) -> Vec<Directive> {
+    let mut out = Vec::new();
+    let rel = abs_path;
+    match kind_for(abs_path) {
+        FileKind::Rust => scan_rust(abs_path, rel, &mut out),
+        FileKind::TomlOrMd => scan_text(abs_path, rel, &mut out),
+        FileKind::Skip => {}
+    }
+    out
+}
+
 fn scan_rust(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
     let Ok(source) = fs::read_to_string(abs_path) else {
         return;
@@ -95,63 +123,118 @@ fn scan_rust(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
     let Ok(file) = syn::parse_file(&source) else {
         return;
     };
-    let mut visitor = RustVisitor {
-        rel: rel.to_path_buf(),
-        directives: Vec::new(),
-    };
-    visitor.visit_file(&file);
-    out.extend(visitor.directives);
+    walk_items(&file.items, rel, out);
 }
 
-struct RustVisitor {
-    rel: PathBuf,
-    directives: Vec<Directive>,
-}
-
-impl<'ast> Visit<'ast> for RustVisitor {
-    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-        let last = match mac.path.segments.last() {
-            Some(seg) => seg.ident.to_string(),
-            None => return,
-        };
-        let kind = match last.as_str() {
-            "allow" => DirectiveKind::Allow,
-            "expect" => DirectiveKind::Expect,
-            _ => return,
-        };
-        // Path must traverse `workspace_lint` (e.g. `workspace_lint::allow`)
-        // OR be just `allow!` after `use workspace_lint::*`. Accept either.
-        let path_str = mac
-            .path
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect::<Vec<_>>()
-            .join("::");
-        if !path_str.starts_with("workspace_lint") && path_str != "allow" && path_str != "expect" {
-            return;
+/// Walk a sequence of top-level items, emitting directives with the right
+/// anchor grain. Every Rust directive emits a [`SilenceAnchor::File`]
+/// (preserves the original semantics — a directive at the top of a file
+/// suppresses file-level findings like `file-size`); when the directive is
+/// *immediately* followed by a non-directive item (function, struct, …),
+/// it ALSO emits a [`SilenceAnchor::Line`] at the followed item's first
+/// line, so item-targeted findings like `visibility` and `unused-pub` get
+/// the more precise scope. Both anchors share the same `origin`, so the
+/// stale-expect dedup collapses them back into one source-level directive.
+fn walk_items(items: &[syn::Item], rel: &Path, out: &mut Vec<Directive>) {
+    let mut i = 0;
+    while i < items.len() {
+        match &items[i] {
+            syn::Item::Macro(item_macro)
+                if let Some((kind, idents)) = parse_workspace_lint_directive(&item_macro.mac) =>
+            {
+                let line = item_macro.mac.path.segments[0].ident.span().start().line as u32;
+                // Step past consecutive directive macros to find the next
+                // non-directive item (if any).
+                let mut next = i + 1;
+                while next < items.len() {
+                    if let syn::Item::Macro(m) = &items[next]
+                        && parse_workspace_lint_directive(&m.mac).is_some()
+                    {
+                        next += 1;
+                        continue;
+                    }
+                    break;
+                }
+                let mut anchors = vec![SilenceAnchor::File {
+                    file: rel.to_path_buf(),
+                }];
+                if let Some(item_line) = items.get(next).and_then(item_anchor_line) {
+                    anchors.push(SilenceAnchor::Line {
+                        file: rel.to_path_buf(),
+                        line: item_line,
+                    });
+                }
+                for ident in idents {
+                    let lint = ident.to_string().replace('_', "-");
+                    for anchor in &anchors {
+                        out.push(Directive {
+                            kind,
+                            lint: lint.clone(),
+                            anchor: anchor.clone(),
+                            origin: DirectiveOrigin {
+                                file: rel.to_path_buf(),
+                                line: line.max(1),
+                            },
+                        });
+                    }
+                }
+            }
+            syn::Item::Mod(item_mod) => {
+                if let Some((_, inner)) = &item_mod.content {
+                    walk_items(inner, rel, out);
+                }
+            }
+            _ => {}
         }
-        // Tokens form an arg list of comma-separated idents (the macro's
-        // strict pattern). Parse as a Punctuated<Ident, Comma>.
-        let parsed: Result<syn::punctuated::Punctuated<syn::Ident, syn::Token![,]>, _> =
-            mac.parse_body_with(syn::punctuated::Punctuated::parse_terminated);
-        let Ok(idents) = parsed else { return };
-        let line = mac.path.segments[0].ident.span().start().line as u32;
-        for ident in idents {
-            let lint = ident.to_string().replace('_', "-");
-            self.directives.push(Directive {
-                kind,
-                lint,
-                anchor: SilenceAnchor::File {
-                    file: self.rel.clone(),
-                },
-                origin: DirectiveOrigin {
-                    file: self.rel.clone(),
-                    line: line.max(1),
-                },
-            });
-        }
+        i += 1;
     }
+}
+
+fn parse_workspace_lint_directive(
+    mac: &syn::Macro,
+) -> Option<(
+    DirectiveKind,
+    syn::punctuated::Punctuated<syn::Ident, syn::Token![,]>,
+)> {
+    let last = mac.path.segments.last()?.ident.to_string();
+    let kind = match last.as_str() {
+        "allow" => DirectiveKind::Allow,
+        "expect" => DirectiveKind::Expect,
+        _ => return None,
+    };
+    let path_str = mac
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::");
+    if !path_str.starts_with("workspace_lint") && path_str != "allow" && path_str != "expect" {
+        return None;
+    }
+    let parsed: Result<syn::punctuated::Punctuated<syn::Ident, syn::Token![,]>, _> =
+        mac.parse_body_with(syn::punctuated::Punctuated::parse_terminated);
+    parsed.ok().map(|idents| (kind, idents))
+}
+
+/// Return the start line of a syn::Item if we can compute it (covers the
+/// kinds users would meaningfully prefix with a directive). Returns `None`
+/// for items whose syn type doesn't expose an ident with a span.
+fn item_anchor_line(item: &syn::Item) -> Option<u32> {
+    use syn::spanned::Spanned;
+    Some(match item {
+        syn::Item::Fn(i) => i.sig.ident.span().start().line as u32,
+        syn::Item::Struct(i) => i.ident.span().start().line as u32,
+        syn::Item::Enum(i) => i.ident.span().start().line as u32,
+        syn::Item::Union(i) => i.ident.span().start().line as u32,
+        syn::Item::Trait(i) => i.ident.span().start().line as u32,
+        syn::Item::Type(i) => i.ident.span().start().line as u32,
+        syn::Item::Const(i) => i.ident.span().start().line as u32,
+        syn::Item::Static(i) => i.ident.span().start().line as u32,
+        syn::Item::Mod(i) => i.ident.span().start().line as u32,
+        syn::Item::Impl(i) => i.span().start().line as u32,
+        _ => return None,
+    })
 }
 
 fn scan_text(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
