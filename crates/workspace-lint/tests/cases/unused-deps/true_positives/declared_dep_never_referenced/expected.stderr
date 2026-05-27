@@ -1,4 +1,4 @@
-warning: 1 possibly unused dependency in <TMP>/crates/consumer/Cargo.toml
+error: 1 possibly unused dependency in <TMP>/crates/consumer/Cargo.toml
  --> <TMP>/crates/consumer/Cargo.toml:1:1
   |
   = help: [dependencies] provider
@@ -9,6 +9,6 @@ help: if intentional, silence with:
   |
 1 + # workspace-lint: allow(unused-deps)
   |
-  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+  = note: `#[deny(workspace_lint::unused_deps)]` on by default
 
-workspace-lint: generated 1 warning
+workspace-lint: generated 1 error

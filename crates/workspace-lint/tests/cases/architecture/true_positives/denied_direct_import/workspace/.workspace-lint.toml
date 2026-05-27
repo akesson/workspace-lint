@@ -4,3 +4,6 @@ from = ["apps-*"]
 deny = ["data-models::internal::**"]
 reason = "Apps must not depend on data internals; use data-models::api instead"
 suggest = "import via data-models::api::*"
+
+[lints]
+architecture = "deny"

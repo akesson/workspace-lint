@@ -1,4 +1,4 @@
-warning: `mod ghost` declared but no `ghost.rs` or `ghost/mod.rs` found
+error: `mod ghost` declared but no `ghost.rs` or `ghost/mod.rs` found
  --> <TMP>/crates/demo/src/lib.rs:2:1
   |
   = help: create `ghost.rs` adjacent to this file, or `ghost/mod.rs`, or add a `#[path = "…"]` attribute
@@ -7,6 +7,6 @@ help: if intentional, silence with:
   |
 2 + workspace_lint::allow!(module_tree);
   |
-  = note: `#[warn(workspace_lint::module_tree)]` on by default
+  = note: `#[deny(workspace_lint::module_tree)]` on by default
 
-workspace-lint: generated 1 warning
+workspace-lint: generated 1 error

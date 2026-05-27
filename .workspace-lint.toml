@@ -7,6 +7,21 @@
 
 schema = 2
 
+# Lint levels. After B2 (the `[lints]` table), only `Deny`-level findings
+# flip the exit code. The dogfood test asserts a clean run, so anything we
+# want to keep enforced must be listed here as `deny`. Lints we want to see
+# but not break on stay `warn` (the implicit default).
+[lints]
+centralized-deps = "deny"
+crate-size = "deny"
+file-size = "deny"
+freshness = "deny"
+cli-crate-version = "deny"
+unused-deps = "deny"
+unused-pub = "deny"
+stale-expect = "deny"
+stale-git-index = "deny"
+
 [checks]
 centralized-deps = true
 

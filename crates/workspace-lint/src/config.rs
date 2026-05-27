@@ -17,6 +17,14 @@ pub struct Config {
     pub schema: Option<u32>,
     #[serde(default)]
     pub checks: Checks,
+    /// Per-lint severity overrides. Keys are short kebab names
+    /// (`file-size`, `unused-pub`, …); values are `"warn"` or `"deny"`.
+    /// Diagnostics whose lint name appears here have their level rewritten
+    /// after collection; the process exits with code 1 iff any `Deny`-level
+    /// diagnostic survives suppression. Lints absent from this table keep
+    /// the default `Warn` level set by each check.
+    #[serde(default)]
+    pub lints: LintLevels,
     #[serde(default, rename = "file-size")]
     pub file_size: Option<FileSizeConfig>,
     #[serde(default, rename = "crate-size")]
@@ -35,6 +43,22 @@ pub struct Config {
     pub architecture: Option<ArchitectureConfig>,
     #[serde(default)]
     pub macros: Option<MacrosConfig>,
+}
+
+/// Per-lint severity overrides parsed from the `[lints]` TOML table.
+/// Keyed by [`crate::lints::LintId::short`] (kebab form, without the
+/// `workspace-lint::` prefix).
+#[derive(Deserialize, Default, Debug)]
+#[serde(transparent)]
+pub struct LintLevels(pub std::collections::HashMap<String, crate::diagnostic::Level>);
+
+impl LintLevels {
+    /// Lookup the configured level for a full lint ID (e.g.
+    /// `workspace-lint::file-size`). Returns `None` if not configured.
+    pub fn level_for(&self, lint_id: &str) -> Option<crate::diagnostic::Level> {
+        let short = lint_id.strip_prefix("workspace-lint::").unwrap_or(lint_id);
+        self.0.get(short).copied()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -245,6 +269,23 @@ pub fn load() -> Config {
 
     warn_on_old_schema(&config);
     config
+}
+
+/// Best-effort variant of [`load`]: returns `None` (instead of exiting) if
+/// no config file is present. Used by single-check runs that should still
+/// honor a project's `[lints]` levels when available but mustn't fail when
+/// invoked outside a configured workspace.
+pub fn try_load() -> Option<Config> {
+    let standalone_exists = Path::new(STANDALONE_FILE).exists();
+    let cargo_metadata = read_cargo_metadata();
+    match (standalone_exists, cargo_metadata) {
+        (true, None) => {
+            let content = fs::read_to_string(STANDALONE_FILE).ok()?;
+            toml::from_str(&content).ok()
+        }
+        (false, Some(raw)) => toml::from_str(&raw).ok(),
+        _ => None,
+    }
 }
 
 /// Emit a one-time stderr warning if the user's config predates the schema

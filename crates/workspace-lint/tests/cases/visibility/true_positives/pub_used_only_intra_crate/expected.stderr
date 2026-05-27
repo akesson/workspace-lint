@@ -1,4 +1,4 @@
-warning: pub `internal_only` in crate `lib_a` is not referenced from any other workspace crate
+error: pub `internal_only` in crate `lib_a` is not referenced from any other workspace crate
  --> <TMP>/crates/lib-a/src/lib.rs:4:1
   |
   = help: tighten to `pub(crate)` if this item is intentionally crate-internal
@@ -7,6 +7,6 @@ help: if intentional, silence with:
   |
 4 + workspace_lint::allow!(visibility);
   |
-  = note: `#[warn(workspace_lint::visibility)]` on by default
+  = note: `#[deny(workspace_lint::visibility)]` on by default
 
-workspace-lint: generated 1 warning
+workspace-lint: generated 1 error

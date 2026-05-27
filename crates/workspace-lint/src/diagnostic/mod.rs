@@ -11,11 +11,13 @@ pub mod builder;
 pub mod render;
 
 /// Stable identifier for a single check. Format: `workspace-lint::<kebab-name>`.
-pub type LintId = &'static str;
-
 /// Severity. Drives both the displayed `warning:`/`error:` prefix and the
 /// process exit code (a single `Deny`-level diagnostic flips exit to 1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// Deserializable from `"warn"`/`"deny"` so config's `[lints]` table can
+/// override per-diagnostic levels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Level {
     Warn,
     Deny,

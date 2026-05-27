@@ -1,0 +1,4 @@
+schema = 2
+
+[lints]
+centralized-deps = "deny"
