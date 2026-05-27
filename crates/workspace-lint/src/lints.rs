@@ -1,30 +1,129 @@
 //! Central registry of every lint name workspace-lint can emit.
 //!
 //! Used as a single source of truth by:
-//! - [`messages::scenarios`](crate::messages::scenarios) — every lint must
-//!   have at least one scenario for the human/json/github snapshot tests.
+//! - [`messages::scenarios`](crate::messages::scenarios) — every variant in
+//!   [`LintId::ALL`] must have at least one scenario for the human/json/github
+//!   snapshot tests.
 //! - `tests/lint_coverage.rs` — the missing-test-files guard.
-//! - `tests/fix_fixtures.rs` — the `FIXTURABLE_LINTS` subset must each have
+//! - `tests/fix_fixtures.rs` — the [`FIXTURABLE_LINTS`] subset must each have
 //!   a paired `tests/fixtures/fix__<short>/` directory.
+//! - The `[lints]` config table (see [`crate::config`]) — every key is a
+//!   short name of a known [`LintId`].
 //!
 //! When you add a new lint:
-//! 1. Add its `pub const LINT: &str` next to the check.
-//! 2. Reference it here in `ALL_LINTS`.
-//! 3. Add a scenario in [`crate::messages::scenarios`].
-//! 4. Either add a `fix__<short>` fixture and put the lint in
+//! 1. Add a [`LintId`] variant and wire its `id`/`short` arms.
+//! 2. Include it in [`LintId::ALL`].
+//! 3. Replace the per-module `pub const LINT: &str = ...` with a reference
+//!    to [`LintId::<variant>::id()`].
+//! 4. Add a scenario in [`crate::messages::scenarios`].
+//! 5. Either add a `fix__<short>` fixture and put the variant in
 //!    [`FIXTURABLE_LINTS`], or document why it's omitted in the comment
 //!    block below.
 
+/// Compile-time identity for every lint workspace-lint can emit.
+///
+/// The exhaustive match in [`Self::id`] makes adding a variant without
+/// wiring its lint-ID string a compile error. The runtime registry tests in
+/// this module check that [`Self::ALL`] also stays in sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LintId {
+    Architecture,
+    CentralizedDeps,
+    CliCrateVersion,
+    CrateSize,
+    FeatureDrift,
+    FileSize,
+    Freshness,
+    ModuleTree,
+    StaleExpect,
+    StaleGitIndex,
+    UnusedDeps,
+    UnusedPub,
+    Visibility,
+}
+
+impl LintId {
+    /// Every lint variant, in stable (alphabetical-by-id) order. Order is
+    /// asserted by [`tests::all_ids_are_sorted`].
+    pub const ALL: &'static [LintId] = &[
+        LintId::Architecture,
+        LintId::CentralizedDeps,
+        LintId::CliCrateVersion,
+        LintId::CrateSize,
+        LintId::FeatureDrift,
+        LintId::FileSize,
+        LintId::Freshness,
+        LintId::ModuleTree,
+        LintId::StaleExpect,
+        LintId::StaleGitIndex,
+        LintId::UnusedDeps,
+        LintId::UnusedPub,
+        LintId::Visibility,
+    ];
+
+    /// The full `workspace-lint::<short>` identifier emitted in diagnostics
+    /// and accepted by config / suppression directives.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Architecture => "workspace-lint::architecture",
+            Self::CentralizedDeps => "workspace-lint::centralized-deps",
+            Self::CliCrateVersion => "workspace-lint::cli-crate-version",
+            Self::CrateSize => "workspace-lint::crate-size",
+            Self::FeatureDrift => "workspace-lint::feature-drift",
+            Self::FileSize => "workspace-lint::file-size",
+            Self::Freshness => "workspace-lint::freshness",
+            Self::ModuleTree => "workspace-lint::module-tree",
+            Self::StaleExpect => "workspace-lint::stale-expect",
+            Self::StaleGitIndex => "workspace-lint::stale-git-index",
+            Self::UnusedDeps => "workspace-lint::unused-deps",
+            Self::UnusedPub => "workspace-lint::unused-pub",
+            Self::Visibility => "workspace-lint::visibility",
+        }
+    }
+
+    /// Short kebab name (no `workspace-lint::` prefix). Used in fixture
+    /// directory names, comment directives, and the `[lints]` config table.
+    pub const fn short(self) -> &'static str {
+        match self {
+            Self::Architecture => "architecture",
+            Self::CentralizedDeps => "centralized-deps",
+            Self::CliCrateVersion => "cli-crate-version",
+            Self::CrateSize => "crate-size",
+            Self::FeatureDrift => "feature-drift",
+            Self::FileSize => "file-size",
+            Self::Freshness => "freshness",
+            Self::ModuleTree => "module-tree",
+            Self::StaleExpect => "stale-expect",
+            Self::StaleGitIndex => "stale-git-index",
+            Self::UnusedDeps => "unused-deps",
+            Self::UnusedPub => "unused-pub",
+            Self::Visibility => "visibility",
+        }
+    }
+
+    /// Reverse of [`Self::short`]: look up a variant by its kebab name.
+    /// Returns `None` for unknown names.
+    pub fn from_short(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|v| v.short() == s)
+    }
+}
+
+/// Compatibility view: every lint's full ID in stable order. Equivalent to
+/// `LintId::ALL.iter().map(|l| l.id())`.
 pub const ALL_LINTS: &[&str] = &[
-    crate::centralized_deps::LINT,
-    crate::cli_crate_version::LINT,
-    crate::crate_size::LINT,
-    crate::file_size::LINT,
-    crate::freshness::LINT,
-    crate::suppress::STALE_EXPECT_LINT,
-    crate::file_size::STALE_GIT_INDEX_LINT,
-    crate::unused_deps::LINT,
-    crate::unused_pub::LINT,
+    LintId::Architecture.id(),
+    LintId::CentralizedDeps.id(),
+    LintId::CliCrateVersion.id(),
+    LintId::CrateSize.id(),
+    LintId::FeatureDrift.id(),
+    LintId::FileSize.id(),
+    LintId::Freshness.id(),
+    LintId::ModuleTree.id(),
+    LintId::StaleExpect.id(),
+    LintId::StaleGitIndex.id(),
+    LintId::UnusedDeps.id(),
+    LintId::UnusedPub.id(),
+    LintId::Visibility.id(),
 ];
 
 /// Lints with a paired `tests/fixtures/fix__<short>/` directory exercised
@@ -43,11 +142,14 @@ pub const ALL_LINTS: &[&str] = &[
 ///   `--fix` mechanics.
 /// - `stale-git-index`: needs `git ls-files` to disagree with on-disk
 ///   state, which requires an in-tempdir git init/add/rm dance.
+/// - `architecture`, `feature-drift`, `module-tree`, `visibility`: the
+///   structural fixes for these are planned but not yet implemented; once
+///   `--fix` rewrites them through rustfix, add fixtures and move them up.
 pub const FIXTURABLE_LINTS: &[&str] = &[
-    crate::centralized_deps::LINT,
-    crate::crate_size::LINT,
-    crate::file_size::LINT,
-    crate::unused_deps::LINT,
+    LintId::CentralizedDeps.id(),
+    LintId::CrateSize.id(),
+    LintId::FileSize.id(),
+    LintId::UnusedDeps.id(),
 ];
 
 /// Strip the `workspace-lint::` prefix so callers can derive the short
@@ -64,9 +166,9 @@ mod tests {
     // --- registry invariants ---
 
     #[test]
-    fn all_lints_is_sorted() {
+    fn all_ids_are_sorted() {
         // Stable order is a property the coverage tests rely on for clear
-        // error messages. Keep this list alphabetized.
+        // error messages.
         let mut sorted = ALL_LINTS.to_vec();
         sorted.sort();
         assert_eq!(sorted, ALL_LINTS);
@@ -91,6 +193,12 @@ mod tests {
     }
 
     #[test]
+    fn lintid_all_matches_all_lints() {
+        let from_enum: Vec<&str> = LintId::ALL.iter().map(|l| l.id()).collect();
+        assert_eq!(from_enum, ALL_LINTS);
+    }
+
+    #[test]
     fn fixturable_is_subset_of_all() {
         for lint in FIXTURABLE_LINTS {
             assert!(
@@ -106,7 +214,16 @@ mod tests {
         assert_eq!(short("no-prefix"), "no-prefix");
     }
 
-    // --- missing-test-files guard (lesson 3 from clippy) ---
+    #[test]
+    fn lintid_short_round_trips() {
+        for &id in LintId::ALL {
+            assert_eq!(LintId::from_short(id.short()), Some(id));
+            // Short name also matches what `short()` would return on the id.
+            assert_eq!(short(id.id()), id.short());
+        }
+    }
+
+    // --- missing-test-files guard ---
 
     #[test]
     fn every_lint_has_a_message_scenario() {

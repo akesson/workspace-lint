@@ -37,7 +37,7 @@ use crate::diagnostic::Diagnostic;
 use crate::diagnostic::Level;
 use crate::diagnostic::builder::at_crate;
 
-pub const LINT: &str = "workspace-lint::architecture";
+pub const LINT: &str = crate::lints::LintId::Architecture.id();
 
 pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();

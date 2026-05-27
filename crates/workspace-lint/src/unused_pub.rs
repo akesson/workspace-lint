@@ -25,7 +25,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::{HashMap, HashSet};
 use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace};
 
-pub const LINT: &str = "workspace-lint::unused-pub";
+pub const LINT: &str = crate::lints::LintId::UnusedPub.id();
 
 pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     if config.effective_on_ci_only() && std::env::var("CI").is_err() {

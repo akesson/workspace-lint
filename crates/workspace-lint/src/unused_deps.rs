@@ -27,7 +27,7 @@ use fs_err as fs;
 use std::collections::{BTreeMap, HashSet};
 use syn_workspace::Workspace;
 
-pub const LINT: &str = "workspace-lint::unused-deps";
+pub const LINT: &str = crate::lints::LintId::UnusedDeps.id();
 
 pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();

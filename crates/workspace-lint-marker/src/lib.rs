@@ -91,6 +91,7 @@ mod tests {
         crate::allow!(module_tree);
         crate::allow!(stale_git_index);
         crate::allow!(feature_drift);
+        crate::allow!(visibility);
     }
 
     #[test]
@@ -114,6 +115,7 @@ mod tests {
         crate::expect!(module_tree);
         crate::expect!(stale_git_index);
         crate::expect!(feature_drift);
+        crate::expect!(visibility);
     }
 
     #[test]

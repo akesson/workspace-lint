@@ -8,7 +8,7 @@
 use crate::diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
 use crate::directives::{Directive, DirectiveKind};
 
-pub const STALE_EXPECT_LINT: &str = "workspace-lint::stale-expect";
+pub const STALE_EXPECT_LINT: &str = crate::lints::LintId::StaleExpect.id();
 
 /// Lookback window (in lines) when matching a TOML/Markdown comment
 /// directive to a diagnostic on a nearby line. A directive on line 5 will

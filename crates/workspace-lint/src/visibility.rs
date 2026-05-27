@@ -24,7 +24,7 @@ use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace}
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_line;
 
-pub const LINT: &str = "workspace-lint::visibility";
+pub const LINT: &str = crate::lints::LintId::Visibility.id();
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let cross_crate_refs = collect_cross_crate_refs(workspace);

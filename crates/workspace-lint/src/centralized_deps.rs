@@ -4,7 +4,7 @@ use fs_err as fs;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-pub const LINT: &str = "workspace-lint::centralized-deps";
+pub const LINT: &str = crate::lints::LintId::CentralizedDeps.id();
 
 pub fn check() -> Vec<Diagnostic> {
     let root_toml = fs::read_to_string("Cargo.toml").unwrap_or_else(|e| {

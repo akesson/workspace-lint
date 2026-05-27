@@ -5,7 +5,7 @@ use fs_err as fs;
 use regex::Regex;
 use std::process::Command;
 
-pub const LINT: &str = "workspace-lint::cli-crate-version";
+pub const LINT: &str = crate::lints::LintId::CliCrateVersion.id();
 
 pub fn check(config: &CliCrateVersionConfig) -> Vec<Diagnostic> {
     let lock_packages = read_lock_packages();

@@ -5,7 +5,7 @@ use globset::Glob;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub const LINT: &str = "workspace-lint::freshness";
+pub const LINT: &str = crate::lints::LintId::Freshness.id();
 
 pub fn check(config: &FreshnessConfig) -> Vec<Diagnostic> {
     if std::env::var("CI").is_ok() {
