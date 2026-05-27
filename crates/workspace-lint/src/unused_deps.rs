@@ -23,6 +23,7 @@
 use crate::config::UnusedDepsConfig;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
+use crate::diagnostic::{Applicability, Span, Suggestion};
 use fs_err as fs;
 use std::collections::{BTreeMap, HashSet};
 use syn_workspace::Workspace;
@@ -79,8 +80,11 @@ pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic
             ),
             krate.manifest_dir.clone(),
         );
-        for label in unused {
-            builder = builder.help(label);
+        for entry in &unused {
+            builder = builder.help(format!("[{}] {}", entry.section, entry.original_name));
+            if let Some(s) = build_delete_suggestion(&content, &cargo_path, entry) {
+                builder = builder.suggestion(s);
+            }
         }
         diagnostics.push(
             builder
@@ -92,6 +96,40 @@ pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic
     }
 
     diagnostics
+}
+
+/// Build a `MachineApplicable` suggestion that deletes the entire dep
+/// line (including the trailing newline) from the Cargo.toml. Returns
+/// `None` if the dep entry spans multiple lines (inline table that wraps)
+/// — those are deferred to manual deletion to avoid swallowing the table
+/// body.
+fn build_delete_suggestion(
+    content: &str,
+    cargo_path: &std::path::Path,
+    entry: &DepEntry,
+) -> Option<Suggestion> {
+    let (line_start, line_end, line_number) =
+        crate::centralized_deps::locate_dep_entry(content, &entry.section, &entry.original_name)?;
+    // Extend the end-of-line to include the trailing newline so we don't
+    // leave a stray blank line behind.
+    let mut end = line_end;
+    if end < content.len() && content.as_bytes()[end] == b'\n' {
+        end += 1;
+    }
+    Some(Suggestion {
+        span: Span {
+            file: cargo_path.to_path_buf(),
+            line_start: line_number,
+            line_end: line_number,
+            col_start: 1,
+            col_end: 1,
+            byte_start: line_start as u32,
+            byte_end: end as u32,
+        },
+        message: format!("remove unused dependency `{}`", entry.original_name),
+        replacement: String::new(),
+        applicability: Applicability::MachineApplicable,
+    })
 }
 
 /// All distinct crate names that appear as the leading segment of any
@@ -108,8 +146,21 @@ fn referenced_crate_names(workspace: &Workspace, krate: &syn_workspace::Crate) -
         .unwrap_or_default()
 }
 
-fn collect_deps_from_toml(doc: &toml::Value, ignore: &[String]) -> BTreeMap<String, Vec<String>> {
-    let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+/// One dep entry seen in a member crate's Cargo.toml. Tracks the exact
+/// section and original name so D3's structural fix can locate the line
+/// for deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DepEntry {
+    pub(crate) section: String,
+    /// Name as written in the Cargo.toml (may contain hyphens).
+    pub(crate) original_name: String,
+    /// Cargo-form name with hyphens replaced by underscores. Matches the
+    /// crate-name segment in `ResolvedPath`.
+    pub(crate) normalized_name: String,
+}
+
+fn collect_deps_from_toml(doc: &toml::Value, ignore: &[String]) -> BTreeMap<String, Vec<DepEntry>> {
+    let mut deps: BTreeMap<String, Vec<DepEntry>> = BTreeMap::new();
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(table) = doc.get(section).and_then(|v| v.as_table()) {
             for name in table.keys() {
@@ -117,9 +168,11 @@ fn collect_deps_from_toml(doc: &toml::Value, ignore: &[String]) -> BTreeMap<Stri
                     continue;
                 }
                 let normalized = name.replace('-', "_");
-                deps.entry(normalized)
-                    .or_default()
-                    .push(format!("[{section}] {name}"));
+                deps.entry(normalized.clone()).or_default().push(DepEntry {
+                    section: section.to_string(),
+                    original_name: name.clone(),
+                    normalized_name: normalized,
+                });
             }
         }
     }
@@ -127,12 +180,12 @@ fn collect_deps_from_toml(doc: &toml::Value, ignore: &[String]) -> BTreeMap<Stri
 }
 
 fn find_unused_deps(
-    deps: BTreeMap<String, Vec<String>>,
+    deps: BTreeMap<String, Vec<DepEntry>>,
     referenced: &HashSet<String>,
-) -> Vec<String> {
+) -> Vec<DepEntry> {
     deps.into_iter()
         .filter(|(normalized, _)| !referenced.contains(normalized))
-        .flat_map(|(_, labels)| labels)
+        .flat_map(|(_, entries)| entries)
         .collect()
 }
 
@@ -196,17 +249,25 @@ mod tests {
         .unwrap();
         let deps = collect_deps_from_toml(&doc, &[]);
         assert_eq!(deps.len(), 3);
-        assert!(deps["a"][0].contains("[dependencies]"));
-        assert!(deps["b"][0].contains("[dev-dependencies]"));
-        assert!(deps["c"][0].contains("[build-dependencies]"));
+        assert_eq!(deps["a"][0].section, "dependencies");
+        assert_eq!(deps["b"][0].section, "dev-dependencies");
+        assert_eq!(deps["c"][0].section, "build-dependencies");
     }
 
     // --- find_unused_deps ---
 
+    fn entry(section: &str, name: &str) -> DepEntry {
+        DepEntry {
+            section: section.into(),
+            original_name: name.into(),
+            normalized_name: name.replace('-', "_"),
+        }
+    }
+
     #[test]
     fn find_unused_all_used() {
         let mut deps = BTreeMap::new();
-        deps.insert("serde".into(), vec!["[dependencies] serde".into()]);
+        deps.insert("serde".into(), vec![entry("dependencies", "serde")]);
         let mut refs = HashSet::new();
         refs.insert("serde".into());
         assert!(find_unused_deps(deps, &refs).is_empty());
@@ -215,20 +276,20 @@ mod tests {
     #[test]
     fn find_unused_none_used() {
         let mut deps = BTreeMap::new();
-        deps.insert("serde".into(), vec!["[dependencies] serde".into()]);
+        deps.insert("serde".into(), vec![entry("dependencies", "serde")]);
         let refs = HashSet::new();
         let unused = find_unused_deps(deps, &refs);
-        assert_eq!(unused, vec!["[dependencies] serde"]);
+        assert_eq!(unused, vec![entry("dependencies", "serde")]);
     }
 
     #[test]
     fn find_unused_partial() {
         let mut deps = BTreeMap::new();
-        deps.insert("serde".into(), vec!["[dependencies] serde".into()]);
-        deps.insert("rand".into(), vec!["[dependencies] rand".into()]);
+        deps.insert("serde".into(), vec![entry("dependencies", "serde")]);
+        deps.insert("rand".into(), vec![entry("dependencies", "rand")]);
         let mut refs = HashSet::new();
         refs.insert("serde".into());
         let unused = find_unused_deps(deps, &refs);
-        assert_eq!(unused, vec!["[dependencies] rand"]);
+        assert_eq!(unused, vec![entry("dependencies", "rand")]);
     }
 }

@@ -1,29 +1,31 @@
 //! Apply `MachineApplicable` suggestions to source files.
 //!
-//! Currently the only `MachineApplicable` suggestion every diagnostic carries
-//! is the *silence* directive — the `workspace_lint::allow!(...)` macro or
-//! `# workspace-lint: allow(...)` comment that suppresses the diagnostic.
-//! Running `workspace-lint --fix` therefore stamps a silence directive next
-//! to every diagnostic that fired.
+//! Two suggestion kinds drive `--fix`:
 //!
-//! This is intentional and dangerous: it doesn't *resolve* the underlying
-//! issues, it silences them. Per-lint structural fixes (rewriting
-//! `serde = "1"` → `serde = { workspace = true }`, deleting unused dep
-//! lines, tightening `pub` → `pub(crate)`) belong on top of this scaffold
-//! and aren't wired in yet.
+//! 1. **Silence directives** (`byte_start == byte_end == 0`): the
+//!    `workspace_lint::allow!(...)` macro or `# workspace-lint: allow(...)`
+//!    comment that suppresses the diagnostic. Inserted at the start of the
+//!    diagnostic's line; safe even when multiple diagnostics target the
+//!    same file (sorted by descending offset before applying).
+//! 2. **Structural rewrites** (`byte_start < byte_end`): byte-range
+//!    replacements emitted by lints with a `MachineApplicable` real fix —
+//!    centralized-deps (`serde = "1"` → `serde = { workspace = true }`),
+//!    unused-deps (line deletion), visibility (`pub` → `pub(crate)`),
+//!    unused-pub (delete-or-tighten). The lint's `check` function attaches
+//!    these to `Diagnostic.suggestions`; the silence suggestion remains
+//!    available as a fallback the user can paste manually.
 //!
 //! Correctness properties this module maintains:
 //!
-//! - **Idempotent.** Running `--fix` twice doesn't duplicate directives.
-//!   [`already_silenced`] checks the relevant window before inserting.
-//! - **Deterministic ordering.** When multiple diagnostics target the same
-//!   file, suggestions are applied by descending *computed* offset, with
-//!   `line_start` as the tiebreaker. Raw `byte_start` ties on synthetic
-//!   anchors and would be unstable.
-//! - **Loud on the replacement-range trap.** If any Suggestion ever arrives
-//!   with `byte_start != byte_end`, [`apply_to_file`] panics with a clear
-//!   message. The simple `insert_str` strategy here is correct only for
-//!   pure insertions; structural fixes must go through `rustfix` instead.
+//! - **Idempotent.** Running `--fix` twice doesn't duplicate directives
+//!   ([`already_silenced`]) and structural rewrites are no-ops when the
+//!   resulting text is identical.
+//! - **Deterministic ordering.** Suggestions targeting one file are
+//!   applied by descending *computed* offset, with `line_start` as the
+//!   tiebreaker. Earlier offsets stay valid as we mutate from the back.
+//! - **Structural fixes preempt silence.** When a diagnostic has both a
+//!   structural suggestion and a silence suggestion, only the structural
+//!   one is applied — fixing the issue removes the need to silence it.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -32,23 +34,46 @@ use fs_err as fs;
 
 use crate::diagnostic::{Applicability, Diagnostic, Suggestion};
 
-/// Apply machine-applicable silence suggestions to disk. Returns the count
-/// of files modified.
+/// Apply machine-applicable suggestions to disk. Returns the count of
+/// files modified.
 pub fn run(diagnostics: &[Diagnostic]) -> usize {
-    let candidates: Vec<Suggestion> = diagnostics
-        .iter()
-        .filter_map(|d| d.silence_suggestion())
-        .filter(|s| s.applicability == Applicability::MachineApplicable)
-        .collect();
+    // For each diagnostic, prefer a structural fix over the silence
+    // fallback. If both exist, fixing makes silencing unnecessary.
+    let mut structural_count = 0usize;
+    let mut silence_count = 0usize;
+    let mut candidates: Vec<Suggestion> = Vec::new();
+    for d in diagnostics {
+        let structural: Vec<&Suggestion> = d
+            .suggestions
+            .iter()
+            .filter(|s| s.applicability == Applicability::MachineApplicable)
+            .collect();
+        if !structural.is_empty() {
+            structural_count += structural.len();
+            candidates.extend(structural.into_iter().cloned());
+        } else if let Some(silence) = d.silence_suggestion()
+            && silence.applicability == Applicability::MachineApplicable
+        {
+            silence_count += 1;
+            candidates.push(silence);
+        }
+    }
 
-    eprintln!(
-        "workspace-lint --fix: stamping silence directives next to {} diagnostic{}",
-        candidates.len(),
-        if candidates.len() == 1 { "" } else { "s" }
-    );
-    eprintln!(
-        "  note: this silences the lints. To resolve the underlying issues, edit them by hand."
-    );
+    if structural_count > 0 {
+        eprintln!(
+            "workspace-lint --fix: applying {structural_count} structural fix{}",
+            if structural_count == 1 { "" } else { "es" }
+        );
+    }
+    if silence_count > 0 {
+        eprintln!(
+            "workspace-lint --fix: stamping silence directives next to {silence_count} remaining diagnostic{}",
+            if silence_count == 1 { "" } else { "s" }
+        );
+        eprintln!(
+            "  note: silence directives suppress without resolving. Prefer per-lint fixes when available."
+        );
+    }
 
     let mut by_file: BTreeMap<std::path::PathBuf, Vec<Suggestion>> = BTreeMap::new();
     for s in candidates {
@@ -81,29 +106,21 @@ fn apply_to_file(
     path: &std::path::Path,
     suggestions: &[Suggestion],
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    // Replacement-range trap. The simple insert_str strategy is correct only
-    // for pure insertions. Structural fixes with byte_start != byte_end must
-    // route through rustfix (already in Cargo.toml for that follow-up).
-    for s in suggestions {
-        assert!(
-            s.span.byte_start == s.span.byte_end,
-            "fix::apply_to_file received a replacement-range Suggestion \
-             ({}:{}..{}), but only insertions are supported. \
-             Wire rustfix before emitting non-insertion suggestions.",
-            s.span.file.display(),
-            s.span.byte_start,
-            s.span.byte_end
-        );
-    }
-
     let source = fs::read_to_string(path)?;
     let eol = detect_eol(&source);
 
-    // Filter out suggestions whose directive already appears in the relevant
-    // window — running `--fix` twice should be a no-op.
+    // Filter idempotency: silence-style insertions skip if the marker is
+    // already in the window. Structural replacements skip if applying them
+    // would produce the same bytes that are already in the file.
     let to_apply: Vec<&Suggestion> = suggestions
         .iter()
-        .filter(|s| !already_silenced(&source, s))
+        .filter(|s| {
+            if is_insertion(s) {
+                !already_silenced(&source, s)
+            } else {
+                !already_replaced(&source, s)
+            }
+        })
         .collect();
 
     if to_apply.is_empty() {
@@ -122,10 +139,39 @@ fn apply_to_file(
             .then(b.1.span.line_start.cmp(&a.1.span.line_start))
     });
 
+    // Reject overlapping replacement ranges — the apply order assumes
+    // non-overlapping mutations from the tail of the file forward. If a
+    // lint ever emits overlapping suggestions for one file, the right
+    // call is to fix the lint, not silently corrupt the file.
+    let mut replacements: Vec<(usize, usize)> = ordered
+        .iter()
+        .filter(|(_, s)| !is_insertion(s))
+        .map(|(_, s)| (s.span.byte_start as usize, s.span.byte_end as usize))
+        .collect();
+    replacements.sort();
+    for w in replacements.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        if a.1 > b.0 {
+            return Err(format!(
+                "{} has overlapping fix suggestions ({:?} and {:?}); refusing to apply",
+                path.display(),
+                a,
+                b,
+            )
+            .into());
+        }
+    }
+
     let mut fixed = source.clone();
     for (offset, s) in ordered {
         let replacement = normalize_eol(&s.replacement, eol);
-        fixed.insert_str(offset, &replacement);
+        if is_insertion(s) {
+            fixed.insert_str(offset, &replacement);
+        } else {
+            let start = s.span.byte_start as usize;
+            let end = s.span.byte_end as usize;
+            fixed.replace_range(start..end, &replacement);
+        }
     }
 
     if fixed != source {
@@ -134,6 +180,21 @@ fn apply_to_file(
     } else {
         Ok(false)
     }
+}
+
+fn is_insertion(s: &Suggestion) -> bool {
+    s.span.byte_start == s.span.byte_end
+}
+
+/// `true` if applying this byte-range replacement would be a no-op (the
+/// file already contains the desired text at the target range).
+fn already_replaced(source: &str, s: &Suggestion) -> bool {
+    let start = s.span.byte_start as usize;
+    let end = s.span.byte_end as usize;
+    if start >= source.len() || end > source.len() || start > end {
+        return false;
+    }
+    source[start..end] == s.replacement
 }
 
 /// `true` if the suggestion's replacement text already appears in the part
@@ -399,26 +460,56 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "replacement-range Suggestion")]
-    fn fix_panics_on_replacement_range() {
+    fn fix_applies_byte_range_replacement() {
         let tmp = TempDir::new().unwrap();
         let p = tmp.path().join("lib.rs");
         std::fs::write(&p, "pub fn x() {}\n").unwrap();
-        let bad = Suggestion {
+        let s = Suggestion {
             span: Span {
                 file: p.clone(),
                 line_start: 1,
                 line_end: 1,
                 col_start: 1,
-                col_end: 5,
+                col_end: 4,
                 byte_start: 0,
-                byte_end: 4, // not equal to byte_start → trap
+                byte_end: 3, // replace just "pub"
             },
-            message: "structural".into(),
-            replacement: "pub(crate) fn x() {}\n".into(),
+            message: "tighten".into(),
+            replacement: "pub(crate)".into(),
             applicability: Applicability::MachineApplicable,
         };
-        let _ = apply_to_file(&p, std::slice::from_ref(&bad));
+        let modified = apply_to_file(&p, std::slice::from_ref(&s)).unwrap();
+        assert!(modified);
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "pub(crate) fn x() {}\n"
+        );
+    }
+
+    #[test]
+    fn fix_rejects_overlapping_replacements() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("lib.rs");
+        std::fs::write(&p, "pub fn x() {}\n").unwrap();
+        let a = Suggestion {
+            span: Span {
+                file: p.clone(),
+                line_start: 1,
+                line_end: 1,
+                col_start: 1,
+                col_end: 4,
+                byte_start: 0,
+                byte_end: 5,
+            },
+            message: "a".into(),
+            replacement: "X".into(),
+            applicability: Applicability::MachineApplicable,
+        };
+        let mut b = a.clone();
+        b.span.byte_start = 3;
+        b.span.byte_end = 8;
+        let err = apply_to_file(&p, &[a, b]).unwrap_err();
+        assert!(err.to_string().contains("overlapping"));
     }
 
     #[test]

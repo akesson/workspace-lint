@@ -1,7 +1,5 @@
-# workspace-lint: allow(unused-deps)
 [package]
 name = "alpha"
 version = "0.1.0"
 
 [dependencies]
-rand = "0.8"
