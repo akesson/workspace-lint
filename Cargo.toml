@@ -4,6 +4,7 @@ members = ["crates/*"]
 
 [workspace.dependencies]
 # Bin deps
+cargo_metadata = "0.22"
 clap = { version = "4", features = ["derive"] }
 fs-err = "3"
 globset = "0.4"
