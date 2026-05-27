@@ -31,7 +31,6 @@ mod suppress;
 mod unused_deps;
 mod unused_pub;
 mod visibility;
-mod workspace;
 
 use clap::Parser;
 use std::io::{self, IsTerminal};

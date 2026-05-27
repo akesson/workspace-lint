@@ -1,8 +1,8 @@
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
-use crate::workspace;
 use fs_err as fs;
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 pub const LINT: &str = "workspace-lint::centralized-deps";
 
@@ -18,18 +18,22 @@ pub fn check() -> Vec<Diagnostic> {
     });
 
     let workspace_dep_names = extract_workspace_dep_names(&root);
-    let member_patterns = workspace::extract_member_patterns(&root);
-    let member_dirs = workspace::expand_member_patterns(&member_patterns);
+    // Member discovery via cargo_metadata so we honor `exclude`,
+    // `default-members`, and complex glob patterns. The previous hand-rolled
+    // `crates/*` expansion silently diverged from cargo on those edge cases.
+    let member_manifests = syn_workspace::member_manifests(Path::new(".")).unwrap_or_else(|e| {
+        eprintln!("failed to discover workspace members: {e}");
+        std::process::exit(1);
+    });
 
     let mut diagnostics = Vec::new();
 
-    for dir in &member_dirs {
-        let cargo_path = dir.join("Cargo.toml");
+    for cargo_path in &member_manifests {
         if !cargo_path.exists() {
             continue;
         }
 
-        let content = fs::read_to_string(&cargo_path).unwrap_or_else(|e| {
+        let content = fs::read_to_string(cargo_path).unwrap_or_else(|e| {
             eprintln!("failed to read {}: {e}", cargo_path.display());
             std::process::exit(1);
         });
@@ -52,6 +56,10 @@ pub fn check() -> Vec<Diagnostic> {
         }
 
         if !crate_errors.is_empty() {
+            let dir: PathBuf = cargo_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| Path::new(".").to_path_buf());
             let n = crate_errors.len();
             let mut builder = at_crate(
                 LINT,
@@ -60,7 +68,7 @@ pub fn check() -> Vec<Diagnostic> {
                     if n == 1 { "y" } else { "ies" },
                     cargo_path.display()
                 ),
-                dir.clone(),
+                dir,
             );
             for err in crate_errors {
                 builder = builder.help(err);

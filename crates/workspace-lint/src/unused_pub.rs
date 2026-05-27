@@ -44,7 +44,7 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
     let mut diagnostics = Vec::new();
 
     for krate in workspace.members() {
-        let crate_code = krate.name.replace('-', "_");
+        let crate_code = krate.code_name();
         if config
             .exclude_crates
             .iter()

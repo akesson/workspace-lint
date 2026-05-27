@@ -11,11 +11,36 @@
 //! `is_workspace_member` so external crates can be added later without an
 //! API change.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cargo_metadata::MetadataCommand;
 
 use crate::resolve::{Crate, Error, Result, module_tree};
+
+/// Run `cargo metadata` on the workspace at `root` and return the absolute
+/// path of every workspace member's `Cargo.toml`.
+///
+/// Honors cargo's full workspace semantics: `members`, glob patterns,
+/// `exclude`, and `default-members`. Use this in preference to parsing the
+/// root `Cargo.toml`'s `members` table by hand — the by-hand version
+/// silently diverges on `exclude` and non-trivial globs.
+pub fn member_manifests(root: &Path) -> Result<Vec<PathBuf>> {
+    let manifest = root.join("Cargo.toml");
+    let metadata = MetadataCommand::new()
+        .manifest_path(&manifest)
+        .exec()
+        .map_err(|e| {
+            Error::Manifest(format!(
+                "cargo metadata failed for {}: {e}",
+                manifest.display()
+            ))
+        })?;
+    Ok(metadata
+        .workspace_packages()
+        .into_iter()
+        .map(|pkg| pkg.manifest_path.as_std_path().to_path_buf())
+        .collect())
+}
 
 /// Run `cargo metadata` on the workspace at `root` and return one [`Crate`]
 /// per workspace member.

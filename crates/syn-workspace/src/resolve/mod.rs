@@ -261,6 +261,17 @@ impl Crate {
         self.items()
             .filter(|i| matches!(i.visibility, Visibility::Public))
     }
+
+    /// In-code form of the crate name (Cargo hyphens replaced with `_`).
+    ///
+    /// `Crate::name` is the Cargo form (`data-models`), but source code
+    /// references the crate as `data_models::...` — most cross-crate
+    /// resolver indexes (e.g. [`Workspace::references_from_crate`]) key on
+    /// the code form, so callers should prefer this method over hand-rolling
+    /// `name.replace('-', "_")`.
+    pub fn code_name(&self) -> String {
+        self.name.replace('-', "_")
+    }
 }
 
 /// The top-level resolved workspace.
@@ -382,8 +393,10 @@ impl Workspace {
     /// Set of canonical paths referenced from the named crate's regular
     /// code (function bodies, type signatures, etc.) plus its `use`
     /// declarations. `crate_name` is the in-code form (hyphens replaced
-    /// with `_`); use [`Crate::name`] then `replace('-', "_")` or query by
-    /// the code name directly.
+    /// with `_`).
+    ///
+    /// Prefer [`Workspace::references_from_crate`] when you have a
+    /// [`Crate`] in hand — it handles the code-name conversion for you.
     ///
     /// Returns `None` if the crate is not a workspace member or the
     /// resolver couldn't load source for it.
@@ -392,6 +405,15 @@ impl Workspace {
         crate_name: &str,
     ) -> Option<&std::collections::HashSet<ResolvedPath>> {
         self.references_by_crate.get(crate_name)
+    }
+
+    /// Same as [`Workspace::references_from`] but takes a [`Crate`] and
+    /// applies the Cargo→code name conversion automatically.
+    pub fn references_from_crate(
+        &self,
+        krate: &Crate,
+    ) -> Option<&std::collections::HashSet<ResolvedPath>> {
+        self.references_by_crate.get(&krate.code_name())
     }
 
     /// Iterator over every `(referring_crate, canonical_path)` reference

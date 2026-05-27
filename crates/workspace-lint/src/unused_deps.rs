@@ -58,9 +58,7 @@ pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic
             continue;
         }
 
-        // The resolver indexes by the in-code crate name (hyphens replaced).
-        let code_name = krate.name.replace('-', "_");
-        let referenced_crates = referenced_crate_names(workspace, &code_name);
+        let referenced_crates = referenced_crate_names(workspace, krate);
 
         let unused = find_unused_deps(deps, &referenced_crates);
         if unused.is_empty() {
@@ -97,11 +95,11 @@ pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic
 }
 
 /// All distinct crate names that appear as the leading segment of any
-/// reference from `crate_code_name`. Names come back in in-code form
-/// (underscores), matching the dep keys after their own normalization.
-fn referenced_crate_names(workspace: &Workspace, crate_code_name: &str) -> HashSet<String> {
+/// reference from `krate`. Names come back in in-code form (underscores),
+/// matching the dep keys after their own normalization.
+fn referenced_crate_names(workspace: &Workspace, krate: &syn_workspace::Crate) -> HashSet<String> {
     workspace
-        .references_from(crate_code_name)
+        .references_from_crate(krate)
         .map(|refs| {
             refs.iter()
                 .filter_map(|p| p.crate_name().map(String::from))

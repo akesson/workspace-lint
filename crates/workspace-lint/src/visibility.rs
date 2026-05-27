@@ -38,7 +38,7 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         if !krate.is_workspace_member {
             continue;
         }
-        let code_name = krate.name.replace('-', "_");
+        let code_name = krate.code_name();
         collect_overpermissive(
             &krate.root,
             &code_name,
