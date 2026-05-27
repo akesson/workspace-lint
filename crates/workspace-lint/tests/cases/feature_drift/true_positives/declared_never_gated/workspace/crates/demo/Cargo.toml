@@ -1,0 +1,11 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Declared but no `#[cfg(feature = "extra")]` references in source.
+extra = []

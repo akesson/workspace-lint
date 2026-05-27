@@ -12,6 +12,7 @@ mod crate_size;
 mod diagnostic;
 mod directives;
 mod expand;
+mod feature_drift;
 mod file_size;
 mod fix;
 mod freshness;
@@ -138,7 +139,8 @@ fn run_all_from_config() -> Vec<Diagnostic> {
         .as_ref()
         .is_some_and(|ac| !ac.rules.is_empty());
     let module_tree_needed = config.checks.module_tree;
-    if (architecture_needed || module_tree_needed)
+    let feature_drift_needed = config.checks.feature_drift;
+    if (architecture_needed || module_tree_needed || feature_drift_needed)
         && let Ok(ws) = syn_workspace::Workspace::load(".")
     {
         if architecture_needed && let Some(ref ac) = config.architecture {
@@ -146,6 +148,9 @@ fn run_all_from_config() -> Vec<Diagnostic> {
         }
         if module_tree_needed {
             diagnostics.extend(module_tree::check(&ws));
+        }
+        if feature_drift_needed {
+            diagnostics.extend(feature_drift::check(&ws));
         }
     }
 

@@ -41,6 +41,8 @@ pub struct Checks {
     pub centralized_deps: bool,
     #[serde(default, rename = "module-tree")]
     pub module_tree: bool,
+    #[serde(default, rename = "feature-drift")]
+    pub feature_drift: bool,
 }
 
 #[derive(Deserialize)]

@@ -26,13 +26,14 @@ use super::{
     BrokenModDecl, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan, Visibility,
 };
 
-/// Items, submodules, `use` bindings, and broken `mod` declarations
-/// collected while walking a module.
+/// Items, submodules, `use` bindings, broken `mod` declarations, and
+/// `#[cfg(feature = "...")]` references collected while walking a module.
 struct ModuleContents {
     items: Vec<Item>,
     submodules: Vec<Module>,
     use_bindings: Vec<UseBinding>,
     broken_mod_decls: Vec<BrokenModDecl>,
+    cfg_features: Vec<String>,
 }
 
 /// Build a fully-populated module tree for one crate.
@@ -60,6 +61,7 @@ fn empty_root(crate_name: &str) -> Module {
         submodules: Vec::new(),
         use_bindings: Vec::new(),
         broken_mod_decls: Vec::new(),
+        cfg_features: Vec::new(),
         file: None,
     }
 }
@@ -84,6 +86,7 @@ fn build_module_from_file(
         submodules: contents.submodules,
         use_bindings: contents.use_bindings,
         broken_mod_decls: contents.broken_mod_decls,
+        cfg_features: contents.cfg_features,
         file: Some(file_path.to_path_buf()),
     })
 }
@@ -105,8 +108,13 @@ fn collect_module_contents(
     let mut submodules = Vec::new();
     let mut use_bindings = Vec::new();
     let mut broken_mod_decls = Vec::new();
+    let mut cfg_features: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for syn_item in syn_items {
+        for attr in item_attrs(syn_item) {
+            extract_cfg_feature_names(attr, &mut cfg_features);
+        }
+
         if let syn::Item::Use(item_use) = syn_item {
             let mut bindings = use_tree::bindings_from_use(item_use, &scope);
             for binding in &mut bindings {
@@ -134,6 +142,7 @@ fn collect_module_contents(
                     submodules: inline.submodules,
                     use_bindings: inline.use_bindings,
                     broken_mod_decls: inline.broken_mod_decls,
+                    cfg_features: inline.cfg_features,
                     file: Some(parent_file.to_path_buf()),
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, item_mod)? {
@@ -159,7 +168,77 @@ fn collect_module_contents(
         submodules,
         use_bindings,
         broken_mod_decls,
+        cfg_features: cfg_features.into_iter().collect(),
     })
+}
+
+/// Outer attributes of a syn item. Returned as a slice so the caller can
+/// iterate without copying.
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Enum(i) => &i.attrs,
+        syn::Item::ExternCrate(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::ForeignMod(i) => &i.attrs,
+        syn::Item::Impl(i) => &i.attrs,
+        syn::Item::Macro(i) => &i.attrs,
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        syn::Item::Struct(i) => &i.attrs,
+        syn::Item::Trait(i) => &i.attrs,
+        syn::Item::TraitAlias(i) => &i.attrs,
+        syn::Item::Type(i) => &i.attrs,
+        syn::Item::Union(i) => &i.attrs,
+        syn::Item::Use(i) => &i.attrs,
+        syn::Item::Verbatim(_) => &[],
+        _ => &[],
+    }
+}
+
+/// Scan an attribute for `feature = "name"` predicates inside `cfg(...)` or
+/// `cfg_attr(<cfg>, ...)`. Predicates can be nested under `any(...)`,
+/// `all(...)`, and `not(...)`; we recurse through the meta-list tree.
+fn extract_cfg_feature_names(attr: &syn::Attribute, out: &mut std::collections::BTreeSet<String>) {
+    let ident = match attr.path().get_ident() {
+        Some(i) => i.to_string(),
+        None => return,
+    };
+    if ident != "cfg" && ident != "cfg_attr" {
+        return;
+    }
+    // Parse the inner meta. cfg(...) and cfg_attr(<cfg>, ...) both start
+    // with a Meta::List whose nested predicate-tree we scan.
+    if let syn::Meta::List(list) = &attr.meta {
+        scan_cfg_tokens(list.tokens.clone(), out);
+    }
+}
+
+fn scan_cfg_tokens(tokens: proc_macro2::TokenStream, out: &mut std::collections::BTreeSet<String>) {
+    let iter: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    let mut i = 0;
+    while i < iter.len() {
+        if let proc_macro2::TokenTree::Ident(id) = &iter[i] {
+            let name = id.to_string();
+            if name == "feature"
+                && let Some(proc_macro2::TokenTree::Punct(p)) = iter.get(i + 1)
+                && p.as_char() == '='
+                && let Some(proc_macro2::TokenTree::Literal(lit)) = iter.get(i + 2)
+            {
+                let s = lit.to_string();
+                let trimmed = s.trim_matches('"');
+                if !trimmed.is_empty() {
+                    out.insert(trimmed.to_string());
+                }
+                i += 3;
+                continue;
+            }
+        }
+        if let proc_macro2::TokenTree::Group(g) = &iter[i] {
+            scan_cfg_tokens(g.stream(), out);
+        }
+        i += 1;
+    }
 }
 
 /// Names declared at a module's lexical scope — function/struct/enum/etc.

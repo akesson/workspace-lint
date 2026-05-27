@@ -1,0 +1,12 @@
+warning: feature `extra` is declared in `[features]` but never gated in source
+ --> <TMP>/crates/demo/Cargo.toml:1:1
+  |
+  = help: either gate code with `#[cfg(feature = "extra")]` or remove `extra` from `[features]`
+  = note: declared in `demo/Cargo.toml`
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: allow(feature-drift)
+  |
+  = note: `#[warn(workspace_lint::feature_drift)]` on by default
+
+workspace-lint: generated 1 warning

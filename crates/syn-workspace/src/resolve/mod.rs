@@ -203,6 +203,11 @@ pub struct Module {
     /// couldn't be resolved (and which don't have an inline body). Drives
     /// the module-tree integrity lint.
     pub broken_mod_decls: Vec<BrokenModDecl>,
+    /// Feature names referenced via `#[cfg(feature = "...")]` or
+    /// `#[cfg_attr(feature = "...", ...)]` on any item declared in this
+    /// module (outer attributes only — feature gates inside function
+    /// bodies are not extracted here). Deduped, sorted lexicographically.
+    pub cfg_features: Vec<String>,
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
@@ -219,6 +224,10 @@ pub struct Crate {
     pub is_workspace_member: bool,
     /// Crate-root module. For external crates, this is an empty placeholder.
     pub root: Module,
+    /// Cargo `[features]` declared in this crate's `Cargo.toml`. Includes
+    /// `default` if defined. Activation lists are not retained — the
+    /// feature-drift lint only cares about which feature names exist.
+    pub declared_features: Vec<String>,
 }
 
 impl Crate {
@@ -348,6 +357,7 @@ mod tests {
             submodules,
             use_bindings: Vec::new(),
             broken_mod_decls: Vec::new(),
+            cfg_features: Vec::new(),
             file: None,
         }
     }
@@ -385,6 +395,7 @@ mod tests {
             manifest_dir: PathBuf::new(),
             is_workspace_member: true,
             root,
+            declared_features: Vec::new(),
         };
         let pub_names: Vec<_> = krate.pub_items().map(|i| i.name.clone()).collect();
         assert_eq!(pub_names, vec!["visible"]);

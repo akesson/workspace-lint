@@ -53,12 +53,16 @@ pub fn load_members(root: &Path) -> Result<Vec<Crate>> {
         let code_name = pkg.name.replace('-', "_");
         let root_module = module_tree::build_crate_tree(&manifest_dir, &code_name)?;
 
+        let mut declared_features: Vec<String> = pkg.features.keys().cloned().collect();
+        declared_features.sort();
+
         out.push(Crate {
             name: pkg.name.to_string(),
             version: pkg.version.to_string(),
             manifest_dir,
             is_workspace_member: true,
             root: root_module,
+            declared_features,
         });
     }
 

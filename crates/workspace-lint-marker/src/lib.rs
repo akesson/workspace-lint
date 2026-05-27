@@ -36,6 +36,7 @@ macro_rules! allow {
     (architecture) => {};
     (module_tree) => {};
     (stale_git_index) => {};
+    (feature_drift) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
         $crate::allow!($first);
         $crate::allow!($($rest),+);
@@ -62,6 +63,7 @@ macro_rules! expect {
     (architecture) => {};
     (module_tree) => {};
     (stale_git_index) => {};
+    (feature_drift) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
         $crate::expect!($first);
         $crate::expect!($($rest),+);
@@ -86,6 +88,7 @@ mod tests {
         crate::allow!(architecture);
         crate::allow!(module_tree);
         crate::allow!(stale_git_index);
+        crate::allow!(feature_drift);
     }
 
     #[test]
@@ -108,6 +111,7 @@ mod tests {
         crate::expect!(architecture);
         crate::expect!(module_tree);
         crate::expect!(stale_git_index);
+        crate::expect!(feature_drift);
     }
 
     #[test]

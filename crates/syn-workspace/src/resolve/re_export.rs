@@ -116,6 +116,7 @@ mod tests {
             submodules,
             use_bindings,
             broken_mod_decls: Vec::new(),
+            cfg_features: Vec::new(),
             file: None,
         }
     }
@@ -127,6 +128,7 @@ mod tests {
             manifest_dir: std::path::PathBuf::new(),
             is_workspace_member: true,
             root,
+            declared_features: Vec::new(),
         }
     }
 
