@@ -118,6 +118,10 @@ pub enum CheckRule {
         /// Path patterns to exclude (matched against source file paths)
         #[arg(long)]
         exclude_paths: Vec<String>,
+        /// Suppress the "only used inside the crate" variant — only report
+        /// items with zero references anywhere.
+        #[arg(long, default_value_t = false)]
+        suppress_intra_crate: bool,
     },
 }
 
@@ -179,6 +183,7 @@ impl CheckRule {
         allowlist: Vec<String>,
         kinds: Vec<String>,
         exclude_paths: Vec<String>,
+        suppress_intra_crate: bool,
     ) -> UnusedPubConfig {
         UnusedPubConfig {
             on_ci_only: Some(on_ci_only),
@@ -186,6 +191,7 @@ impl CheckRule {
             allowlist,
             kinds,
             exclude_paths,
+            suppress_intra_crate,
         }
     }
 

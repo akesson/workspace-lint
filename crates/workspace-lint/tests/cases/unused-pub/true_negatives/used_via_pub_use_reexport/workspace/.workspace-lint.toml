@@ -1,0 +1,4 @@
+schema = 2
+
+[unused-pub]
+on-ci-only = false

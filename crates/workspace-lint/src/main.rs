@@ -246,6 +246,7 @@ fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
             allowlist,
             kinds,
             exclude_paths,
+            suppress_intra_crate,
         } => {
             let config = CheckRule::into_unused_pub_config(
                 on_ci_only,
@@ -253,6 +254,7 @@ fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
                 allowlist,
                 kinds,
                 exclude_paths,
+                suppress_intra_crate,
             );
             let ws = syn_workspace::Workspace::load(".").unwrap_or_else(|e| {
                 eprintln!("failed to load workspace for unused-pub: {e}");

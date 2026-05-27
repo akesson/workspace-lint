@@ -60,6 +60,7 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
             kind_filter.as_ref(),
             allowlist.as_ref(),
             exclude_paths.as_ref(),
+            config.suppress_intra_crate,
             &mut diagnostics,
         );
     }
@@ -92,6 +93,7 @@ fn collect_findings(
     kind_filter: Option<&HashSet<ItemKind>>,
     allowlist: Option<&GlobSet>,
     exclude_paths: Option<&GlobSet>,
+    suppress_intra_crate: bool,
     out: &mut Vec<Diagnostic>,
 ) {
     for item in &module.items {
@@ -140,6 +142,10 @@ fn collect_findings(
             .map(|set| set.contains(crate_code))
             .unwrap_or(false);
 
+        if used_same_crate && suppress_intra_crate {
+            continue;
+        }
+
         let Some(span) = &item.source else {
             continue;
         };
@@ -182,6 +188,7 @@ fn collect_findings(
             kind_filter,
             allowlist,
             exclude_paths,
+            suppress_intra_crate,
             out,
         );
     }

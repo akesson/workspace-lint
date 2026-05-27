@@ -61,9 +61,13 @@ pub struct ResolveContext<'a> {
     _phantom: std::marker::PhantomData<&'a ()>,
 }
 
-#[cfg(test)]
 impl ResolveContext<'_> {
-    pub(super) fn placeholder() -> Self {
+    /// V1 stub context. Plugins that need scope/use-bindings to canonicalize
+    /// single-segment paths won't be able to with this — they must emit
+    /// multi-segment refs that the caller resolves through
+    /// [`crate::resolve::module_tree`]'s scope rules. The full context is
+    /// added in v2.
+    pub(crate) fn placeholder() -> Self {
         Self {
             _phantom: std::marker::PhantomData,
         }

@@ -157,8 +157,10 @@ fn collect_module_contents(
                 );
             } else if matches_known_plugin_macro(&item_macro.mac.path) {
                 // Plugin path: known macro invocations (e.g. `quote!`,
-                // `quote::quote!`) get their bodies scanned the same way
-                // `macro_rules!` bodies are.
+                // `quote::quote!`, `rsx!`) get their bodies scanned the same
+                // way `macro_rules!` bodies are. Token scanning is the
+                // baseline — it catches every multi-segment path inside
+                // groups.
                 extract_macro_paths(
                     item_macro.mac.tokens.clone(),
                     &scope,
@@ -166,6 +168,21 @@ fn collect_module_contents(
                     parent_canonical,
                     &mut macro_refs,
                 );
+                // Structured plugin dispatch: parsers that walk a macro's
+                // real AST (currently `DioxusRsxParser`) may surface refs
+                // the token scanner misses or misclassifies. Each raw path
+                // gets canonicalized through `resolve_macro_path` so the
+                // resolver's scope rules apply.
+                for raw in dispatch_plugin_refs(&item_macro.mac.path, &item_macro.mac.tokens) {
+                    if let Some(canonical) = resolve_macro_path(
+                        raw.segments().to_vec(),
+                        &scope,
+                        &sibling_names,
+                        parent_canonical,
+                    ) {
+                        macro_refs.insert(canonical);
+                    }
+                }
             }
         }
 
@@ -293,10 +310,9 @@ fn is_expansion_uses(path: &syn::Path) -> bool {
 /// Match invocations of macros that have a built-in
 /// [`crate::plugins::MacroBodyParser`] — currently `quote!`/`quote::quote!`
 /// and `rsx!`/`dioxus::rsx!`. Future built-ins (e.g. `serde_json::json!`)
-/// extend this matcher. The actual extraction reuses [`extract_macro_paths`]
-/// since v1 plugins all reduce to the same token-scan operation; richer
-/// AST-based extraction lives in the plugin's `references()` method and
-/// will be wired in v2 dispatch.
+/// extend this matcher. Every match triggers [`extract_macro_paths`] (the
+/// token-scan baseline) plus [`dispatch_plugin_refs`] for any parser whose
+/// `references()` walks a real AST.
 fn matches_known_plugin_macro(path: &syn::Path) -> bool {
     let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     match segs.as_slice() {
@@ -306,6 +322,36 @@ fn matches_known_plugin_macro(path: &syn::Path) -> bool {
         }
         _ => false,
     }
+}
+
+/// Dispatch a macro invocation to the built-in plugin registry and collect
+/// any references the matching parser emits. Returned paths are in raw
+/// (uncanonicalized) form — the caller runs them through
+/// [`resolve_macro_path`] to apply scope rules.
+///
+/// This is what makes [`crate::plugins::MacroBodyParser::references`] a real
+/// extension point in v1 (the trait method is no longer just a stub). Each
+/// invocation iterates `builtin_parsers()` — the call site is bounded by
+/// macro-invocation density in source, not item count, so the per-call
+/// allocation is fine in practice.
+fn dispatch_plugin_refs(
+    macro_path: &syn::Path,
+    body: &proc_macro2::TokenStream,
+) -> Vec<ResolvedPath> {
+    let segs: Vec<String> = macro_path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    let mp = ResolvedPath::new(segs);
+    let cx = crate::plugins::ResolveContext::placeholder();
+    let mut out: Vec<ResolvedPath> = Vec::new();
+    for parser in crate::plugins::builtin_parsers() {
+        if parser.matches(&mp) {
+            out.extend(parser.references(body, &cx));
+        }
+    }
+    out
 }
 
 /// Scan a `macro_rules!` body token-stream for path-like sequences
@@ -489,9 +535,13 @@ fn resolve_code_path(
                     prefix.extend(scope.module_path.iter().cloned());
                     started = true;
                 }
-                if prefix.len() > 1 {
-                    prefix.pop();
+                if prefix.len() <= 1 {
+                    // `super` at the crate root is illegal Rust (rustc
+                    // errors). Drop the reference rather than fabricate
+                    // `crate::remaining` and silently mis-attribute it.
+                    return None;
                 }
+                prefix.pop();
                 iter.next();
             }
             _ => break,
@@ -564,9 +614,10 @@ fn resolve_macro_path(
                     prefix.extend(scope.module_path.iter().cloned());
                     started = true;
                 }
-                if prefix.len() > 1 {
-                    prefix.pop();
+                if prefix.len() <= 1 {
+                    return None;
                 }
+                prefix.pop();
                 iter.next();
             }
             _ => break,
