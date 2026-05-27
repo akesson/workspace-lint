@@ -164,12 +164,19 @@ pub struct Item {
     pub source: Option<SourceSpan>,
 }
 
-/// File location of a syntactic element.
+/// File location of a syntactic element. The byte range covers the entire
+/// item (from its first attribute or `pub` keyword through the closing brace
+/// or semicolon) when available — `byte_start == byte_end == 0` means the
+/// span is synthetic or the resolver couldn't determine it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSpan {
     pub file: PathBuf,
     pub line: u32,
     pub column: u32,
+    /// Inclusive byte offset of the span start within the file.
+    pub byte_start: u32,
+    /// Exclusive byte offset of the span end within the file.
+    pub byte_end: u32,
 }
 
 /// A `mod foo;` declaration that didn't resolve to a backing file.

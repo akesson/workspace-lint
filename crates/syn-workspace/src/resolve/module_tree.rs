@@ -651,7 +651,34 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
     None
 }
 
+/// Byte range of a `proc_macro2::Span`. The `span-locations` feature on
+/// `proc-macro2` exposes `byte_range`, which returns inclusive-exclusive
+/// offsets within the source file. Returns `(0, 0)` for synthetic spans
+/// (where `byte_range` is empty), preserving the "no span available"
+/// sentinel that callers downstream of the diagnostic builder check.
+fn byte_range(span: proc_macro2::Span) -> (u32, u32) {
+    let r = span.byte_range();
+    (r.start as u32, r.end as u32)
+}
+
 fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path) -> Option<Item> {
+    // Full span of the item, used by structural-fix lints (visibility,
+    // unused-pub) that need to know the byte range to rewrite.
+    let full_span = match item {
+        syn::Item::Fn(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Struct(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Enum(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Union(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Trait(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Type(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Const(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Static(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Mod(i) => Some(syn::spanned::Spanned::span(i)),
+        syn::Item::Macro(i) => Some(syn::spanned::Spanned::span(i)),
+        _ => None,
+    };
+    let (byte_start, byte_end) = full_span.map(byte_range).unwrap_or((0, 0));
+
     let (name, kind, vis, line) = match item {
         syn::Item::Fn(i) => (
             i.sig.ident.to_string(),
@@ -730,6 +757,8 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
                     file: file.to_path_buf(),
                     line: i.ident.as_ref().unwrap().span().start().line as u32,
                     column: 1,
+                    byte_start,
+                    byte_end,
                 }),
             });
         }
@@ -747,6 +776,8 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
             file: file.to_path_buf(),
             line: line as u32,
             column: 1,
+            byte_start,
+            byte_end,
         }),
     })
 }
