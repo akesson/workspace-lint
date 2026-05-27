@@ -28,6 +28,10 @@ pub const LINT: &str = "workspace-lint::visibility";
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let cross_crate_refs = collect_cross_crate_refs(workspace);
+    // Items reachable via macro-rules expansion should not be flagged even
+    // if no `use` binding mentions them — Layer 1 autodetect collects
+    // these workspace-wide.
+    let macro_refs = workspace.macro_implicit_refs();
     let mut diagnostics = Vec::new();
 
     for krate in workspace.crates() {
@@ -35,7 +39,13 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             continue;
         }
         let code_name = krate.name.replace('-', "_");
-        collect_overpermissive(&krate.root, &code_name, &cross_crate_refs, &mut diagnostics);
+        collect_overpermissive(
+            &krate.root,
+            &code_name,
+            &cross_crate_refs,
+            &macro_refs,
+            &mut diagnostics,
+        );
     }
     diagnostics
 }
@@ -44,6 +54,7 @@ fn collect_overpermissive(
     module: &Module,
     crate_code_name: &str,
     cross_crate_refs: &HashSet<ResolvedPath>,
+    macro_refs: &HashSet<ResolvedPath>,
     out: &mut Vec<Diagnostic>,
 ) {
     for item in &module.items {
@@ -61,6 +72,12 @@ fn collect_overpermissive(
         if cross_crate_refs.contains(&item.canonical) {
             continue;
         }
+        // Suppress if the item is reachable through any workspace
+        // `macro_rules!` body — that's a real cross-crate use channel
+        // even if no explicit `use` binding points at it.
+        if macro_refs.contains(&item.canonical) {
+            continue;
+        }
 
         let Some(span) = &item.source else {
             continue;
@@ -72,12 +89,12 @@ fn collect_overpermissive(
         out.push(
             at_line(LINT, msg, span.file.clone(), span.line)
                 .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
-                .note("references via fully-qualified path, trait dispatch, or macro bodies are not tracked")
+                .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked")
                 .build(),
         );
     }
     for sub in &module.submodules {
-        collect_overpermissive(sub, crate_code_name, cross_crate_refs, out);
+        collect_overpermissive(sub, crate_code_name, cross_crate_refs, macro_refs, out);
     }
 }
 

@@ -117,6 +117,7 @@ mod tests {
             use_bindings,
             broken_mod_decls: Vec::new(),
             cfg_features: Vec::new(),
+            macro_implicit_refs: Vec::new(),
             file: None,
         }
     }

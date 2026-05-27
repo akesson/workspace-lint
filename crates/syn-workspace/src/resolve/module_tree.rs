@@ -26,14 +26,16 @@ use super::{
     BrokenModDecl, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan, Visibility,
 };
 
-/// Items, submodules, `use` bindings, broken `mod` declarations, and
-/// `#[cfg(feature = "...")]` references collected while walking a module.
+/// Items, submodules, `use` bindings, broken `mod` declarations,
+/// `#[cfg(feature = "...")]` references, and `macro_rules!`-body implicit
+/// references collected while walking a module.
 struct ModuleContents {
     items: Vec<Item>,
     submodules: Vec<Module>,
     use_bindings: Vec<UseBinding>,
     broken_mod_decls: Vec<BrokenModDecl>,
     cfg_features: Vec<String>,
+    macro_implicit_refs: Vec<ResolvedPath>,
 }
 
 /// Build a fully-populated module tree for one crate.
@@ -62,6 +64,7 @@ fn empty_root(crate_name: &str) -> Module {
         use_bindings: Vec::new(),
         broken_mod_decls: Vec::new(),
         cfg_features: Vec::new(),
+        macro_implicit_refs: Vec::new(),
         file: None,
     }
 }
@@ -87,6 +90,7 @@ fn build_module_from_file(
         use_bindings: contents.use_bindings,
         broken_mod_decls: contents.broken_mod_decls,
         cfg_features: contents.cfg_features,
+        macro_implicit_refs: contents.macro_implicit_refs,
         file: Some(file_path.to_path_buf()),
     })
 }
@@ -109,6 +113,8 @@ fn collect_module_contents(
     let mut use_bindings = Vec::new();
     let mut broken_mod_decls = Vec::new();
     let mut cfg_features: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut macro_refs: std::collections::BTreeSet<ResolvedPath> =
+        std::collections::BTreeSet::new();
 
     for syn_item in syn_items {
         for attr in item_attrs(syn_item) {
@@ -121,6 +127,20 @@ fn collect_module_contents(
                 rewrite_sibling_local(binding, parent_canonical, &sibling_names);
             }
             use_bindings.extend(bindings);
+        }
+
+        if let syn::Item::Macro(item_macro) = syn_item
+            && item_macro.ident.is_some()
+        {
+            // `macro_rules!` definition — scan its body for path-like
+            // token sequences and resolve through this scope.
+            extract_macro_paths(
+                item_macro.mac.tokens.clone(),
+                &scope,
+                &sibling_names,
+                parent_canonical,
+                &mut macro_refs,
+            );
         }
 
         if let Some(named) = item_from_syn(syn_item, parent_canonical, parent_file) {
@@ -143,6 +163,7 @@ fn collect_module_contents(
                     use_bindings: inline.use_bindings,
                     broken_mod_decls: inline.broken_mod_decls,
                     cfg_features: inline.cfg_features,
+                    macro_implicit_refs: inline.macro_implicit_refs,
                     file: Some(parent_file.to_path_buf()),
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, item_mod)? {
@@ -169,7 +190,120 @@ fn collect_module_contents(
         use_bindings,
         broken_mod_decls,
         cfg_features: cfg_features.into_iter().collect(),
+        macro_implicit_refs: macro_refs.into_iter().collect(),
     })
+}
+
+/// Scan a `macro_rules!` body token-stream for path-like sequences
+/// (`Ident :: Ident (:: Ident)*`) and resolve each through the macro's
+/// defining scope. Records the resolved path in `out`.
+///
+/// This is intentionally conservative: any multi-segment path that *looks*
+/// like a reference becomes one. Single identifiers (parameter names,
+/// keywords, etc.) are dropped. Token groups are recursed into so paths
+/// inside nested braces/parens/brackets are still seen.
+fn extract_macro_paths(
+    tokens: proc_macro2::TokenStream,
+    scope: &use_tree::Scope,
+    siblings: &HashSet<String>,
+    parent_canonical: &ResolvedPath,
+    out: &mut std::collections::BTreeSet<ResolvedPath>,
+) {
+    let stream: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    let mut i = 0;
+    while i < stream.len() {
+        if let proc_macro2::TokenTree::Ident(first) = &stream[i] {
+            let mut segments = vec![first.to_string()];
+            let mut j = i + 1;
+            while let (Some(p1), Some(p2), Some(next)) =
+                (stream.get(j), stream.get(j + 1), stream.get(j + 2))
+            {
+                let (proc_macro2::TokenTree::Punct(a), proc_macro2::TokenTree::Punct(b)) = (p1, p2)
+                else {
+                    break;
+                };
+                if a.as_char() != ':' || b.as_char() != ':' {
+                    break;
+                }
+                let proc_macro2::TokenTree::Ident(next) = next else {
+                    break;
+                };
+                segments.push(next.to_string());
+                j += 3;
+            }
+            if segments.len() >= 2
+                && let Some(resolved) =
+                    resolve_macro_path(segments, scope, siblings, parent_canonical)
+            {
+                out.insert(resolved);
+            }
+            i = j;
+            continue;
+        }
+        if let proc_macro2::TokenTree::Group(group) = &stream[i] {
+            extract_macro_paths(group.stream(), scope, siblings, parent_canonical, out);
+        }
+        i += 1;
+    }
+}
+
+/// Apply the same crate/self/super peeling and sibling-prepend logic that
+/// `bindings_from_use` does, but for a path extracted from raw tokens.
+fn resolve_macro_path(
+    segments: Vec<String>,
+    scope: &use_tree::Scope,
+    siblings: &HashSet<String>,
+    parent_canonical: &ResolvedPath,
+) -> Option<ResolvedPath> {
+    if segments.is_empty() {
+        return None;
+    }
+    let mut iter = segments.into_iter().peekable();
+    let mut prefix: Vec<String> = Vec::new();
+    let mut started = false;
+
+    while let Some(head) = iter.peek().cloned() {
+        match head.as_str() {
+            "crate" if !started => {
+                prefix.clear();
+                prefix.push(scope.crate_name.clone());
+                started = true;
+                iter.next();
+            }
+            "self" if !started => {
+                prefix.clear();
+                prefix.push(scope.crate_name.clone());
+                prefix.extend(scope.module_path.iter().cloned());
+                started = true;
+                iter.next();
+            }
+            "super" => {
+                if !started {
+                    prefix.push(scope.crate_name.clone());
+                    prefix.extend(scope.module_path.iter().cloned());
+                    started = true;
+                }
+                if prefix.len() > 1 {
+                    prefix.pop();
+                }
+                iter.next();
+            }
+            _ => break,
+        }
+    }
+    let remaining: Vec<String> = iter.collect();
+    if remaining.is_empty() {
+        return None;
+    }
+    let first_remaining = remaining.first()?.clone();
+    if !started && siblings.contains(&first_remaining) {
+        // Sibling local — prepend the surrounding module's canonical.
+        let mut segs = parent_canonical.segments().to_vec();
+        segs.extend(remaining);
+        return Some(ResolvedPath::new(segs));
+    }
+    prefix.extend(remaining);
+    Some(ResolvedPath::new(prefix))
 }
 
 /// Outer attributes of a syn item. Returned as a slice so the caller can

@@ -208,6 +208,13 @@ pub struct Module {
     /// module (outer attributes only — feature gates inside function
     /// bodies are not extracted here). Deduped, sorted lexicographically.
     pub cfg_features: Vec<String>,
+    /// Canonical paths referenced inside `macro_rules!` bodies declared in
+    /// this module (Layer 1 autodetect). Conservative: any multi-segment
+    /// path appearing in the macro RHS gets resolved through the macro's
+    /// defining scope and recorded. Used by downstream lints
+    /// (visibility, unused-deps, architecture) to avoid false positives
+    /// on items reachable only through workspace-owned macros.
+    pub macro_implicit_refs: Vec<ResolvedPath>,
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
@@ -296,6 +303,27 @@ impl Workspace {
     pub fn re_exports(&self) -> &re_export::ReExportIndex {
         &self.re_exports
     }
+
+    /// Union of every `macro_rules!`-body implicit reference across all
+    /// workspace members. Lints consult this set to avoid flagging items
+    /// whose only "use" is reachable through a workspace-owned macro
+    /// expansion (Layer 1 autodetect — see [`module_tree`] for extraction).
+    pub fn macro_implicit_refs(&self) -> std::collections::HashSet<ResolvedPath> {
+        let mut out = std::collections::HashSet::new();
+        for krate in &self.crates {
+            collect_macro_implicit_refs(&krate.root, &mut out);
+        }
+        out
+    }
+}
+
+fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
+    for path in &module.macro_implicit_refs {
+        out.insert(path.clone());
+    }
+    for sub in &module.submodules {
+        collect_macro_implicit_refs(sub, out);
+    }
 }
 
 /// Recursive iterator over items in a module tree.
@@ -358,6 +386,7 @@ mod tests {
             use_bindings: Vec::new(),
             broken_mod_decls: Vec::new(),
             cfg_features: Vec::new(),
+            macro_implicit_refs: Vec::new(),
             file: None,
         }
     }
