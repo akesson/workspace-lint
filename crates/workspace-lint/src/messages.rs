@@ -185,6 +185,12 @@ pub fn scenarios() -> Vec<(&'static str, Diagnostic)> {
     ]
 }
 
+// Structural-quality assertions across every `scenarios()` Diagnostic live
+// in a sibling file so `messages.rs` stays under the `file-size` cap.
+#[cfg(test)]
+#[path = "messages_quality.rs"]
+mod quality_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
