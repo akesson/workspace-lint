@@ -68,12 +68,16 @@ pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic
         }
 
         let n = unused.len();
+        // Normalize path separators in the message body. Spans get
+        // renderer-normalized to forward slash, but free-form message text
+        // embeds the path directly — without this, Windows snapshots
+        // diverge from macOS/Linux ones.
+        let cargo_path_str = cargo_path.display().to_string().replace('\\', "/");
         let mut builder = at_crate(
             LINT,
             format!(
-                "{n} possibly unused dependenc{} in {}",
+                "{n} possibly unused dependenc{} in {cargo_path_str}",
                 if n == 1 { "y" } else { "ies" },
-                cargo_path.display()
             ),
             krate.manifest_dir.clone(),
         );
