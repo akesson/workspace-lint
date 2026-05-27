@@ -5,6 +5,25 @@
 //! (Layer 1 autodetect) often misses these or misclassifies them. Plugins
 //! parse such bodies into structured ASTs and emit precise reference lists.
 //!
+//! ## v1 status — trait surface, no dispatch
+//!
+//! **The plugin registry is not yet wired into the resolver.** In v1 the
+//! built-in [`QuoteParser`] is matched directly inside
+//! [`crate::resolve::module_tree::matches_known_plugin_macro`] and its body
+//! extracted by the same token scanner Layer 1 uses (since `quote!` bodies
+//! degrade gracefully to that). The [`MacroBodyParser::references`] method
+//! on the shipped parser therefore returns an empty vec — calling it does
+//! not yield references. The trait exists so that:
+//!
+//! - the public shape of plugin contributions is fixed before v2 (when
+//!   parsers that need real AST walks — dioxus-rsx, serde-json — land), and
+//! - downstream code can implement and register parsers ahead of the
+//!   internal dispatch wiring.
+//!
+//! Do not rely on [`builtin_parsers`] for extraction in v1; consult the
+//! resolver-attached implicit-refs set via [`crate::Workspace::macro_implicit_refs`]
+//! instead.
+//!
 //! ## Always built-in
 //!
 //! Plugins ship as modules inside this crate and are unconditionally
@@ -95,11 +114,12 @@ impl MacroBodyParser for QuoteParser {
     }
 
     fn references(&self, body: &TokenStream, _cx: &ResolveContext<'_>) -> Vec<ResolvedPath> {
-        // The token-scanning code lives in the module-tree walker; this
-        // method exists for the trait surface but the call site passes
-        // the already-extracted paths back into the resolver pipeline.
-        // For external callers who want to use the trait outside the
-        // resolver, an in-method extraction would go here.
+        // v1 stub: extraction lives in the module-tree walker
+        // (`extract_macro_paths`), which is what the resolver actually calls
+        // when it encounters a `quote!` invocation. Returning empty here is
+        // deliberate — see the module doc. The trait method body will be
+        // filled in when the resolver starts dispatching through
+        // `builtin_parsers()` in v2.
         let _ = body;
         Vec::new()
     }

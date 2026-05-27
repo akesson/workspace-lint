@@ -216,12 +216,22 @@ fn collect_module_contents(
     })
 }
 
-/// Match `expansion_uses!` or `<crate>::expansion_uses!` invocations.
-/// Used to detect the Layer 2 annotation alongside `macro_rules!` defs.
+/// Match `expansion_uses!` (unqualified) or `<crate>::expansion_uses!` where
+/// the leading segment is the `syn-workspace-marker` crate (typically
+/// imported as `workspace_syn` or `syn_workspace_marker`). Restricting the
+/// prefix avoids treating a third-party `foo::expansion_uses!` as a Layer 2
+/// annotation, which would silently feed its body into the implicit-refs
+/// set and corrupt visibility/unused-pub findings.
 fn is_expansion_uses(path: &syn::Path) -> bool {
-    path.segments
-        .last()
-        .is_some_and(|seg| seg.ident == "expansion_uses")
+    let segs: Vec<&syn::Ident> = path.segments.iter().map(|s| &s.ident).collect();
+    match segs.as_slice() {
+        [single] => *single == "expansion_uses",
+        [krate, name] => {
+            *name == "expansion_uses"
+                && (*krate == "workspace_syn" || *krate == "syn_workspace_marker")
+        }
+        _ => false,
+    }
 }
 
 /// Match invocations of macros that have a built-in
@@ -242,10 +252,27 @@ fn matches_known_plugin_macro(path: &syn::Path) -> bool {
 /// (`Ident :: Ident (:: Ident)*`) and resolve each through the macro's
 /// defining scope. Records the resolved path in `out`.
 ///
-/// This is intentionally conservative: any multi-segment path that *looks*
-/// like a reference becomes one. Single identifiers (parameter names,
-/// keywords, etc.) are dropped. Token groups are recursed into so paths
-/// inside nested braces/parens/brackets are still seen.
+/// **Suppression bias — important to understand.** Any multi-segment path
+/// shape *anywhere* inside *any* `macro_rules!` body in the workspace ends
+/// up in the implicit-refs set. That set is union'd across every member
+/// crate (see [`Workspace::macro_implicit_refs`]) and lints like
+/// `visibility` and `unused-pub` skip items whose canonical appears in it.
+///
+/// In other words: a match-arm pattern like `Foo::Bar` or a hand-written
+/// template literal `quote! { Type::method }` will silence visibility
+/// findings for `Foo::Bar` / `Type::method` workspace-wide, regardless of
+/// where the macro lives or whether the call site is anywhere near the
+/// flagged item. This errs strongly toward false-negatives (missed
+/// findings) over false-positives (incorrect findings) — the assumption is
+/// that flagging a public item that is, in fact, referenced by *some*
+/// macro expansion is worse than missing a few unused items.
+///
+/// Single identifiers (parameter names, keywords, etc.) are dropped.
+/// Token groups (`{}`, `()`, `[]`) are recursed into so paths inside
+/// nested groups are still seen. String literals are tokenized as
+/// `Literal` and so do not produce false positives.
+///
+/// [`Workspace::macro_implicit_refs`]: crate::Workspace::macro_implicit_refs
 fn extract_macro_paths(
     tokens: proc_macro2::TokenStream,
     scope: &use_tree::Scope,

@@ -142,9 +142,15 @@ fn run_all_from_config() -> Vec<Diagnostic> {
     let module_tree_needed = config.checks.module_tree;
     let feature_drift_needed = config.checks.feature_drift;
     let visibility_needed = config.checks.visibility;
-    if (architecture_needed || module_tree_needed || feature_drift_needed || visibility_needed)
-        && let Ok(mut ws) = syn_workspace::Workspace::load(".")
-    {
+    if architecture_needed || module_tree_needed || feature_drift_needed || visibility_needed {
+        // Loud-fail: if the resolver can't load the workspace, every
+        // resolver-backed lint would silently produce zero diagnostics. CI
+        // would see green for a broken state. Match the existing
+        // `unused_deps`/`unused_pub` convention and bail with a clear error.
+        let mut ws = syn_workspace::Workspace::load(".").unwrap_or_else(|e| {
+            eprintln!("failed to load workspace for resolver-backed lints: {e}");
+            std::process::exit(1);
+        });
         // Layer 3: feed external-macro expansion-uses entries from config
         // into the workspace's implicit-refs set so downstream lints see
         // items reachable only through e.g. `#[tokio::main]`.

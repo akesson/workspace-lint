@@ -27,9 +27,35 @@ use super::{Crate, Module, ResolvedPath, Visibility};
 /// Map from a re-export source path to its declared target path.
 ///
 /// Built once per [`crate::Workspace`] load and queried by every downstream
-/// lint that needs canonical names. Currently materializes only `pub use`
-/// edges — `pub(crate) use` is intra-crate visibility tightening, not a
-/// cross-crate re-export.
+/// lint that needs canonical names.
+///
+/// # Scope: only `pub use` edges
+///
+/// `pub(crate) use`, `pub(super) use`, and bare `use` are deliberately
+/// excluded. The rationale is that those forms tighten visibility instead
+/// of re-publishing a name across the crate boundary, and the consumer of
+/// this index — primarily the architecture lint — operates on cross-crate
+/// imports.
+///
+/// **Consequence — known precision gap.** Chains that pass through a
+/// `pub(crate) use` hop are not followed. Example:
+///
+/// ```ignore
+/// // crate `data-models`
+/// pub struct User;
+///
+/// // crate `data-api`
+/// pub(crate) use data_models::User;    // hop NOT recorded
+/// pub use Self::User as PublicUser;    // edge: data_api::PublicUser -> data_api::User
+/// ```
+///
+/// A consumer asking for the canonical of `data_api::PublicUser` will get
+/// `data_api::User` — not the true source `data_models::User`. Architecture
+/// rules targeting `data_models::User` will not fire on imports of
+/// `data_api::PublicUser`. Fixing this requires either also recording
+/// intra-crate `pub(crate) use` edges (and filtering at query time by the
+/// caller's crate) or doing a separate intra-crate resolution pass.
+/// Neither is in scope for v1.
 #[derive(Debug, Clone, Default)]
 pub struct ReExportIndex {
     edges: HashMap<ResolvedPath, ResolvedPath>,

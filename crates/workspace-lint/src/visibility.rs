@@ -43,7 +43,7 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             &krate.root,
             &code_name,
             &cross_crate_refs,
-            &macro_refs,
+            macro_refs,
             &mut diagnostics,
         );
     }

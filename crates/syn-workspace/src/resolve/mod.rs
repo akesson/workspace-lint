@@ -257,9 +257,11 @@ pub struct Workspace {
     crates: Vec<Crate>,
     root: PathBuf,
     re_exports: re_export::ReExportIndex,
-    /// Layer 3: external-macro implicit references contributed by config
-    /// rather than scanned from source. Populated by callers after `load`.
-    extra_macro_refs: std::collections::HashSet<ResolvedPath>,
+    /// Union of all macro-implicit references: Layer 1 (autodetect of
+    /// `macro_rules!` bodies, eagerly collected from `crates` at load time)
+    /// plus Layer 3 (`[[macros.external]]` entries, appended via
+    /// `register_external_macro_uses`). Built once; lints borrow it.
+    macro_refs: std::collections::HashSet<ResolvedPath>,
 }
 
 impl Workspace {
@@ -273,11 +275,15 @@ impl Workspace {
         let root = root.as_ref().to_path_buf();
         let crates = crate::walk::load_members(&root)?;
         let re_exports = re_export::ReExportIndex::build(&crates);
+        let mut macro_refs = std::collections::HashSet::new();
+        for krate in &crates {
+            collect_macro_implicit_refs(&krate.root, &mut macro_refs);
+        }
         Ok(Self {
             crates,
             root,
             re_exports,
-            extra_macro_refs: std::collections::HashSet::new(),
+            macro_refs,
         })
     }
 
@@ -290,7 +296,7 @@ impl Workspace {
     where
         I: IntoIterator<Item = ResolvedPath>,
     {
-        self.extra_macro_refs.extend(paths);
+        self.macro_refs.extend(paths);
     }
 
     /// All workspace member crates plus referenced external crates.
@@ -321,18 +327,16 @@ impl Workspace {
     }
 
     /// Union of every `macro_rules!`-body implicit reference across all
-    /// workspace members. Lints consult this set to avoid flagging items
-    /// whose only "use" is reachable through a workspace-owned macro
-    /// expansion (Layer 1 autodetect — see [`module_tree`] for extraction).
-    pub fn macro_implicit_refs(&self) -> std::collections::HashSet<ResolvedPath> {
-        let mut out = std::collections::HashSet::new();
-        for krate in &self.crates {
-            collect_macro_implicit_refs(&krate.root, &mut out);
-        }
-        for path in &self.extra_macro_refs {
-            out.insert(path.clone());
-        }
-        out
+    /// workspace members plus any Layer 3 external-macro entries registered
+    /// via [`Workspace::register_external_macro_uses`]. Lints consult this
+    /// set to avoid flagging items whose only "use" is reachable through a
+    /// macro expansion (Layer 1 autodetect — see [`module_tree`] for
+    /// extraction).
+    ///
+    /// The set is built eagerly at [`Workspace::load`] time and stored on
+    /// the workspace, so repeated calls across multiple lints are O(1).
+    pub fn macro_implicit_refs(&self) -> &std::collections::HashSet<ResolvedPath> {
+        &self.macro_refs
     }
 }
 

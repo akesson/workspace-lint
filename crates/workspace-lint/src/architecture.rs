@@ -14,6 +14,20 @@
 //! globset matching. `*` matches one segment, `**` matches zero or more.
 //! `data-models::internal::*` matches a one-segment-deep item under
 //! `internal`; `data-models::internal::**` is the transitive form.
+//!
+//! ## Known scope limits
+//!
+//! - **Only `use` bindings are inspected.** Fully-qualified call sites like
+//!   `other_crate::forbidden::Type::call()` written without a `use` statement
+//!   will *not* trigger a rule. Treat architecture rules as guard-rails, not
+//!   as a hard sandbox — a determined caller can bypass them by inlining the
+//!   path. (Tightening to all path expressions would require a full
+//!   expression-level walker; out of scope for v1.)
+//! - **`pub(crate) use` re-export hops are invisible.** Tier 2.5 follows only
+//!   `pub use` edges, so a `pub(crate) use forbidden::T as Renamed;` in some
+//!   middle crate breaks the chain — the rule will see the local alias's
+//!   canonical instead of the original target. See
+//!   `syn_workspace::resolve::re_export` for the rationale.
 
 use globset::{Glob, GlobMatcher};
 use syn_workspace::{Module, ResolvedPath, Workspace};
