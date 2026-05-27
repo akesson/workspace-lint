@@ -102,11 +102,13 @@ fn re_export_index_chases_self_chain() {
 
     // syn-workspace::lib.rs has `pub use resolve::ResolvedPath`, which Tier 2.5
     // should chase to the original definition inside the `resolve` submodule.
-    let exported_at_root = syn_workspace::ResolvedPath::new(["syn-workspace", "ResolvedPath"]);
+    // Canonical paths use the code-form crate name (underscores), matching what
+    // `use syn_workspace::...` writes in source.
+    let exported_at_root = syn_workspace::ResolvedPath::new(["syn_workspace", "ResolvedPath"]);
     let canonical = ws.resolve_canonical(&exported_at_root);
     assert_eq!(
         canonical.display(),
-        "syn-workspace::resolve::ResolvedPath",
+        "syn_workspace::resolve::ResolvedPath",
         "pub use should chase to the definition site; got {}",
         canonical.display(),
     );

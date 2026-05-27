@@ -31,6 +31,8 @@ pub struct Config {
     pub unused_deps: Option<UnusedDepsConfig>,
     #[serde(default, rename = "unused-pub")]
     pub unused_pub: Option<UnusedPubConfig>,
+    #[serde(default)]
+    pub architecture: Option<ArchitectureConfig>,
 }
 
 #[derive(Deserialize, Default)]
@@ -98,6 +100,45 @@ impl UnusedPubConfig {
     pub fn effective_on_ci_only(&self) -> bool {
         self.on_ci_only.unwrap_or(true)
     }
+}
+
+#[derive(Deserialize, Default)]
+pub struct ArchitectureConfig {
+    #[serde(default)]
+    pub rules: Vec<ArchitectureRule>,
+}
+
+#[derive(Deserialize)]
+pub struct ArchitectureRule {
+    /// Display name surfaced in diagnostics. Optional but recommended.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Crate-name globs the rule applies to (the importing crate). Required;
+    /// empty means the rule never fires.
+    pub from: Vec<String>,
+    /// Canonical-path globs of forbidden targets. Required; empty means the
+    /// rule never fires.
+    pub deny: Vec<String>,
+    /// Specific canonical paths in the deny set that are explicitly allowed
+    /// (per-rule escape hatch). Matched as globs against canonical paths.
+    #[serde(default)]
+    pub exceptions: Vec<String>,
+    #[serde(default)]
+    pub severity: ArchSeverity,
+    /// Free-text explanation surfaced in the diagnostic's `note:` line.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Suggested alternative surfaced in the diagnostic's `help:` line.
+    #[serde(default)]
+    pub suggest: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchSeverity {
+    #[default]
+    Warn,
+    Deny,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]

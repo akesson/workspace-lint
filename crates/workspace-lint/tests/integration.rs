@@ -61,6 +61,35 @@ fn unused_deps_violation_fails() {
         .stderr(predicate::str::contains("rand"));
 }
 
+// --- architecture ---
+
+#[test]
+fn architecture_violation_fails() {
+    workspace_lint()
+        .current_dir(fixture("architecture_violation"))
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("apps-foo")
+                .and(predicate::str::contains("apps-no-data-internals"))
+                // Diagnostic renders the resolved canonical, which uses
+                // code-form crate name (underscores).
+                .and(predicate::str::contains(
+                    "data_models::internal::InternalUser",
+                ))
+                .and(predicate::str::contains("imported in module `apps_foo`")),
+        );
+}
+
+#[test]
+fn architecture_clean_passes() {
+    workspace_lint()
+        .current_dir(fixture("architecture_clean"))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("all passed"));
+}
+
 // --- config loading ---
 
 #[test]

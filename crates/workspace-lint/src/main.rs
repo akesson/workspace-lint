@@ -1,3 +1,4 @@
+mod architecture;
 mod centralized_deps;
 mod cli;
 mod cli_crate_version;
@@ -128,6 +129,12 @@ fn run_all_from_config() -> Vec<Diagnostic> {
     }
     if let Some(ref up) = config.unused_pub {
         diagnostics.extend(unused_pub::check(up));
+    }
+    if let Some(ref ac) = config.architecture
+        && !ac.rules.is_empty()
+        && let Ok(ws) = syn_workspace::Workspace::load(".")
+    {
+        diagnostics.extend(architecture::check(ac, &ws));
     }
 
     diagnostics

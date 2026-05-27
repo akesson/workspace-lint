@@ -44,7 +44,14 @@ pub fn load_members(root: &Path) -> Result<Vec<Crate>> {
                 ))
             })?;
 
-        let root_module = module_tree::build_crate_tree(&manifest_dir, &pkg.name)?;
+        // Cargo crate names use hyphens (e.g. `data-models`), but source code
+        // references them with underscores (`use data_models::...`). The
+        // resolver stores canonical paths in code form so they line up with
+        // what bindings see; `Crate.name` keeps the cargo form so user-facing
+        // diagnostics and `from`-pattern matching see the same string users
+        // wrote in `Cargo.toml`.
+        let code_name = pkg.name.replace('-', "_");
+        let root_module = module_tree::build_crate_tree(&manifest_dir, &code_name)?;
 
         out.push(Crate {
             name: pkg.name.to_string(),

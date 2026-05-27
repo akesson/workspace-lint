@@ -2304,6 +2304,7 @@ dependencies = [
  "serde_json",
  "strip-ansi-escapes",
  "syn",
+ "syn-workspace",
  "tempfile",
  "tokei",
  "toml",
