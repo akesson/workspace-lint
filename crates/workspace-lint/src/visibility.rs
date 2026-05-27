@@ -113,30 +113,19 @@ fn checkable(item: &Item) -> bool {
 }
 
 fn collect_cross_crate_refs(workspace: &Workspace) -> HashSet<ResolvedPath> {
+    // Walk the resolver's per-crate references index (use bindings +
+    // regular code paths + macro_rules! body refs), follow each path
+    // through any `pub use` chain, and keep only paths that point to a
+    // different crate than the referring one. This subsumes the old
+    // use-binding-only walk while also catching fully-qualified path
+    // references inside function bodies (e.g. `lib_a::Button` inside an
+    // rsx! body that has no `use` statement).
     let mut refs = HashSet::new();
-    for krate in workspace.crates() {
-        if !krate.is_workspace_member {
-            continue;
-        }
-        let self_crate_code = krate.name.replace('-', "_");
-        collect_refs_from_module(&krate.root, &self_crate_code, workspace, &mut refs);
-    }
-    refs
-}
-
-fn collect_refs_from_module(
-    module: &Module,
-    self_crate: &str,
-    workspace: &Workspace,
-    refs: &mut HashSet<ResolvedPath>,
-) {
-    for binding in &module.use_bindings {
-        let canonical = workspace.resolve_canonical(&binding.canonical);
-        if canonical.crate_name() != Some(self_crate) {
+    for (referring_crate, path) in workspace.iter_references() {
+        let canonical = workspace.resolve_canonical(path);
+        if canonical.crate_name() != Some(referring_crate) {
             refs.insert(canonical);
         }
     }
-    for sub in &module.submodules {
-        collect_refs_from_module(sub, self_crate, workspace, refs);
-    }
+    refs
 }

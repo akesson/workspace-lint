@@ -27,8 +27,9 @@ use super::{
 };
 
 /// Items, submodules, `use` bindings, broken `mod` declarations,
-/// `#[cfg(feature = "...")]` references, and `macro_rules!`-body implicit
-/// references collected while walking a module.
+/// `#[cfg(feature = "...")]` references, `macro_rules!`-body implicit
+/// references, and regular-code path references collected while walking a
+/// module.
 struct ModuleContents {
     items: Vec<Item>,
     submodules: Vec<Module>,
@@ -36,6 +37,7 @@ struct ModuleContents {
     broken_mod_decls: Vec<BrokenModDecl>,
     cfg_features: Vec<String>,
     macro_implicit_refs: Vec<ResolvedPath>,
+    references: Vec<ResolvedPath>,
 }
 
 /// Build a fully-populated module tree for one crate.
@@ -65,11 +67,12 @@ fn empty_root(crate_name: &str) -> Module {
         broken_mod_decls: Vec::new(),
         cfg_features: Vec::new(),
         macro_implicit_refs: Vec::new(),
+        references: Vec::new(),
         file: None,
     }
 }
 
-fn build_module_from_file(
+pub(super) fn build_module_from_file(
     file_path: &Path,
     mod_name: String,
     canonical: ResolvedPath,
@@ -91,6 +94,7 @@ fn build_module_from_file(
         broken_mod_decls: contents.broken_mod_decls,
         cfg_features: contents.cfg_features,
         macro_implicit_refs: contents.macro_implicit_refs,
+        references: contents.references,
         file: Some(file_path.to_path_buf()),
     })
 }
@@ -153,8 +157,10 @@ fn collect_module_contents(
                 );
             } else if matches_known_plugin_macro(&item_macro.mac.path) {
                 // Plugin path: known macro invocations (e.g. `quote!`,
-                // `quote::quote!`) get their bodies scanned the same way
-                // `macro_rules!` bodies are.
+                // `quote::quote!`, `rsx!`) get their bodies scanned the same
+                // way `macro_rules!` bodies are. Token scanning is the
+                // baseline — it catches every multi-segment path inside
+                // groups.
                 extract_macro_paths(
                     item_macro.mac.tokens.clone(),
                     &scope,
@@ -162,6 +168,21 @@ fn collect_module_contents(
                     parent_canonical,
                     &mut macro_refs,
                 );
+                // Structured plugin dispatch: parsers that walk a macro's
+                // real AST (currently `DioxusRsxParser`) may surface refs
+                // the token scanner misses or misclassifies. Each raw path
+                // gets canonicalized through `resolve_macro_path` so the
+                // resolver's scope rules apply.
+                for raw in dispatch_plugin_refs(&item_macro.mac.path, &item_macro.mac.tokens) {
+                    if let Some(canonical) = resolve_macro_path(
+                        raw.segments().to_vec(),
+                        &scope,
+                        &sibling_names,
+                        parent_canonical,
+                    ) {
+                        macro_refs.insert(canonical);
+                    }
+                }
             }
         }
 
@@ -186,6 +207,7 @@ fn collect_module_contents(
                     broken_mod_decls: inline.broken_mod_decls,
                     cfg_features: inline.cfg_features,
                     macro_implicit_refs: inline.macro_implicit_refs,
+                    references: inline.references,
                     file: Some(parent_file.to_path_buf()),
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, item_mod)? {
@@ -206,6 +228,56 @@ fn collect_module_contents(
         }
     }
 
+    // Second pass: extract regular-code path references. Done after the main
+    // loop so the use_bindings set is complete — references can resolve any
+    // use statement in the module regardless of source order.
+    let mut refs_set: std::collections::BTreeSet<ResolvedPath> = std::collections::BTreeSet::new();
+    for syn_item in syn_items {
+        match syn_item {
+            // Use produces use_bindings; nested modules contribute their
+            // references via their own ModuleContents. But glob imports
+            // (`use foo::bar::*;`) don't produce bindings — we record their
+            // prefix as a reference so unused-deps sees the crate.
+            syn::Item::Use(item_use) => {
+                for target in use_tree::glob_targets_from_use(item_use, &scope) {
+                    refs_set.insert(target);
+                }
+                continue;
+            }
+            syn::Item::Mod(_) => continue,
+            // macro_rules! bodies (and Layer 2/3 annotation macros) already
+            // contribute to macro_implicit_refs. Skip to avoid double-counting
+            // and to keep regular-code refs separate from macro-body refs.
+            syn::Item::Macro(item_macro)
+                if item_macro.ident.is_some()
+                    || is_expansion_uses(&item_macro.mac.path)
+                    || matches_known_plugin_macro(&item_macro.mac.path) =>
+            {
+                continue;
+            }
+            // `extern crate foo [as bar];` is a single-ident reference that
+            // wouldn't match the multi-segment scan. Capture explicitly.
+            syn::Item::ExternCrate(ec) => {
+                let crate_ident = ec.ident.to_string();
+                if crate_ident != "self" {
+                    refs_set.insert(ResolvedPath::new([crate_ident]));
+                }
+                continue;
+            }
+            _ => {}
+        }
+
+        let tokens = quote::ToTokens::to_token_stream(syn_item);
+        extract_code_paths(
+            tokens,
+            &scope,
+            &sibling_names,
+            &use_bindings,
+            parent_canonical,
+            &mut refs_set,
+        );
+    }
+
     Ok(ModuleContents {
         items,
         submodules,
@@ -213,6 +285,7 @@ fn collect_module_contents(
         broken_mod_decls,
         cfg_features: cfg_features.into_iter().collect(),
         macro_implicit_refs: macro_refs.into_iter().collect(),
+        references: refs_set.into_iter().collect(),
     })
 }
 
@@ -235,17 +308,50 @@ fn is_expansion_uses(path: &syn::Path) -> bool {
 }
 
 /// Match invocations of macros that have a built-in
-/// [`crate::plugins::MacroBodyParser`] — currently just `quote!` /
-/// `quote::quote!`. Future built-ins (dioxus-rsx, json!) will extend this
-/// matcher. The actual extraction reuses [`extract_macro_paths`] since the
-/// plugin parsers all reduce to the same token-scan operation in v1.
+/// [`crate::plugins::MacroBodyParser`] — currently `quote!`/`quote::quote!`
+/// and `rsx!`/`dioxus::rsx!`. Future built-ins (e.g. `serde_json::json!`)
+/// extend this matcher. Every match triggers [`extract_macro_paths`] (the
+/// token-scan baseline) plus [`dispatch_plugin_refs`] for any parser whose
+/// `references()` walks a real AST.
 fn matches_known_plugin_macro(path: &syn::Path) -> bool {
     let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     match segs.as_slice() {
-        [single] => single == "quote",
-        [a, b] => a == "quote" && b == "quote",
+        [single] => single == "quote" || single == "rsx",
+        [a, b] => {
+            (a == "quote" && b == "quote") || (b == "rsx" && (a == "dioxus" || a == "dioxus_core"))
+        }
         _ => false,
     }
+}
+
+/// Dispatch a macro invocation to the built-in plugin registry and collect
+/// any references the matching parser emits. Returned paths are in raw
+/// (uncanonicalized) form — the caller runs them through
+/// [`resolve_macro_path`] to apply scope rules.
+///
+/// This is what makes [`crate::plugins::MacroBodyParser::references`] a real
+/// extension point in v1 (the trait method is no longer just a stub). Each
+/// invocation iterates `builtin_parsers()` — the call site is bounded by
+/// macro-invocation density in source, not item count, so the per-call
+/// allocation is fine in practice.
+fn dispatch_plugin_refs(
+    macro_path: &syn::Path,
+    body: &proc_macro2::TokenStream,
+) -> Vec<ResolvedPath> {
+    let segs: Vec<String> = macro_path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    let mp = ResolvedPath::new(segs);
+    let cx = crate::plugins::ResolveContext::placeholder();
+    let mut out: Vec<ResolvedPath> = Vec::new();
+    for parser in crate::plugins::builtin_parsers() {
+        if parser.matches(&mp) {
+            out.extend(parser.references(body, &cx));
+        }
+    }
+    out
 }
 
 /// Scan a `macro_rules!` body token-stream for path-like sequences
@@ -318,6 +424,160 @@ fn extract_macro_paths(
     }
 }
 
+/// Token-scan regular (non-macro) item bodies for path references, with
+/// use-binding substitution applied to the leading segment.
+///
+/// Same shape as [`extract_macro_paths`], but with three extra behaviors:
+///
+/// 1. **Use-binding substitution.** If the leading segment matches a
+///    `local_name` in `use_bindings`, the binding's canonical replaces it.
+///    So `use foo::Bar;` followed by `Bar::baz()` resolves to `foo::Bar::baz`.
+/// 2. **Single-segment paths.** A bare `Bar` is normally a local var or
+///    prelude name — skipped. But if `Bar` matches a use-binding's local
+///    name, it's recorded as a reference to that binding's canonical. This
+///    catches single-ident type/expression references that the
+///    multi-segment scanner alone would miss.
+/// 3. **Macros are non-hygienic at the call site.** Unlike `macro_rules!`
+///    bodies (which resolve at the expansion site), regular code paths
+///    resolve against the surrounding module's `use` statements. The
+///    use-binding lookup reflects that.
+fn extract_code_paths(
+    tokens: proc_macro2::TokenStream,
+    scope: &use_tree::Scope,
+    siblings: &HashSet<String>,
+    use_bindings: &[UseBinding],
+    parent_canonical: &ResolvedPath,
+    out: &mut std::collections::BTreeSet<ResolvedPath>,
+) {
+    let stream: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    let mut i = 0;
+    while i < stream.len() {
+        if let proc_macro2::TokenTree::Ident(first) = &stream[i] {
+            let mut segments = vec![first.to_string()];
+            let mut j = i + 1;
+            while let (Some(p1), Some(p2), Some(next)) =
+                (stream.get(j), stream.get(j + 1), stream.get(j + 2))
+            {
+                let (proc_macro2::TokenTree::Punct(a), proc_macro2::TokenTree::Punct(b)) = (p1, p2)
+                else {
+                    break;
+                };
+                if a.as_char() != ':' || b.as_char() != ':' {
+                    break;
+                }
+                let proc_macro2::TokenTree::Ident(next) = next else {
+                    break;
+                };
+                segments.push(next.to_string());
+                j += 3;
+            }
+            let keep = segments.len() >= 2
+                || (segments.len() == 1
+                    && use_bindings.iter().any(|b| b.local_name == segments[0]));
+            if keep
+                && let Some(resolved) =
+                    resolve_code_path(segments, scope, siblings, use_bindings, parent_canonical)
+            {
+                out.insert(resolved);
+            }
+            i = j;
+            continue;
+        }
+        if let proc_macro2::TokenTree::Group(group) = &stream[i] {
+            extract_code_paths(
+                group.stream(),
+                scope,
+                siblings,
+                use_bindings,
+                parent_canonical,
+                out,
+            );
+        }
+        i += 1;
+    }
+}
+
+/// Resolve a code-path's leading segment through (in order):
+/// crate/self/super peeling, use-binding substitution, sibling lookup,
+/// then external-crate fallback. See [`extract_code_paths`] for context.
+fn resolve_code_path(
+    segments: Vec<String>,
+    scope: &use_tree::Scope,
+    siblings: &HashSet<String>,
+    use_bindings: &[UseBinding],
+    parent_canonical: &ResolvedPath,
+) -> Option<ResolvedPath> {
+    if segments.is_empty() {
+        return None;
+    }
+    let mut iter = segments.into_iter().peekable();
+    let mut prefix: Vec<String> = Vec::new();
+    let mut started = false;
+
+    while let Some(head) = iter.peek().cloned() {
+        match head.as_str() {
+            "crate" if !started => {
+                prefix.clear();
+                prefix.push(scope.crate_name.clone());
+                started = true;
+                iter.next();
+            }
+            "self" if !started => {
+                prefix.clear();
+                prefix.push(scope.crate_name.clone());
+                prefix.extend(scope.module_path.iter().cloned());
+                started = true;
+                iter.next();
+            }
+            "super" => {
+                if !started {
+                    prefix.push(scope.crate_name.clone());
+                    prefix.extend(scope.module_path.iter().cloned());
+                    started = true;
+                }
+                if prefix.len() <= 1 {
+                    // `super` at the crate root is illegal Rust (rustc
+                    // errors). Drop the reference rather than fabricate
+                    // `crate::remaining` and silently mis-attribute it.
+                    return None;
+                }
+                prefix.pop();
+                iter.next();
+            }
+            _ => break,
+        }
+    }
+    let remaining: Vec<String> = iter.collect();
+    if remaining.is_empty() {
+        return None;
+    }
+    let first_remaining = remaining.first()?.clone();
+
+    if !started {
+        // Use-binding shadows siblings and externals.
+        if let Some(binding) = use_bindings
+            .iter()
+            .find(|b| b.local_name == first_remaining)
+        {
+            let mut segs = binding.canonical.segments().to_vec();
+            segs.extend(remaining.into_iter().skip(1));
+            return Some(ResolvedPath::new(segs));
+        }
+        if siblings.contains(&first_remaining) {
+            let mut segs = parent_canonical.segments().to_vec();
+            segs.extend(remaining);
+            return Some(ResolvedPath::new(segs));
+        }
+        // Unmatched single segment — almost always a local var or prelude
+        // name, not a cross-crate reference. Drop to avoid noise.
+        if remaining.len() == 1 {
+            return None;
+        }
+    }
+    prefix.extend(remaining);
+    Some(ResolvedPath::new(prefix))
+}
+
 /// Apply the same crate/self/super peeling and sibling-prepend logic that
 /// `bindings_from_use` does, but for a path extracted from raw tokens.
 fn resolve_macro_path(
@@ -354,9 +614,10 @@ fn resolve_macro_path(
                     prefix.extend(scope.module_path.iter().cloned());
                     started = true;
                 }
-                if prefix.len() > 1 {
-                    prefix.pop();
+                if prefix.len() <= 1 {
+                    return None;
                 }
+                prefix.pop();
                 iter.next();
             }
             _ => break,
@@ -736,5 +997,125 @@ mod tests {
             "expected `ghost` to be recorded as a broken mod decl, got: {:?}",
             root.broken_mod_decls,
         );
+    }
+
+    // --- code-path extraction (regular non-macro item bodies) ---
+
+    fn parse_items(src: &str) -> Vec<syn::Item> {
+        syn::parse_file(src).expect("valid file").items
+    }
+
+    fn collect_refs(src: &str, crate_name: &str) -> Vec<String> {
+        let parent_canonical = ResolvedPath::new([crate_name.to_string()]);
+        let items = parse_items(src);
+        let contents =
+            collect_module_contents(&items, std::path::Path::new("<test>"), &parent_canonical)
+                .expect("collect");
+        let mut out: Vec<String> = contents.references.iter().map(|p| p.display()).collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn code_path_extracts_fully_qualified_external() {
+        let refs = collect_refs("fn f() { let _ = std::env::args(); }", "demo");
+        assert!(refs.contains(&"std::env::args".to_string()), "got {refs:?}");
+    }
+
+    #[test]
+    fn code_path_substitutes_use_binding() {
+        let refs = collect_refs("use other::Bar; fn f() -> Bar { Bar::new() }", "demo");
+        assert!(refs.contains(&"other::Bar".to_string()), "got {refs:?}");
+        assert!(
+            refs.contains(&"other::Bar::new".to_string()),
+            "got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn code_path_substitutes_renamed_use() {
+        // `use foo::Bar as Baz; Baz::method()` → canonical foo::Bar::method
+        let refs = collect_refs("use foo::Bar as Baz; fn f() { Baz::method(); }", "demo");
+        assert!(
+            refs.contains(&"foo::Bar::method".to_string()),
+            "got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn code_path_resolves_crate_prefix() {
+        let refs = collect_refs("fn f() { crate::inner::go(); }", "demo");
+        assert!(
+            refs.contains(&"demo::inner::go".to_string()),
+            "got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn code_path_resolves_sibling_local() {
+        let refs = collect_refs(
+            "fn helper() {} fn f() { helper(); helper::Sub::go(); }",
+            "demo",
+        );
+        // `helper` matches a sibling; first segment of `helper::Sub::go`
+        // resolves crate-local (note: `helper` alone is a single-ident sibling
+        // call — those are NOT recorded since they don't survive the
+        // single-ident filter without a use-binding).
+        assert!(
+            refs.contains(&"demo::helper::Sub::go".to_string()),
+            "got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn code_path_skips_unmatched_single_ident() {
+        let refs = collect_refs("fn f() { let x = 5; let _ = x; }", "demo");
+        assert!(
+            !refs.iter().any(|r| r == "x"),
+            "got {refs:?} — bare locals should not be recorded as references"
+        );
+    }
+
+    #[test]
+    fn code_path_captures_extern_crate() {
+        let refs = collect_refs("extern crate foo;", "demo");
+        assert!(refs.contains(&"foo".to_string()), "got {refs:?}");
+    }
+
+    #[test]
+    fn code_path_captures_macro_invocation_path() {
+        let refs = collect_refs("fn f() { serde_json::json!({\"a\": 1}); }", "demo");
+        assert!(
+            refs.contains(&"serde_json::json".to_string()),
+            "got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn code_path_skips_use_statements() {
+        // Use statements produce use_bindings, not references.
+        let refs = collect_refs("use foo::Bar;", "demo");
+        // We expect no entries for `foo::Bar` in references — that's a binding.
+        assert!(
+            !refs.contains(&"foo::Bar".to_string()),
+            "got {refs:?} — use statements should not contribute to references"
+        );
+    }
+
+    #[test]
+    fn code_path_skips_macro_rules_definitions() {
+        // macro_rules! bodies feed macro_implicit_refs, not references.
+        let src = "macro_rules! m { () => { foo::bar() }; }";
+        let refs = collect_refs(src, "demo");
+        assert!(
+            !refs.contains(&"foo::bar".to_string()),
+            "got {refs:?} — macro_rules bodies belong in macro_implicit_refs"
+        );
+    }
+
+    #[test]
+    fn code_path_captures_struct_field_types() {
+        let refs = collect_refs("use other::Inner; struct S { f: Inner }", "demo");
+        assert!(refs.contains(&"other::Inner".to_string()), "got {refs:?}");
     }
 }

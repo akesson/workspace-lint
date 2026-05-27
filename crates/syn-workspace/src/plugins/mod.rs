@@ -47,6 +47,10 @@ use proc_macro2::TokenStream;
 
 use crate::resolve::ResolvedPath;
 
+pub mod dioxus_rsx;
+
+pub use dioxus_rsx::DioxusRsxParser;
+
 /// Context passed to a plugin while it's resolving references inside a
 /// macro body.
 ///
@@ -57,9 +61,13 @@ pub struct ResolveContext<'a> {
     _phantom: std::marker::PhantomData<&'a ()>,
 }
 
-#[cfg(test)]
 impl ResolveContext<'_> {
-    fn placeholder() -> Self {
+    /// V1 stub context. Plugins that need scope/use-bindings to canonicalize
+    /// single-segment paths won't be able to with this — they must emit
+    /// multi-segment refs that the caller resolves through
+    /// [`crate::resolve::module_tree`]'s scope rules. The full context is
+    /// added in v2.
+    pub(crate) fn placeholder() -> Self {
         Self {
             _phantom: std::marker::PhantomData,
         }
@@ -83,12 +91,12 @@ pub trait MacroBodyParser: Send + Sync {
 
 /// All plugins shipped inside `syn-workspace`.
 ///
-/// v1 ships one parser: [`QuoteParser`] for `quote!` / `quote::quote!`
-/// invocations. `dioxus_rsx` and `serde_json::json!` are planned follow-ups
-/// (dioxus-rsx needs an external dep pinned to a specific Dioxus version;
-/// serde_json::json! has lower value and is mostly speculative).
+/// Ships two parsers: [`QuoteParser`] for `quote!`/`quote::quote!` and
+/// [`DioxusRsxParser`] for `rsx!`/`dioxus::rsx!`. A future `serde_json::json!`
+/// parser is on the roadmap but considered speculative — the references it
+/// would surface are almost always already visible elsewhere in the file.
 pub fn builtin_parsers() -> Vec<Box<dyn MacroBodyParser>> {
-    vec![Box::new(QuoteParser)]
+    vec![Box::new(QuoteParser), Box::new(DioxusRsxParser)]
 }
 
 /// Built-in parser for `quote!` / `quote::quote!` invocations.
@@ -167,8 +175,15 @@ mod tests {
     fn quote_parser_does_not_match_unrelated_macros() {
         let parsers = builtin_parsers();
         let lazy_static = ResolvedPath::new(["lazy_static"]);
-        let rsx = ResolvedPath::new(["dioxus", "rsx"]);
         assert!(!parsers.iter().any(|p| p.matches(&lazy_static)));
-        assert!(!parsers.iter().any(|p| p.matches(&rsx)));
+    }
+
+    #[test]
+    fn builtin_parsers_includes_dioxus_rsx() {
+        let parsers = builtin_parsers();
+        let rsx = ResolvedPath::new(["rsx"]);
+        let dioxus_rsx_qualified = ResolvedPath::new(["dioxus", "rsx"]);
+        assert!(parsers.iter().any(|p| p.matches(&rsx)));
+        assert!(parsers.iter().any(|p| p.matches(&dioxus_rsx_qualified)));
     }
 }

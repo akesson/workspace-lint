@@ -125,8 +125,12 @@ fn assert_trees_equal(actual: &Path, expected: &Path) {
     }
 }
 
-/// Recursively walk a directory and return every regular file path. Skips
-/// nothing — fixtures shouldn't contain VCS or target dirs anyway.
+/// Recursively walk a directory and return every regular file path.
+///
+/// Filters out `Cargo.lock` and `target/` since some lints (resolver-backed
+/// ones) shell out to `cargo metadata`, which can create those as a side
+/// effect. They're not part of the user-visible workspace state we're
+/// asserting on.
 fn walk_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if !root.is_dir() {
@@ -140,9 +144,16 @@ fn walk_files(root: &Path) -> Vec<PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             if path.is_dir() {
+                if name == "target" {
+                    continue;
+                }
                 stack.push(path);
             } else if path.is_file() {
+                if name == "Cargo.lock" {
+                    continue;
+                }
                 out.push(path);
             }
         }

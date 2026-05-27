@@ -215,6 +215,18 @@ pub struct Module {
     /// (visibility, unused-deps, architecture) to avoid false positives
     /// on items reachable only through workspace-owned macros.
     pub macro_implicit_refs: Vec<ResolvedPath>,
+    /// Canonical paths referenced from this module's regular code (function
+    /// bodies, type signatures, attribute paths). Distinct from
+    /// `use_bindings` (which records what `use` statements bring into scope)
+    /// and from `macro_implicit_refs` (which records paths inside
+    /// `macro_rules!` bodies). Populated by token-scanning each non-`use`,
+    /// non-`macro_rules!` item with use-binding substitution applied to the
+    /// leading segment.
+    ///
+    /// Used by lints that need cross-crate reference graphs without paying
+    /// SCIP's cost: unused-deps consults the set of crate names; unused-pub
+    /// and visibility consult per-item canonicals.
+    pub references: Vec<ResolvedPath>,
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
@@ -262,6 +274,12 @@ pub struct Workspace {
     /// plus Layer 3 (`[[macros.external]]` entries, appended via
     /// `register_external_macro_uses`). Built once; lints borrow it.
     macro_refs: std::collections::HashSet<ResolvedPath>,
+    /// Per-crate set of canonical paths referenced from that crate's regular
+    /// code (combines `use` bindings + the `Module.references` set). Keyed
+    /// by the crate's code name (Cargo-form hyphens replaced with '_'). Built
+    /// once at load time so unused-deps / unused-pub / visibility don't
+    /// re-walk the tree.
+    references_by_crate: std::collections::HashMap<String, std::collections::HashSet<ResolvedPath>>,
 }
 
 impl Workspace {
@@ -279,11 +297,33 @@ impl Workspace {
         for krate in &crates {
             collect_macro_implicit_refs(&krate.root, &mut macro_refs);
         }
+        let mut references_by_crate: std::collections::HashMap<
+            String,
+            std::collections::HashSet<ResolvedPath>,
+        > = std::collections::HashMap::new();
+        for krate in &crates {
+            if !krate.is_workspace_member {
+                continue;
+            }
+            let code_name = krate.name.replace('-', "_");
+            let entry = references_by_crate.entry(code_name.clone()).or_default();
+            collect_module_references(&krate.root, entry);
+            // Cargo dev-deps are used from `tests/`, `benches/`, `examples/`
+            // (separate compilation units, not part of the lib/bin module
+            // tree). Without scanning these, unused-deps false-positives on
+            // every dev-dep used only in integration tests. Attribute their
+            // references to the parent crate.
+            for aux in ["tests", "benches", "examples"] {
+                let aux_dir = krate.manifest_dir.join(aux);
+                scan_aux_dir_references(&aux_dir, &code_name, entry);
+            }
+        }
         Ok(Self {
             crates,
             root,
             re_exports,
             macro_refs,
+            references_by_crate,
         })
     }
 
@@ -338,6 +378,30 @@ impl Workspace {
     pub fn macro_implicit_refs(&self) -> &std::collections::HashSet<ResolvedPath> {
         &self.macro_refs
     }
+
+    /// Set of canonical paths referenced from the named crate's regular
+    /// code (function bodies, type signatures, etc.) plus its `use`
+    /// declarations. `crate_name` is the in-code form (hyphens replaced
+    /// with `_`); use [`Crate::name`] then `replace('-', "_")` or query by
+    /// the code name directly.
+    ///
+    /// Returns `None` if the crate is not a workspace member or the
+    /// resolver couldn't load source for it.
+    pub fn references_from(
+        &self,
+        crate_name: &str,
+    ) -> Option<&std::collections::HashSet<ResolvedPath>> {
+        self.references_by_crate.get(crate_name)
+    }
+
+    /// Iterator over every `(referring_crate, canonical_path)` reference
+    /// pair across the workspace. Useful for building reverse indexes (e.g.
+    /// "which crates reference symbol X?").
+    pub fn iter_references(&self) -> impl Iterator<Item = (&str, &ResolvedPath)> {
+        self.references_by_crate
+            .iter()
+            .flat_map(|(crate_name, refs)| refs.iter().map(move |r| (crate_name.as_str(), r)))
+    }
 }
 
 fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
@@ -346,6 +410,75 @@ fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::Hash
     }
     for sub in &module.submodules {
         collect_macro_implicit_refs(sub, out);
+    }
+}
+
+/// Walk a directory of standalone `.rs` files (cargo's `tests/`, `benches/`,
+/// `examples/`), parsing each as a root module and unioning its references
+/// into `out`. Subdirectories with a `mod.rs` are walked too (integration
+/// tests sometimes split helpers across files). Errors are silently dropped
+/// — these directories are conventionally present-or-absent and a parse
+/// error on a test file shouldn't crash the resolver for the whole workspace.
+fn scan_aux_dir_references(
+    aux_dir: &Path,
+    crate_name: &str,
+    out: &mut std::collections::HashSet<ResolvedPath>,
+) {
+    let Ok(entries) = std::fs::read_dir(aux_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let canonical = ResolvedPath::new([crate_name.to_string()]);
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("aux")
+                .to_string();
+            if let Ok(module) = module_tree::build_module_from_file(&path, stem, canonical) {
+                collect_module_references(&module, out);
+            }
+        } else if path.is_dir() {
+            let nested = path.join("mod.rs");
+            if nested.exists() {
+                let stem = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("aux_mod")
+                    .to_string();
+                if let Ok(module) = module_tree::build_module_from_file(&nested, stem, canonical) {
+                    collect_module_references(&module, out);
+                }
+            }
+        }
+    }
+}
+
+/// Walk a crate's module tree and collect every canonical path it references,
+/// unioning three sources: `use` bindings (declared imports),
+/// `Module.references` (regular-code path use), and
+/// `Module.macro_implicit_refs` (paths inside the crate's own
+/// `macro_rules!` bodies). Macro-body refs belong here too — when crate A's
+/// macro body mentions `B::foo`, A genuinely depends on B, and unused-deps
+/// must not flag B as unused.
+///
+/// The result populates `Workspace::references_by_crate` once per crate at
+/// load time. Note: the workspace-wide [`Workspace::macro_implicit_refs`]
+/// set is a different concept — it's used as a suppression channel by
+/// visibility/unused-pub to flag items reachable through any macro.
+fn collect_module_references(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
+    for binding in &module.use_bindings {
+        out.insert(binding.canonical.clone());
+    }
+    for path in &module.references {
+        out.insert(path.clone());
+    }
+    for path in &module.macro_implicit_refs {
+        out.insert(path.clone());
+    }
+    for sub in &module.submodules {
+        collect_module_references(sub, out);
     }
 }
 
@@ -410,6 +543,7 @@ mod tests {
             broken_mod_decls: Vec::new(),
             cfg_features: Vec::new(),
             macro_implicit_refs: Vec::new(),
+            references: Vec::new(),
             file: None,
         }
     }

@@ -1,0 +1,10 @@
+[package]
+name = "consumer"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+provider = { path = "../provider" }

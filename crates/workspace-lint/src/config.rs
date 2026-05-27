@@ -89,8 +89,6 @@ pub struct UnusedPubConfig {
     /// At runtime, treat `None` as `true` (the new default).
     #[serde(default, rename = "on-ci-only")]
     pub on_ci_only: Option<bool>,
-    #[serde(default, rename = "scip-index")]
-    pub scip_index: Option<String>,
     #[serde(default, rename = "exclude-crates")]
     pub exclude_crates: Vec<String>,
     #[serde(default)]
@@ -99,8 +97,13 @@ pub struct UnusedPubConfig {
     pub kinds: Vec<String>,
     #[serde(default, rename = "exclude-paths")]
     pub exclude_paths: Vec<String>,
-    #[serde(default = "CargoFeatures::default_all", rename = "cargo-features")]
-    pub cargo_features: CargoFeatures,
+    /// When `true`, suppress the "only used inside the crate" variant and
+    /// only emit findings for items with zero references anywhere. Default
+    /// `false` (both variants reported). Useful on noisy codebases where the
+    /// `pub`-everywhere convention would otherwise flood the report with
+    /// "consider `pub(crate)`" suggestions.
+    #[serde(default, rename = "suppress-intra-crate")]
+    pub suppress_intra_crate: bool,
 }
 
 impl UnusedPubConfig {
@@ -172,25 +175,6 @@ pub enum ArchSeverity {
     #[default]
     Warn,
     Deny,
-}
-
-#[derive(Deserialize, Debug, PartialEq)]
-#[serde(untagged)]
-pub enum CargoFeatures {
-    Keyword(String),
-    List(Vec<String>),
-}
-
-impl Default for CargoFeatures {
-    fn default() -> Self {
-        Self::default_all()
-    }
-}
-
-impl CargoFeatures {
-    fn default_all() -> Self {
-        CargoFeatures::Keyword("all".to_string())
-    }
 }
 
 #[derive(Deserialize)]
@@ -356,12 +340,10 @@ crate = "wasm-bindgen"
 ignore = ["prost", "tonic"]
 
 [unused-pub]
-scip-index = "index.scip"
 exclude-crates = ["api", "sdk"]
 allowlist = ["*Error", "main"]
 kinds = ["function", "struct"]
 exclude-paths = ["generated/**"]
-cargo-features = "all"
 "#;
 
         let config: Config = toml::from_str(toml).unwrap();
@@ -403,7 +385,6 @@ cargo-features = "all"
         assert_eq!(ud.ignore, &["prost", "tonic"]);
 
         let up = config.unused_pub.unwrap();
-        assert_eq!(up.scip_index.as_deref(), Some("index.scip"));
         assert_eq!(up.exclude_crates, &["api", "sdk"]);
         assert_eq!(up.allowlist, &["*Error", "main"]);
         assert_eq!(up.kinds, &["function", "struct"]);
@@ -466,12 +447,10 @@ max-code-lines = 400
         // returns the new default of true.
         assert!(up.on_ci_only.is_none());
         assert!(up.effective_on_ci_only());
-        assert!(up.scip_index.is_none());
         assert!(up.exclude_crates.is_empty());
         assert!(up.allowlist.is_empty());
         assert!(up.kinds.is_empty());
         assert!(up.exclude_paths.is_empty());
-        assert_eq!(up.cargo_features, CargoFeatures::Keyword("all".to_string()));
     }
 
     #[test]
@@ -509,38 +488,17 @@ on-ci-only = false
     fn parse_unused_pub_full() {
         let toml = r#"
 [unused-pub]
-scip-index = "target/index.scip"
 exclude-crates = ["api"]
 allowlist = ["Error", "*Builder"]
 kinds = ["function", "method"]
 exclude-paths = ["generated/**", "proto/**"]
-cargo-features = "default"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         let up = config.unused_pub.unwrap();
-        assert_eq!(up.scip_index.as_deref(), Some("target/index.scip"));
         assert_eq!(up.exclude_crates, &["api"]);
         assert_eq!(up.allowlist, &["Error", "*Builder"]);
         assert_eq!(up.kinds, &["function", "method"]);
         assert_eq!(up.exclude_paths, &["generated/**", "proto/**"]);
-        assert_eq!(
-            up.cargo_features,
-            CargoFeatures::Keyword("default".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_unused_pub_cargo_features_list() {
-        let toml = r#"
-[unused-pub]
-cargo-features = ["feat1", "feat2"]
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        let up = config.unused_pub.unwrap();
-        assert_eq!(
-            up.cargo_features,
-            CargoFeatures::List(vec!["feat1".to_string(), "feat2".to_string()])
-        );
     }
 
     #[test]

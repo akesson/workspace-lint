@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 
 use crate::config::{
-    CargoFeatures, CliCrateVersionConfig, CliCrateVersionRule, CrateSizeConfig, CrateSizeRule,
-    ExpandConfig, ExpandRule, FileSizeConfig, FileSizeRule, FreshnessConfig, FreshnessRule,
-    UnusedDepsConfig, UnusedPubConfig,
+    CliCrateVersionConfig, CliCrateVersionRule, CrateSizeConfig, CrateSizeRule, ExpandConfig,
+    ExpandRule, FileSizeConfig, FileSizeRule, FreshnessConfig, FreshnessRule, UnusedDepsConfig,
+    UnusedPubConfig,
 };
 
 #[derive(Parser)]
@@ -101,29 +101,27 @@ pub enum CheckRule {
         #[arg(long)]
         ignore: Vec<String>,
     },
-    /// Check for unused public items via SCIP index
+    /// Check for unused public items via the resolver-backed cross-crate index
     UnusedPub {
         /// Only run this check in CI environments (when CI env var is set)
         #[arg(long, default_value_t = false)]
         on_ci_only: bool,
-        /// Path to SCIP index file
-        #[arg(long)]
-        scip_index: Option<String>,
         /// Crates to exclude from analysis
         #[arg(long)]
         exclude_crates: Vec<String>,
-        /// Glob patterns for allowed unused items
+        /// Glob patterns for allowed unused items (matched against canonical paths)
         #[arg(long)]
         allowlist: Vec<String>,
-        /// Kinds of items to check (e.g. function, struct)
+        /// Kinds of items to check (e.g. fn, struct, trait)
         #[arg(long)]
         kinds: Vec<String>,
-        /// Path patterns to exclude
+        /// Path patterns to exclude (matched against source file paths)
         #[arg(long)]
         exclude_paths: Vec<String>,
-        /// Cargo features to enable ("all", "default", or specific features)
-        #[arg(long)]
-        cargo_features: Vec<String>,
+        /// Suppress the "only used inside the crate" variant — only report
+        /// items with zero references anywhere.
+        #[arg(long, default_value_t = false)]
+        suppress_intra_crate: bool,
     },
 }
 
@@ -181,30 +179,19 @@ impl CheckRule {
 
     pub fn into_unused_pub_config(
         on_ci_only: bool,
-        scip_index: Option<String>,
         exclude_crates: Vec<String>,
         allowlist: Vec<String>,
         kinds: Vec<String>,
         exclude_paths: Vec<String>,
-        cargo_features: Vec<String>,
+        suppress_intra_crate: bool,
     ) -> UnusedPubConfig {
-        let cargo_features = if cargo_features.is_empty() {
-            CargoFeatures::default()
-        } else if cargo_features.len() == 1
-            && matches!(cargo_features[0].as_str(), "all" | "default" | "none")
-        {
-            CargoFeatures::Keyword(cargo_features.into_iter().next().unwrap())
-        } else {
-            CargoFeatures::List(cargo_features)
-        };
         UnusedPubConfig {
             on_ci_only: Some(on_ci_only),
-            scip_index,
             exclude_crates,
             allowlist,
             kinds,
             exclude_paths,
-            cargo_features,
+            suppress_intra_crate,
         }
     }
 

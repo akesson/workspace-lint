@@ -127,12 +127,6 @@ fn run_all_from_config() -> Vec<Diagnostic> {
     if let Some(ref fc) = config.crate_size {
         diagnostics.extend(crate_size::check(fc));
     }
-    if let Some(ref uc) = config.unused_deps {
-        diagnostics.extend(unused_deps::check(uc));
-    }
-    if let Some(ref up) = config.unused_pub {
-        diagnostics.extend(unused_pub::check(up));
-    }
     // syn-workspace-backed checks share a single resolved Workspace so we
     // pay the cargo_metadata + per-file syn parse once across all of them.
     let architecture_needed = config
@@ -142,7 +136,15 @@ fn run_all_from_config() -> Vec<Diagnostic> {
     let module_tree_needed = config.checks.module_tree;
     let feature_drift_needed = config.checks.feature_drift;
     let visibility_needed = config.checks.visibility;
-    if architecture_needed || module_tree_needed || feature_drift_needed || visibility_needed {
+    let unused_deps_needed = config.unused_deps.is_some();
+    let unused_pub_needed = config.unused_pub.is_some();
+    if architecture_needed
+        || module_tree_needed
+        || feature_drift_needed
+        || visibility_needed
+        || unused_deps_needed
+        || unused_pub_needed
+    {
         // Loud-fail: if the resolver can't load the workspace, every
         // resolver-backed lint would silently produce zero diagnostics. CI
         // would see green for a broken state. Match the existing
@@ -172,6 +174,12 @@ fn run_all_from_config() -> Vec<Diagnostic> {
         }
         if visibility_needed {
             diagnostics.extend(visibility::check(&ws));
+        }
+        if let Some(ref uc) = config.unused_deps {
+            diagnostics.extend(unused_deps::check(uc, &ws));
+        }
+        if let Some(ref up) = config.unused_pub {
+            diagnostics.extend(unused_pub::check(up, &ws));
         }
     }
 
@@ -226,27 +234,33 @@ fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
         }
         CheckRule::UnusedDeps { ignore } => {
             let config = CheckRule::into_unused_deps_config(ignore);
-            unused_deps::check(&config)
+            let ws = syn_workspace::Workspace::load(".").unwrap_or_else(|e| {
+                eprintln!("failed to load workspace for unused-deps: {e}");
+                std::process::exit(1);
+            });
+            unused_deps::check(&config, &ws)
         }
         CheckRule::UnusedPub {
             on_ci_only,
-            scip_index,
             exclude_crates,
             allowlist,
             kinds,
             exclude_paths,
-            cargo_features,
+            suppress_intra_crate,
         } => {
             let config = CheckRule::into_unused_pub_config(
                 on_ci_only,
-                scip_index,
                 exclude_crates,
                 allowlist,
                 kinds,
                 exclude_paths,
-                cargo_features,
+                suppress_intra_crate,
             );
-            unused_pub::check(&config)
+            let ws = syn_workspace::Workspace::load(".").unwrap_or_else(|e| {
+                eprintln!("failed to load workspace for unused-pub: {e}");
+                std::process::exit(1);
+            });
+            unused_pub::check(&config, &ws)
         }
     }
 }
