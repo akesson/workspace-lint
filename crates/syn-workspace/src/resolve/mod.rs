@@ -822,10 +822,23 @@ impl Workspace {
         if let Ok(rel) = path.strip_prefix(&self.root) {
             return rel.to_path_buf();
         }
-        if let Ok(abs_root) = self.root.canonicalize()
-            && let Ok(rel) = path.strip_prefix(&abs_root)
-        {
-            return rel.to_path_buf();
+        // Two follow-up attempts handle the platform asymmetries that bite
+        // in CI:
+        //   - macOS: `/var` ↔ `/private/var` symlink dance — only one side
+        //     canonicalizes.
+        //   - Windows: `Path::canonicalize` returns a `\\?\` UNC prefix that
+        //     the cargo_metadata-derived `manifest_dir` doesn't carry,
+        //     so canonicalising only the root still leaves a mismatch.
+        // Canonicalising both sides at once normalises away both.
+        if let Ok(abs_root) = self.root.canonicalize() {
+            if let Ok(rel) = path.strip_prefix(&abs_root) {
+                return rel.to_path_buf();
+            }
+            if let Ok(abs_path) = path.canonicalize()
+                && let Ok(rel) = abs_path.strip_prefix(&abs_root)
+            {
+                return rel.to_path_buf();
+            }
         }
         path.to_path_buf()
     }
