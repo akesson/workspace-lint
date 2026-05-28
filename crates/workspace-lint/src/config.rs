@@ -204,7 +204,7 @@ fn parse_config(toml_str: &str, source: &str) -> Config {
 /// Extract the `[workspace.metadata.workspace-lint]` section from raw Cargo.toml content,
 /// re-serialized as a standalone TOML string so we can deserialize it into Config.
 fn extract_metadata_section(cargo_toml_content: &str) -> Option<String> {
-    let doc: toml::Value = cargo_toml_content.parse().ok()?;
+    let doc: toml::Value = toml::from_str(cargo_toml_content).ok()?;
     let section = doc
         .get("workspace")?
         .get("metadata")?

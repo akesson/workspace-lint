@@ -5,8 +5,8 @@ fn ws(names: &[&str]) -> BTreeSet<String> {
 }
 
 fn parse_item(toml_str: &str, section: DepSection, dep_name: &str) -> Item {
-    let doc: syn_workspace::toml_edit::ImDocument<String> =
-        syn_workspace::toml_edit::ImDocument::parse(toml_str.to_string()).unwrap();
+    let doc: syn_workspace::toml_edit::Document<String> =
+        syn_workspace::toml_edit::Document::parse(toml_str.to_string()).unwrap();
     let table = doc.as_table();
     let section_item = match section {
         DepSection::Dependencies => table.get("dependencies"),

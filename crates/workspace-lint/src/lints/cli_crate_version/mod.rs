@@ -140,7 +140,7 @@ fn read_lock_packages() -> Vec<(String, String)> {
 }
 
 fn parse_lock_packages(content: &str) -> Vec<(String, String)> {
-    let doc: toml::Value = content.parse().unwrap_or_else(|e| {
+    let doc: toml::Value = toml::from_str(content).unwrap_or_else(|e| {
         eprintln!("failed to parse Cargo.lock: {e}");
         std::process::exit(1);
     });
