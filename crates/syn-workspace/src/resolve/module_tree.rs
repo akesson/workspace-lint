@@ -27,7 +27,7 @@ use super::{
 };
 use crate::macros::annotation::is_expansion_uses;
 use crate::macros::autodetect::extract_macro_paths;
-use crate::macros::dispatch::{dispatch_plugin_refs, matches_known_plugin_macro};
+use crate::plugins;
 
 /// Items, submodules, `use` bindings, broken `mod` declarations,
 /// `#[cfg(feature = "...")]` references, `macro_rules!`-body implicit
@@ -160,7 +160,7 @@ fn collect_module_contents(
                     parent_canonical,
                     &mut macro_refs,
                 );
-            } else if matches_known_plugin_macro(&item_macro.mac.path) {
+            } else if plugins::matches(&item_macro.mac.path) {
                 // Plugin path: known macro invocations (e.g. `quote!`,
                 // `quote::quote!`, `rsx!`) get their bodies scanned the same
                 // way `macro_rules!` bodies are. Token scanning is the
@@ -178,7 +178,7 @@ fn collect_module_contents(
                 // the token scanner misses or misclassifies. Each raw path
                 // gets canonicalized through `resolve_macro_path` so the
                 // resolver's scope rules apply.
-                for raw in dispatch_plugin_refs(&item_macro.mac.path, &item_macro.mac.tokens) {
+                for raw in plugins::refs(&item_macro.mac.path, &item_macro.mac.tokens) {
                     if let Some(canonical) = resolve_macro_path(
                         raw.segments().to_vec(),
                         &scope,
@@ -263,7 +263,7 @@ fn collect_module_contents(
             syn::Item::Macro(item_macro)
                 if item_macro.ident.is_some()
                     || is_expansion_uses(&item_macro.mac.path)
-                    || matches_known_plugin_macro(&item_macro.mac.path) =>
+                    || plugins::matches(&item_macro.mac.path) =>
             {
                 continue;
             }
