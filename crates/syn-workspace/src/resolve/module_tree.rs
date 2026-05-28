@@ -151,7 +151,7 @@ fn collect_module_contents(
         }
 
         if let syn::Item::Use(item_use) = syn_item {
-            let mut bindings = use_tree::bindings_from_use(item_use, &scope);
+            let mut bindings = use_tree::bindings_from_use(item_use, &scope, parent_file);
             for binding in &mut bindings {
                 rewrite_sibling_local(binding, parent_canonical, &sibling_names);
             }
@@ -691,7 +691,7 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 /// offsets within the source file. Returns `None` for synthetic spans
 /// (where `byte_range` is empty), so the resulting `SourceSpan` carries
 /// `byte_range: None` rather than a zero-zero sentinel.
-fn byte_range(span: proc_macro2::Span) -> Option<std::ops::Range<u32>> {
+pub(crate) fn byte_range(span: proc_macro2::Span) -> Option<std::ops::Range<u32>> {
     let r = span.byte_range();
     if r.start == 0 && r.end == 0 {
         None

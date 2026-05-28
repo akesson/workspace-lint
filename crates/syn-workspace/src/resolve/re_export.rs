@@ -199,6 +199,7 @@ mod tests {
             local_name: local.into(),
             canonical: ResolvedPath::new(canonical.iter().map(|s| s.to_string())),
             visibility: Visibility::Public,
+            source: None,
         }
     }
 
@@ -207,6 +208,7 @@ mod tests {
             local_name: local.into(),
             canonical: ResolvedPath::new(canonical.iter().map(|s| s.to_string())),
             visibility: Visibility::Private,
+            source: None,
         }
     }
 

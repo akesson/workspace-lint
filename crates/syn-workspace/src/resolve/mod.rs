@@ -797,6 +797,24 @@ impl Workspace {
         &self.root
     }
 
+    /// Strip the workspace root prefix from `path` and return a path
+    /// relative to [`Self::root`]. Falls back to a clone of `path` when
+    /// the input doesn't start with the workspace root — keeps callers
+    /// (mostly diagnostic-builder lints) one-liners regardless of
+    /// whether the input was inside or outside the workspace tree.
+    ///
+    /// Use this for any anchor or rendered path that's expected to round-
+    /// trip with a `# workspace-lint: …` suppression directive: the
+    /// directive scanner emits anchors against workspace-relative paths,
+    /// so any absolute `cargo_metadata`-derived path needs to come back
+    /// through here before being passed to `at_crate` / `at_file` /
+    /// `at_line`.
+    pub fn crate_relative_path(&self, path: &Path) -> PathBuf {
+        path.strip_prefix(&self.root)
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+
     /// Read and parse the given source file with `syn::parse_file`.
     ///
     /// `Module` only stores the file *path*, not the parsed AST — that
