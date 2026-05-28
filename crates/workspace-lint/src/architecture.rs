@@ -54,8 +54,16 @@ pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnost
         if !krate.is_workspace_member {
             continue;
         }
+        // Architecture rules govern production layering — apply to the
+        // primary unit (lib / proc-macro / main bin) only. Tests,
+        // examples, benches, and build scripts legitimately reach across
+        // layers (a test for the data layer may import the API layer for
+        // setup) and shouldn't enforce production constraints.
+        let Some(target) = krate.lib_or_main() else {
+            continue;
+        };
         let from_name = krate.name.as_str();
-        for_each_binding(&krate.root, &mut |module, binding| {
+        for_each_binding(&target.root, &mut |module, binding| {
             let canonical = workspace.resolve_canonical(&binding.canonical);
             for rule in &compiled {
                 if !rule.matches_from(from_name) {

@@ -25,6 +25,7 @@ strip-ansi-escapes = "0.2"
 syn = { version = "2", features = ["full", "visit"] }
 tokei = { version = "14", default-features = false }
 toml = "0.8"
+toml_edit = "0.22"
 
 # Dev-deps
 assert_cmd = "2"

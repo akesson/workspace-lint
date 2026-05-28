@@ -72,10 +72,11 @@ fn empty_root(crate_name: &str) -> Module {
         macro_implicit_refs: Vec::new(),
         references: Vec::new(),
         file: None,
+        parsed_file: None,
     }
 }
 
-pub(super) fn build_module_from_file(
+pub(crate) fn build_module_from_file(
     file_path: &Path,
     mod_name: String,
     canonical: ResolvedPath,
@@ -99,6 +100,7 @@ pub(super) fn build_module_from_file(
         macro_implicit_refs: contents.macro_implicit_refs,
         references: contents.references,
         file: Some(file_path.to_path_buf()),
+        parsed_file: Some(std::rc::Rc::new(parsed)),
     })
 }
 
@@ -201,6 +203,12 @@ fn collect_module_contents(
 
             if let Some((_, inline_items)) = &item_mod.content {
                 let inline = collect_module_contents(inline_items, parent_file, &child_canonical)?;
+                // Inline `mod foo { ... }` shares the parent's file but
+                // not its parsed AST — the parent's `parsed_file` already
+                // contains this inline body. `parsed_file: None` here
+                // means "ask the file-owner for the AST"; consumers
+                // dedupe by `file` and read `parsed_file` from whichever
+                // module carries it.
                 submodules.push(Module {
                     name: child_name,
                     canonical: child_canonical,
@@ -212,6 +220,7 @@ fn collect_module_contents(
                     macro_implicit_refs: inline.macro_implicit_refs,
                     references: inline.references,
                     file: Some(parent_file.to_path_buf()),
+                    parsed_file: None,
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, item_mod)? {
                 submodules.push(build_module_from_file(

@@ -71,12 +71,15 @@ fn members_iterator_returns_only_workspace_members() {
 fn module_tree_is_populated_for_each_member() {
     let ws = Workspace::load(workspace_root()).expect("load workspace");
 
-    // syn-workspace itself has known submodules (resolve, macros, plugins);
-    // each member-crate root should at minimum have a backing source file.
+    // Every workspace member should expose a primary unit (lib or bin)
+    // backed by a real source file.
     for krate in ws.crates() {
+        let target = krate
+            .lib_or_main()
+            .unwrap_or_else(|| panic!("{}: should expose a lib_or_main target", krate.name));
         assert!(
-            krate.root.file.is_some(),
-            "{}: root module should be backed by lib.rs or main.rs",
+            target.root.file.is_some(),
+            "{}: primary target's root module should be backed by a file",
             krate.name
         );
     }
@@ -87,7 +90,13 @@ fn module_tree_is_populated_for_each_member() {
         .find(|c| c.name == "syn-workspace")
         .expect("self crate should be a member");
 
-    let sub_names: Vec<_> = me.root.submodules.iter().map(|m| m.name.as_str()).collect();
+    let lib = me.lib_or_main().expect("syn-workspace lib target");
+    let sub_names: Vec<_> = lib
+        .root
+        .submodules
+        .iter()
+        .map(|m| m.name.as_str())
+        .collect();
     for expected in ["resolve", "macros", "plugins"] {
         assert!(
             sub_names.contains(&expected),
@@ -123,7 +132,8 @@ fn module_tree_extracts_pub_items() {
         .find(|c| c.name == "syn-workspace")
         .expect("self crate");
 
-    let resolve_mod = me
+    let lib = me.lib_or_main().expect("syn-workspace lib target");
+    let resolve_mod = lib
         .root
         .submodules
         .iter()

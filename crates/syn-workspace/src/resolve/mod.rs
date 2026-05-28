@@ -237,6 +237,62 @@ pub struct Module {
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
+    /// Parsed `syn::File` for this module's backing file. Populated only
+    /// for file-owning modules — i.e. modules where [`Module::file`] is
+    /// `Some` and the resolver successfully parsed the file. Inline
+    /// `mod foo { ... }` submodules carry `None` here; their content
+    /// lives inside the parent file's `parsed_file`.
+    ///
+    /// Held behind [`std::rc::Rc`] (single-threaded — `syn::File` isn't
+    /// `Send`/`Sync` and workspace-lint runs sequentially) so consumers
+    /// can keep cheap references across helpers without re-parsing.
+    /// Memory cost: every file-owning module retains its full AST for
+    /// the lifetime of the [`Workspace`]. Negligible for typical
+    /// workspaces (<1000 source files), but worth knowing for large
+    /// monorepos.
+    pub parsed_file: Option<std::rc::Rc<syn::File>>,
+}
+
+/// Kind of a Cargo target. Library crate-types (`lib`/`rlib`/`dylib`/
+/// `cdylib`/`staticlib`) are coalesced into [`TargetKind::Lib`] since
+/// downstream lints rarely distinguish them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TargetKind {
+    Lib,
+    ProcMacro,
+    Bin,
+    Example,
+    Test,
+    Bench,
+    BuildScript,
+}
+
+/// One Cargo target inside a crate: a `[lib]`, `[[bin]]`, `[[example]]`,
+/// `[[test]]`, `[[bench]]`, proc-macro library, or `build.rs`. Each target
+/// has its own module tree, since cargo compiles each as a separate crate.
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub kind: TargetKind,
+    /// Target name from `Cargo.toml` (or auto-derived for path-discovered
+    /// targets).
+    pub name: String,
+    /// Absolute path to the target's root source file (e.g.
+    /// `…/src/lib.rs`, `…/src/main.rs`, `…/build.rs`,
+    /// `…/tests/integration.rs`).
+    pub src_path: PathBuf,
+    /// Module tree rooted at `src_path`. The root module's `canonical` is
+    /// the parent crate's code-form name — even for non-lib targets — so
+    /// cross-crate references (e.g. `serde::Foo`) inside a test attribute
+    /// to the parent crate's reference set without polluting it with
+    /// synthetic-root paths.
+    pub root: Module,
+}
+
+impl Target {
+    /// Recursively iterate every module in this target's tree, root first.
+    pub fn all_modules(&self) -> impl Iterator<Item = &Module> + '_ {
+        ModuleWalk::new(&self.root)
+    }
 }
 
 /// A crate — either a workspace member or an external dependency. External
@@ -248,23 +304,72 @@ pub struct Crate {
     pub version: String,
     pub manifest_dir: PathBuf,
     pub is_workspace_member: bool,
-    /// Crate-root module. For external crates, this is an empty placeholder.
-    pub root: Module,
+    /// One [`Target`] per Cargo target (`[lib]`, `[[bin]]`, `[[example]]`,
+    /// `[[test]]`, `[[bench]]`, proc-macro lib, `build.rs`). For external
+    /// crates this is empty.
+    pub targets: Vec<Target>,
+    /// `.rs` files under `<manifest_dir>/src/` that aren't reached by any
+    /// of this crate's targets' module trees and aren't the `src_path` of
+    /// some other target. These are the inputs to the `module-tree::
+    /// orphan_rs_file` lint and the `directives` scanner.
+    pub orphan_files: Vec<PathBuf>,
     /// Cargo `[features]` declared in this crate's `Cargo.toml`. Includes
     /// `default` if defined. Activation lists are not retained — the
     /// feature-drift lint only cares about which feature names exist.
     pub declared_features: Vec<String>,
+    /// Parsed `Cargo.toml`. Used by centralized-deps / unused-deps for
+    /// section enumeration and byte-locating dep lines for `--fix`
+    /// suggestions.
+    pub manifest: crate::manifest::Manifest,
 }
 
 impl Crate {
-    /// Iterate all items in the crate, recursively.
-    pub fn items(&self) -> impl Iterator<Item = &Item> {
-        ModuleItems::new(&self.root)
+    /// The crate's primary unit — preferring a library or proc-macro
+    /// target, falling back to the first binary. `None` for crates with
+    /// no targets at all (typically external/non-member entries).
+    ///
+    /// Most lints that historically walked `krate.root` want this:
+    /// `pub_items`, `visibility`, `unused_pub`, etc. care about the lib
+    /// surface, not test/bench/build-script trees.
+    pub fn lib_or_main(&self) -> Option<&Target> {
+        self.targets
+            .iter()
+            .find(|t| matches!(t.kind, TargetKind::Lib | TargetKind::ProcMacro))
+            .or_else(|| self.targets.iter().find(|t| t.kind == TargetKind::Bin))
+    }
+
+    /// Iterate targets of a specific [`TargetKind`].
+    pub fn targets_of_kind(&self, kind: TargetKind) -> impl Iterator<Item = &Target> + '_ {
+        self.targets.iter().filter(move |t| t.kind == kind)
+    }
+
+    /// Iterate every module in every target, root-first within each target.
+    /// Use this when a lint needs the whole crate's surface (e.g.
+    /// `feature_drift` reads `cfg_features` regardless of target).
+    pub fn all_modules(&self) -> impl Iterator<Item = &Module> + '_ {
+        self.targets.iter().flat_map(|t| t.all_modules())
+    }
+
+    /// Iterate items in the crate's primary unit (lib_or_main).
+    /// Test / build-script / bin-not-primary items are *not* included —
+    /// they're not part of the cross-crate API surface that most lints
+    /// reason about. Use [`Crate::all_items`] for full coverage.
+    pub fn items(&self) -> impl Iterator<Item = &Item> + '_ {
+        self.lib_or_main()
+            .into_iter()
+            .flat_map(|t| ModuleItems::new(&t.root))
+    }
+
+    /// Items in *every* target. Rarely needed — most lints want
+    /// [`Crate::items`].
+    pub fn all_items(&self) -> impl Iterator<Item = &Item> + '_ {
+        self.targets.iter().flat_map(|t| ModuleItems::new(&t.root))
     }
 
     /// Iterate items whose visibility is reachable outside the crate
-    /// (currently: `Public` only — `pub(crate)` is intra-crate).
-    pub fn pub_items(&self) -> impl Iterator<Item = &Item> {
+    /// (currently: `Public` only — `pub(crate)` is intra-crate). Restricted
+    /// to the primary unit; tests/build-scripts don't expose a stable API.
+    pub fn pub_items(&self) -> impl Iterator<Item = &Item> + '_ {
         self.items()
             .filter(|i| matches!(i.visibility, Visibility::Public))
     }
@@ -279,6 +384,19 @@ impl Crate {
     pub fn code_name(&self) -> String {
         self.name.replace('-', "_")
     }
+
+    /// Parsed `Cargo.toml` for this crate. Use this in preference to
+    /// re-parsing the file from disk.
+    pub fn manifest(&self) -> &crate::manifest::Manifest {
+        &self.manifest
+    }
+
+    /// All declared dependencies across `[dependencies]`,
+    /// `[dev-dependencies]`, and `[build-dependencies]`. Delegates to
+    /// [`Manifest::declared_deps`].
+    pub fn declared_deps(&self) -> impl Iterator<Item = crate::manifest::DeclaredDep> + '_ {
+        self.manifest.declared_deps()
+    }
 }
 
 /// The top-level resolved workspace.
@@ -286,6 +404,10 @@ impl Crate {
 pub struct Workspace {
     crates: Vec<Crate>,
     root: PathBuf,
+    /// Parsed root `Cargo.toml`. Carries the `[workspace.dependencies]` table
+    /// centralized-deps checks against, and the raw source bytes for the
+    /// directives scanner.
+    root_manifest: crate::manifest::Manifest,
     re_exports: re_export::ReExportIndex,
     /// Macro implicit references partitioned by defining crate (code name).
     /// Built eagerly at load time by unioning every module's
@@ -318,7 +440,7 @@ impl Workspace {
     /// workspace-wide `pub use` chain index (Tier 2.5).
     pub fn load(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
-        let crates = crate::walk::load_members(&root)?;
+        let (root_manifest, crates) = crate::walk::load_members(&root)?;
         let re_exports = re_export::ReExportIndex::build(&crates);
         let mut macro_refs_by_crate: std::collections::HashMap<
             String,
@@ -334,27 +456,37 @@ impl Workspace {
             }
             let code_name = krate.code_name();
             let macro_entry = macro_refs_by_crate.entry(code_name.clone()).or_default();
-            collect_macro_implicit_refs(&krate.root, macro_entry);
             let entry = references_by_crate.entry(code_name.clone()).or_default();
-            collect_module_references(&krate.root, entry);
-            // Cargo dev-deps are used from `tests/`, `benches/`, `examples/`
-            // (separate compilation units, not part of the lib/bin module
-            // tree). Without scanning these, unused-deps false-positives on
-            // every dev-dep used only in integration tests. Attribute their
-            // references to the parent crate.
-            for aux in ["tests", "benches", "examples"] {
-                let aux_dir = krate.manifest_dir.join(aux);
-                collect_aux_references(&aux_dir, entry);
+            // Walk every target (lib/bin/example/test/bench/build-script).
+            // Each target's tree was built with the parent crate's code_name
+            // as canonical root, so cross-crate references (e.g.
+            // `serde::Foo` inside an integration test) attribute correctly
+            // to the parent. Intra-target paths like `crate::helpers::foo`
+            // become `parent_crate::helpers::foo` — self-references that
+            // get filtered out by all consumers (unused-deps ignores them
+            // because they don't match a Cargo.toml dep, visibility ignores
+            // them because they're same-crate, etc.).
+            for target in &krate.targets {
+                collect_macro_implicit_refs(&target.root, macro_entry);
+                collect_module_references(&target.root, entry);
             }
         }
         Ok(Self {
             crates,
             root,
+            root_manifest,
             re_exports,
             macro_refs_by_crate,
             external_macro_refs: std::collections::HashSet::new(),
             references_by_crate,
         })
+    }
+
+    /// Parsed root `Cargo.toml`. Centralized-deps consults this for
+    /// `[workspace.dependencies]`; directives consults `raw()` for
+    /// `# workspace-lint: allow|expect` comments.
+    pub fn root_manifest(&self) -> &crate::manifest::Manifest {
+        &self.root_manifest
     }
 
     /// Register implicit references for macros defined outside the workspace
@@ -486,86 +618,6 @@ fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::Hash
     }
 }
 
-/// Synthetic root segment for aux-file parses. Aux files (integration
-/// tests, benches, examples) are independent compilation units — cargo
-/// gives each one its own crate, so `crate::foo` inside an integration test
-/// resolves to that test binary's root, NOT the lib crate. Using a synthetic
-/// segment isolates aux-internal paths so they don't get misattributed to
-/// the lib crate's canonical tree, and lets us filter them out before
-/// unioning the genuine cross-crate references into the lib's reference set.
-const AUX_SYNTHETIC_ROOT: &str = "__workspace_lint_aux_root";
-
-/// Walk a directory of standalone `.rs` files (cargo's `tests/`, `benches/`,
-/// `examples/`), extract references that point at workspace-external or
-/// other workspace-member crates, and union them into `out`. Subdirectories
-/// with a `mod.rs` are walked too (integration tests sometimes split helpers
-/// across files). Errors are silently dropped — these directories are
-/// conventionally present-or-absent and a parse error on a test file
-/// shouldn't crash the resolver for the whole workspace.
-///
-/// Implementation note: each aux file is parsed under
-/// [`AUX_SYNTHETIC_ROOT`] so `crate::`/`self::`/`super::` peeling
-/// doesn't collide with the lib crate's name. We then drop any reference
-/// whose leading segment is the synthetic root — those are aux-internal
-/// paths (`crate::helpers::foo`) that have no bearing on which deps the
-/// parent crate uses.
-fn collect_aux_references(aux_dir: &Path, out: &mut std::collections::HashSet<ResolvedPath>) {
-    let Ok(entries) = std::fs::read_dir(aux_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let canonical = ResolvedPath::new([AUX_SYNTHETIC_ROOT.to_string()]);
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("aux")
-                .to_string();
-            if let Ok(module) = module_tree::build_module_from_file(&path, stem, canonical) {
-                merge_external_references(&module, out);
-            }
-        } else if path.is_dir() {
-            let nested = path.join("mod.rs");
-            if nested.exists() {
-                let stem = path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("aux_mod")
-                    .to_string();
-                if let Ok(module) = module_tree::build_module_from_file(&nested, stem, canonical) {
-                    merge_external_references(&module, out);
-                }
-            }
-        }
-    }
-}
-
-/// Like [`collect_module_references`] but drops paths rooted at
-/// [`AUX_SYNTHETIC_ROOT`] — those are intra-aux references that have no
-/// meaning outside the aux file itself.
-fn merge_external_references(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
-    let is_aux_internal = |p: &ResolvedPath| p.crate_name() == Some(AUX_SYNTHETIC_ROOT);
-    for binding in &module.use_bindings {
-        if !is_aux_internal(&binding.canonical) {
-            out.insert(binding.canonical.clone());
-        }
-    }
-    for path in &module.references {
-        if !is_aux_internal(path) {
-            out.insert(path.clone());
-        }
-    }
-    for path in &module.macro_implicit_refs {
-        if !is_aux_internal(path) {
-            out.insert(path.clone());
-        }
-    }
-    for sub in &module.submodules {
-        merge_external_references(sub, out);
-    }
-}
-
 /// Walk a crate's module tree and collect every canonical path it references,
 /// unioning three sources: `use` bindings (declared imports),
 /// `Module.references` (regular-code path use), and
@@ -590,6 +642,31 @@ fn collect_module_references(module: &Module, out: &mut std::collections::HashSe
     }
     for sub in &module.submodules {
         collect_module_references(sub, out);
+    }
+}
+
+/// Recursive iterator over modules in a tree, yielding the root first
+/// then descending into submodules depth-first. Used by [`Target::all_modules`]
+/// and [`Crate::all_modules`].
+struct ModuleWalk<'a> {
+    stack: Vec<&'a Module>,
+}
+
+impl<'a> ModuleWalk<'a> {
+    fn new(root: &'a Module) -> Self {
+        Self { stack: vec![root] }
+    }
+}
+
+impl<'a> Iterator for ModuleWalk<'a> {
+    type Item = &'a Module;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let module = self.stack.pop()?;
+        for sub in module.submodules.iter().rev() {
+            self.stack.push(sub);
+        }
+        Some(module)
     }
 }
 
@@ -653,6 +730,7 @@ mod tests {
             use_bindings: Vec::new(),
             broken_mod_decls: Vec::new(),
             cfg_features: Vec::new(),
+            parsed_file: None,
             macro_implicit_refs: Vec::new(),
             references: Vec::new(),
             file: None,
@@ -686,13 +764,21 @@ mod tests {
         priv_item.visibility = Visibility::Private;
         pub_item.visibility = Visibility::Public;
         let root = module("root", "demo", vec![pub_item, priv_item], vec![]);
+        let lib_target = Target {
+            kind: TargetKind::Lib,
+            name: "demo".into(),
+            src_path: PathBuf::from("src/lib.rs"),
+            root,
+        };
         let krate = Crate {
             name: "demo".into(),
             version: "0.0.0".into(),
             manifest_dir: PathBuf::new(),
             is_workspace_member: true,
-            root,
+            targets: vec![lib_target],
+            orphan_files: Vec::new(),
             declared_features: Vec::new(),
+            manifest: crate::manifest::Manifest::empty(),
         };
         let pub_names: Vec<_> = krate.pub_items().map(|i| i.name.clone()).collect();
         assert_eq!(pub_names, vec!["visible"]);

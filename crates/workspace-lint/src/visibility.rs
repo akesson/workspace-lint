@@ -43,8 +43,14 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         // crate's items (its own macros + macros from every dependent
         // crate). See `macro_implicit_refs_for` for the full rule.
         let macro_refs = workspace.macro_implicit_refs_for(krate);
+        // Only inspect the primary unit — tests/benches/examples
+        // legitimately use `pub` for cross-test plumbing, and flagging
+        // them would amount to noise.
+        let Some(target) = krate.lib_or_main() else {
+            continue;
+        };
         collect_overpermissive(
-            &krate.root,
+            &target.root,
             &code_name,
             &cross_crate_refs,
             &macro_refs,
