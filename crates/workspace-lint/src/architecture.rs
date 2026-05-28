@@ -50,20 +50,14 @@ pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnost
         return diagnostics;
     }
 
-    for krate in workspace.crates() {
-        if !krate.is_workspace_member {
-            continue;
-        }
-        // Architecture rules govern production layering — apply to the
-        // primary unit (lib / proc-macro / main bin) only. Tests,
-        // examples, benches, and build scripts legitimately reach across
-        // layers (a test for the data layer may import the API layer for
-        // setup) and shouldn't enforce production constraints.
-        let Some(target) = krate.lib_or_main() else {
-            continue;
-        };
+    // Architecture rules govern production layering — apply to each
+    // member's primary unit (lib / proc-macro / main bin) only. Tests,
+    // examples, benches, and build scripts legitimately reach across
+    // layers (a test for the data layer may import the API layer for
+    // setup) and shouldn't enforce production constraints.
+    for (krate, target) in workspace.primary_units() {
         let from_name = krate.name.as_str();
-        for_each_binding(&target.root, &mut |module, binding| {
+        for (module, binding) in target.root.walk_use_bindings() {
             let canonical = workspace.resolve_canonical(&binding.canonical);
             for rule in &compiled {
                 if !rule.matches_from(from_name) {
@@ -77,22 +71,10 @@ pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnost
                 }
                 diagnostics.push(build_diagnostic(rule, krate, module, binding, &canonical));
             }
-        });
+        }
     }
 
     diagnostics
-}
-
-fn for_each_binding(
-    module: &Module,
-    cb: &mut dyn FnMut(&Module, &syn_workspace::resolve::use_tree::UseBinding),
-) {
-    for binding in &module.use_bindings {
-        cb(module, binding);
-    }
-    for sub in &module.submodules {
-        for_each_binding(sub, cb);
-    }
 }
 
 fn build_diagnostic(

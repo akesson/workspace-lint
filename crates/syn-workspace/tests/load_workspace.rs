@@ -85,9 +85,7 @@ fn module_tree_is_populated_for_each_member() {
     }
 
     let me = ws
-        .crates()
-        .iter()
-        .find(|c| c.name == "syn-workspace")
+        .member_by_name("syn-workspace")
         .expect("self crate should be a member");
 
     let lib = me.lib_or_main().expect("syn-workspace lib target");
@@ -126,11 +124,7 @@ fn re_export_index_chases_self_chain() {
 #[test]
 fn module_tree_extracts_pub_items() {
     let ws = Workspace::load(workspace_root()).expect("load workspace");
-    let me = ws
-        .crates()
-        .iter()
-        .find(|c| c.name == "syn-workspace")
-        .expect("self crate");
+    let me = ws.member_by_name("syn-workspace").expect("self crate");
 
     let lib = me.lib_or_main().expect("syn-workspace lib target");
     let resolve_mod = lib

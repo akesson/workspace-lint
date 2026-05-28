@@ -17,7 +17,7 @@
 
 use std::collections::BTreeSet;
 
-use syn_workspace::{Module, Workspace};
+use syn_workspace::Workspace;
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
@@ -26,18 +26,15 @@ pub const LINT: &str = crate::lints::LintId::FeatureDrift.id();
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    for krate in workspace.crates() {
-        if !krate.is_workspace_member {
-            continue;
-        }
+    for krate in workspace.members() {
         let declared: BTreeSet<&str> = krate.declared_features.iter().map(String::as_str).collect();
-        let mut used: BTreeSet<String> = BTreeSet::new();
         // Feature gates can appear in any target (build.rs gates
         // build-time codegen, tests gate integration paths). Walk all
         // targets so we don't miss a `#[cfg(feature = "x")]` outside lib.
-        for target in &krate.targets {
-            collect_cfg_features(&target.root, &mut used);
-        }
+        let used: BTreeSet<String> = krate
+            .all_modules()
+            .flat_map(|m| m.cfg_features.iter().cloned())
+            .collect();
         let used_refs: BTreeSet<&str> = used.iter().map(String::as_str).collect();
 
         // declared_never_gated — skip `default` and any feature literally
@@ -82,13 +79,4 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         }
     }
     diagnostics
-}
-
-fn collect_cfg_features(module: &Module, out: &mut BTreeSet<String>) {
-    for f in &module.cfg_features {
-        out.insert(f.clone());
-    }
-    for sub in &module.submodules {
-        collect_cfg_features(sub, out);
-    }
 }

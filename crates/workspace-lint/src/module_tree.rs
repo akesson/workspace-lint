@@ -25,10 +25,7 @@ pub const LINT: &str = crate::lints::LintId::ModuleTree.id();
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    for krate in workspace.crates() {
-        if !krate.is_workspace_member {
-            continue;
-        }
+    for krate in workspace.members() {
         for module in krate.all_modules() {
             collect_broken_mod_decls(module, &mut diagnostics);
         }

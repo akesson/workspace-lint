@@ -22,7 +22,7 @@ use crate::config::UnusedPubConfig;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_line;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace};
 
 pub const LINT: &str = crate::lints::LintId::UnusedPub.id();
@@ -32,17 +32,16 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
         return Vec::new();
     }
 
-    // Per-canonical-path: set of crates that reference it (excluding the
-    // defining crate). Empty entry means "referenced only intra-crate"; no
-    // entry at all means "not referenced anywhere in the workspace".
-    let references_by_path = build_reference_index(workspace);
     let kind_filter = parse_kind_filter(&config.kinds);
     let allowlist = build_glob_set(&config.allowlist, "allowlist");
     let exclude_paths = build_glob_set(&config.exclude_paths, "exclude-paths");
 
     let mut diagnostics = Vec::new();
 
-    for krate in workspace.members() {
+    // `pub` items in tests / build scripts / benches aren't part of the
+    // cross-crate API surface, so we only scan each member's primary unit
+    // (lib / proc-macro / main bin).
+    for (krate, target) in workspace.primary_units() {
         let crate_code = krate.code_name();
         if config
             .exclude_crates
@@ -55,178 +54,139 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
         // macros plus macros from every crate that references this one.
         // See `macro_implicit_refs_for` for the rule.
         let macro_refs = workspace.macro_implicit_refs_for(krate);
-        // `pub` items in tests / build scripts / benches aren't part of
-        // the cross-crate API surface, so we only scan the lib (or
-        // proc-macro / main bin). Same scope as the pre-refactor
-        // `krate.root` walk.
-        let Some(target) = krate.lib_or_main() else {
-            continue;
+        let ctx = CheckCtx {
+            workspace,
+            crate_code: &crate_code,
+            macro_refs: &macro_refs,
+            kind_filter: kind_filter.as_ref(),
+            allowlist: allowlist.as_ref(),
+            exclude_paths: exclude_paths.as_ref(),
+            suppress_intra_crate: config.suppress_intra_crate,
+            auto_delete: config.auto_delete,
         };
-        collect_findings(
-            &target.root,
-            &crate_code,
-            &references_by_path,
-            &macro_refs,
-            kind_filter.as_ref(),
-            allowlist.as_ref(),
-            exclude_paths.as_ref(),
-            config.suppress_intra_crate,
-            config.auto_delete,
-            &mut diagnostics,
-        );
+        for (module, item) in target.root.walk_items() {
+            if let Some(d) = check_item(module, item, &ctx) {
+                diagnostics.push(d);
+            }
+        }
     }
 
     diagnostics
 }
 
-/// Build a `canonical_path → set<referring_crate>` index from the
-/// workspace's per-crate reference sets. The defining crate is excluded
-/// from each entry, so checking "referenced from another crate" reduces to
-/// "entry exists and is non-empty".
-fn build_reference_index(workspace: &Workspace) -> HashMap<ResolvedPath, HashSet<String>> {
-    let mut out: HashMap<ResolvedPath, HashSet<String>> = HashMap::new();
-    for (referring_crate, path) in workspace.iter_references() {
-        // Follow re-export chains so an item used via `pub use` counts as a
-        // reference to its canonical definition site, not the re-export.
-        let canonical = workspace.resolve_canonical(path);
-        let entry = out.entry(canonical).or_default();
-        entry.insert(referring_crate.to_string());
-    }
-    out
-}
-
-#[allow(clippy::too_many_arguments)]
-fn collect_findings(
-    module: &Module,
-    crate_code: &str,
-    refs_by_path: &HashMap<ResolvedPath, HashSet<String>>,
-    macro_refs: &HashSet<ResolvedPath>,
-    kind_filter: Option<&HashSet<ItemKind>>,
-    allowlist: Option<&GlobSet>,
-    exclude_paths: Option<&GlobSet>,
+struct CheckCtx<'a> {
+    workspace: &'a Workspace,
+    crate_code: &'a str,
+    macro_refs: &'a HashSet<ResolvedPath>,
+    kind_filter: Option<&'a HashSet<ItemKind>>,
+    allowlist: Option<&'a GlobSet>,
+    exclude_paths: Option<&'a GlobSet>,
     suppress_intra_crate: bool,
     auto_delete: bool,
-    out: &mut Vec<Diagnostic>,
-) {
-    for item in &module.items {
-        if !checkable(item) {
-            continue;
-        }
-        if item.visibility != Visibility::Public {
-            continue;
-        }
-        // Crate-root `pub fn main()` is the bin entry point; cargo needs it
-        // pub for entry-point resolution.
-        if item.name == "main" && module.canonical.segments().len() == 1 {
-            continue;
-        }
-        if let Some(kf) = kind_filter
-            && !kf.contains(&item.kind)
-        {
-            continue;
-        }
-        if let Some(al) = allowlist
-            && al.is_match(item.canonical.display())
-        {
-            continue;
-        }
-        if let Some(ex) = exclude_paths
-            && let Some(span) = &item.source
-            && ex.is_match(span.file.to_string_lossy().as_ref())
-        {
-            continue;
-        }
-        // Macro-body reachability is a workspace-wide suppression channel:
-        // any item appearing in any `macro_rules!` body is potentially
-        // reachable from any macro call site, so don't flag.
-        if macro_refs.contains(&item.canonical) {
-            continue;
-        }
+}
 
-        let referring = refs_by_path.get(&item.canonical);
-        let used_cross_crate = referring
-            .map(|set| set.iter().any(|c| c != crate_code))
-            .unwrap_or(false);
-        if used_cross_crate {
-            continue;
-        }
-        let used_same_crate = referring
-            .map(|set| set.contains(crate_code))
-            .unwrap_or(false);
+fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagnostic> {
+    if !item.kind.is_definition() {
+        return None;
+    }
+    if item.visibility != Visibility::Public {
+        return None;
+    }
+    // Crate-root `pub fn main()` is the bin entry point; cargo needs it
+    // pub for entry-point resolution.
+    if item.name == "main" && module.canonical.segments().len() == 1 {
+        return None;
+    }
+    if let Some(kf) = ctx.kind_filter
+        && !kf.contains(&item.kind)
+    {
+        return None;
+    }
+    if let Some(al) = ctx.allowlist
+        && al.is_match(item.canonical.display())
+    {
+        return None;
+    }
+    if let Some(ex) = ctx.exclude_paths
+        && let Some(span) = &item.source
+        && ex.is_match(span.file.to_string_lossy().as_ref())
+    {
+        return None;
+    }
+    // Macro-body reachability is a workspace-wide suppression channel:
+    // any item appearing in any `macro_rules!` body is potentially
+    // reachable from any macro call site, so don't flag.
+    if ctx.macro_refs.contains(&item.canonical) {
+        return None;
+    }
 
-        if used_same_crate && suppress_intra_crate {
-            continue;
-        }
+    let referring = ctx.workspace.referring_crates(&item.canonical);
+    let used_cross_crate = referring
+        .map(|set| set.iter().any(|c| c != ctx.crate_code))
+        .unwrap_or(false);
+    if used_cross_crate {
+        return None;
+    }
+    let used_same_crate = referring
+        .map(|set| set.contains(ctx.crate_code))
+        .unwrap_or(false);
 
-        let Some(span) = &item.source else {
-            continue;
-        };
+    if used_same_crate && ctx.suppress_intra_crate {
+        return None;
+    }
 
-        let kind_str = format_kind(item.kind);
-        let (message, suggestion) = if used_same_crate {
-            (
-                format!(
-                    "pub {kind_str} `{}` in crate `{crate_code}` is only used inside the crate",
-                    item.name
-                ),
-                "consider `pub(crate)` to tighten visibility",
-            )
-        } else {
-            (
-                format!(
-                    "pub {kind_str} `{}` in crate `{crate_code}` appears unused — consider removing",
-                    item.name
-                ),
-                "remove the item or its `pub` visibility",
-            )
-        };
+    let span = item.source.as_ref()?;
 
-        let mut builder = at_line(LINT, message, span.file.clone(), span.line)
-            .help(suggestion)
-            .note(
-                "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
-            );
-        // Structural fix policy:
-        //  - "only used inside the crate" → always pub → pub(crate).
-        //  - "appears unused" + auto_delete on + file is git-tracked-clean
-        //    → delete the item.
-        //  - "appears unused" + auto_delete on + file is dirty/untracked
-        //    → emit deletion suggestion as MaybeIncorrect (--fix skips
-        //    those) with an extra note explaining why.
-        //  - "appears unused" + auto_delete off → pub → pub(crate).
-        let want_delete = !used_same_crate && auto_delete;
-        if want_delete {
-            match delete_suggestion(span) {
-                DeleteOutcome::Apply(s) => builder = builder.suggestion(s),
-                DeleteOutcome::Skip(s, reason) => {
-                    builder = builder.suggestion(s).note(reason);
-                }
-                DeleteOutcome::Unavailable => {
-                    if let Some(s) = crate::visibility::build_tighten_suggestion(span) {
-                        builder = builder.suggestion(s);
-                    }
+    let kind_str = item.kind;
+    let crate_code = ctx.crate_code;
+    let (message, suggestion) = if used_same_crate {
+        (
+            format!(
+                "pub {kind_str} `{}` in crate `{crate_code}` is only used inside the crate",
+                item.name
+            ),
+            "consider `pub(crate)` to tighten visibility",
+        )
+    } else {
+        (
+            format!(
+                "pub {kind_str} `{}` in crate `{crate_code}` appears unused — consider removing",
+                item.name
+            ),
+            "remove the item or its `pub` visibility",
+        )
+    };
+
+    let mut builder = at_line(LINT, message, span.file.clone(), span.line)
+        .help(suggestion)
+        .note(
+            "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
+        );
+    // Structural fix policy:
+    //  - "only used inside the crate" → always pub → pub(crate).
+    //  - "appears unused" + auto_delete on + file is git-tracked-clean
+    //    → delete the item.
+    //  - "appears unused" + auto_delete on + file is dirty/untracked
+    //    → emit deletion suggestion as MaybeIncorrect (--fix skips
+    //    those) with an extra note explaining why.
+    //  - "appears unused" + auto_delete off → pub → pub(crate).
+    let want_delete = !used_same_crate && ctx.auto_delete;
+    if want_delete {
+        match delete_suggestion(span) {
+            DeleteOutcome::Apply(s) => builder = builder.suggestion(s),
+            DeleteOutcome::Skip(s, reason) => {
+                builder = builder.suggestion(s).note(reason);
+            }
+            DeleteOutcome::Unavailable => {
+                if let Some(s) = crate::visibility::build_tighten_suggestion(span) {
+                    builder = builder.suggestion(s);
                 }
             }
-        } else if let Some(s) = crate::visibility::build_tighten_suggestion(span) {
-            builder = builder.suggestion(s);
         }
-        out.push(builder.build());
+    } else if let Some(s) = crate::visibility::build_tighten_suggestion(span) {
+        builder = builder.suggestion(s);
     }
-
-    for sub in &module.submodules {
-        collect_findings(
-            sub,
-            crate_code,
-            refs_by_path,
-            macro_refs,
-            kind_filter,
-            allowlist,
-            exclude_paths,
-            suppress_intra_crate,
-            auto_delete,
-            out,
-        );
-    }
+    Some(builder.build())
 }
 
 enum DeleteOutcome {
@@ -241,7 +201,7 @@ enum DeleteOutcome {
 }
 
 fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
-    if span.byte_start == 0 && span.byte_end == 0 {
+    if !span.has_byte_range() {
         return DeleteOutcome::Unavailable;
     }
     let Ok(source) = fs_err::read_to_string(&span.file) else {
@@ -317,39 +277,6 @@ fn is_file_clean_in_git(path: &std::path::Path) -> bool {
         return false;
     }
     out.stdout.is_empty()
-}
-
-fn checkable(item: &Item) -> bool {
-    matches!(
-        item.kind,
-        ItemKind::Fn
-            | ItemKind::Struct
-            | ItemKind::Enum
-            | ItemKind::Union
-            | ItemKind::Trait
-            | ItemKind::TypeAlias
-            | ItemKind::Const
-            | ItemKind::Static
-            | ItemKind::Macro
-    )
-}
-
-fn format_kind(kind: ItemKind) -> &'static str {
-    match kind {
-        ItemKind::Fn => "fn",
-        ItemKind::Struct => "struct",
-        ItemKind::Enum => "enum",
-        ItemKind::Union => "union",
-        ItemKind::Trait => "trait",
-        ItemKind::TypeAlias => "type",
-        ItemKind::Const => "const",
-        ItemKind::Static => "static",
-        ItemKind::Module => "mod",
-        ItemKind::Macro => "macro",
-        ItemKind::Impl => "impl",
-        ItemKind::Use => "use",
-        ItemKind::ExternCrate => "extern crate",
-    }
 }
 
 fn parse_kind_filter(kinds: &[String]) -> Option<HashSet<ItemKind>> {
@@ -440,28 +367,5 @@ mod tests {
     #[test]
     fn glob_set_returns_none_for_empty() {
         assert!(build_glob_set(&[], "test").is_none());
-    }
-
-    #[test]
-    fn format_kind_covers_all_variants() {
-        // Don't crash on any ItemKind — important since the resolver may
-        // extend this enum in the future and we'd want a quick visual check.
-        for k in [
-            ItemKind::Fn,
-            ItemKind::Struct,
-            ItemKind::Enum,
-            ItemKind::Union,
-            ItemKind::Trait,
-            ItemKind::TypeAlias,
-            ItemKind::Const,
-            ItemKind::Static,
-            ItemKind::Module,
-            ItemKind::Macro,
-            ItemKind::Impl,
-            ItemKind::Use,
-            ItemKind::ExternCrate,
-        ] {
-            let _ = format_kind(k);
-        }
     }
 }
