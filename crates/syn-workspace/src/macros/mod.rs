@@ -16,8 +16,8 @@
 //! Plugins (`crate::plugins::MacroBodyParser`) are a fourth, orthogonal
 //! mechanism: instead of declaring references statically, they parse macro
 //! bodies on demand into structured ASTs (e.g. `dioxus-rsx` for `rsx!`).
-//! The walker dispatches to them via [`crate::plugins::matches`] and
-//! [`crate::plugins::refs`].
+//! The walker dispatches to them via `plugins::matches` and
+//! `plugins::refs`.
 
 pub mod annotation;
 pub mod autodetect;
