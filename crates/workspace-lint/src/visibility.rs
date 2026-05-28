@@ -28,7 +28,6 @@ use crate::diagnostic::builder::at_line;
 pub const LINT: &str = crate::lints::LintId::Visibility.id();
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
-    let cross_crate_refs = collect_cross_crate_refs(workspace);
     let mut diagnostics = Vec::new();
 
     // Only inspect each member's primary unit — tests/benches/examples
@@ -44,7 +43,7 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         // crate). See `macro_implicit_refs_for` for the full rule.
         let macro_refs = workspace.macro_implicit_refs_for(krate);
         for (module, item) in target.root.walk_items() {
-            if let Some(d) = check_item(module, item, &code_name, &cross_crate_refs, &macro_refs) {
+            if let Some(d) = check_item(workspace, module, item, &code_name, &macro_refs) {
                 diagnostics.push(d);
             }
         }
@@ -53,13 +52,16 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
 }
 
 fn check_item(
+    workspace: &Workspace,
     module: &Module,
     item: &Item,
     crate_code_name: &str,
-    cross_crate_refs: &HashSet<ResolvedPath>,
     macro_refs: &HashSet<ResolvedPath>,
 ) -> Option<Diagnostic> {
-    if !checkable(item) {
+    // Visibility tightening doesn't apply to `macro_rules!` — those are
+    // exported via `#[macro_export]`, not the syn `pub` keyword, so the
+    // tightening suggestion ("pub → pub(crate)") doesn't have a target.
+    if !item.kind.is_definition() || matches!(item.kind, ItemKind::Macro) {
         return None;
     }
     if item.visibility != Visibility::Public {
@@ -70,7 +72,13 @@ fn check_item(
     if item.name == "main" && module.canonical.segments().len() == 1 {
         return None;
     }
-    if cross_crate_refs.contains(&item.canonical) {
+    // Used from any other crate? Consult the workspace's canonical-ref
+    // index directly — built once at load time so per-crate lookups don't
+    // re-chase pub-use chains.
+    let cross_crate_used = workspace
+        .referring_crates(&item.canonical)
+        .is_some_and(|set| set.iter().any(|c| c != crate_code_name));
+    if cross_crate_used {
         return None;
     }
     // Suppress if the item is reachable through any workspace
@@ -172,36 +180,4 @@ fn find_word_boundary_pub(slice: &str) -> Option<usize> {
         }
     }
     None
-}
-
-fn checkable(item: &Item) -> bool {
-    matches!(
-        item.kind,
-        ItemKind::Fn
-            | ItemKind::Struct
-            | ItemKind::Enum
-            | ItemKind::Union
-            | ItemKind::Trait
-            | ItemKind::TypeAlias
-            | ItemKind::Const
-            | ItemKind::Static
-    )
-}
-
-fn collect_cross_crate_refs(workspace: &Workspace) -> HashSet<ResolvedPath> {
-    // Walk the resolver's per-crate references index (use bindings +
-    // regular code paths + macro_rules! body refs), follow each path
-    // through any `pub use` chain, and keep only paths that point to a
-    // different crate than the referring one. This subsumes the old
-    // use-binding-only walk while also catching fully-qualified path
-    // references inside function bodies (e.g. `lib_a::Button` inside an
-    // rsx! body that has no `use` statement).
-    let mut refs = HashSet::new();
-    for (referring_crate, path) in workspace.iter_references() {
-        let canonical = workspace.resolve_canonical(path);
-        if canonical.crate_name() != Some(referring_crate) {
-            refs.insert(canonical);
-        }
-    }
-    refs
 }

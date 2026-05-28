@@ -22,7 +22,7 @@ use crate::config::UnusedPubConfig;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_line;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace};
 
 pub const LINT: &str = crate::lints::LintId::UnusedPub.id();
@@ -32,10 +32,6 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
         return Vec::new();
     }
 
-    // Per-canonical-path: set of crates that reference it (excluding the
-    // defining crate). Empty entry means "referenced only intra-crate"; no
-    // entry at all means "not referenced anywhere in the workspace".
-    let references_by_path = build_reference_index(workspace);
     let kind_filter = parse_kind_filter(&config.kinds);
     let allowlist = build_glob_set(&config.allowlist, "allowlist");
     let exclude_paths = build_glob_set(&config.exclude_paths, "exclude-paths");
@@ -59,8 +55,8 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
         // See `macro_implicit_refs_for` for the rule.
         let macro_refs = workspace.macro_implicit_refs_for(krate);
         let ctx = CheckCtx {
+            workspace,
             crate_code: &crate_code,
-            refs_by_path: &references_by_path,
             macro_refs: &macro_refs,
             kind_filter: kind_filter.as_ref(),
             allowlist: allowlist.as_ref(),
@@ -79,8 +75,8 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
 }
 
 struct CheckCtx<'a> {
+    workspace: &'a Workspace,
     crate_code: &'a str,
-    refs_by_path: &'a HashMap<ResolvedPath, HashSet<String>>,
     macro_refs: &'a HashSet<ResolvedPath>,
     kind_filter: Option<&'a HashSet<ItemKind>>,
     allowlist: Option<&'a GlobSet>,
@@ -89,24 +85,8 @@ struct CheckCtx<'a> {
     auto_delete: bool,
 }
 
-/// Build a `canonical_path → set<referring_crate>` index from the
-/// workspace's per-crate reference sets. The defining crate is excluded
-/// from each entry, so checking "referenced from another crate" reduces to
-/// "entry exists and is non-empty".
-fn build_reference_index(workspace: &Workspace) -> HashMap<ResolvedPath, HashSet<String>> {
-    let mut out: HashMap<ResolvedPath, HashSet<String>> = HashMap::new();
-    for (referring_crate, path) in workspace.iter_references() {
-        // Follow re-export chains so an item used via `pub use` counts as a
-        // reference to its canonical definition site, not the re-export.
-        let canonical = workspace.resolve_canonical(path);
-        let entry = out.entry(canonical).or_default();
-        entry.insert(referring_crate.to_string());
-    }
-    out
-}
-
 fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagnostic> {
-    if !checkable(item) {
+    if !item.kind.is_definition() {
         return None;
     }
     if item.visibility != Visibility::Public {
@@ -140,7 +120,7 @@ fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagno
         return None;
     }
 
-    let referring = ctx.refs_by_path.get(&item.canonical);
+    let referring = ctx.workspace.referring_crates(&item.canonical);
     let used_cross_crate = referring
         .map(|set| set.iter().any(|c| c != ctx.crate_code))
         .unwrap_or(false);
@@ -157,7 +137,7 @@ fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagno
 
     let span = item.source.as_ref()?;
 
-    let kind_str = format_kind(item.kind);
+    let kind_str = item.kind;
     let crate_code = ctx.crate_code;
     let (message, suggestion) = if used_same_crate {
         (
@@ -299,39 +279,6 @@ fn is_file_clean_in_git(path: &std::path::Path) -> bool {
     out.stdout.is_empty()
 }
 
-fn checkable(item: &Item) -> bool {
-    matches!(
-        item.kind,
-        ItemKind::Fn
-            | ItemKind::Struct
-            | ItemKind::Enum
-            | ItemKind::Union
-            | ItemKind::Trait
-            | ItemKind::TypeAlias
-            | ItemKind::Const
-            | ItemKind::Static
-            | ItemKind::Macro
-    )
-}
-
-fn format_kind(kind: ItemKind) -> &'static str {
-    match kind {
-        ItemKind::Fn => "fn",
-        ItemKind::Struct => "struct",
-        ItemKind::Enum => "enum",
-        ItemKind::Union => "union",
-        ItemKind::Trait => "trait",
-        ItemKind::TypeAlias => "type",
-        ItemKind::Const => "const",
-        ItemKind::Static => "static",
-        ItemKind::Module => "mod",
-        ItemKind::Macro => "macro",
-        ItemKind::Impl => "impl",
-        ItemKind::Use => "use",
-        ItemKind::ExternCrate => "extern crate",
-    }
-}
-
 fn parse_kind_filter(kinds: &[String]) -> Option<HashSet<ItemKind>> {
     if kinds.is_empty() {
         return None;
@@ -420,28 +367,5 @@ mod tests {
     #[test]
     fn glob_set_returns_none_for_empty() {
         assert!(build_glob_set(&[], "test").is_none());
-    }
-
-    #[test]
-    fn format_kind_covers_all_variants() {
-        // Don't crash on any ItemKind — important since the resolver may
-        // extend this enum in the future and we'd want a quick visual check.
-        for k in [
-            ItemKind::Fn,
-            ItemKind::Struct,
-            ItemKind::Enum,
-            ItemKind::Union,
-            ItemKind::Trait,
-            ItemKind::TypeAlias,
-            ItemKind::Const,
-            ItemKind::Static,
-            ItemKind::Module,
-            ItemKind::Macro,
-            ItemKind::Impl,
-            ItemKind::Use,
-            ItemKind::ExternCrate,
-        ] {
-            let _ = format_kind(k);
-        }
     }
 }
