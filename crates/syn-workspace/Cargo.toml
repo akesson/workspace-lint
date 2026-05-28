@@ -7,9 +7,16 @@ repository = "https://github.com/human-solutions/workspace-lint"
 description = "A resolved workspace model for Rust: per-file imports, cross-file module trees, pub-use chains, and macro-body parsing — built on syn, no rust-analyzer required."
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["dioxus"]
+# `dioxus` enables the `rsx!` / `dioxus::rsx!` macro-body parser. Disabling
+# it drops the `dioxus-rsx` dep (and its transitives) for users who don't
+# need Dioxus component-path detection. See `src/plugins/dioxus_rsx/`.
+dioxus = ["dep:dioxus-rsx"]
+
 [dependencies]
 cargo_metadata = { workspace = true }
-dioxus-rsx = { workspace = true }
+dioxus-rsx = { workspace = true, optional = true }
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }

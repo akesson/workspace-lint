@@ -6,27 +6,43 @@
 //! parse such bodies into structured ASTs and emit precise reference lists.
 //!
 //! **This is an internal extension point**, not a public API. The trait,
-//! the context type, and the built-in parser list are all `pub(crate)` and
-//! exist so that built-in parsers (currently [`QuoteParser`] and
-//! [`DioxusRsxParser`]) can be added in one place without spreading their
-//! match logic across the resolver. Downstream consumers do not implement
-//! this trait; they consume the resolved references via
-//! [`crate::Workspace`].
+//! the context type, the registry, and the [`matches`]/[`refs`] dispatch
+//! functions are all `pub(crate)` and exist so that built-in parsers can be
+//! added in one place. Downstream consumers do not implement this trait;
+//! they consume the resolved references via [`crate::Workspace`].
 //!
 //! ## Adding a built-in parser
 //!
-//! 1. Implement [`MacroBodyParser`] in a new module under `plugins/`.
-//! 2. Append a `Box::new(MyParser)` entry to [`builtin_parsers`].
-//! 3. Add fixtures under
+//! Each plugin lives in its own folder (mirroring the layout of
+//! `crates/workspace-lint/src/lints/`). To add one:
+//!
+//! 1. Create `plugins/<name>/mod.rs`. Define your parser struct and
+//!    `impl MacroBodyParser for ...`. Colocate unit tests in a
+//!    `#[cfg(test)] mod tests` block in the same file.
+//! 2. **If your parser brings an extra crate dep**: mark that dep
+//!    `optional = true` in `crates/syn-workspace/Cargo.toml`, add a
+//!    `<name>` entry to the `[features]` table (and to `default` if it
+//!    should ship enabled by default), and gate the `mod <name>;` line
+//!    below with `#[cfg(feature = "<name>")]`.
+//! 3. Append `Box::new(<name>::Parser)` to [`builtin_parsers`] (with the
+//!    same `#[cfg]` gate if your parser is feature-flagged).
+//! 4. Add a `builtin_parsers_includes_<name>` test in the registry tests
+//!    below (cfg-gated to match).
+//! 5. Add fixtures under
 //!    `crates/workspace-lint/tests/cases/<lint>/{true_negatives,known_false_positives}/`.
+//!
+//! There is no separate gating table to update — the module-tree walker
+//! goes through [`matches`], which iterates [`builtin_parsers`] and asks
+//! each parser whether it claims the macro path.
 
 use proc_macro2::TokenStream;
 
 use crate::resolve::ResolvedPath;
 
-pub(crate) mod dioxus_rsx;
+pub(crate) mod quote;
 
-pub(crate) use dioxus_rsx::DioxusRsxParser;
+#[cfg(feature = "dioxus")]
+pub(crate) mod dioxus_rsx;
 
 /// Context passed to a plugin while it's resolving references inside a
 /// macro body. Currently carries no state; the type exists so the trait
@@ -55,42 +71,54 @@ pub(crate) trait MacroBodyParser: Send + Sync {
     fn matches(&self, macro_path: &ResolvedPath) -> bool;
 
     /// Extract references from the macro's body. Implementations that rely
-    /// solely on Layer 1 token-scanning (currently [`QuoteParser`]) return
-    /// an empty vec — they exist only to gate Layer 1 via [`Self::matches`].
+    /// solely on Layer 1 token-scanning (currently [`quote::QuoteParser`])
+    /// return an empty vec — they exist only to gate Layer 1 via
+    /// [`Self::matches`].
     fn references(&self, body: &TokenStream, cx: &ResolveContext<'_>) -> Vec<ResolvedPath>;
 }
 
 /// All built-in plugin parsers shipped with `syn-workspace`.
 pub(crate) fn builtin_parsers() -> Vec<Box<dyn MacroBodyParser>> {
-    vec![Box::new(QuoteParser), Box::new(DioxusRsxParser)]
+    // `mut` only needed when at least one feature-gated parser is enabled.
+    #[allow(unused_mut)]
+    let mut v: Vec<Box<dyn MacroBodyParser>> = vec![Box::new(quote::QuoteParser)];
+    #[cfg(feature = "dioxus")]
+    v.push(Box::new(dioxus_rsx::DioxusRsxParser));
+    v
 }
 
-/// Built-in parser for `quote!` / `quote::quote!` invocations.
+/// Returns `true` if any built-in plugin parser claims the macro at `path`.
 ///
-/// `quote!` bodies are token streams the proc-macro emits as Rust source at
-/// expansion time. Their contents reference items the caller will see at
-/// the expansion site; Layer 1 token scanning (extract multi-segment path
-/// tokens, resolve through the call-site scope) handles them. This parser
-/// only contributes the `matches` predicate that gates the token scan —
-/// `references` is intentionally empty.
-pub(crate) struct QuoteParser;
+/// Single source of truth for the "is this a known plugin macro?" gate
+/// used by the module-tree walker — both to enable Layer 1 token scanning
+/// of bodies and to suppress double-counting in the implicit-refs filter.
+/// The matched path set is derived from each parser's `matches()`, so
+/// adding a plugin does not require any edits here.
+pub(crate) fn matches(path: &syn::Path) -> bool {
+    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    let rp = ResolvedPath::new(segs);
+    builtin_parsers().iter().any(|p| p.matches(&rp))
+}
 
-impl MacroBodyParser for QuoteParser {
-    fn matches(&self, macro_path: &ResolvedPath) -> bool {
-        let segs = macro_path.segments();
-        // Match bare `quote!` and `quote::quote!`. Other suffixes
-        // (`quote_spanned!`, `format_ident!`) intentionally don't match —
-        // their body semantics differ.
-        match segs {
-            [single] => single == "quote",
-            [a, b] => a == "quote" && b == "quote",
-            _ => false,
+/// Dispatch a macro invocation to the built-in plugin registry and collect
+/// any references the matching parser emits. Returned paths are in raw
+/// (uncanonicalized) form — the caller runs them through
+/// [`crate::resolve::module_tree::resolve_macro_path`] to apply scope rules.
+pub(crate) fn refs(macro_path: &syn::Path, body: &TokenStream) -> Vec<ResolvedPath> {
+    let segs: Vec<String> = macro_path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    let mp = ResolvedPath::new(segs);
+    let cx = ResolveContext::placeholder();
+    let mut out: Vec<ResolvedPath> = Vec::new();
+    for parser in builtin_parsers() {
+        if parser.matches(&mp) {
+            out.extend(parser.references(body, &cx));
         }
     }
-
-    fn references(&self, _body: &TokenStream, _cx: &ResolveContext<'_>) -> Vec<ResolvedPath> {
-        Vec::new()
-    }
+    out
 }
 
 #[cfg(test)]
@@ -131,13 +159,7 @@ mod tests {
         assert!(parsers.iter().any(|p| p.matches(&quote_qualified)));
     }
 
-    #[test]
-    fn quote_parser_does_not_match_unrelated_macros() {
-        let parsers = builtin_parsers();
-        let lazy_static = ResolvedPath::new(["lazy_static"]);
-        assert!(!parsers.iter().any(|p| p.matches(&lazy_static)));
-    }
-
+    #[cfg(feature = "dioxus")]
     #[test]
     fn builtin_parsers_includes_dioxus_rsx() {
         let parsers = builtin_parsers();
@@ -145,5 +167,28 @@ mod tests {
         let dioxus_rsx_qualified = ResolvedPath::new(["dioxus", "rsx"]);
         assert!(parsers.iter().any(|p| p.matches(&rsx)));
         assert!(parsers.iter().any(|p| p.matches(&dioxus_rsx_qualified)));
+    }
+
+    fn syn_path(s: &str) -> syn::Path {
+        syn::parse_str(s).expect("valid path")
+    }
+
+    #[test]
+    fn matches_gates_known_plugin_macros() {
+        assert!(matches(&syn_path("quote")));
+        assert!(matches(&syn_path("quote::quote")));
+    }
+
+    #[cfg(feature = "dioxus")]
+    #[test]
+    fn matches_gates_rsx_when_dioxus_enabled() {
+        assert!(matches(&syn_path("rsx")));
+        assert!(matches(&syn_path("dioxus::rsx")));
+    }
+
+    #[test]
+    fn matches_rejects_unrelated_macros() {
+        assert!(!matches(&syn_path("lazy_static")));
+        assert!(!matches(&syn_path("serde_json::json")));
     }
 }
