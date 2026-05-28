@@ -1,11 +1,11 @@
-error: import of `data_models::internal::InternalUser` from `apps-foo` violates architecture rule `apps-no-data-internals`
- --> crates/apps-foo/src/lib.rs:1:1
+error: import of `data_models::internal::InternalUser` from `apps-bar` violates architecture rule `apps-no-data-internals`
+ --> crates/apps-bar/src/lib.rs:6:1
   |
   = help: import via data-models::api::*
   = note: Apps must not depend on data internals; use data-models::api instead
 help: if intentional, silence with:
   |
-1 + workspace_lint::allow!(architecture);
+6 + workspace_lint::allow!(architecture);
   |
   = note: `#[deny(workspace_lint::architecture)]` on by default
 

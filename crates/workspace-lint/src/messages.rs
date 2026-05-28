@@ -189,17 +189,20 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .help("run `git rm crates/old/src/legacy.rs` to stage the removal")
             .build(),
         ),
-        // architecture: a denied `use` violates a configured rule.
+        // architecture: a denied `use` violates a configured rule. Anchored
+        // at the offending `use` line via `UseBinding::source` (added in
+        // syn-workspace 0.4.0); the previous "imported in module …" note
+        // is redundant once the diagnostic points at the line itself.
         (
             "architecture_denied_import",
-            at_crate(
+            at_line(
                 "workspace-lint::architecture",
                 "import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`",
-                PathBuf::from("crates/apps-foo"),
+                PathBuf::from("crates/apps-foo/src/lib.rs"),
+                7,
             )
             .help("import from `data-models::api` instead")
             .note("internal types are not part of the published API surface")
-            .note("imported in module `apps_foo`")
             .build(),
         ),
         // module-tree: a `mod foo;` declaration with no backing file.
@@ -504,14 +507,13 @@ mod tests {
         fn architecture_denied_import() {
             insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r"
             warning: import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`
-             --> crates/apps-foo/Cargo.toml:1:1
+             --> crates/apps-foo/src/lib.rs:7:1
               |
               = help: import from `data-models::api` instead
               = note: internal types are not part of the published API surface
-              = note: imported in module `apps_foo`
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(architecture)
+            7 + workspace_lint::allow!(architecture);
               |
               = note: `#[warn(workspace_lint::architecture)]` on by default
             ");
@@ -668,7 +670,7 @@ mod tests {
 
         #[test]
         fn architecture_denied_import() {
-            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r##"{"level":"warning","message":"import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: allow(architecture)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]},{"level":"note","message":"imported in module `apps_foo`","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r#"{"level":"warning","message":"import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(architecture);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
@@ -772,7 +774,7 @@ mod tests {
 
         #[test]
         fn architecture_denied_import() {
-            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @"::warning file=crates/apps-foo/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Aarchitecture::import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`");
+            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @"::warning file=crates/apps-foo/src/lib.rs,line=7,col=1,title=workspace-lint%3A%3Aarchitecture::import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`");
         }
 
         #[test]
