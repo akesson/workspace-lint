@@ -44,7 +44,7 @@ pub enum LintId {
 
 impl LintId {
     /// Every lint variant, in stable (alphabetical-by-id) order. Order is
-    /// asserted by [`tests::all_ids_are_sorted`].
+    /// asserted by `tests::all_ids_are_sorted`.
     pub const ALL: &'static [LintId] = &[
         LintId::Architecture,
         LintId::CentralizedDeps,

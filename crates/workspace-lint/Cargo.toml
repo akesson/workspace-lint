@@ -5,6 +5,7 @@
 name = "workspace-lint"
 version = "0.1.0"
 edition = "2024"
+rust-version.workspace = true
 repository = "https://github.com/human-solutions/workspace-lint"
 
 [dependencies]

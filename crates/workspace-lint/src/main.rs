@@ -89,7 +89,7 @@ fn main() {
 /// Apply the `[lints]` table overrides: any diagnostic whose lint short
 /// name appears in `config.lints` has its `level` rewritten to the
 /// configured value. Diagnostics not in the table keep the per-check
-/// default (typically [`Level::Warn`]).
+/// default (typically `Level::Warn`).
 fn apply_lint_levels(config: &config::Config, diagnostics: &mut [Diagnostic]) {
     for d in diagnostics {
         if let Some(level) = config.lints.level_for(d.lint.as_ref()) {

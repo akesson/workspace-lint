@@ -2,13 +2,13 @@
 //!
 //! Token-level scanning of macro bodies for path-like `Ident :: Ident
 //! (:: Ident)*` sequences. Resolves each through the macro's defining
-//! scope (using [`crate::resolve::module_tree::resolve_macro_path`]) and
+//! scope (using `crate::resolve::module_tree::resolve_macro_path`) and
 //! records the canonical path in the caller's output set.
 //!
 //! **Suppression bias — important to understand.** Any multi-segment path
 //! shape *anywhere* inside *any* `macro_rules!` body in the workspace ends
 //! up in the implicit-refs set. That set is union'd across every member
-//! crate (see [`crate::Workspace::macro_implicit_refs`]) and lints like
+//! crate (see `crate::Workspace::macro_implicit_refs`) and lints like
 //! `visibility` and `unused-pub` skip items whose canonical appears in it.
 //!
 //! In other words: a match-arm pattern like `Foo::Bar` or a hand-written

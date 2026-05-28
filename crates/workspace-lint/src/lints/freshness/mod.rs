@@ -96,11 +96,15 @@ fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
 }
 
 pub fn mark_done(config: &FreshnessConfig) {
+    mark_done_with_root(config, Path::new("."));
+}
+
+fn mark_done_with_root(config: &FreshnessConfig, root: &Path) {
     let now = SystemTime::now();
     let times = std::fs::FileTimes::new().set_modified(now);
 
     for rule in &config.rules {
-        let files = find_files_matching(Path::new("."), &rule.glob);
+        let files = find_files_matching(root, &rule.glob);
         for file in &files {
             let f = match fs_err::File::options().write(true).open(file) {
                 Ok(f) => f,

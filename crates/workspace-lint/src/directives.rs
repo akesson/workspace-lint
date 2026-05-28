@@ -537,4 +537,51 @@ mod tests {
         write(tmp.path(), "data.bin", "anything goes here");
         assert!(scan(tmp.path()).is_empty());
     }
+
+    // --- item_anchor_line ---
+
+    fn parse_one(src: &str) -> syn::Item {
+        let file: syn::File = syn::parse_str(src).unwrap();
+        file.items.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn item_anchor_line_for_fn_points_at_ident() {
+        // `pub fn foo()` is on line 2 → the `foo` ident lives on line 2.
+        let item = parse_one("\npub fn foo() {}\n");
+        assert_eq!(item_anchor_line(&item), Some(2));
+    }
+
+    #[test]
+    fn item_anchor_line_for_struct_enum_union() {
+        assert_eq!(item_anchor_line(&parse_one("\nstruct S;")), Some(2));
+        assert_eq!(item_anchor_line(&parse_one("\n\nenum E { A, B }")), Some(3));
+        assert_eq!(item_anchor_line(&parse_one("union U { x: u8 }")), Some(1));
+    }
+
+    #[test]
+    fn item_anchor_line_for_trait_type_const_static() {
+        assert_eq!(item_anchor_line(&parse_one("trait T {}")), Some(1));
+        assert_eq!(item_anchor_line(&parse_one("\ntype A = u8;")), Some(2));
+        assert_eq!(item_anchor_line(&parse_one("const C: u8 = 1;")), Some(1));
+        assert_eq!(item_anchor_line(&parse_one("static X: u8 = 1;")), Some(1));
+    }
+
+    #[test]
+    fn item_anchor_line_for_mod_and_impl() {
+        assert_eq!(item_anchor_line(&parse_one("\nmod m {}")), Some(2));
+        // For Impl, the anchor is the `impl` keyword line, not an ident.
+        assert_eq!(
+            item_anchor_line(&parse_one("\nstruct S;\nimpl S {}")),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn item_anchor_line_none_for_unsupported_kinds() {
+        // syn::Item::Use is not one of the matched arms.
+        assert_eq!(item_anchor_line(&parse_one("use std::io;")), None);
+        // syn::Item::ExternCrate, ForeignMod, Macro etc. → also None.
+        assert_eq!(item_anchor_line(&parse_one("extern crate foo;")), None);
+    }
 }

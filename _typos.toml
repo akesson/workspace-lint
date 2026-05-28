@@ -1,0 +1,6 @@
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "crates/workspace-lint/tests/fixtures/**",
+    "crates/workspace-lint/tests/cases/**",
+]

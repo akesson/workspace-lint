@@ -1,5 +1,7 @@
 # workspace-lint
 
+[![CI](https://github.com/akesson/workspace-lint/actions/workflows/ci.yml/badge.svg)](https://github.com/akesson/workspace-lint/actions/workflows/ci.yml)
+
 A Rust CLI that enforces workspace quality standards via configurable lint checks.
 
 Emits clippy-style human output, rustc-compatible JSON, or GitHub Actions

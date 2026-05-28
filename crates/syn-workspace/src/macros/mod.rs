@@ -13,7 +13,7 @@
 //! workspace-owned macros, else `Layer 3` for declared externals, else empty
 //! (documented in `known_false_positives` fixtures).
 //!
-//! Plugins ([`crate::plugins::MacroBodyParser`]) are a fourth, orthogonal
+//! Plugins (`crate::plugins::MacroBodyParser`) are a fourth, orthogonal
 //! mechanism: instead of declaring references statically, they parse macro
 //! bodies on demand into structured ASTs (e.g. `dioxus-rsx` for `rsx!`).
 

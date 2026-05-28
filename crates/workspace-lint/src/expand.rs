@@ -1,10 +1,14 @@
 use crate::config::ExpandConfig;
 use fs_err as fs;
 use globset::Glob;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn run(config: &ExpandConfig) {
+    run_with_root(config, Path::new("."));
+}
+
+fn run_with_root(config: &ExpandConfig, root: &Path) {
     for rule in &config.rules {
         let (program, args) = rule.command.split_first().unwrap_or_else(|| {
             eprintln!("expand: command must not be empty");
@@ -35,7 +39,7 @@ pub fn run(config: &ExpandConfig) {
         let start_marker = format!("<!-- {}_START -->", rule.marker);
         let end_marker = format!("<!-- {}_END -->", rule.marker);
 
-        let files = find_files_matching(&rule.glob);
+        let files = find_files_matching(root, &rule.glob);
         if files.is_empty() {
             eprintln!(
                 "expand: no files matching `{}` for marker {}",
@@ -116,7 +120,7 @@ fn replace_marker(
     ))
 }
 
-fn find_files_matching(pattern: &str) -> Vec<PathBuf> {
+fn find_files_matching(root: &Path, pattern: &str) -> Vec<PathBuf> {
     let glob = Glob::new(pattern).unwrap_or_else(|e| {
         eprintln!("expand: invalid glob pattern '{pattern}': {e}");
         std::process::exit(1);
@@ -124,13 +128,13 @@ fn find_files_matching(pattern: &str) -> Vec<PathBuf> {
     let matcher = glob.compile_matcher();
 
     let mut results = Vec::new();
-    for entry in ignore::WalkBuilder::new(".").build().flatten() {
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
-        let path = entry.path().strip_prefix("./").unwrap_or(entry.path());
-        if matcher.is_match(path) {
-            results.push(path.to_path_buf());
+        let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
+        if matcher.is_match(rel) {
+            results.push(entry.into_path());
         }
     }
     results
@@ -201,5 +205,91 @@ mod tests {
         let body = "line1\nline2\nline3\n";
         let result = replace_marker(content, &s, &e, body).unwrap();
         assert!(result.contains("line1\nline2\nline3\n"));
+    }
+
+    // --- run_with_root (end-to-end with subprocess) ---
+
+    use crate::config::ExpandRule;
+    use tempfile::TempDir;
+
+    fn write(dir: &Path, name: &str, content: &str) {
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn run_rewrites_file_with_command_output() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "DOC.md",
+            "header\n<!-- VERSION_START -->\nold\n<!-- VERSION_END -->\nfooter\n",
+        );
+
+        let config = ExpandConfig {
+            rules: vec![ExpandRule {
+                command: vec!["cargo".into(), "--version".into()],
+                glob: "DOC.md".into(),
+                marker: "VERSION".into(),
+                auto_stage: false,
+            }],
+        };
+
+        run_with_root(&config, tmp.path());
+
+        let result = std::fs::read_to_string(tmp.path().join("DOC.md")).unwrap();
+        assert!(result.starts_with("header\n"));
+        assert!(result.ends_with("footer\n"));
+        assert!(result.contains("cargo "));
+        assert!(!result.contains("old"));
+    }
+
+    #[test]
+    fn run_noop_when_content_already_matches() {
+        let tmp = TempDir::new().unwrap();
+        // Pre-populate with the body the command would produce.
+        let initial = "<!-- ECHO_START -->\n```\nhi\n```\n<!-- ECHO_END -->\n";
+        write(tmp.path(), "X.md", initial);
+        let before_mtime = std::fs::metadata(tmp.path().join("X.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        // Use `printf` (POSIX) — falls back to no test on non-unix.
+        #[cfg(unix)]
+        {
+            let config = ExpandConfig {
+                rules: vec![ExpandRule {
+                    command: vec!["printf".into(), "hi\n".into()],
+                    glob: "X.md".into(),
+                    marker: "ECHO".into(),
+                    auto_stage: false,
+                }],
+            };
+            run_with_root(&config, tmp.path());
+
+            let after = std::fs::read_to_string(tmp.path().join("X.md")).unwrap();
+            assert_eq!(after, initial);
+            let after_mtime = std::fs::metadata(tmp.path().join("X.md"))
+                .unwrap()
+                .modified()
+                .unwrap();
+            assert_eq!(before_mtime, after_mtime, "file should not be rewritten");
+        }
+    }
+
+    #[test]
+    fn run_skips_when_no_matching_files() {
+        let tmp = TempDir::new().unwrap();
+        // No file matches the glob.
+        let config = ExpandConfig {
+            rules: vec![ExpandRule {
+                command: vec!["cargo".into(), "--version".into()],
+                glob: "NEVER_MATCHES.md".into(),
+                marker: "X".into(),
+                auto_stage: false,
+            }],
+        };
+        // Should print a warning and continue without panicking.
+        run_with_root(&config, tmp.path());
     }
 }
