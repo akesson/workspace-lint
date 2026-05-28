@@ -1,0 +1,525 @@
+//! Parsed-and-located `Cargo.toml` view.
+//!
+//! Owns the raw source bytes plus a `toml_edit::ImDocument` parse for
+//! structural reads. Stays *read-only* — the syn-workspace model contract.
+//! Mutation needed for fix-mode replacements happens in
+//! [`Manifest::format_workspace_dep`] on a local `DocumentMut` scratch and
+//! returns a `String`; the stored doc is never modified.
+//!
+//! Two consumers today:
+//!
+//! - `centralized_deps`: enumerates `[dependencies]` / `[dev-dependencies]` /
+//!   `[build-dependencies]` per crate, checks each against the workspace's
+//!   `[workspace.dependencies]` table, and constructs `workspace = true`
+//!   rewrites via [`Manifest::format_workspace_dep`].
+//! - `unused_deps`: enumerates declared deps via [`Crate::declared_deps`] (a
+//!   thin wrapper on [`Manifest::deps`]) and uses [`Manifest::locate_dep`] to
+//!   build delete-line suggestions.
+//!
+//! Locator note: [`Manifest::locate_dep`] uses a line-based byte scanner
+//! rather than `toml_edit`'s value-level span info. The line-based form
+//! returns the *whole `key = value` line* including indent — which is what
+//! both consumers want — without needing to walk decor/whitespace around the
+//! value span. Multi-line inline tables (entry wraps across `\n`) are
+//! outside TOML 1.0 spec and `toml_edit::ImDocument::parse` rejects them at
+//! load time; we don't try to handle them. Real-world Cargo.toml files use
+//! `[dependencies.<name>]` table blocks instead — those parse fine.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use toml_edit::{ImDocument, Item, Table, TableLike, Value};
+
+use crate::resolve::{Error, Result};
+
+/// Which dependency table a query targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DepSection {
+    Dependencies,
+    DevDependencies,
+    BuildDependencies,
+    /// `[workspace.dependencies]` — only valid on the root manifest.
+    WorkspaceDependencies,
+}
+
+impl DepSection {
+    /// Cargo's table-header form (e.g. `"dev-dependencies"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dependencies => "dependencies",
+            Self::DevDependencies => "dev-dependencies",
+            Self::BuildDependencies => "build-dependencies",
+            Self::WorkspaceDependencies => "workspace.dependencies",
+        }
+    }
+
+    /// The non-workspace sections in iteration order. Most lints want all
+    /// three; `WorkspaceDependencies` is queried explicitly.
+    pub fn member_sections() -> [DepSection; 3] {
+        [
+            Self::Dependencies,
+            Self::DevDependencies,
+            Self::BuildDependencies,
+        ]
+    }
+}
+
+/// Byte location of a single dep line within the source manifest.
+///
+/// Covers the *line* (including leading indent, excluding trailing `\n` /
+/// `\r\n`). Suitable for `--fix`-style byte-range replacement against the
+/// `Manifest::raw()` content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepLocation {
+    /// 1-indexed line number of the dep entry.
+    pub line: u32,
+    /// Inclusive byte offset of the line start.
+    pub byte_start: u32,
+    /// Exclusive byte offset of the line end (EOL bytes excluded).
+    pub byte_end: u32,
+}
+
+/// One declared dependency, as enumerated by [`Manifest::declared_deps`] or
+/// [`Crate::declared_deps`]. Carries enough for unused-deps to match against
+/// the resolver's references_by_crate index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredDep {
+    pub section: DepSection,
+    /// Name as written in the Cargo.toml (may contain hyphens).
+    pub original_name: String,
+    /// Cargo-form name with hyphens replaced by underscores. Matches the
+    /// crate-name segment in `ResolvedPath`.
+    pub normalized_name: String,
+}
+
+/// A parsed Cargo manifest. Pure read-only data on the model side.
+#[derive(Debug, Clone)]
+pub struct Manifest {
+    path: PathBuf,
+    raw: String,
+    doc: ImDocument<String>,
+}
+
+impl Manifest {
+    /// Read and parse `Cargo.toml` at `path`. Errors propagate as
+    /// [`Error::Manifest`] with the path embedded.
+    pub fn load(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| Error::Manifest(format!("failed to read {}: {e}", path.display())))?;
+        let doc: ImDocument<String> = ImDocument::parse(raw.clone())
+            .map_err(|e| Error::Manifest(format!("failed to parse {}: {e}", path.display())))?;
+        Ok(Self { path, raw, doc })
+    }
+
+    /// An empty manifest at a synthetic path. Provided for tests and
+    /// synthesized `Crate` fixtures — callers building a workspace by hand
+    /// (rather than via [`Workspace::load`]) can use this to satisfy the
+    /// `manifest` field without touching disk.
+    pub fn empty() -> Self {
+        Self {
+            path: PathBuf::new(),
+            raw: String::new(),
+            doc: ImDocument::parse(String::new()).expect("empty toml is parseable"),
+        }
+    }
+
+    /// Absolute path of the manifest file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Raw source bytes. Used by fix suggestions to address the file by byte
+    /// offset, and by `directives` to scan comment-form `# workspace-lint:`
+    /// markers.
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// The parsed read-only document.
+    pub fn doc(&self) -> &ImDocument<String> {
+        &self.doc
+    }
+
+    /// Iterate `(name, item)` pairs in a given section. Returns an empty
+    /// iterator if the section is absent.
+    ///
+    /// For [`DepSection::WorkspaceDependencies`] this drills into
+    /// `[workspace.dependencies]`. For everything else it reads the top-level
+    /// table directly.
+    pub fn deps(&self, section: DepSection) -> impl Iterator<Item = (&str, &Item)> + '_ {
+        self.section_table(section)
+            .into_iter()
+            .flat_map(|t| t.iter())
+    }
+
+    /// All dep names in `[workspace.dependencies]`. Convenience for
+    /// centralized-deps' workspace-membership check.
+    pub fn workspace_dep_names(&self) -> BTreeSet<String> {
+        self.section_table(DepSection::WorkspaceDependencies)
+            .map(|t| t.iter().map(|(k, _)| k.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerate declared deps across `[dependencies]`, `[dev-dependencies]`,
+    /// and `[build-dependencies]`. Excludes the workspace.dependencies
+    /// section (that's the root-only sink, not a "the crate depends on X"
+    /// signal).
+    pub fn declared_deps(&self) -> impl Iterator<Item = DeclaredDep> + '_ {
+        DepSection::member_sections().into_iter().flat_map(|s| {
+            self.deps(s).map(move |(name, _)| DeclaredDep {
+                section: s,
+                original_name: name.to_string(),
+                normalized_name: name.replace('-', "_"),
+            })
+        })
+    }
+
+    /// Locate the line for a specific dep key inside the given section.
+    /// Returns `None` for entries whose value wraps across multiple lines
+    /// (multi-line inline table) — those are not safely rewritable by a
+    /// single byte-range replacement.
+    pub fn locate_dep(&self, section: DepSection, dep_name: &str) -> Option<DepLocation> {
+        locate_dep_line(&self.raw, section, dep_name)
+    }
+
+    /// Build the canonical workspace-form replacement *line* for `dep_name`:
+    /// `<indent><name> = { workspace = true[, features = [...], optional = true,
+    /// default-features = false] }`.
+    ///
+    /// Indent is preserved from the original line (read via [`Manifest::raw`]).
+    /// Returns `None` if the dep can't be located or the value is a shape we
+    /// don't rewrite (multi-line inline table, or a `[dependencies.<name>]`
+    /// table block — those aren't single-line replacements).
+    ///
+    /// `version`/`git`/`registry`/`path` keys are dropped (the workspace
+    /// inherit covers them); `features`/`optional`/`default-features` are
+    /// preserved alongside `workspace = true`.
+    pub fn format_workspace_dep(&self, section: DepSection, dep_name: &str) -> Option<String> {
+        let location = self.locate_dep(section, dep_name)?;
+        let original_line = &self.raw[location.byte_start as usize..location.byte_end as usize];
+        let indent_end = original_line
+            .char_indices()
+            .find(|(_, c)| !c.is_whitespace())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let indent = &original_line[..indent_end];
+
+        let table = self.section_table(section)?;
+        let item = table.get(dep_name)?;
+        let new_value = format_workspace_value(item)?;
+        Some(format!("{indent}{dep_name} = {new_value}"))
+    }
+
+    fn section_table(&self, section: DepSection) -> Option<&dyn TableLike> {
+        let root: &Table = self.doc.as_table();
+        match section {
+            DepSection::Dependencies => root.get("dependencies").and_then(Item::as_table_like),
+            DepSection::DevDependencies => {
+                root.get("dev-dependencies").and_then(Item::as_table_like)
+            }
+            DepSection::BuildDependencies => {
+                root.get("build-dependencies").and_then(Item::as_table_like)
+            }
+            DepSection::WorkspaceDependencies => root
+                .get("workspace")
+                .and_then(Item::as_table_like)?
+                .get("dependencies")
+                .and_then(Item::as_table_like),
+        }
+    }
+}
+
+/// Build the inline-table value `{ workspace = true[, ...preserved] }` for a
+/// dep currently shaped as `Value::String("1.0")` or
+/// `Value::InlineTable({...})`. Returns `None` for shapes we don't rewrite
+/// (e.g. `[dependencies.<name>]` block — those are `Item::Table`, not a
+/// `Value`, and don't fit a single-line replacement).
+fn format_workspace_value(item: &Item) -> Option<String> {
+    let value = item.as_value()?;
+    let mut new_table = toml_edit::InlineTable::new();
+    new_table.insert("workspace", true.into());
+
+    // Inline-table source: preserve the keys that cargo allows alongside
+    // workspace = true.
+    if let Value::InlineTable(existing) = value {
+        for key in ["features", "optional", "default-features"] {
+            if let Some(v) = existing.get(key) {
+                let mut cloned = v.clone();
+                // Strip decor so the rendered table is canonical (no inherited
+                // newlines or trailing comments from the source).
+                cloned.decor_mut().clear();
+                new_table.insert(key, cloned);
+            }
+        }
+    } else if !value.is_str() {
+        // Anything else (datetime, integer, array, …) doesn't fit a dep
+        // line — bail rather than emit nonsense.
+        return None;
+    }
+
+    Some(new_table.to_string())
+}
+
+fn locate_dep_line(content: &str, section: DepSection, dep_name: &str) -> Option<DepLocation> {
+    let mut current_section: Option<String> = None;
+    let mut byte_offset = 0usize;
+    for (i, raw_line) in content.split('\n').enumerate() {
+        // `split('\n')` leaves a trailing `\r` on CRLF files. Trim it for
+        // structural matching (section headers etc.) but keep the original
+        // length for byte-offset accounting so callers can still address
+        // the file accurately.
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let line_with_newline_len = raw_line.len() + 1; // raw_line + the \n we split on
+        let trimmed = line.trim_start();
+        if let Some(name) = parse_section_header(trimmed) {
+            current_section = Some(name.to_string());
+            byte_offset += line_with_newline_len;
+            continue;
+        }
+        if current_section_matches(current_section.as_deref(), section)
+            && line_matches_dep(trimmed, dep_name)
+        {
+            // Reject multi-line inline tables — if the line starts the
+            // entry but doesn't terminate `}` on the same line, bail.
+            if has_unbalanced_inline_table(line) {
+                return None;
+            }
+            let start = byte_offset;
+            // `end` excludes any trailing CR/LF so the structural rewriter
+            // replaces only the dep line's content and leaves the file's
+            // EOL bytes untouched.
+            let end = byte_offset + line.len();
+            return Some(DepLocation {
+                line: (i + 1) as u32,
+                byte_start: start as u32,
+                byte_end: end as u32,
+            });
+        }
+        byte_offset += line_with_newline_len;
+    }
+    None
+}
+
+fn current_section_matches(current: Option<&str>, target: DepSection) -> bool {
+    let Some(current) = current else {
+        return false;
+    };
+    current == target.as_str()
+}
+
+fn parse_section_header(line: &str) -> Option<&str> {
+    let stripped = line.strip_prefix('[')?.strip_suffix(']')?;
+    Some(stripped)
+}
+
+fn line_matches_dep(line: &str, dep_name: &str) -> bool {
+    if !line.starts_with(dep_name) {
+        return false;
+    }
+    let after = &line[dep_name.len()..];
+    matches!(after.chars().next(), Some(c) if c == ' ' || c == '\t' || c == '=')
+}
+
+fn has_unbalanced_inline_table(line: &str) -> bool {
+    let opens = line.matches('{').count();
+    let closes = line.matches('}').count();
+    opens > closes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(content: &str) -> Manifest {
+        Manifest {
+            path: PathBuf::from("/tmp/Cargo.toml"),
+            raw: content.to_string(),
+            doc: ImDocument::parse(content.to_string()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn workspace_dep_names_collects_root_table() {
+        let m = parse(
+            r#"
+[workspace.dependencies]
+serde = "1"
+tokio = { version = "1", features = ["full"] }
+"#,
+        );
+        let names = m.workspace_dep_names();
+        assert_eq!(names, BTreeSet::from(["serde".into(), "tokio".into()]));
+    }
+
+    #[test]
+    fn workspace_dep_names_empty_when_absent() {
+        let m = parse(
+            r#"
+[package]
+name = "foo"
+"#,
+        );
+        assert!(m.workspace_dep_names().is_empty());
+    }
+
+    #[test]
+    fn declared_deps_walks_all_member_sections() {
+        let m = parse(
+            r#"
+[dependencies]
+a = "1"
+[dev-dependencies]
+b = "1"
+[build-dependencies]
+c = "1"
+"#,
+        );
+        let deps: Vec<_> = m.declared_deps().collect();
+        assert_eq!(deps.len(), 3);
+        assert!(
+            deps.iter()
+                .any(|d| d.section == DepSection::Dependencies && d.original_name == "a")
+        );
+        assert!(
+            deps.iter()
+                .any(|d| d.section == DepSection::DevDependencies && d.original_name == "b")
+        );
+        assert!(
+            deps.iter()
+                .any(|d| d.section == DepSection::BuildDependencies && d.original_name == "c")
+        );
+    }
+
+    #[test]
+    fn declared_deps_normalizes_hyphens() {
+        let m = parse(
+            r#"
+[dependencies]
+my-crate = "1"
+"#,
+        );
+        let deps: Vec<_> = m.declared_deps().collect();
+        assert_eq!(deps[0].original_name, "my-crate");
+        assert_eq!(deps[0].normalized_name, "my_crate");
+    }
+
+    #[test]
+    fn locate_dep_finds_line_in_correct_section() {
+        let content = "[package]\nname = \"a\"\n\n[dependencies]\nserde = \"1.0\"\n";
+        let m = parse(content);
+        let loc = m.locate_dep(DepSection::Dependencies, "serde").unwrap();
+        assert_eq!(loc.line, 5);
+        assert_eq!(
+            &content[loc.byte_start as usize..loc.byte_end as usize],
+            "serde = \"1.0\""
+        );
+    }
+
+    #[test]
+    fn locate_dep_distinguishes_sections() {
+        let content = "[dependencies]\nfoo = \"1\"\n\n[dev-dependencies]\nbar = \"1\"\n";
+        let m = parse(content);
+        assert!(m.locate_dep(DepSection::Dependencies, "bar").is_none());
+        assert!(m.locate_dep(DepSection::DevDependencies, "foo").is_none());
+    }
+
+    #[test]
+    fn locate_dep_crlf() {
+        let content = "[package]\r\nname = \"a\"\r\n\r\n[dependencies]\r\nserde = \"1.0\"\r\n";
+        let m = parse(content);
+        let loc = m.locate_dep(DepSection::Dependencies, "serde").unwrap();
+        assert_eq!(loc.line, 5);
+        assert_eq!(
+            &content[loc.byte_start as usize..loc.byte_end as usize],
+            "serde = \"1.0\""
+        );
+        // The bytes after `end` must still be the original `\r\n`, untouched.
+        assert_eq!(
+            &content[loc.byte_end as usize..loc.byte_end as usize + 2],
+            "\r\n"
+        );
+    }
+
+    // --- format_workspace_dep scenarios ---
+
+    #[test]
+    fn format_plain_version_string() {
+        let m = parse("[dependencies]\nserde = \"1.0.200\"\n");
+        let out = m
+            .format_workspace_dep(DepSection::Dependencies, "serde")
+            .unwrap();
+        assert_eq!(out, "serde = { workspace = true }");
+    }
+
+    #[test]
+    fn format_preserves_leading_indent() {
+        let m = parse("[dependencies]\n    serde = \"1\"\n");
+        let out = m
+            .format_workspace_dep(DepSection::Dependencies, "serde")
+            .unwrap();
+        assert_eq!(out, "    serde = { workspace = true }");
+    }
+
+    #[test]
+    fn format_table_with_version_only_drops_version() {
+        let m = parse("[dependencies]\nserde = { version = \"1.0\" }\n");
+        let out = m
+            .format_workspace_dep(DepSection::Dependencies, "serde")
+            .unwrap();
+        assert_eq!(out, "serde = { workspace = true }");
+    }
+
+    #[test]
+    fn format_table_with_features_keeps_features() {
+        let m = parse("[dependencies]\nserde = { version = \"1.0\", features = [\"derive\"] }\n");
+        let out = m
+            .format_workspace_dep(DepSection::Dependencies, "serde")
+            .unwrap();
+        assert_eq!(out, "serde = { workspace = true, features = [\"derive\"] }");
+    }
+
+    #[test]
+    fn format_table_with_optional_and_default_features() {
+        let m = parse(
+            "[dependencies]\ntokio = { version = \"1\", optional = true, default-features = false }\n",
+        );
+        let out = m
+            .format_workspace_dep(DepSection::Dependencies, "tokio")
+            .unwrap();
+        assert_eq!(
+            out,
+            "tokio = { workspace = true, optional = true, default-features = false }"
+        );
+    }
+
+    #[test]
+    fn format_git_table_strips_git_source() {
+        let m = parse(
+            "[dependencies]\ntonic = { git = \"https://github.com/hyperium/tonic\", branch = \"master\" }\n",
+        );
+        let out = m
+            .format_workspace_dep(DepSection::Dependencies, "tonic")
+            .unwrap();
+        assert_eq!(out, "tonic = { workspace = true }");
+    }
+
+    #[test]
+    fn format_missing_dep_returns_none() {
+        let m = parse("[dependencies]\nserde = \"1\"\n");
+        assert!(
+            m.format_workspace_dep(DepSection::Dependencies, "missing")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn deps_iterates_pairs() {
+        let m = parse("[dependencies]\nserde = \"1\"\ntokio = { workspace = true }\n");
+        let pairs: Vec<_> = m
+            .deps(DepSection::Dependencies)
+            .map(|(k, _)| k.to_string())
+            .collect();
+        assert_eq!(pairs, vec!["serde", "tokio"]);
+    }
+}

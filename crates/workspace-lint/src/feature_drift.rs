@@ -32,7 +32,12 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         }
         let declared: BTreeSet<&str> = krate.declared_features.iter().map(String::as_str).collect();
         let mut used: BTreeSet<String> = BTreeSet::new();
-        collect_cfg_features(&krate.root, &mut used);
+        // Feature gates can appear in any target (build.rs gates
+        // build-time codegen, tests gate integration paths). Walk all
+        // targets so we don't miss a `#[cfg(feature = "x")]` outside lib.
+        for target in &krate.targets {
+            collect_cfg_features(&target.root, &mut used);
+        }
         let used_refs: BTreeSet<&str> = used.iter().map(String::as_str).collect();
 
         // declared_never_gated — skip `default` and any feature literally

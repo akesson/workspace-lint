@@ -11,8 +11,11 @@ use crate::diagnostic::SilenceAnchor;
 use fs_err as fs;
 use ignore::WalkBuilder;
 use regex::Regex;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::OnceLock;
+use syn_workspace::Workspace;
 
 /// One parsed suppression directive.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,20 +55,24 @@ pub struct DirectiveOrigin {
 ///   line *after* the comment (1-3 line lookback when matching).
 /// - Other TOML/MD: [`SilenceAnchor::File`].
 ///
-/// Workspace-wide directive scan.
-///
-/// **Performance note** (planned optimization): we currently `syn::parse_file`
-/// each `.rs` file in the walker, even though `syn-workspace::Workspace::load`
-/// already parsed them once during module-tree assembly. The two passes are
-/// independent today because `syn-workspace` discards the parsed
-/// `syn::File` ASTs after extracting items / use-bindings / refs. A future
-/// change can plumb the parsed File (or just the workspace-lint directive
-/// macros it contains) through a new `Module::directive_macros: Vec<...>`
-/// or `Rc<syn::File>` so this function reuses that work and drops the
-/// duplicate parse. The current implementation is correct and fast enough
-/// for workspaces under a few hundred crates; revisit if profiling shows it
-/// dominating end-to-end run time.
+/// Workspace-wide directive scan, parsing every `.rs` file on demand. Use
+/// [`scan_with_workspace`] in production code paths — it reuses the
+/// already-parsed `syn::File` ASTs held by [`syn_workspace::Workspace`] and
+/// avoids a second per-file parse.
 pub fn scan(root: &Path) -> Vec<Directive> {
+    scan_inner(root, &HashMap::new())
+}
+
+/// Same as [`scan`], but consults `workspace`'s cached `Module::parsed_file`
+/// entries to skip re-parsing `.rs` files the resolver already processed.
+/// Orphan `.rs` files (under `src/` but unreached) and `.rs` files outside
+/// any workspace member fall back to on-demand parsing.
+pub fn scan_with_workspace(workspace: &Workspace) -> Vec<Directive> {
+    let lookup = build_parsed_lookup(workspace);
+    scan_inner(workspace.root(), &lookup)
+}
+
+fn scan_inner(root: &Path, parsed_lookup: &HashMap<PathBuf, Rc<syn::File>>) -> Vec<Directive> {
     let mut directives = Vec::new();
     for entry in WalkBuilder::new(root).build().flatten() {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -74,12 +81,31 @@ pub fn scan(root: &Path) -> Vec<Directive> {
         let path = entry.path();
         let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
         match kind_for(&rel) {
-            FileKind::Rust => scan_rust(path, &rel, &mut directives),
+            FileKind::Rust => scan_rust(path, &rel, parsed_lookup, &mut directives),
             FileKind::TomlOrMd => scan_text(path, &rel, &mut directives),
             FileKind::Skip => {}
         }
     }
     directives
+}
+
+/// Build a map from absolute file path → cached `syn::File` AST, drawn
+/// from every workspace member's parsed modules. Inline `mod foo { ... }`
+/// submodules don't contribute (their AST lives in the parent's file).
+fn build_parsed_lookup(workspace: &Workspace) -> HashMap<PathBuf, Rc<syn::File>> {
+    let mut map = HashMap::new();
+    for krate in workspace.members() {
+        for module in krate.all_modules() {
+            if let (Some(file), Some(parsed)) = (&module.file, &module.parsed_file) {
+                // Canonicalize so lookups through symlinks / `.`-prefixed
+                // walk paths match the absolute paths cargo_metadata
+                // emitted.
+                let key = file.canonicalize().unwrap_or_else(|_| file.clone());
+                map.insert(key, parsed.clone());
+            }
+        }
+    }
+    map
 }
 
 #[derive(Copy, Clone)]
@@ -101,7 +127,23 @@ fn kind_for(rel: &Path) -> FileKind {
     }
 }
 
-fn scan_rust(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
+fn scan_rust(
+    abs_path: &Path,
+    rel: &Path,
+    parsed_lookup: &HashMap<PathBuf, Rc<syn::File>>,
+    out: &mut Vec<Directive>,
+) {
+    // Fast path: the resolver already parsed this file. Lookup by the
+    // canonicalized absolute path; the lookup keys are pre-canonicalized.
+    let canon = abs_path.canonicalize();
+    if let Ok(canon) = &canon
+        && let Some(file) = parsed_lookup.get(canon)
+    {
+        walk_items(&file.items, rel, out);
+        return;
+    }
+    // Fall back to on-demand parsing for orphan / non-member files and
+    // for callers (like tests) that don't pass a `Workspace`.
     let Ok(source) = fs::read_to_string(abs_path) else {
         return;
     };

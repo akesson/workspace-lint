@@ -26,10 +26,16 @@
 #![forbid(unsafe_code)]
 
 pub mod macros;
+pub mod manifest;
 pub(crate) mod plugins;
 pub mod resolve;
 mod walk;
 
+/// Re-export `toml_edit` so lint crates can name [`toml_edit::Item`] and
+/// related types without adding their own direct dep.
+pub use toml_edit;
+
+pub use manifest::{DeclaredDep, DepLocation, DepSection, Manifest};
 pub use resolve::{
     BrokenModDecl, Crate, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan,
     Visibility, Workspace, re_export::ReExportIndex,

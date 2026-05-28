@@ -51,9 +51,9 @@ fn main() {
             if format == Format::Human {
                 config::maybe_warn_on_old_schema(&config);
             }
-            let mut diagnostics = run_all(&config);
+            let (mut diagnostics, workspace) = run_all(&config);
             apply_lint_levels(&config, &mut diagnostics);
-            apply_suppression(&mut diagnostics);
+            apply_suppression(workspace.as_ref(), &mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
             }
@@ -70,11 +70,11 @@ fn main() {
             // config file exists, so `workspace-lint check file-size` and the
             // default run agree on severity.
             let config_for_levels = config::try_load();
-            let mut diagnostics = run_single_check(rule);
+            let (mut diagnostics, workspace) = run_single_check(rule);
             if let Some(cfg) = &config_for_levels {
                 apply_lint_levels(cfg, &mut diagnostics);
             }
-            apply_suppression(&mut diagnostics);
+            apply_suppression(workspace.as_ref(), &mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
             }
@@ -119,8 +119,19 @@ fn parse_format(arg: Option<&str>) -> Format {
 /// new diagnostics — these pass back through the suppression map so an
 /// `allow(stale-expect)` directive silences them (e.g. README example code
 /// that mentions an expect directive without intending to fire one).
-fn apply_suppression(diagnostics: &mut Vec<Diagnostic>) {
-    let directives_list = directives::scan(std::path::Path::new("."));
+///
+/// When a [`Workspace`] is available, the scanner reuses its cached
+/// `syn::File` ASTs and skips re-parsing every `.rs` file. Without one
+/// (e.g. for lint subcommands that don't load a workspace), we fall back
+/// to the on-demand parse path.
+fn apply_suppression(
+    workspace: Option<&syn_workspace::Workspace>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let directives_list = match workspace {
+        Some(ws) => directives::scan_with_workspace(ws),
+        None => directives::scan(std::path::Path::new(".")),
+    };
     let mut map = suppress::SuppressionMap::from_directives(directives_list);
     suppress::apply(&mut map, diagnostics);
     let mut stale = map.stale_expects();
@@ -128,7 +139,7 @@ fn apply_suppression(diagnostics: &mut Vec<Diagnostic>) {
     diagnostics.extend(stale);
 }
 
-fn run_all(config: &config::Config) -> Vec<Diagnostic> {
+fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<syn_workspace::Workspace>) {
     if let Some(ref ec) = config.expand {
         expand::run(ec);
     }
@@ -137,9 +148,6 @@ fn run_all(config: &config::Config) -> Vec<Diagnostic> {
 
     if let Some(ref cv) = config.cli_crate_version {
         diagnostics.extend(cli_crate_version::check(cv));
-    }
-    if config.checks.centralized_deps {
-        diagnostics.extend(centralized_deps::check());
     }
     if let Some(ref fc) = config.freshness {
         diagnostics.extend(freshness::check(fc));
@@ -156,12 +164,15 @@ fn run_all(config: &config::Config) -> Vec<Diagnostic> {
         .architecture
         .as_ref()
         .is_some_and(|ac| !ac.rules.is_empty());
+    let centralized_deps_needed = config.checks.centralized_deps;
     let module_tree_needed = config.checks.module_tree;
     let feature_drift_needed = config.checks.feature_drift;
     let visibility_needed = config.checks.visibility;
     let unused_deps_needed = config.unused_deps.is_some();
     let unused_pub_needed = config.unused_pub.is_some();
+    let mut workspace = None;
     if architecture_needed
+        || centralized_deps_needed
         || module_tree_needed
         || feature_drift_needed
         || visibility_needed
@@ -186,6 +197,9 @@ fn run_all(config: &config::Config) -> Vec<Diagnostic> {
                 .flat_map(|m| m.expansion_uses.iter().map(|p| canonicalize_user_path(p)));
             ws.register_external_macro_uses(paths);
         }
+        if centralized_deps_needed {
+            diagnostics.extend(centralized_deps::check(&ws));
+        }
         if architecture_needed && let Some(ref ac) = config.architecture {
             diagnostics.extend(architecture::check(ac, &ws));
         }
@@ -204,9 +218,10 @@ fn run_all(config: &config::Config) -> Vec<Diagnostic> {
         if let Some(ref up) = config.unused_pub {
             diagnostics.extend(unused_pub::check(up, &ws));
         }
+        workspace = Some(ws);
     }
 
-    diagnostics
+    (diagnostics, workspace)
 }
 
 /// Convert a user-facing path string (`tokio::runtime::Builder`,
@@ -225,15 +240,22 @@ fn canonicalize_user_path(path: &str) -> syn_workspace::ResolvedPath {
     syn_workspace::ResolvedPath::new(segments)
 }
 
-fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
+fn run_single_check(rule: CheckRule) -> (Vec<Diagnostic>, Option<syn_workspace::Workspace>) {
     match rule {
-        CheckRule::CentralizedDeps => centralized_deps::check(),
+        CheckRule::CentralizedDeps => {
+            let ws = syn_workspace::Workspace::load(".").unwrap_or_else(|e| {
+                eprintln!("failed to load workspace for centralized-deps: {e}");
+                std::process::exit(1);
+            });
+            let diagnostics = centralized_deps::check(&ws);
+            (diagnostics, Some(ws))
+        }
         CheckRule::FileSize {
             glob,
             max_code_lines,
         } => {
             let config = CheckRule::into_file_size_config(glob, max_code_lines);
-            file_size::check(&config)
+            (file_size::check(&config), None)
         }
         CheckRule::CrateSize {
             glob,
@@ -241,11 +263,11 @@ fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
             include,
         } => {
             let config = CheckRule::into_crate_size_config(glob, max_code_lines, include);
-            crate_size::check(&config)
+            (crate_size::check(&config), None)
         }
         CheckRule::Freshness { glob, depends_on } => {
             let config = CheckRule::into_freshness_config(glob, depends_on);
-            freshness::check(&config)
+            (freshness::check(&config), None)
         }
         CheckRule::CliCrateVersion {
             command,
@@ -253,7 +275,7 @@ fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
             crate_name,
         } => {
             let config = CheckRule::into_cli_crate_version_config(command, pattern, crate_name);
-            cli_crate_version::check(&config)
+            (cli_crate_version::check(&config), None)
         }
         CheckRule::UnusedDeps { ignore } => {
             let config = CheckRule::into_unused_deps_config(ignore);
@@ -261,7 +283,8 @@ fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
                 eprintln!("failed to load workspace for unused-deps: {e}");
                 std::process::exit(1);
             });
-            unused_deps::check(&config, &ws)
+            let diagnostics = unused_deps::check(&config, &ws);
+            (diagnostics, Some(ws))
         }
         CheckRule::UnusedPub {
             on_ci_only,
@@ -283,7 +306,8 @@ fn run_single_check(rule: CheckRule) -> Vec<Diagnostic> {
                 eprintln!("failed to load workspace for unused-pub: {e}");
                 std::process::exit(1);
             });
-            unused_pub::check(&config, &ws)
+            let diagnostics = unused_pub::check(&config, &ws);
+            (diagnostics, Some(ws))
         }
     }
 }

@@ -55,8 +55,15 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
         // macros plus macros from every crate that references this one.
         // See `macro_implicit_refs_for` for the rule.
         let macro_refs = workspace.macro_implicit_refs_for(krate);
+        // `pub` items in tests / build scripts / benches aren't part of
+        // the cross-crate API surface, so we only scan the lib (or
+        // proc-macro / main bin). Same scope as the pre-refactor
+        // `krate.root` walk.
+        let Some(target) = krate.lib_or_main() else {
+            continue;
+        };
         collect_findings(
-            &krate.root,
+            &target.root,
             &crate_code,
             &references_by_path,
             &macro_refs,

@@ -66,7 +66,13 @@ impl ReExportIndex {
     pub fn build(crates: &[Crate]) -> Self {
         let mut edges = HashMap::new();
         for krate in crates {
-            collect_edges(&krate.root, &mut edges);
+            // Re-exports apply only to the crate's public API surface,
+            // which lives in the lib (or proc-macro / main bin). Test and
+            // build-script targets don't expose a stable API, so we skip
+            // them here.
+            if let Some(target) = krate.lib_or_main() {
+                collect_edges(&target.root, &mut edges);
+            }
         }
         Self { edges }
     }
@@ -146,17 +152,26 @@ mod tests {
             macro_implicit_refs: Vec::new(),
             references: Vec::new(),
             file: None,
+            parsed_file: None,
         }
     }
 
     fn krate(name: &str, root: Module) -> Crate {
+        let target = crate::resolve::Target {
+            kind: crate::resolve::TargetKind::Lib,
+            name: name.into(),
+            src_path: std::path::PathBuf::from("src/lib.rs"),
+            root,
+        };
         Crate {
             name: name.into(),
             version: "0.0.0".into(),
             manifest_dir: std::path::PathBuf::new(),
             is_workspace_member: true,
-            root,
+            targets: vec![target],
+            orphan_files: Vec::new(),
             declared_features: Vec::new(),
+            manifest: crate::manifest::Manifest::empty(),
         }
     }
 
