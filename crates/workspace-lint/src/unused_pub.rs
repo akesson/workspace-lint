@@ -25,7 +25,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::{HashMap, HashSet};
 use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace};
 
-pub const LINT: &str = "workspace-lint::unused-pub";
+pub const LINT: &str = crate::lints::LintId::UnusedPub.id();
 
 pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     if config.effective_on_ci_only() && std::env::var("CI").is_err() {
@@ -36,7 +36,6 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
     // defining crate). Empty entry means "referenced only intra-crate"; no
     // entry at all means "not referenced anywhere in the workspace".
     let references_by_path = build_reference_index(workspace);
-    let macro_refs = workspace.macro_implicit_refs();
     let kind_filter = parse_kind_filter(&config.kinds);
     let allowlist = build_glob_set(&config.allowlist, "allowlist");
     let exclude_paths = build_glob_set(&config.exclude_paths, "exclude-paths");
@@ -44,7 +43,7 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
     let mut diagnostics = Vec::new();
 
     for krate in workspace.members() {
-        let crate_code = krate.name.replace('-', "_");
+        let crate_code = krate.code_name();
         if config
             .exclude_crates
             .iter()
@@ -52,15 +51,20 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
         {
             continue;
         }
+        // Macros that could plausibly suppress this crate's items: its own
+        // macros plus macros from every crate that references this one.
+        // See `macro_implicit_refs_for` for the rule.
+        let macro_refs = workspace.macro_implicit_refs_for(krate);
         collect_findings(
             &krate.root,
             &crate_code,
             &references_by_path,
-            macro_refs,
+            &macro_refs,
             kind_filter.as_ref(),
             allowlist.as_ref(),
             exclude_paths.as_ref(),
             config.suppress_intra_crate,
+            config.auto_delete,
             &mut diagnostics,
         );
     }
@@ -94,6 +98,7 @@ fn collect_findings(
     allowlist: Option<&GlobSet>,
     exclude_paths: Option<&GlobSet>,
     suppress_intra_crate: bool,
+    auto_delete: bool,
     out: &mut Vec<Diagnostic>,
 ) {
     for item in &module.items {
@@ -169,14 +174,36 @@ fn collect_findings(
             )
         };
 
-        out.push(
-            at_line(LINT, message, span.file.clone(), span.line)
-                .help(suggestion)
-                .note(
-                    "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
-                )
-                .build(),
-        );
+        let mut builder = at_line(LINT, message, span.file.clone(), span.line)
+            .help(suggestion)
+            .note(
+                "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
+            );
+        // Structural fix policy:
+        //  - "only used inside the crate" → always pub → pub(crate).
+        //  - "appears unused" + auto_delete on + file is git-tracked-clean
+        //    → delete the item.
+        //  - "appears unused" + auto_delete on + file is dirty/untracked
+        //    → emit deletion suggestion as MaybeIncorrect (--fix skips
+        //    those) with an extra note explaining why.
+        //  - "appears unused" + auto_delete off → pub → pub(crate).
+        let want_delete = !used_same_crate && auto_delete;
+        if want_delete {
+            match delete_suggestion(span) {
+                DeleteOutcome::Apply(s) => builder = builder.suggestion(s),
+                DeleteOutcome::Skip(s, reason) => {
+                    builder = builder.suggestion(s).note(reason);
+                }
+                DeleteOutcome::Unavailable => {
+                    if let Some(s) = crate::visibility::build_tighten_suggestion(span) {
+                        builder = builder.suggestion(s);
+                    }
+                }
+            }
+        } else if let Some(s) = crate::visibility::build_tighten_suggestion(span) {
+            builder = builder.suggestion(s);
+        }
+        out.push(builder.build());
     }
 
     for sub in &module.submodules {
@@ -189,9 +216,100 @@ fn collect_findings(
             allowlist,
             exclude_paths,
             suppress_intra_crate,
+            auto_delete,
             out,
         );
     }
+}
+
+enum DeleteOutcome {
+    /// Git-tracked-clean: emit a MachineApplicable deletion suggestion.
+    Apply(crate::diagnostic::Suggestion),
+    /// Tracked-but-dirty or untracked: emit MaybeIncorrect so `--fix`
+    /// passes over it, plus a reason note for the user.
+    Skip(crate::diagnostic::Suggestion, String),
+    /// Span has no byte range, file can't be read, etc. Fall back to the
+    /// visibility-narrowing path.
+    Unavailable,
+}
+
+fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
+    if span.byte_start == 0 && span.byte_end == 0 {
+        return DeleteOutcome::Unavailable;
+    }
+    let Ok(source) = fs_err::read_to_string(&span.file) else {
+        return DeleteOutcome::Unavailable;
+    };
+    let start = span.byte_start as usize;
+    let mut end = (span.byte_end as usize).min(source.len());
+    if start >= end {
+        return DeleteOutcome::Unavailable;
+    }
+    // Extend deletion through the trailing newline so the file doesn't
+    // accumulate blank lines.
+    if end < source.len() && source.as_bytes()[end] == b'\n' {
+        end += 1;
+    }
+    let applicability = if is_file_clean_in_git(&span.file) {
+        crate::diagnostic::Applicability::MachineApplicable
+    } else {
+        crate::diagnostic::Applicability::MaybeIncorrect
+    };
+    let suggestion = crate::diagnostic::Suggestion {
+        span: crate::diagnostic::Span {
+            file: span.file.clone(),
+            line_start: span.line,
+            line_end: span.line,
+            col_start: 1,
+            col_end: 1,
+            byte_start: start as u32,
+            byte_end: end as u32,
+        },
+        message: "delete the unused item".into(),
+        replacement: String::new(),
+        applicability,
+    };
+    if applicability == crate::diagnostic::Applicability::MachineApplicable {
+        DeleteOutcome::Apply(suggestion)
+    } else {
+        DeleteOutcome::Skip(
+            suggestion,
+            format!(
+                "file `{}` is untracked or has uncommitted changes; `--fix` will not auto-delete (commit first or use `git stash`)",
+                span.file.display()
+            ),
+        )
+    }
+}
+
+/// `true` iff `path` is tracked by git AND has no uncommitted changes
+/// (per `git status --porcelain`). The git-safety net for the `auto-delete`
+/// variant of unused-pub: we only nuke an item if the user has a backup.
+///
+/// Returns `false` if we can't determine the state — git missing, not a
+/// repo, path outside the repo, command failure. The safer default is to
+/// downgrade the suggestion's applicability so `--fix` skips it.
+fn is_file_clean_in_git(path: &std::path::Path) -> bool {
+    use std::process::Command;
+    // 1. Path is tracked.
+    let ls = Command::new("git")
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(path)
+        .output();
+    let Ok(out) = ls else { return false };
+    if !out.status.success() {
+        return false;
+    }
+    // 2. No pending modifications.
+    let st = Command::new("git")
+        .args(["status", "--porcelain", "--"])
+        .arg(path)
+        .output();
+    let Ok(out) = st else { return false };
+    if !out.status.success() {
+        return false;
+    }
+    out.stdout.is_empty()
 }
 
 fn checkable(item: &Item) -> bool {

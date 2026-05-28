@@ -1,14 +1,18 @@
-warning: 1 possibly unused dependency in <TMP>/crates/consumer/Cargo.toml
+error: 1 possibly unused dependency in <TMP>/crates/consumer/Cargo.toml
  --> <TMP>/crates/consumer/Cargo.toml:1:1
   |
   = help: [build-dependencies] provider
   = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
   = note: verify by removing the dep and running `cargo build --all-targets`
   = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `provider`
+  |
+11 - …
+  |
 help: if intentional, silence with:
   |
 1 + # workspace-lint: allow(unused-deps)
   |
-  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+  = note: `#[deny(workspace_lint::unused_deps)]` on by default
 
-workspace-lint: generated 1 warning
+workspace-lint: generated 1 error (run `workspace-lint --fix` to apply 1 suggestion)

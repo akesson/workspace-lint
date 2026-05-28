@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::process::Command;
 use tokei::{Config as TokeiConfig, Languages};
 
-pub const LINT: &str = "workspace-lint::file-size";
-pub const STALE_GIT_INDEX_LINT: &str = "workspace-lint::stale-git-index";
+pub const LINT: &str = crate::lints::LintId::FileSize.id();
+pub const STALE_GIT_INDEX_LINT: &str = crate::lints::LintId::StaleGitIndex.id();
 
 pub fn check(config: &FileSizeConfig) -> Vec<Diagnostic> {
     // Build glob matchers for each rule

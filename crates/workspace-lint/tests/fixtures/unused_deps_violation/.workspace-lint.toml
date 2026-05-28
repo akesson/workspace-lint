@@ -1,4 +1,4 @@
-[unused-deps]
+schema = 2
 
 [lints]
 unused-deps = "deny"

@@ -17,6 +17,13 @@
 //! then re-running `cargo test` — insta will prompt you to accept the new
 //! snapshot lines.
 
+// This file is intentionally long: it lists every user-facing diagnostic
+// next to its rendered snapshot in three formats. Splitting it would scatter
+// the canonical message surface across multiple files. Acknowledge with
+// expect — stale-expect will nudge us when the file shrinks back under the
+// limit.
+workspace_lint_marker::expect!(file_size);
+
 use std::path::PathBuf;
 
 use crate::diagnostic::Diagnostic;
@@ -180,6 +187,89 @@ pub fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 "deleted file `crates/old/src/legacy.rs` is still tracked by git",
             )
             .help("run `git rm crates/old/src/legacy.rs` to stage the removal")
+            .build(),
+        ),
+        // architecture: a denied `use` violates a configured rule.
+        (
+            "architecture_denied_import",
+            at_crate(
+                "workspace-lint::architecture",
+                "import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`",
+                PathBuf::from("crates/apps-foo"),
+            )
+            .help("import from `data-models::api` instead")
+            .note("internal types are not part of the published API surface")
+            .note("imported in module `apps_foo`")
+            .build(),
+        ),
+        // module-tree: a `mod foo;` declaration with no backing file.
+        (
+            "module_tree_broken_mod_decl",
+            at_line(
+                "workspace-lint::module-tree",
+                "`mod missing` declared but no `missing.rs` or `missing/mod.rs` found",
+                PathBuf::from("crates/demo/src/lib.rs"),
+                3,
+            )
+            .help(
+                "create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = \"…\"]` attribute",
+            )
+            .note("`mod foo;` with no inline body must resolve to a source file")
+            .build(),
+        ),
+        // module-tree: an orphan source file not reachable from any `mod`.
+        (
+            "module_tree_orphan_file",
+            at_file(
+                "workspace-lint::module-tree",
+                "orphan source file `src/orphan.rs` is not reachable from any `mod` declaration",
+                PathBuf::from("crates/demo/src/orphan.rs"),
+            )
+            .help(
+                "add `mod orphan;` (or a `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module, or delete the file",
+            )
+            .note("crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`")
+            .build(),
+        ),
+        // feature-drift: a declared feature never appears in `#[cfg]`.
+        (
+            "feature_drift_declared_never_gated",
+            at_crate(
+                "workspace-lint::feature-drift",
+                "feature `experimental` is declared in `[features]` but never gated in source",
+                PathBuf::from("crates/demo"),
+            )
+            .help(
+                "either gate code with `#[cfg(feature = \"experimental\")]` or remove `experimental` from `[features]`",
+            )
+            .note("declared in `demo/Cargo.toml`")
+            .build(),
+        ),
+        // feature-drift: a `#[cfg(feature = "…")]` references a feature
+        // missing from `[features]`.
+        (
+            "feature_drift_gated_undeclared",
+            at_crate(
+                "workspace-lint::feature-drift",
+                "feature `nightly` is gated in source but not declared in `[features]`",
+                PathBuf::from("crates/demo"),
+            )
+            .help(
+                "add `nightly = []` to the `[features]` table of `demo/Cargo.toml`, or remove the `cfg(feature = \"nightly\")` references",
+            )
+            .build(),
+        ),
+        // visibility: a pub item referenced only intra-crate.
+        (
+            "visibility_pub_used_only_intra_crate",
+            at_line(
+                "workspace-lint::visibility",
+                "pub `Helper` in crate `lib_a` is not referenced from any other workspace crate",
+                PathBuf::from("crates/lib-a/src/inner.rs"),
+                5,
+            )
+            .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
+            .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked")
             .build(),
         ),
     ]
@@ -409,6 +499,102 @@ mod tests {
               = note: `#[warn(workspace_lint::stale_git_index)]` on by default
             "#);
         }
+
+        #[test]
+        fn architecture_denied_import() {
+            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r"
+            warning: import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`
+             --> crates/apps-foo/Cargo.toml:1:1
+              |
+              = help: import from `data-models::api` instead
+              = note: internal types are not part of the published API surface
+              = note: imported in module `apps_foo`
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: allow(architecture)
+              |
+              = note: `#[warn(workspace_lint::architecture)]` on by default
+            ");
+        }
+
+        #[test]
+        fn module_tree_broken_mod_decl() {
+            insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @r#"
+            warning: `mod missing` declared but no `missing.rs` or `missing/mod.rs` found
+             --> crates/demo/src/lib.rs:3:1
+              |
+              = help: create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = "…"]` attribute
+              = note: `mod foo;` with no inline body must resolve to a source file
+            help: if intentional, silence with:
+              |
+            3 + workspace_lint::allow!(module_tree);
+              |
+              = note: `#[warn(workspace_lint::module_tree)]` on by default
+            "#);
+        }
+
+        #[test]
+        fn module_tree_orphan_file() {
+            insta::assert_snapshot!(render(&scenario("module_tree_orphan_file")), @r#"
+            warning: orphan source file `src/orphan.rs` is not reachable from any `mod` declaration
+             --> crates/demo/src/orphan.rs:1:1
+              |
+              = help: add `mod orphan;` (or a `#[path = "src/orphan.rs"] mod ...;`) in the appropriate parent module, or delete the file
+              = note: crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`
+            help: if intentional, silence with:
+              |
+            1 + workspace_lint::allow!(module_tree);
+              |
+              = note: `#[warn(workspace_lint::module_tree)]` on by default
+            "#);
+        }
+
+        #[test]
+        fn feature_drift_declared_never_gated() {
+            insta::assert_snapshot!(render(&scenario("feature_drift_declared_never_gated")), @r#"
+            warning: feature `experimental` is declared in `[features]` but never gated in source
+             --> crates/demo/Cargo.toml:1:1
+              |
+              = help: either gate code with `#[cfg(feature = "experimental")]` or remove `experimental` from `[features]`
+              = note: declared in `demo/Cargo.toml`
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: allow(feature-drift)
+              |
+              = note: `#[warn(workspace_lint::feature_drift)]` on by default
+            "#);
+        }
+
+        #[test]
+        fn feature_drift_gated_undeclared() {
+            insta::assert_snapshot!(render(&scenario("feature_drift_gated_undeclared")), @r#"
+            warning: feature `nightly` is gated in source but not declared in `[features]`
+             --> crates/demo/Cargo.toml:1:1
+              |
+              = help: add `nightly = []` to the `[features]` table of `demo/Cargo.toml`, or remove the `cfg(feature = "nightly")` references
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: allow(feature-drift)
+              |
+              = note: `#[warn(workspace_lint::feature_drift)]` on by default
+            "#);
+        }
+
+        #[test]
+        fn visibility_pub_used_only_intra_crate() {
+            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @r"
+            warning: pub `Helper` in crate `lib_a` is not referenced from any other workspace crate
+             --> crates/lib-a/src/inner.rs:5:1
+              |
+              = help: tighten to `pub(crate)` if this item is intentionally crate-internal
+              = note: references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked
+            help: if intentional, silence with:
+              |
+            5 + workspace_lint::allow!(visibility);
+              |
+              = note: `#[warn(workspace_lint::visibility)]` on by default
+            ");
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -478,6 +664,36 @@ mod tests {
             let v: serde_json::Value =
                 serde_json::from_str(&render(&scenario("stale_expect"))).unwrap();
             assert_eq!(v["code"]["code"], "workspace-lint::stale-expect");
+        }
+
+        #[test]
+        fn architecture_denied_import() {
+            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r##"{"level":"warning","message":"import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: allow(architecture)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]},{"level":"note","message":"imported in module `apps_foo`","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn module_tree_broken_mod_decl() {
+            insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @r#"{"level":"warning","message":"`mod missing` declared but no `missing.rs` or `missing/mod.rs` found","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = \"…\"]` attribute","spans":[]},{"level":"note","message":"`mod foo;` with no inline body must resolve to a source file","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
+        fn module_tree_orphan_file() {
+            insta::assert_snapshot!(render(&scenario("module_tree_orphan_file")), @r#"{"level":"warning","message":"orphan source file `src/orphan.rs` is not reachable from any `mod` declaration","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add `mod orphan;` (or a `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module, or delete the file","spans":[]},{"level":"note","message":"crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
+        fn feature_drift_declared_never_gated() {
+            insta::assert_snapshot!(render(&scenario("feature_drift_declared_never_gated")), @r##"{"level":"warning","message":"feature `experimental` is declared in `[features]` but never gated in source","code":{"code":"workspace-lint::feature-drift","explanation":null},"spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: allow(feature-drift)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"either gate code with `#[cfg(feature = \"experimental\")]` or remove `experimental` from `[features]`","spans":[]},{"level":"note","message":"declared in `demo/Cargo.toml`","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn feature_drift_gated_undeclared() {
+            insta::assert_snapshot!(render(&scenario("feature_drift_gated_undeclared")), @r##"{"level":"warning","message":"feature `nightly` is gated in source but not declared in `[features]`","code":{"code":"workspace-lint::feature-drift","explanation":null},"spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: allow(feature-drift)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add `nightly = []` to the `[features]` table of `demo/Cargo.toml`, or remove the `cfg(feature = \"nightly\")` references","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn visibility_pub_used_only_intra_crate() {
+            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @r#"{"level":"warning","message":"pub `Helper` in crate `lib_a` is not referenced from any other workspace crate","code":{"code":"workspace-lint::visibility","explanation":null},"spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(visibility);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"tighten to `pub(crate)` if this item is intentionally crate-internal","spans":[]},{"level":"note","message":"references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked","spans":[]}],"rendered":null}"#);
         }
     }
 
@@ -552,6 +768,36 @@ mod tests {
         #[test]
         fn stale_git_index() {
             insta::assert_snapshot!(render(&scenario("stale_git_index")), @"::warning file=Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Astale-git-index::deleted file `crates/old/src/legacy.rs` is still tracked by git");
+        }
+
+        #[test]
+        fn architecture_denied_import() {
+            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @"::warning file=crates/apps-foo/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Aarchitecture::import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`");
+        }
+
+        #[test]
+        fn module_tree_broken_mod_decl() {
+            insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @"::warning file=crates/demo/src/lib.rs,line=3,col=1,title=workspace-lint%3A%3Amodule-tree::`mod missing` declared but no `missing.rs` or `missing/mod.rs` found");
+        }
+
+        #[test]
+        fn module_tree_orphan_file() {
+            insta::assert_snapshot!(render(&scenario("module_tree_orphan_file")), @"::warning file=crates/demo/src/orphan.rs,line=1,col=1,title=workspace-lint%3A%3Amodule-tree::orphan source file `src/orphan.rs` is not reachable from any `mod` declaration");
+        }
+
+        #[test]
+        fn feature_drift_declared_never_gated() {
+            insta::assert_snapshot!(render(&scenario("feature_drift_declared_never_gated")), @"::warning file=crates/demo/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Afeature-drift::feature `experimental` is declared in `[features]` but never gated in source");
+        }
+
+        #[test]
+        fn feature_drift_gated_undeclared() {
+            insta::assert_snapshot!(render(&scenario("feature_drift_gated_undeclared")), @"::warning file=crates/demo/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Afeature-drift::feature `nightly` is gated in source but not declared in `[features]`");
+        }
+
+        #[test]
+        fn visibility_pub_used_only_intra_crate() {
+            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @"::warning file=crates/lib-a/src/inner.rs,line=5,col=1,title=workspace-lint%3A%3Avisibility::pub `Helper` in crate `lib_a` is not referenced from any other workspace crate");
         }
 
         #[test]

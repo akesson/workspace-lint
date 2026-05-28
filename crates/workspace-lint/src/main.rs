@@ -31,7 +31,6 @@ mod suppress;
 mod unused_deps;
 mod unused_pub;
 mod visibility;
-mod workspace;
 
 use clap::Parser;
 use std::io::{self, IsTerminal};
@@ -46,7 +45,14 @@ fn main() {
 
     match cli.command {
         None => {
-            let mut diagnostics = run_all_from_config();
+            let config = config::load();
+            // Schema-2 warning is human-only — JSON / GitHub channels
+            // shouldn't get prose mixed into their stderr.
+            if format == Format::Human {
+                config::maybe_warn_on_old_schema(&config);
+            }
+            let mut diagnostics = run_all(&config);
+            apply_lint_levels(&config, &mut diagnostics);
             apply_suppression(&mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
@@ -60,7 +66,14 @@ fn main() {
             }
         }
         Some(Commands::Check { rule }) => {
+            // For single-check runs we still honor the `[lints]` table if a
+            // config file exists, so `workspace-lint check file-size` and the
+            // default run agree on severity.
+            let config_for_levels = config::try_load();
             let mut diagnostics = run_single_check(rule);
+            if let Some(cfg) = &config_for_levels {
+                apply_lint_levels(cfg, &mut diagnostics);
+            }
             apply_suppression(&mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
@@ -75,6 +88,18 @@ fn main() {
         }) => {
             let ec = CheckRule::into_expand_config(command, glob, marker, auto_stage);
             expand::run(&ec);
+        }
+    }
+}
+
+/// Apply the `[lints]` table overrides: any diagnostic whose lint short
+/// name appears in `config.lints` has its `level` rewritten to the
+/// configured value. Diagnostics not in the table keep the per-check
+/// default (typically [`Level::Warn`]).
+fn apply_lint_levels(config: &config::Config, diagnostics: &mut [Diagnostic]) {
+    for d in diagnostics {
+        if let Some(level) = config.lints.level_for(d.lint.as_ref()) {
+            d.level = level;
         }
     }
 }
@@ -103,9 +128,7 @@ fn apply_suppression(diagnostics: &mut Vec<Diagnostic>) {
     diagnostics.extend(stale);
 }
 
-fn run_all_from_config() -> Vec<Diagnostic> {
-    let config = config::load();
-
+fn run_all(config: &config::Config) -> Vec<Diagnostic> {
     if let Some(ref ec) = config.expand {
         expand::run(ec);
     }
@@ -279,9 +302,9 @@ fn report_and_exit(diagnostics: Vec<Diagnostic>, format: Format) {
         eprintln!("error: failed to write diagnostics: {e}");
         std::process::exit(2);
     });
-    if deny_count > 0 || (format == Format::Human && !diagnostics.is_empty()) {
-        // For now: any diagnostic flips exit. Once `[lints]` levels are wired
-        // in step 16, only `Deny`-level findings will trip the exit.
+    // Only `Deny`-level diagnostics flip exit. Configure escalation via the
+    // `[lints]` table; without it, every diagnostic stays advisory.
+    if deny_count > 0 {
         std::process::exit(1);
     }
 }

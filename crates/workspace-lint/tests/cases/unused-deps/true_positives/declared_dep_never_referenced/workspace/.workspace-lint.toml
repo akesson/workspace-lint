@@ -1,1 +1,4 @@
 [unused-deps]
+
+[lints]
+unused-deps = "deny"

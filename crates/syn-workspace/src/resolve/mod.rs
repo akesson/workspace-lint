@@ -164,12 +164,19 @@ pub struct Item {
     pub source: Option<SourceSpan>,
 }
 
-/// File location of a syntactic element.
+/// File location of a syntactic element. The byte range covers the entire
+/// item (from its first attribute or `pub` keyword through the closing brace
+/// or semicolon) when available — `byte_start == byte_end == 0` means the
+/// span is synthetic or the resolver couldn't determine it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSpan {
     pub file: PathBuf,
     pub line: u32,
     pub column: u32,
+    /// Inclusive byte offset of the span start within the file.
+    pub byte_start: u32,
+    /// Exclusive byte offset of the span end within the file.
+    pub byte_end: u32,
 }
 
 /// A `mod foo;` declaration that didn't resolve to a backing file.
@@ -261,6 +268,17 @@ impl Crate {
         self.items()
             .filter(|i| matches!(i.visibility, Visibility::Public))
     }
+
+    /// In-code form of the crate name (Cargo hyphens replaced with `_`).
+    ///
+    /// `Crate::name` is the Cargo form (`data-models`), but source code
+    /// references the crate as `data_models::...` — most cross-crate
+    /// resolver indexes (e.g. [`Workspace::references_from_crate`]) key on
+    /// the code form, so callers should prefer this method over hand-rolling
+    /// `name.replace('-', "_")`.
+    pub fn code_name(&self) -> String {
+        self.name.replace('-', "_")
+    }
 }
 
 /// The top-level resolved workspace.
@@ -269,11 +287,20 @@ pub struct Workspace {
     crates: Vec<Crate>,
     root: PathBuf,
     re_exports: re_export::ReExportIndex,
-    /// Union of all macro-implicit references: Layer 1 (autodetect of
-    /// `macro_rules!` bodies, eagerly collected from `crates` at load time)
-    /// plus Layer 3 (`[[macros.external]]` entries, appended via
-    /// `register_external_macro_uses`). Built once; lints borrow it.
-    macro_refs: std::collections::HashSet<ResolvedPath>,
+    /// Macro implicit references partitioned by defining crate (code name).
+    /// Built eagerly at load time by unioning every module's
+    /// `macro_implicit_refs` per crate. Used by
+    /// [`Workspace::macro_implicit_refs_for`] to compute per-target-crate
+    /// suppression sets narrowed by invocation reachability — a macro
+    /// defined in crate B only contributes to suppressing items in crate A
+    /// if A references B (or B == A).
+    macro_refs_by_crate: std::collections::HashMap<String, std::collections::HashSet<ResolvedPath>>,
+    /// Layer 3 external-macro references registered via
+    /// [`Workspace::register_external_macro_uses`]. Treated as
+    /// workspace-wide because we can't tell from `cargo_metadata` which
+    /// crates actually invoke an external macro — broadcasting to all
+    /// matches the conservative pre-A5 behavior for these specifically.
+    external_macro_refs: std::collections::HashSet<ResolvedPath>,
     /// Per-crate set of canonical paths referenced from that crate's regular
     /// code (combines `use` bindings + the `Module.references` set). Keyed
     /// by the crate's code name (Cargo-form hyphens replaced with '_'). Built
@@ -293,10 +320,10 @@ impl Workspace {
         let root = root.as_ref().to_path_buf();
         let crates = crate::walk::load_members(&root)?;
         let re_exports = re_export::ReExportIndex::build(&crates);
-        let mut macro_refs = std::collections::HashSet::new();
-        for krate in &crates {
-            collect_macro_implicit_refs(&krate.root, &mut macro_refs);
-        }
+        let mut macro_refs_by_crate: std::collections::HashMap<
+            String,
+            std::collections::HashSet<ResolvedPath>,
+        > = std::collections::HashMap::new();
         let mut references_by_crate: std::collections::HashMap<
             String,
             std::collections::HashSet<ResolvedPath>,
@@ -305,7 +332,9 @@ impl Workspace {
             if !krate.is_workspace_member {
                 continue;
             }
-            let code_name = krate.name.replace('-', "_");
+            let code_name = krate.code_name();
+            let macro_entry = macro_refs_by_crate.entry(code_name.clone()).or_default();
+            collect_macro_implicit_refs(&krate.root, macro_entry);
             let entry = references_by_crate.entry(code_name.clone()).or_default();
             collect_module_references(&krate.root, entry);
             // Cargo dev-deps are used from `tests/`, `benches/`, `examples/`
@@ -315,14 +344,15 @@ impl Workspace {
             // references to the parent crate.
             for aux in ["tests", "benches", "examples"] {
                 let aux_dir = krate.manifest_dir.join(aux);
-                scan_aux_dir_references(&aux_dir, &code_name, entry);
+                collect_aux_references(&aux_dir, entry);
             }
         }
         Ok(Self {
             crates,
             root,
             re_exports,
-            macro_refs,
+            macro_refs_by_crate,
+            external_macro_refs: std::collections::HashSet::new(),
             references_by_crate,
         })
     }
@@ -332,11 +362,16 @@ impl Workspace {
     /// in the underlying [`HashSet`]. Typically invoked by the lint harness
     /// once after [`Workspace::load`], passing entries derived from the
     /// `[[macros.external]]` table in the config file.
+    ///
+    /// External-macro refs are treated as workspace-wide (broadcast to
+    /// every crate) because `cargo_metadata` can't tell us which workspace
+    /// crates actually invoke a given external macro. This preserves the
+    /// pre-A5 conservative behavior specifically for external macros.
     pub fn register_external_macro_uses<I>(&mut self, paths: I)
     where
         I: IntoIterator<Item = ResolvedPath>,
     {
-        self.macro_refs.extend(paths);
+        self.external_macro_refs.extend(paths);
     }
 
     /// All workspace member crates plus referenced external crates.
@@ -366,24 +401,53 @@ impl Workspace {
         &self.re_exports
     }
 
-    /// Union of every `macro_rules!`-body implicit reference across all
-    /// workspace members plus any Layer 3 external-macro entries registered
-    /// via [`Workspace::register_external_macro_uses`]. Lints consult this
-    /// set to avoid flagging items whose only "use" is reachable through a
-    /// macro expansion (Layer 1 autodetect — see [`module_tree`] for
-    /// extraction).
+    /// Macro implicit references that could plausibly suppress findings in
+    /// `target_crate`. Built per call by unioning:
     ///
-    /// The set is built eagerly at [`Workspace::load`] time and stored on
-    /// the workspace, so repeated calls across multiple lints are O(1).
-    pub fn macro_implicit_refs(&self) -> &std::collections::HashSet<ResolvedPath> {
-        &self.macro_refs
+    /// 1. The target crate's own macros (intra-crate macros can suppress
+    ///    intra-crate items reached through their expansion).
+    /// 2. Macros from every workspace crate that references `target_crate`
+    ///    — those are the crates whose code could invoke a macro whose body
+    ///    points back at `target_crate`'s items.
+    /// 3. Layer 3 external-macro entries registered via
+    ///    [`Workspace::register_external_macro_uses`] (broadcast to all
+    ///    target crates because we can't infer which crate invokes them).
+    ///
+    /// This narrows the pre-A5 workspace-global suppression to invocation
+    /// reachability: a macro body in an unrelated crate no longer silently
+    /// hides genuine findings.
+    pub fn macro_implicit_refs_for(
+        &self,
+        target_crate: &Crate,
+    ) -> std::collections::HashSet<ResolvedPath> {
+        let target_code = target_crate.code_name();
+        let mut result = self.external_macro_refs.clone();
+        if let Some(refs) = self.macro_refs_by_crate.get(&target_code) {
+            result.extend(refs.iter().cloned());
+        }
+        for (referring_crate, refs) in &self.references_by_crate {
+            if referring_crate == &target_code {
+                continue;
+            }
+            let references_target = refs
+                .iter()
+                .any(|p| p.crate_name() == Some(target_code.as_str()));
+            if references_target
+                && let Some(macro_refs) = self.macro_refs_by_crate.get(referring_crate)
+            {
+                result.extend(macro_refs.iter().cloned());
+            }
+        }
+        result
     }
 
     /// Set of canonical paths referenced from the named crate's regular
     /// code (function bodies, type signatures, etc.) plus its `use`
     /// declarations. `crate_name` is the in-code form (hyphens replaced
-    /// with `_`); use [`Crate::name`] then `replace('-', "_")` or query by
-    /// the code name directly.
+    /// with `_`).
+    ///
+    /// Prefer [`Workspace::references_from_crate`] when you have a
+    /// [`Crate`] in hand — it handles the code-name conversion for you.
     ///
     /// Returns `None` if the crate is not a workspace member or the
     /// resolver couldn't load source for it.
@@ -392,6 +456,15 @@ impl Workspace {
         crate_name: &str,
     ) -> Option<&std::collections::HashSet<ResolvedPath>> {
         self.references_by_crate.get(crate_name)
+    }
+
+    /// Same as [`Workspace::references_from`] but takes a [`Crate`] and
+    /// applies the Cargo→code name conversion automatically.
+    pub fn references_from_crate(
+        &self,
+        krate: &Crate,
+    ) -> Option<&std::collections::HashSet<ResolvedPath>> {
+        self.references_by_crate.get(&krate.code_name())
     }
 
     /// Iterator over every `(referring_crate, canonical_path)` reference
@@ -413,23 +486,36 @@ fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::Hash
     }
 }
 
+/// Synthetic root segment for aux-file parses. Aux files (integration
+/// tests, benches, examples) are independent compilation units — cargo
+/// gives each one its own crate, so `crate::foo` inside an integration test
+/// resolves to that test binary's root, NOT the lib crate. Using a synthetic
+/// segment isolates aux-internal paths so they don't get misattributed to
+/// the lib crate's canonical tree, and lets us filter them out before
+/// unioning the genuine cross-crate references into the lib's reference set.
+const AUX_SYNTHETIC_ROOT: &str = "__workspace_lint_aux_root";
+
 /// Walk a directory of standalone `.rs` files (cargo's `tests/`, `benches/`,
-/// `examples/`), parsing each as a root module and unioning its references
-/// into `out`. Subdirectories with a `mod.rs` are walked too (integration
-/// tests sometimes split helpers across files). Errors are silently dropped
-/// — these directories are conventionally present-or-absent and a parse
-/// error on a test file shouldn't crash the resolver for the whole workspace.
-fn scan_aux_dir_references(
-    aux_dir: &Path,
-    crate_name: &str,
-    out: &mut std::collections::HashSet<ResolvedPath>,
-) {
+/// `examples/`), extract references that point at workspace-external or
+/// other workspace-member crates, and union them into `out`. Subdirectories
+/// with a `mod.rs` are walked too (integration tests sometimes split helpers
+/// across files). Errors are silently dropped — these directories are
+/// conventionally present-or-absent and a parse error on a test file
+/// shouldn't crash the resolver for the whole workspace.
+///
+/// Implementation note: each aux file is parsed under
+/// [`AUX_SYNTHETIC_ROOT`] so `crate::`/`self::`/`super::` peeling
+/// doesn't collide with the lib crate's name. We then drop any reference
+/// whose leading segment is the synthetic root — those are aux-internal
+/// paths (`crate::helpers::foo`) that have no bearing on which deps the
+/// parent crate uses.
+fn collect_aux_references(aux_dir: &Path, out: &mut std::collections::HashSet<ResolvedPath>) {
     let Ok(entries) = std::fs::read_dir(aux_dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let canonical = ResolvedPath::new([crate_name.to_string()]);
+        let canonical = ResolvedPath::new([AUX_SYNTHETIC_ROOT.to_string()]);
         if path.extension().is_some_and(|ext| ext == "rs") {
             let stem = path
                 .file_stem()
@@ -437,7 +523,7 @@ fn scan_aux_dir_references(
                 .unwrap_or("aux")
                 .to_string();
             if let Ok(module) = module_tree::build_module_from_file(&path, stem, canonical) {
-                collect_module_references(&module, out);
+                merge_external_references(&module, out);
             }
         } else if path.is_dir() {
             let nested = path.join("mod.rs");
@@ -448,10 +534,35 @@ fn scan_aux_dir_references(
                     .unwrap_or("aux_mod")
                     .to_string();
                 if let Ok(module) = module_tree::build_module_from_file(&nested, stem, canonical) {
-                    collect_module_references(&module, out);
+                    merge_external_references(&module, out);
                 }
             }
         }
+    }
+}
+
+/// Like [`collect_module_references`] but drops paths rooted at
+/// [`AUX_SYNTHETIC_ROOT`] — those are intra-aux references that have no
+/// meaning outside the aux file itself.
+fn merge_external_references(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
+    let is_aux_internal = |p: &ResolvedPath| p.crate_name() == Some(AUX_SYNTHETIC_ROOT);
+    for binding in &module.use_bindings {
+        if !is_aux_internal(&binding.canonical) {
+            out.insert(binding.canonical.clone());
+        }
+    }
+    for path in &module.references {
+        if !is_aux_internal(path) {
+            out.insert(path.clone());
+        }
+    }
+    for path in &module.macro_implicit_refs {
+        if !is_aux_internal(path) {
+            out.insert(path.clone());
+        }
+    }
+    for sub in &module.submodules {
+        merge_external_references(sub, out);
     }
 }
 

@@ -50,10 +50,9 @@ fn run_fix_fixture(name: &str) {
     let tmp = TempDir::new().expect("create tempdir");
     copy_tree(&input, tmp.path()).expect("copy input → tempdir");
 
-    // --fix in current implementation runs the renderer after fixing, which
-    // exits 1 if any diagnostic fired (whether or not it was silenced).
-    // Fixture tests focus on the resulting tree, not exit status, so the
-    // assertion is dropped here.
+    // --fix runs the renderer after fixing, which exits 1 if any Deny-level
+    // diagnostic survived. Fixture tests focus on the resulting tree, not
+    // exit status, so the assertion is dropped here.
     let _ = workspace_lint()
         .current_dir(tmp.path())
         .arg("--fix")
@@ -173,21 +172,6 @@ fn fix_centralized_deps() {
 }
 
 #[test]
-fn fix_file_size() {
-    run_fix_fixture("fix__file_size");
-}
-
-#[test]
-fn fix_crate_size() {
-    run_fix_fixture("fix__crate_size");
-}
-
-#[test]
 fn fix_unused_deps() {
     run_fix_fixture("fix__unused_deps");
-}
-
-#[test]
-fn fix_multiple_in_same_file() {
-    run_fix_fixture("fix__multiple_in_same_file");
 }

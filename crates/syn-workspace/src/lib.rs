@@ -6,9 +6,8 @@
 //! typed model that downstream lints can query in sub-second time.
 //!
 //! Deliberate non-goals: no type inference, no trait solving, no proc-macro
-//! execution. The library trades precision for speed; the [`MacroBodyParser`]
-//! plugin trait covers the macro-body cases where token-level scanning is
-//! insufficient.
+//! execution. The library trades precision for speed; built-in macro-body
+//! parsers cover the cases where token-level scanning is insufficient.
 //!
 //! # Example
 //!
@@ -27,12 +26,12 @@
 #![forbid(unsafe_code)]
 
 pub mod macros;
-pub mod plugins;
+pub(crate) mod plugins;
 pub mod resolve;
 mod walk;
 
-pub use plugins::{MacroBodyParser, ResolveContext, builtin_parsers};
 pub use resolve::{
-    BrokenModDecl, Crate, Error, Item, ItemKind, Module, ResolvedPath, Result, Visibility,
-    Workspace, re_export::ReExportIndex,
+    BrokenModDecl, Crate, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan,
+    Visibility, Workspace, re_export::ReExportIndex,
 };
+pub use walk::member_manifests;

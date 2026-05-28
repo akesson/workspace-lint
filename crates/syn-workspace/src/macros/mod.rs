@@ -19,4 +19,5 @@
 
 pub mod annotation;
 pub mod autodetect;
+pub(crate) mod dispatch;
 pub mod external;

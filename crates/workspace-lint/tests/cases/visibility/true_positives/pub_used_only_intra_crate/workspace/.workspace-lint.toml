@@ -1,2 +1,5 @@
 [checks]
 visibility = true
+
+[lints]
+visibility = "deny"

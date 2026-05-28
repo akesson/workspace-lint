@@ -13,10 +13,9 @@ pub struct Cli {
     /// or `github` (Actions annotations).
     #[arg(long, global = true)]
     pub message_format: Option<String>,
-    /// Apply machine-applicable suggestions in-place. Currently this is the
-    /// silence directive each diagnostic carries (`workspace_lint::allow!`
-    /// macro for `.rs` files, `# workspace-lint: allow(...)` comment for
-    /// `Cargo.toml`/Markdown). Per-lint structural fixes are planned.
+    /// Apply machine-applicable structural rewrites in-place. Lints without a
+    /// structural fix are reported but left untouched; `--fix` never inserts
+    /// silence directives on your behalf.
     #[arg(long, global = true, default_value_t = false)]
     pub fix: bool,
     #[command(subcommand)]
@@ -192,6 +191,11 @@ impl CheckRule {
             kinds,
             exclude_paths,
             suppress_intra_crate,
+            // `--fix` deletion is opt-in via config only — there's no CLI
+            // override because deletion is irreversible-without-git and
+            // we want the choice to live in the project's config file
+            // (not a forgotten shell history line).
+            auto_delete: false,
         }
     }
 

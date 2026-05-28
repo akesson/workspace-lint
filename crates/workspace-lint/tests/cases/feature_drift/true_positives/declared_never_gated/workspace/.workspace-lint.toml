@@ -1,2 +1,5 @@
 [checks]
 feature-drift = true
+
+[lints]
+feature-drift = "deny"

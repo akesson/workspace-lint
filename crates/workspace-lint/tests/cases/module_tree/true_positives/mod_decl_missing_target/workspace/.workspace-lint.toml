@@ -1,2 +1,5 @@
 [checks]
 module-tree = true
+
+[lints]
+module-tree = "deny"

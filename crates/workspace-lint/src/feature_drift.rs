@@ -22,7 +22,7 @@ use syn_workspace::{Module, Workspace};
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
 
-pub const LINT: &str = "workspace-lint::feature-drift";
+pub const LINT: &str = crate::lints::LintId::FeatureDrift.id();
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();

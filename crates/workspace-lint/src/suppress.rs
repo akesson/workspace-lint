@@ -8,7 +8,7 @@
 use crate::diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
 use crate::directives::{Directive, DirectiveKind};
 
-pub const STALE_EXPECT_LINT: &str = "workspace-lint::stale-expect";
+pub const STALE_EXPECT_LINT: &str = crate::lints::LintId::StaleExpect.id();
 
 /// Lookback window (in lines) when matching a TOML/Markdown comment
 /// directive to a diagnostic on a nearby line. A directive on line 5 will
@@ -66,6 +66,15 @@ impl SuppressionMap {
     /// have produced multiple internal `Entry` rows (e.g. a Cargo.toml
     /// comment fans out to Line + Crate anchors); we group by origin so the
     /// user sees a single stale diagnostic per source directive.
+    ///
+    /// **Invariant the key relies on**: every `Entry` that originated from
+    /// the same source directive carries identical
+    /// `(directive.origin.file, directive.origin.line, directive.lint)`,
+    /// regardless of which anchor grains the scanner emitted. Adding a new
+    /// anchor grain (e.g. a File-and-Line pair for non-Rust files) is
+    /// safe — the dedup keeps working as long as the fan-out reuses the
+    /// same `origin`. See `directives.rs::cargo_toml_fan_out` for the
+    /// Line + Crate emitter that's the original motivating case.
     pub fn stale_expects(&self) -> Vec<Diagnostic> {
         use std::collections::HashMap;
 

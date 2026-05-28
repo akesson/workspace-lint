@@ -23,7 +23,7 @@ use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::{at_file, at_line};
 use crate::diagnostic::render::display_path;
 
-pub const LINT: &str = "workspace-lint::module-tree";
+pub const LINT: &str = crate::lints::LintId::ModuleTree.id();
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();

@@ -206,7 +206,7 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::file_size)]` on by default
 
-workspace-lint: generated 1 warning (run `workspace-lint --fix` to apply 1 suggestion)
+workspace-lint: generated 1 warning
 ```
 
 **`json`** (rustc-compatible per-line, written to stdout). Set rust-analyzer's
@@ -219,10 +219,28 @@ and IDE squiggles + "Apply suggestion" code actions work without further glue.
 ::warning file=crates/web-api/src/handler.rs,line=1,col=1,title=workspace-lint%3A%3Afile-size::file exceeds 500 code lines (612)
 ```
 
+## Lint levels
+
+By default every diagnostic is a `Warn` and the process exits 0 even when
+the report is non-empty. Escalate per lint via the `[lints]` table in
+`.workspace-lint.toml`:
+
+```toml
+[lints]
+file-size = "deny"
+unused-pub = "warn"
+centralized-deps = "deny"
+```
+
+Exit code 1 fires iff at least one `Deny`-level diagnostic survives
+suppression. Unknown lint names are ignored (silently — there is no typo
+check yet). Use the kebab-case short name (no `workspace-lint::` prefix).
+
 ## Silencing diagnostics
 
-Every diagnostic prints the exact text to paste to silence it. Two forms,
-picked automatically by `--fix` or by the user:
+Silence directives are always author-written — `--fix` never inserts them
+on your behalf. Every diagnostic prints the exact text to paste; two
+forms, picked by file kind:
 
 **Rust files** — declarative macro from `workspace-lint-marker`:
 
@@ -275,7 +293,28 @@ removed files in the post-fix tree propagate correctly.
 - `workspace-lint check <rule> [opts]` — run a single check.
 - `workspace-lint --message-format <human|json|github>` — pick the renderer.
 - `workspace-lint --fix` — apply every diagnostic's `MachineApplicable`
-  suggestion in place. Currently this is the silence directive next to each
-  finding; structural fixes are planned.
+  structural rewrite in place. Lints that don't ship a structural fix are
+  reported but left untouched — `--fix` will never edit a file to suppress
+  a finding it didn't actually resolve. Available structural fixes:
+    - **centralized-deps** rewrites `serde = "1"` (or table forms) to
+      `serde = { workspace = true }`, preserving `features`, `optional`,
+      and `default-features` when present.
+    - **unused-deps** deletes the dep line from `[dependencies]` /
+      `[dev-dependencies]` / `[build-dependencies]`.
+    - **visibility** rewrites `pub fn`/`pub struct`/… to `pub(crate)` for
+      items not used outside their crate.
+    - **unused-pub** tightens to `pub(crate)` by default. With
+      `[unused-pub] auto-delete = true`, items that *appear unused
+      entirely* are deleted — but only if the file is tracked by git AND
+      has no uncommitted changes (git serves as the backup). When the
+      file is dirty or untracked the deletion suggestion is downgraded
+      to `MaybeIncorrect` and `--fix` skips it; the diagnostic carries
+      a `note:` explaining why.
+
+  `--fix` is non-destructive: it rewrites files but never deletes them.
+  Idempotent: re-running on a clean tree is a no-op. To suppress a
+  diagnostic without resolving it, paste the directive shown in the
+  diagnostic's "if intentional, silence with:" hint manually — that's
+  always an author decision, never `--fix`'s.
 - `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.

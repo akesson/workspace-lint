@@ -5,7 +5,7 @@ use globset::{Glob, GlobSetBuilder};
 use std::path::Path;
 use tokei::{Config as TokeiConfig, Languages};
 
-pub const LINT: &str = "workspace-lint::crate-size";
+pub const LINT: &str = crate::lints::LintId::CrateSize.id();
 
 pub fn check(config: &CrateSizeConfig) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
