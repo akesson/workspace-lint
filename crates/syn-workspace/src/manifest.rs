@@ -540,4 +540,62 @@ my-crate = "1"
             .collect();
         assert_eq!(pairs, vec!["serde", "tokio"]);
     }
+
+    // --- get_dep_version ---
+
+    #[test]
+    fn get_dep_version_reads_plain_string_form() {
+        let m = parse("[dependencies]\nserde = \"1.0.200\"\n");
+        assert_eq!(
+            m.get_dep_version(DepSection::Dependencies, "serde"),
+            Some("1.0.200")
+        );
+    }
+
+    #[test]
+    fn get_dep_version_reads_inline_table_version_key() {
+        let m = parse("[dependencies]\nserde = { version = \"1.0\", features = [\"derive\"] }\n");
+        assert_eq!(
+            m.get_dep_version(DepSection::Dependencies, "serde"),
+            Some("1.0")
+        );
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_workspace_inherit() {
+        let m = parse("[dependencies]\nserde = { workspace = true }\n");
+        assert_eq!(m.get_dep_version(DepSection::Dependencies, "serde"), None);
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_git_only() {
+        let m = parse(
+            "[dependencies]\ntonic = { git = \"https://github.com/hyperium/tonic\", branch = \"master\" }\n",
+        );
+        assert_eq!(m.get_dep_version(DepSection::Dependencies, "tonic"), None);
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_missing_dep() {
+        let m = parse("[dependencies]\nserde = \"1\"\n");
+        assert_eq!(m.get_dep_version(DepSection::Dependencies, "missing"), None);
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_wrong_section() {
+        let m = parse("[dependencies]\nserde = \"1\"\n");
+        assert_eq!(
+            m.get_dep_version(DepSection::DevDependencies, "serde"),
+            None
+        );
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_table_block_form() {
+        // `[dependencies.<name>]` is `Item::Table`, not a `Value` — the helper
+        // only handles single-line entries, so this returns None rather than
+        // returning a misleading partial result.
+        let m = parse("[dependencies.serde]\nversion = \"1.0\"\n");
+        assert_eq!(m.get_dep_version(DepSection::Dependencies, "serde"), None);
+    }
 }
