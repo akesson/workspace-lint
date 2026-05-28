@@ -115,7 +115,7 @@ fn check_item(
 ///   shouldn't downgrade them.
 /// - We can't read the source file (deleted on disk, permissions, …).
 pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> {
-    if span.byte_start == 0 && span.byte_end == 0 {
+    if !span.has_byte_range() {
         return None;
     }
     let source = fs_err::read_to_string(&span.file).ok()?;

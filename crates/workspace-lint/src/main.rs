@@ -191,10 +191,11 @@ fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<syn_workspace::W
         // into the workspace's implicit-refs set so downstream lints see
         // items reachable only through e.g. `#[tokio::main]`.
         if let Some(ref macros) = config.macros {
-            let paths = macros
-                .external
-                .iter()
-                .flat_map(|m| m.expansion_uses.iter().map(|p| canonicalize_user_path(p)));
+            let paths = macros.external.iter().flat_map(|m| {
+                m.expansion_uses
+                    .iter()
+                    .map(|p| syn_workspace::ResolvedPath::from_user_str(p))
+            });
             ws.register_external_macro_uses(paths);
         }
         if centralized_deps_needed {
@@ -222,22 +223,6 @@ fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<syn_workspace::W
     }
 
     (diagnostics, workspace)
-}
-
-/// Convert a user-facing path string (`tokio::runtime::Builder`,
-/// `data-models::api::User`) into a [`ResolvedPath`]. Hyphens in the leading
-/// segment are normalized to underscores so cargo crate names match the
-/// in-code form the resolver stores. Other segments pass through verbatim.
-fn canonicalize_user_path(path: &str) -> syn_workspace::ResolvedPath {
-    let mut segments: Vec<String> = path
-        .split("::")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if let Some(first) = segments.first_mut() {
-        *first = first.replace('-', "_");
-    }
-    syn_workspace::ResolvedPath::new(segments)
 }
 
 fn run_single_check(rule: CheckRule) -> (Vec<Diagnostic>, Option<syn_workspace::Workspace>) {
