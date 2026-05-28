@@ -1,11 +1,17 @@
-// Most of this file is unit tests for the TOML schema; the production
-// surface is small. Acknowledge the size with an expect!, and stale-expect
-// will surface here if the test block shrinks back under the limit.
-workspace_lint_marker::expect!(file_size);
-
 use fs_err as fs;
 use serde::Deserialize;
 use std::path::Path;
+
+// Per-lint config structs live next to their lint impls under `crate::lints`.
+// `Config` re-exports them so the top-level TOML schema (the user-facing
+// `.workspace-lint.toml`) is unchanged.
+pub use crate::lints::architecture::ArchitectureConfig;
+pub use crate::lints::cli_crate_version::CliCrateVersionConfig;
+pub use crate::lints::crate_size::CrateSizeConfig;
+pub use crate::lints::file_size::FileSizeConfig;
+pub use crate::lints::freshness::FreshnessConfig;
+pub use crate::lints::unused_deps::UnusedDepsConfig;
+pub use crate::lints::unused_pub::UnusedPubConfig;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
@@ -73,12 +79,12 @@ pub struct Checks {
     pub visibility: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct ExpandConfig {
     pub rules: Vec<ExpandRule>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct ExpandRule {
     pub command: Vec<String>,
     pub glob: String,
@@ -87,66 +93,7 @@ pub struct ExpandRule {
     pub auto_stage: bool,
 }
 
-#[derive(Deserialize)]
-pub struct CliCrateVersionConfig {
-    pub rules: Vec<CliCrateVersionRule>,
-}
-
-#[derive(Deserialize)]
-pub struct CliCrateVersionRule {
-    pub command: Vec<String>,
-    pub pattern: String,
-    #[serde(rename = "crate")]
-    pub crate_name: String,
-}
-
-#[derive(Deserialize, Default)]
-pub struct UnusedDepsConfig {
-    #[serde(default)]
-    pub ignore: Vec<String>,
-}
-
-#[derive(Deserialize, Default)]
-pub struct UnusedPubConfig {
-    /// `None` means "not set in the config" — used to detect old configs in
-    /// the schema-migration check. `Some(value)` is an explicit user choice.
-    /// At runtime, treat `None` as `true` (the new default).
-    #[serde(default, rename = "on-ci-only")]
-    pub on_ci_only: Option<bool>,
-    #[serde(default, rename = "exclude-crates")]
-    pub exclude_crates: Vec<String>,
-    #[serde(default)]
-    pub allowlist: Vec<String>,
-    #[serde(default)]
-    pub kinds: Vec<String>,
-    #[serde(default, rename = "exclude-paths")]
-    pub exclude_paths: Vec<String>,
-    /// When `true`, suppress the "only used inside the crate" variant and
-    /// only emit findings for items with zero references anywhere. Default
-    /// `false` (both variants reported). Useful on noisy codebases where the
-    /// `pub`-everywhere convention would otherwise flood the report with
-    /// "consider `pub(crate)`" suggestions.
-    #[serde(default, rename = "suppress-intra-crate")]
-    pub suppress_intra_crate: bool,
-    /// When `true`, the structural fix for `appears unused — consider
-    /// removing` becomes *item deletion* instead of `pub(crate)` narrowing.
-    /// Guarded by a git-tracked-clean check: if the containing file is
-    /// untracked or has uncommitted changes, the suggestion is downgraded
-    /// to `MaybeIncorrect` and `--fix` skips it. Default `false`
-    /// (visibility-narrow only — safer when the user can't recover via
-    /// `git checkout`).
-    #[serde(default, rename = "auto-delete")]
-    pub auto_delete: bool,
-}
-
-impl UnusedPubConfig {
-    /// Effective on-ci-only value after applying the (new) default.
-    pub fn effective_on_ci_only(&self) -> bool {
-        self.on_ci_only.unwrap_or(true)
-    }
-}
-
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 pub struct MacrosConfig {
     /// External macros (defined outside the workspace) whose expansion
     /// references items the resolver can't see from source alone. Each entry
@@ -156,7 +103,7 @@ pub struct MacrosConfig {
     pub external: Vec<ExternalMacro>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct ExternalMacro {
     /// Canonical path of the external macro, e.g. `tokio::main` or
     /// `sqlx::query`. Currently only used for documentation in the config
@@ -169,82 +116,6 @@ pub struct ExternalMacro {
     /// were imported at every call site of the macro.
     #[serde(default, rename = "expansion-uses")]
     pub expansion_uses: Vec<String>,
-}
-
-#[derive(Deserialize, Default)]
-pub struct ArchitectureConfig {
-    #[serde(default)]
-    pub rules: Vec<ArchitectureRule>,
-}
-
-#[derive(Deserialize)]
-pub struct ArchitectureRule {
-    /// Display name surfaced in diagnostics. Optional but recommended.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Crate-name globs the rule applies to (the importing crate). Required;
-    /// empty means the rule never fires.
-    pub from: Vec<String>,
-    /// Canonical-path globs of forbidden targets. Required; empty means the
-    /// rule never fires.
-    pub deny: Vec<String>,
-    /// Specific canonical paths in the deny set that are explicitly allowed
-    /// (per-rule escape hatch). Matched as globs against canonical paths.
-    #[serde(default)]
-    pub exceptions: Vec<String>,
-    #[serde(default)]
-    pub severity: ArchSeverity,
-    /// Free-text explanation surfaced in the diagnostic's `note:` line.
-    #[serde(default)]
-    pub reason: Option<String>,
-    /// Suggested alternative surfaced in the diagnostic's `help:` line.
-    #[serde(default)]
-    pub suggest: Option<String>,
-}
-
-#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ArchSeverity {
-    #[default]
-    Warn,
-    Deny,
-}
-
-#[derive(Deserialize)]
-pub struct FileSizeConfig {
-    pub rules: Vec<FileSizeRule>,
-}
-
-#[derive(Deserialize)]
-pub struct FileSizeRule {
-    pub glob: String,
-    #[serde(rename = "max-code-lines")]
-    pub max_code_lines: usize,
-}
-
-#[derive(Deserialize)]
-pub struct CrateSizeConfig {
-    pub rules: Vec<CrateSizeRule>,
-}
-
-#[derive(Deserialize)]
-pub struct CrateSizeRule {
-    pub glob: String,
-    #[serde(rename = "max-code-lines")]
-    pub max_code_lines: usize,
-    pub include: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-pub struct FreshnessConfig {
-    pub rules: Vec<FreshnessRule>,
-}
-
-#[derive(Deserialize)]
-pub struct FreshnessRule {
-    pub glob: String,
-    #[serde(rename = "depends-on")]
-    pub depends_on: String,
 }
 
 const STANDALONE_FILE: &str = ".workspace-lint.toml";
