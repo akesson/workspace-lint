@@ -10,7 +10,7 @@ use crate::lints::{Lint, LintContext, LintId, Requirements};
 #[cfg(test)]
 mod tests;
 
-pub struct CentralizedDeps;
+pub(crate) struct CentralizedDeps;
 
 impl CentralizedDeps {
     pub fn new() -> Self {
@@ -43,7 +43,7 @@ impl Lint for CentralizedDeps {
     }
 }
 
-pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let lint_id = LintId::CentralizedDeps.id();
     let workspace_dep_names = workspace.root_manifest().workspace_dep_names();
 

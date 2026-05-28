@@ -10,9 +10,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{CrateSizeConfig, CrateSizeRule};
+pub(crate) use config::{CrateSizeConfig, CrateSizeRule};
 
-pub struct CrateSize {
+pub(crate) struct CrateSize {
     config: CrateSizeConfig,
 }
 
@@ -46,7 +46,7 @@ impl Lint for CrateSize {
     }
 }
 
-pub fn check(config: &CrateSizeConfig) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &CrateSizeConfig) -> Vec<Diagnostic> {
     let lint_id = LintId::CrateSize.id();
     let mut diagnostics = Vec::new();
 

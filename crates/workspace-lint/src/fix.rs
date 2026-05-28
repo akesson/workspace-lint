@@ -32,7 +32,7 @@ use crate::diagnostic::{Applicability, Diagnostic, Suggestion};
 
 /// Apply machine-applicable structural suggestions to disk. Returns the
 /// count of files modified.
-pub fn run(diagnostics: &[Diagnostic]) -> usize {
+pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
     let mut structural_count = 0usize;
     let mut candidates: Vec<Suggestion> = Vec::new();
     for d in diagnostics {

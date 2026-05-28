@@ -17,7 +17,7 @@ use crate::diagnostic::builder::{at_file, at_line};
 use crate::diagnostic::render::display_path;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
-pub struct ModuleTree;
+pub(crate) struct ModuleTree;
 
 impl ModuleTree {
     pub fn new() -> Self {
@@ -50,7 +50,7 @@ impl Lint for ModuleTree {
     }
 }
 
-pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for krate in workspace.members() {
         for module in krate.all_modules() {

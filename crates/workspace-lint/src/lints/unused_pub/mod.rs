@@ -27,9 +27,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::UnusedPubConfig;
+pub(crate) use config::UnusedPubConfig;
 
-pub struct UnusedPub {
+pub(crate) struct UnusedPub {
     config: UnusedPubConfig,
 }
 
@@ -81,7 +81,7 @@ impl Lint for UnusedPub {
     }
 }
 
-pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     if config.effective_on_ci_only() && std::env::var("CI").is_err() {
         return Vec::new();
     }

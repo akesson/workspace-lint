@@ -58,5 +58,13 @@ ignore = [
 # it can run in CI without extra installs. `on-ci-only = false` is explicit so
 # the dogfood test exercises this lint locally too, and silences the schema-2
 # default-flip migration warning.
+#
+# `syn-workspace` and `syn-workspace-marker` are published libraries whose
+# `pub`-re-exported API surface is consumed externally (outside this workspace).
+# The resolver-backed check sees no in-workspace consumer for many of those
+# items and flags them; narrowing to `pub(crate)` would break the lib.rs
+# `pub use` re-exports (E0364 / E0365). Exclude until the lint understands
+# `pub use` chains as a visibility constraint.
 [unused-pub]
 on-ci-only = false
+exclude-crates = ["syn-workspace", "syn-workspace-marker"]

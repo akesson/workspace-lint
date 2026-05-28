@@ -5,16 +5,16 @@ use std::path::Path;
 // Per-lint config structs live next to their lint impls under `crate::lints`.
 // `Config` re-exports them so the top-level TOML schema (the user-facing
 // `.workspace-lint.toml`) is unchanged.
-pub use crate::lints::architecture::ArchitectureConfig;
-pub use crate::lints::cli_crate_version::CliCrateVersionConfig;
-pub use crate::lints::crate_size::CrateSizeConfig;
-pub use crate::lints::file_size::FileSizeConfig;
-pub use crate::lints::freshness::FreshnessConfig;
-pub use crate::lints::unused_deps::UnusedDepsConfig;
-pub use crate::lints::unused_pub::UnusedPubConfig;
+pub(crate) use crate::lints::architecture::ArchitectureConfig;
+pub(crate) use crate::lints::cli_crate_version::CliCrateVersionConfig;
+pub(crate) use crate::lints::crate_size::CrateSizeConfig;
+pub(crate) use crate::lints::file_size::FileSizeConfig;
+pub(crate) use crate::lints::freshness::FreshnessConfig;
+pub(crate) use crate::lints::unused_deps::UnusedDepsConfig;
+pub(crate) use crate::lints::unused_pub::UnusedPubConfig;
 
 #[derive(Deserialize, Default)]
-pub struct Config {
+pub(crate) struct Config {
     /// Config schema version. Missing or `< 2` triggers a one-time migration
     /// warning when `[unused-pub]` is present without an explicit
     /// `on-ci-only` setting (the default flipped from `false` to `true`).
@@ -56,7 +56,7 @@ pub struct Config {
 /// `workspace-lint::` prefix).
 #[derive(Deserialize, Default, Debug)]
 #[serde(transparent)]
-pub struct LintLevels(pub std::collections::HashMap<String, crate::diagnostic::Level>);
+pub(crate) struct LintLevels(pub std::collections::HashMap<String, crate::diagnostic::Level>);
 
 impl LintLevels {
     /// Lookup the configured level for a full lint ID (e.g.
@@ -68,7 +68,7 @@ impl LintLevels {
 }
 
 #[derive(Deserialize, Default)]
-pub struct Checks {
+pub(crate) struct Checks {
     #[serde(default, rename = "centralized-deps")]
     pub centralized_deps: bool,
     #[serde(default, rename = "module-tree")]
@@ -80,12 +80,12 @@ pub struct Checks {
 }
 
 #[derive(Deserialize, Clone)]
-pub struct ExpandConfig {
+pub(crate) struct ExpandConfig {
     pub rules: Vec<ExpandRule>,
 }
 
 #[derive(Deserialize, Clone)]
-pub struct ExpandRule {
+pub(crate) struct ExpandRule {
     pub command: Vec<String>,
     pub glob: String,
     pub marker: String,
@@ -94,7 +94,7 @@ pub struct ExpandRule {
 }
 
 #[derive(Deserialize, Default, Clone)]
-pub struct MacrosConfig {
+pub(crate) struct MacrosConfig {
     /// External macros (defined outside the workspace) whose expansion
     /// references items the resolver can't see from source alone. Each entry
     /// contributes its `expansion-uses` paths to the workspace-wide
@@ -104,7 +104,7 @@ pub struct MacrosConfig {
 }
 
 #[derive(Deserialize, Clone)]
-pub struct ExternalMacro {
+pub(crate) struct ExternalMacro {
     /// Canonical path of the external macro, e.g. `tokio::main` or
     /// `sqlx::query`. Currently only used for documentation in the config
     /// — v1 just unions every `expansion-uses` entry into the workspace's
@@ -120,7 +120,7 @@ pub struct ExternalMacro {
 
 const STANDALONE_FILE: &str = ".workspace-lint.toml";
 
-pub fn load() -> Config {
+pub(crate) fn load() -> Config {
     let standalone_exists = Path::new(STANDALONE_FILE).exists();
     let cargo_metadata = read_cargo_metadata();
 
@@ -151,7 +151,7 @@ pub fn load() -> Config {
 /// Public wrapper so `main.rs` can emit the schema-migration warning at
 /// the right moment in the pipeline (after the output format is parsed,
 /// so the JSON/GitHub renderers don't get prose mixed into their channel).
-pub fn maybe_warn_on_old_schema(config: &Config) {
+pub(crate) fn maybe_warn_on_old_schema(config: &Config) {
     warn_on_old_schema(config);
 }
 
@@ -159,7 +159,7 @@ pub fn maybe_warn_on_old_schema(config: &Config) {
 /// no config file is present. Used by single-check runs that should still
 /// honor a project's `[lints]` levels when available but mustn't fail when
 /// invoked outside a configured workspace.
-pub fn try_load() -> Option<Config> {
+pub(crate) fn try_load() -> Option<Config> {
     let standalone_exists = Path::new(STANDALONE_FILE).exists();
     let cargo_metadata = read_cargo_metadata();
     match (standalone_exists, cargo_metadata) {

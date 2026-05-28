@@ -26,7 +26,7 @@
 /// wiring its lint-ID string a compile error. The runtime registry tests in
 /// this module check that [`Self::ALL`] also stays in sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LintId {
+pub(crate) enum LintId {
     Architecture,
     CentralizedDeps,
     CliCrateVersion,
@@ -110,7 +110,7 @@ impl LintId {
 
 /// Compatibility view: every lint's full ID in stable order. Equivalent to
 /// `LintId::ALL.iter().map(|l| l.id())`.
-pub const ALL_LINTS: &[&str] = &[
+pub(crate) const ALL_LINTS: &[&str] = &[
     LintId::Architecture.id(),
     LintId::CentralizedDeps.id(),
     LintId::CliCrateVersion.id(),
@@ -149,12 +149,13 @@ pub const ALL_LINTS: &[&str] = &[
 /// - `architecture`, `feature-drift`, `module-tree`, `visibility`: the
 ///   structural fixes for these are planned but not yet implemented; once
 ///   `--fix` rewrites them through rustfix, add fixtures and move them up.
-pub const FIXTURABLE_LINTS: &[&str] = &[LintId::CentralizedDeps.id(), LintId::UnusedDeps.id()];
+pub(crate) const FIXTURABLE_LINTS: &[&str] =
+    &[LintId::CentralizedDeps.id(), LintId::UnusedDeps.id()];
 
 /// Strip the `workspace-lint::` prefix so callers can derive the short
 /// kebab form (`file-size`) used in fixture directory names and comment
 /// directives.
-pub fn short(lint: &str) -> &str {
+pub(crate) fn short(lint: &str) -> &str {
     lint.strip_prefix("workspace-lint::").unwrap_or(lint)
 }
 

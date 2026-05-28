@@ -31,7 +31,7 @@ pub(crate) fn display_path(p: &Path) -> String {
 
 /// Output format selected by the `--message-format` flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Format {
+pub(crate) enum Format {
     #[default]
     Human,
     Json,
@@ -54,7 +54,7 @@ impl Format {
 /// Render every diagnostic plus the trailing summary (for `human`) to a
 /// writer. Returns the number of `Deny`-level diagnostics, which the caller
 /// uses to set the process exit code.
-pub fn render(
+pub(crate) fn render(
     format: Format,
     diagnostics: &[Diagnostic],
     out: &mut dyn Write,

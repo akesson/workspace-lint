@@ -8,14 +8,14 @@
 use crate::diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
 use crate::directives::{Directive, DirectiveKind};
 
-pub const STALE_EXPECT_LINT: &str = crate::lints::LintId::StaleExpect.id();
+pub(crate) const STALE_EXPECT_LINT: &str = crate::lints::LintId::StaleExpect.id();
 
 /// Lookback window (in lines) when matching a TOML/Markdown comment
 /// directive to a diagnostic on a nearby line. A directive on line 5 will
 /// suppress a diagnostic on lines 5, 6, 7, or 8.
 const LOOKBACK_FORWARD: u32 = 3;
 
-pub struct SuppressionMap {
+pub(crate) struct SuppressionMap {
     entries: Vec<Entry>,
 }
 
@@ -162,7 +162,7 @@ fn applies(directive: &SilenceAnchor, diag: &SilenceAnchor) -> bool {
 
 /// Filter a vector in place, retaining only the diagnostics that are not
 /// suppressed by the map. Returns the count of suppressed entries.
-pub fn apply(map: &mut SuppressionMap, diagnostics: &mut Vec<Diagnostic>) -> usize {
+pub(crate) fn apply(map: &mut SuppressionMap, diagnostics: &mut Vec<Diagnostic>) -> usize {
     let before = diagnostics.len();
     diagnostics.retain(|d| !map.is_suppressed(d));
     before - diagnostics.len()

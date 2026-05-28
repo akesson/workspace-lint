@@ -23,7 +23,7 @@ use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
-pub struct FeatureDrift;
+pub(crate) struct FeatureDrift;
 
 impl FeatureDrift {
     pub fn new() -> Self {
@@ -56,7 +56,7 @@ impl Lint for FeatureDrift {
     }
 }
 
-pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let lint_id = LintId::FeatureDrift.id();
     let mut diagnostics = Vec::new();
     for krate in workspace.members() {

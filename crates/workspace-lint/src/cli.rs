@@ -9,7 +9,7 @@ use crate::lints::{
 
 #[derive(Parser)]
 #[command(name = "workspace-lint")]
-pub struct Cli {
+pub(crate) struct Cli {
     /// Output format: `human` (default, clippy-style), `json` (rustc-compatible),
     /// or `github` (Actions annotations).
     #[arg(long, global = true)]
@@ -24,7 +24,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
-pub enum Commands {
+pub(crate) enum Commands {
     /// Run a single lint check
     Check {
         #[command(subcommand)]
@@ -50,7 +50,7 @@ pub enum Commands {
 }
 
 #[derive(Subcommand)]
-pub enum CheckRule {
+pub(crate) enum CheckRule {
     /// Check that workspace dependencies are centralized
     CentralizedDeps,
     /// Check file sizes against limits

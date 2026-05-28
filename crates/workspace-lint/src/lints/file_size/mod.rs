@@ -10,9 +10,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{FileSizeConfig, FileSizeRule};
+pub(crate) use config::{FileSizeConfig, FileSizeRule};
 
-pub struct FileSize {
+pub(crate) struct FileSize {
     config: FileSizeConfig,
 }
 
@@ -41,7 +41,7 @@ impl Lint for FileSize {
     }
 }
 
-pub fn check(config: &FileSizeConfig) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &FileSizeConfig) -> Vec<Diagnostic> {
     let mut builder = GlobSetBuilder::new();
     for rule in &config.rules {
         builder.add(Glob::new(&rule.glob).unwrap_or_else(|e| {

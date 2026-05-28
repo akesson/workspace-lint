@@ -32,9 +32,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{ArchSeverity, ArchitectureConfig, ArchitectureRule};
+pub(crate) use config::{ArchSeverity, ArchitectureConfig, ArchitectureRule};
 
-pub struct Architecture {
+pub(crate) struct Architecture {
     config: ArchitectureConfig,
 }
 
@@ -63,7 +63,7 @@ impl Lint for Architecture {
     }
 }
 
-pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let compiled: Vec<CompiledRule> = config
         .rules

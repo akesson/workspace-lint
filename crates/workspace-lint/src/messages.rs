@@ -32,7 +32,7 @@ use crate::diagnostic::builder::{at_crate, at_file, at_line, at_workspace};
 /// Every distinct diagnostic the tool can emit, in a fixed order. The order
 /// here is what the snapshot tests assert against, so think of this as the
 /// canonical user-facing surface.
-pub fn scenarios() -> Vec<(&'static str, Diagnostic)> {
+pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
     vec![
         // centralized-deps: one offending member crate.
         (

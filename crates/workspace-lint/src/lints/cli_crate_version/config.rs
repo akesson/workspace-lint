@@ -1,12 +1,12 @@
 use serde::Deserialize;
 
 #[derive(Deserialize, Clone)]
-pub struct CliCrateVersionConfig {
+pub(crate) struct CliCrateVersionConfig {
     pub rules: Vec<CliCrateVersionRule>,
 }
 
 #[derive(Deserialize, Clone)]
-pub struct CliCrateVersionRule {
+pub(crate) struct CliCrateVersionRule {
     pub command: Vec<String>,
     pub pattern: String,
     #[serde(rename = "crate")]

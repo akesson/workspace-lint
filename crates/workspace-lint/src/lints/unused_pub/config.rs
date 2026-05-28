@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 #[derive(Deserialize, Default, Clone)]
-pub struct UnusedPubConfig {
+pub(crate) struct UnusedPubConfig {
     /// `None` means "not set in the config" — used to detect old configs in
     /// the schema-migration check. `Some(value)` is an explicit user choice.
     /// At runtime, treat `None` as `true` (the new default).

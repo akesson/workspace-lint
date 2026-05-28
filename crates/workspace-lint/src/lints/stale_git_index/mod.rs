@@ -11,7 +11,7 @@ use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_workspace;
 use crate::lints::{Lint, LintContext, LintId};
 
-pub struct StaleGitIndex;
+pub(crate) struct StaleGitIndex;
 
 impl StaleGitIndex {
     pub fn new() -> Self {
@@ -35,7 +35,7 @@ impl Lint for StaleGitIndex {
     }
 }
 
-pub fn check() -> Vec<Diagnostic> {
+pub(crate) fn check() -> Vec<Diagnostic> {
     let output = Command::new("git")
         .args(["ls-files"])
         .output()

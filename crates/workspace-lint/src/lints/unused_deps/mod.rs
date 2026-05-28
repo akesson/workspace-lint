@@ -31,9 +31,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::UnusedDepsConfig;
+pub(crate) use config::UnusedDepsConfig;
 
-pub struct UnusedDeps {
+pub(crate) struct UnusedDeps {
     config: UnusedDepsConfig,
 }
 
@@ -66,7 +66,7 @@ impl Lint for UnusedDeps {
     }
 }
 
-pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let lint_id = LintId::UnusedDeps.id();
     let mut diagnostics = Vec::new();
 

@@ -49,7 +49,7 @@ struct OutChild {
     spans: Vec<OutSpan>,
 }
 
-pub fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
+pub(crate) fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
     for d in diagnostics {
         let out_d = to_out(d);
         let line = serde_json::to_string(&out_d).expect("serialize Diagnostic");
