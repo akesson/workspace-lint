@@ -101,21 +101,6 @@ fn kind_for(rel: &Path) -> FileKind {
     }
 }
 
-/// Scan a single file's directives (Rust or text). Used by `fix.rs` to
-/// detect whether a silence directive is already present in the target
-/// file — text matching is too fragile (false-positives inside string
-/// literals or doc comments).
-pub fn scan_single_file(abs_path: &Path) -> Vec<Directive> {
-    let mut out = Vec::new();
-    let rel = abs_path;
-    match kind_for(abs_path) {
-        FileKind::Rust => scan_rust(abs_path, rel, &mut out),
-        FileKind::TomlOrMd => scan_text(abs_path, rel, &mut out),
-        FileKind::Skip => {}
-    }
-    out
-}
-
 fn scan_rust(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
     let Ok(source) = fs::read_to_string(abs_path) else {
         return;

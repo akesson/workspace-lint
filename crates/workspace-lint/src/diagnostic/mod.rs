@@ -67,8 +67,9 @@ pub struct Span {
 
 impl Span {
     /// A degenerate "the whole file" span at line 1 col 1 with zero length —
-    /// used by checks whose grain is the file itself (file-size) or by
-    /// auto-generated silence suggestions inserted at the top of the file.
+    /// used by checks whose grain is the file itself (file-size) and by the
+    /// rendered "if intentional, silence with:" hint that targets the top of
+    /// the file.
     pub fn file_anchor(file: impl Into<PathBuf>) -> Self {
         Self {
             file: file.into(),
@@ -92,7 +93,8 @@ pub struct Suggestion {
 }
 
 /// What "silencing this lint" means for a given diagnostic — the unit the
-/// suppression map (and the auto-generated silence suggestion) operate on.
+/// suppression map (and the rendered "if intentional, silence with:" hint)
+/// operates on.
 ///
 /// `Line ⊂ File ⊂ Crate ⊂ Workspace`: a directive at a wider scope silences
 /// every diagnostic at a narrower one inside it.
@@ -183,10 +185,12 @@ impl Diagnostic {
             .unwrap_or(&self.lint)
     }
 
-    /// Build the "if intentional, silence with:" suggestion that every
-    /// silencable diagnostic carries. The suggestion text is picked from the
-    /// anchor's file extension: `.rs` files get the macro form, everything
-    /// else gets the comment form.
+    /// Build the rendered "if intentional, silence with:" hint that every
+    /// silencable diagnostic carries. The suggestion text is picked from
+    /// the anchor's file extension: `.rs` files get the macro form,
+    /// everything else gets the comment form. Renderers attach this to the
+    /// human/JSON/github output so an author can paste it manually;
+    /// `--fix` deliberately ignores it.
     pub fn silence_suggestion(&self) -> Option<Suggestion> {
         let (span, is_rust) = match &self.silence_anchor {
             SilenceAnchor::Line { file, line } => {

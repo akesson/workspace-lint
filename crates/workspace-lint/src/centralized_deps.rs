@@ -145,8 +145,8 @@ fn build_rewrite_suggestion(
 /// Locate the byte range and 1-indexed line number of `<dep_name>`'s entry
 /// inside the given `[section]` table. Returns `(start, end, line)` where
 /// `start..end` covers the full line (no trailing newline). Multi-line
-/// inline-table entries are unsupported in v1 — those return `None` and
-/// fall through to the silence path.
+/// inline-table entries are unsupported in v1 — those return `None`, and
+/// the diagnostic fires without a `--fix`-applicable suggestion.
 pub(crate) fn locate_dep_entry(
     content: &str,
     section: &str,

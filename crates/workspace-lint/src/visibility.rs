@@ -104,8 +104,9 @@ fn collect_overpermissive(
 }
 
 /// Locate the `pub` token within an item's span and return its byte range,
-/// or `None` if the heuristic can't pin it down. Cases we punt on (and the
-/// silence fallback covers):
+/// or `None` if the heuristic can't pin it down. When this returns `None`
+/// the diagnostic still fires — `--fix` simply has nothing to apply and
+/// leaves the file alone for the human to address. Cases we punt on:
 ///
 /// - Item starts with `#[...]` attributes — the `pub` keyword is deeper
 ///   inside the span and disambiguating it from `#[allow(...)]` or

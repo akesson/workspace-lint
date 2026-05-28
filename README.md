@@ -206,7 +206,7 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::file_size)]` on by default
 
-workspace-lint: generated 1 warning (run `workspace-lint --fix` to apply 1 suggestion)
+workspace-lint: generated 1 warning
 ```
 
 **`json`** (rustc-compatible per-line, written to stdout). Set rust-analyzer's
@@ -238,8 +238,9 @@ check yet). Use the kebab-case short name (no `workspace-lint::` prefix).
 
 ## Silencing diagnostics
 
-Every diagnostic prints the exact text to paste to silence it. Two forms,
-picked automatically by `--fix` or by the user:
+Silence directives are always author-written — `--fix` never inserts them
+on your behalf. Every diagnostic prints the exact text to paste; two
+forms, picked by file kind:
 
 **Rust files** — declarative macro from `workspace-lint-marker`:
 
@@ -292,8 +293,9 @@ removed files in the post-fix tree propagate correctly.
 - `workspace-lint check <rule> [opts]` — run a single check.
 - `workspace-lint --message-format <human|json|github>` — pick the renderer.
 - `workspace-lint --fix` — apply every diagnostic's `MachineApplicable`
-  suggestion in place. Structural rewrites take precedence over silence
-  directives when both are available:
+  structural rewrite in place. Lints that don't ship a structural fix are
+  reported but left untouched — `--fix` will never edit a file to suppress
+  a finding it didn't actually resolve. Available structural fixes:
     - **centralized-deps** rewrites `serde = "1"` (or table forms) to
       `serde = { workspace = true }`, preserving `features`, `optional`,
       and `default-features` when present.
@@ -308,11 +310,11 @@ removed files in the post-fix tree propagate correctly.
       file is dirty or untracked the deletion suggestion is downgraded
       to `MaybeIncorrect` and `--fix` skips it; the diagnostic carries
       a `note:` explaining why.
-    - Every other lint falls back to inserting the silence directive
-      (`workspace_lint::allow!(…)` macro for `.rs` files, a `# workspace-lint:
-      allow(…)` comment for everything else).
 
   `--fix` is non-destructive: it rewrites files but never deletes them.
-  Idempotent: re-running on a clean tree is a no-op.
+  Idempotent: re-running on a clean tree is a no-op. To suppress a
+  diagnostic without resolving it, paste the directive shown in the
+  diagnostic's "if intentional, silence with:" hint manually — that's
+  always an author decision, never `--fix`'s.
 - `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.

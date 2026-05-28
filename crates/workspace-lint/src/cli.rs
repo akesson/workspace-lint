@@ -13,10 +13,9 @@ pub struct Cli {
     /// or `github` (Actions annotations).
     #[arg(long, global = true)]
     pub message_format: Option<String>,
-    /// Apply machine-applicable suggestions in-place. Currently this is the
-    /// silence directive each diagnostic carries (`workspace_lint::allow!`
-    /// macro for `.rs` files, `# workspace-lint: allow(...)` comment for
-    /// `Cargo.toml`/Markdown). Per-lint structural fixes are planned.
+    /// Apply machine-applicable structural rewrites in-place. Lints without a
+    /// structural fix are reported but left untouched; `--fix` never inserts
+    /// silence directives on your behalf.
     #[arg(long, global = true, default_value_t = false)]
     pub fix: bool,
     #[command(subcommand)]

@@ -127,11 +127,15 @@ pub const ALL_LINTS: &[&str] = &[
 ];
 
 /// Lints with a paired `tests/fixtures/fix__<short>/` directory exercised
-/// by `tests/fix_fixtures.rs`. The rest are documented inline below — if
-/// you add scaffolding that lets one of them be fixture-tested cleanly,
-/// move it up here.
+/// by `tests/fix_fixtures.rs`. Only lints that emit a real structural
+/// rewrite (byte-range replacement with `Applicability::MachineApplicable`)
+/// belong here — `--fix` never inserts silence directives, so any lint
+/// without a structural fix has nothing for the fixture driver to assert
+/// on.
 ///
 /// Omitted today:
+/// - `file-size`, `crate-size`: no structural fix — heuristic refactoring
+///   isn't tractable. `--fix` is a no-op; users must split files manually.
 /// - `freshness`: needs mtime manipulation that can't live inert in a
 ///   committed fixture (timestamps move on every clone / checkout).
 /// - `cli-crate-version`: needs a fake CLI binary the fixture can invoke.
@@ -145,12 +149,7 @@ pub const ALL_LINTS: &[&str] = &[
 /// - `architecture`, `feature-drift`, `module-tree`, `visibility`: the
 ///   structural fixes for these are planned but not yet implemented; once
 ///   `--fix` rewrites them through rustfix, add fixtures and move them up.
-pub const FIXTURABLE_LINTS: &[&str] = &[
-    LintId::CentralizedDeps.id(),
-    LintId::CrateSize.id(),
-    LintId::FileSize.id(),
-    LintId::UnusedDeps.id(),
-];
+pub const FIXTURABLE_LINTS: &[&str] = &[LintId::CentralizedDeps.id(), LintId::UnusedDeps.id()];
 
 /// Strip the `workspace-lint::` prefix so callers can derive the short
 /// kebab form (`file-size`) used in fixture directory names and comment

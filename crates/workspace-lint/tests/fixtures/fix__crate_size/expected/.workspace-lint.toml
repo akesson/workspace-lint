@@ -1,3 +1,0 @@
-[[crate-size.rules]]
-glob = "crates/*"
-max-code-lines = 3

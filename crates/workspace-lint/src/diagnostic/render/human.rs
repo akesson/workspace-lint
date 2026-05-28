@@ -128,10 +128,15 @@ fn write_summary(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<
         .iter()
         .filter(|d| d.level == Level::Deny)
         .count();
+    // Match the predicate `fix::run` uses: only byte-range structural
+    // replacements count, since `--fix` will never apply silence inserts.
     let machine_fixes = diagnostics
         .iter()
         .flat_map(|d| &d.suggestions)
-        .filter(|s| s.applicability == crate::diagnostic::Applicability::MachineApplicable)
+        .filter(|s| {
+            s.applicability == crate::diagnostic::Applicability::MachineApplicable
+                && s.span.byte_end > s.span.byte_start
+        })
         .count();
 
     let mut parts = Vec::new();
