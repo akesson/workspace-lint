@@ -34,23 +34,29 @@ glob = "crates/*"
 max-code-lines = 6000
 
 [unused-deps]
-# Direct deps whose names don't appear in source:
-# - protobuf: needed for the scip-generated types' Message trait.
-# - proc-macro2: needed for the `span-locations` feature that syn re-exports.
-# - cargo-husky: only the build script runs (installs git hooks).
-# - workspace-lint-marker: macros are referenced by path `workspace_lint_marker::`
-#   in src/, so the heuristic in unused-deps that strips the crate name doesn't
-#   see it — false positive worth pinning down rather than acting on.
-# - rustfix: pre-added for a planned follow-up that routes non-insertion
-#   suggestions through it (see comments in src/fix.rs). Not imported yet.
+# Direct deps whose names don't appear in source. Kept as workspace-level
+# `ignore` (not per-dep `expect` comments in each Cargo.toml) because the
+# diagnostic is anchored at the whole crate with one `help:` per unused dep —
+# a crate-level `expect` would silence the diagnostic entirely, suppressing
+# any *new* unused deps that appear later. To migrate, unused-deps must first
+# emit one diagnostic per dep (refactor: src/lints/unused_deps/mod.rs,
+# messages.rs scenarios, tests/cases/unused-deps/ fixtures).
 ignore = [
-    "protobuf",
+    # Pulled in only for the `span-locations` feature unification with `syn`.
     "proc-macro2",
+    # Build-script-only (installs git hooks); never appears in source.
     "cargo-husky",
+    # Macros are referenced by path `workspace_lint_marker::` in src/; the
+    # unused-deps name-stripping heuristic doesn't see it.
     "workspace-lint-marker",
+    # Pre-added for a planned follow-up routing non-insertion suggestions
+    # through it (see src/fix.rs). Not imported yet — drop the dep if no movement.
     "rustfix",
 ]
 
-# `unused-pub` deliberately omitted: it shells out to rust-analyzer for the
-# SCIP index and CI doesn't install it. The check is exercised separately by
-# the SCIP-fixture-driven unit tests under src/unused_pub/tests/.
+# `unused-pub` is now resolver-backed (no SCIP, no rust-analyzer subprocess) so
+# it can run in CI without extra installs. `on-ci-only = false` is explicit so
+# the dogfood test exercises this lint locally too, and silences the schema-2
+# default-flip migration warning.
+[unused-pub]
+on-ci-only = false
