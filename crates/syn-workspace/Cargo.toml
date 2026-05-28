@@ -1,11 +1,14 @@
 [package]
 name = "syn-workspace"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version.workspace = true
 repository = "https://github.com/human-solutions/workspace-lint"
 description = "A resolved workspace model for Rust: per-file imports, cross-file module trees, pub-use chains, and macro-body parsing — built on syn, no rust-analyzer required."
 license = "MIT OR Apache-2.0"
+keywords = ["syn", "workspace", "cargo", "ast", "resolver"]
+categories = ["development-tools", "parser-implementations"]
+readme = "README.md"
 
 [features]
 default = ["dioxus"]

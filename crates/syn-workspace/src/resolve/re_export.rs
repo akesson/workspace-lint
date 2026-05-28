@@ -26,16 +26,16 @@ use super::{Crate, Module, ResolvedPath, Visibility};
 
 /// Map from a re-export source path to its declared target path.
 ///
-/// Built once per [`crate::Workspace`] load and queried by every downstream
-/// lint that needs canonical names.
+/// Built once per [`crate::Workspace`] load and queried by any consumer
+/// that needs canonical names (architectural analyses, dependency
+/// analyses, etc.).
 ///
 /// # Scope: only `pub use` edges
 ///
 /// `pub(crate) use`, `pub(super) use`, and bare `use` are deliberately
 /// excluded. The rationale is that those forms tighten visibility instead
-/// of re-publishing a name across the crate boundary, and the consumer of
-/// this index — primarily the architecture lint — operates on cross-crate
-/// imports.
+/// of re-publishing a name across the crate boundary; this index is built
+/// to support cross-crate import reasoning.
 ///
 /// **Consequence — known precision gap.** Chains that pass through a
 /// `pub(crate) use` hop are not followed. Example:
@@ -98,7 +98,7 @@ impl ReExportIndex {
 
     /// Returns the number of `pub use` edges stored in the index.
     ///
-    /// Mostly useful for tests; downstream lints query [`Self::canonical`]
+    /// Mostly useful for tests; consumers query [`Self::canonical`]
     /// rather than introspecting the graph.
     pub fn len(&self) -> usize {
         self.edges.len()
@@ -152,7 +152,6 @@ mod tests {
             macro_implicit_refs: Vec::new(),
             references: Vec::new(),
             file: None,
-            parsed_file: None,
         }
     }
 

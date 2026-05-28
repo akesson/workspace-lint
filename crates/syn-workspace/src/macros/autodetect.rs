@@ -5,20 +5,22 @@
 //! scope (using `crate::resolve::module_tree::resolve_macro_path`) and
 //! records the canonical path in the caller's output set.
 //!
-//! **Suppression bias — important to understand.** Any multi-segment path
-//! shape *anywhere* inside *any* `macro_rules!` body in the workspace ends
-//! up in the implicit-refs set. That set is union'd across every member
-//! crate (see `crate::Workspace::macro_implicit_refs`) and lints like
-//! `visibility` and `unused-pub` skip items whose canonical appears in it.
+//! **Recall vs. precision.** Any multi-segment path shape *anywhere*
+//! inside *any* `macro_rules!` body ends up in the implicit-refs set.
+//! That set then feeds [`crate::Workspace::macro_implicit_refs_for`],
+//! which lets consumers decide whether a given canonical "could plausibly
+//! be reached via a macro." A match-arm pattern like `Foo::Bar` or a
+//! template literal `quote! { Type::method }` therefore contributes
+//! `Foo::Bar` / `Type::method` to that set, regardless of whether the
+//! macro's call site is anywhere near those items.
 //!
-//! In other words: a match-arm pattern like `Foo::Bar` or a hand-written
-//! template literal `quote! { Type::method }` will silence visibility
-//! findings for `Foo::Bar` / `Type::method` workspace-wide, regardless of
-//! where the macro lives or whether the call site is anywhere near the
-//! flagged item. This errs strongly toward false-negatives (missed
-//! findings) over false-positives (incorrect findings) — the assumption is
-//! that flagging a public item that is, in fact, referenced by *some*
-//! macro expansion is worse than missing a few unused items.
+//! This errs toward over-inclusion. Consumers that use the set as a
+//! suppression channel (e.g. "don't flag this public item as unused if
+//! any macro could be reaching it") will miss some genuine findings but
+//! avoid false positives — the assumption is that wrongly flagging an
+//! item that *is* referenced via macro expansion is worse than missing
+//! a few. Consumers with different tolerances can ignore the set or
+//! re-narrow it themselves.
 //!
 //! Single identifiers (parameter names, keywords, etc.) are dropped.
 //! Token groups (`{}`, `()`, `[]`) are recursed into so paths inside

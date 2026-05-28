@@ -15,9 +15,9 @@
 //!   because we can't enumerate external exports without rustdoc JSON.
 //!
 //! Renames (`use foo::Bar as Baz`) record both the local binding (`Baz`) and
-//! the canonical path at the definition site (`foo::Bar`). Downstream lints
-//! query the canonical path; rename loss would produce false-positive
-//! "unused" reports.
+//! the canonical path at the definition site (`foo::Bar`). Consumers query
+//! the canonical path; rename loss would silently turn "imported and used"
+//! into "unknown reference."
 
 use super::{ResolvedPath, Visibility};
 
@@ -171,9 +171,9 @@ fn walk(tree: &syn::UseTree, prefix: &[String], visibility: Visibility, out: &mu
 /// Collect the canonical prefix of every glob (`use foo::bar::*;`) in the
 /// given `use` item. Tier 1's [`bindings_from_use`] deliberately skips globs
 /// because there's no specific local name to bind; this companion walker
-/// exists so the references pass can still record what the glob targeted —
-/// without that, `use predicates::prelude::*;` looks like a no-op and
-/// unused-deps false-positives on `predicates`.
+/// exists so the references pass can still record what the glob targeted.
+/// Without it, `use predicates::prelude::*;` would look like a no-op and
+/// any dep-usage analysis would wrongly conclude `predicates` is unused.
 pub fn glob_targets_from_use(item: &syn::ItemUse, scope: &Scope) -> Vec<ResolvedPath> {
     let mut prefix: Vec<String> = Vec::new();
     let mut tree: &syn::UseTree = &item.tree;
@@ -285,7 +285,8 @@ mod tests {
     fn super_at_crate_root_stops_at_crate_name() {
         // `use super::Foo;` from a file at the crate root is invalid Rust,
         // but the resolver shouldn't panic — it should saturate at the
-        // crate name. The downstream lint will catch the invalid file.
+        // crate name. The compiler will catch the invalid file at build
+        // time, not us.
         let s = scope("demo", &[]);
         assert_eq!(
             bindings("use super::Foo;", &s),

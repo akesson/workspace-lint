@@ -43,11 +43,14 @@ struct ModuleContents {
     references: Vec<ResolvedPath>,
 }
 
-/// Build a fully-populated module tree for one crate.
+/// Build a fully-populated module tree for one crate, using the default
+/// marker-crate names for `expansion_uses!` detection. Most callers
+/// reach this via [`crate::Workspace::load`] rather than directly.
 ///
 /// Returns an empty placeholder [`Module`] if the crate has neither `lib.rs`
 /// nor `main.rs` at the standard location — for non-standard layouts, the
 /// caller should pass an explicit entry point to a future variant.
+#[cfg(test)]
 pub fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module> {
     let src_dir = manifest_dir.join("src");
     let candidates = [src_dir.join("lib.rs"), src_dir.join("main.rs")];
@@ -57,9 +60,19 @@ pub fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module>
     };
 
     let crate_root_path = ResolvedPath::new([crate_name.to_string()]);
-    build_module_from_file(root_file, crate_name.to_string(), crate_root_path)
+    let default_markers = vec![
+        "workspace_syn".to_string(),
+        "syn_workspace_marker".to_string(),
+    ];
+    build_module_from_file(
+        root_file,
+        crate_name.to_string(),
+        crate_root_path,
+        &default_markers,
+    )
 }
 
+#[cfg(test)]
 fn empty_root(crate_name: &str) -> Module {
     Module {
         name: crate_name.to_string(),
@@ -72,7 +85,6 @@ fn empty_root(crate_name: &str) -> Module {
         macro_implicit_refs: Vec::new(),
         references: Vec::new(),
         file: None,
-        parsed_file: None,
     }
 }
 
@@ -80,14 +92,15 @@ pub(crate) fn build_module_from_file(
     file_path: &Path,
     mod_name: String,
     canonical: ResolvedPath,
+    marker_crates: &[String],
 ) -> Result<Module> {
     let source = std::fs::read_to_string(file_path)?;
     let parsed = syn::parse_file(&source).map_err(|e| Error::Parse {
         path: file_path.to_path_buf(),
-        message: e.to_string(),
+        source: e,
     })?;
 
-    let contents = collect_module_contents(&parsed.items, file_path, &canonical)?;
+    let contents = collect_module_contents(&parsed.items, file_path, &canonical, marker_crates)?;
 
     Ok(Module {
         name: mod_name,
@@ -100,7 +113,6 @@ pub(crate) fn build_module_from_file(
         macro_implicit_refs: contents.macro_implicit_refs,
         references: contents.references,
         file: Some(file_path.to_path_buf()),
-        parsed_file: Some(std::rc::Rc::new(parsed)),
     })
 }
 
@@ -108,6 +120,7 @@ fn collect_module_contents(
     syn_items: &[syn::Item],
     parent_file: &Path,
     parent_canonical: &ResolvedPath,
+    marker_crates: &[String],
 ) -> Result<ModuleContents> {
     let scope = scope_from(parent_canonical);
     // Names declared at this module level. A `use foo::Bar;` whose first
@@ -149,7 +162,7 @@ fn collect_module_contents(
                     parent_canonical,
                     &mut macro_refs,
                 );
-            } else if is_expansion_uses(&item_macro.mac.path) {
+            } else if is_expansion_uses(&item_macro.mac.path, marker_crates) {
                 // Layer 2: explicit `expansion_uses!(path, path, ...)`
                 // annotation. Each argument resolves through the same
                 // scope rules as a macro_rules! body path.
@@ -202,13 +215,15 @@ fn collect_module_contents(
             let child_canonical = ResolvedPath::new(child_canonical_segs);
 
             if let Some((_, inline_items)) = &item_mod.content {
-                let inline = collect_module_contents(inline_items, parent_file, &child_canonical)?;
-                // Inline `mod foo { ... }` shares the parent's file but
-                // not its parsed AST — the parent's `parsed_file` already
-                // contains this inline body. `parsed_file: None` here
-                // means "ask the file-owner for the AST"; consumers
-                // dedupe by `file` and read `parsed_file` from whichever
-                // module carries it.
+                let inline = collect_module_contents(
+                    inline_items,
+                    parent_file,
+                    &child_canonical,
+                    marker_crates,
+                )?;
+                // Inline `mod foo { ... }` shares the parent's `file`.
+                // Callers that need the AST re-parse the file via
+                // `Workspace::parse_file(path)`; we don't cache here.
                 submodules.push(Module {
                     name: child_name,
                     canonical: child_canonical,
@@ -220,17 +235,18 @@ fn collect_module_contents(
                     macro_implicit_refs: inline.macro_implicit_refs,
                     references: inline.references,
                     file: Some(parent_file.to_path_buf()),
-                    parsed_file: None,
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, item_mod)? {
                 submodules.push(build_module_from_file(
                     &child_file,
                     child_name,
                     child_canonical,
+                    marker_crates,
                 )?);
             } else {
                 // `mod foo;` with neither inline body nor backing file —
-                // record so the module-tree lint can flag it.
+                // record so consumers (e.g. module-tree integrity
+                // checks) can flag the dangling declaration.
                 broken_mod_decls.push(BrokenModDecl {
                     name: child_name,
                     declared_in: parent_file.to_path_buf(),
@@ -248,8 +264,9 @@ fn collect_module_contents(
         match syn_item {
             // Use produces use_bindings; nested modules contribute their
             // references via their own ModuleContents. But glob imports
-            // (`use foo::bar::*;`) don't produce bindings — we record their
-            // prefix as a reference so unused-deps sees the crate.
+            // (`use foo::bar::*;`) don't produce bindings — we record
+            // their prefix as a reference so dep-usage analyses still
+            // see the crate.
             syn::Item::Use(item_use) => {
                 for target in use_tree::glob_targets_from_use(item_use, &scope) {
                     refs_set.insert(target);
@@ -262,7 +279,7 @@ fn collect_module_contents(
             // and to keep regular-code refs separate from macro-body refs.
             syn::Item::Macro(item_macro)
                 if item_macro.ident.is_some()
-                    || is_expansion_uses(&item_macro.mac.path)
+                    || is_expansion_uses(&item_macro.mac.path, marker_crates)
                     || plugins::matches(&item_macro.mac.path) =>
             {
                 continue;
@@ -662,17 +679,21 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 
 /// Byte range of a `proc_macro2::Span`. The `span-locations` feature on
 /// `proc-macro2` exposes `byte_range`, which returns inclusive-exclusive
-/// offsets within the source file. Returns `(0, 0)` for synthetic spans
-/// (where `byte_range` is empty), preserving the "no span available"
-/// sentinel that callers downstream of the diagnostic builder check.
-fn byte_range(span: proc_macro2::Span) -> (u32, u32) {
+/// offsets within the source file. Returns `None` for synthetic spans
+/// (where `byte_range` is empty), so the resulting `SourceSpan` carries
+/// `byte_range: None` rather than a zero-zero sentinel.
+fn byte_range(span: proc_macro2::Span) -> Option<std::ops::Range<u32>> {
     let r = span.byte_range();
-    (r.start as u32, r.end as u32)
+    if r.start == 0 && r.end == 0 {
+        None
+    } else {
+        Some(r.start as u32..r.end as u32)
+    }
 }
 
 fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path) -> Option<Item> {
-    // Full span of the item, used by structural-fix lints (visibility,
-    // unused-pub) that need to know the byte range to rewrite.
+    // Full span of the item, used by callers that need to rewrite the
+    // item structurally (e.g. visibility tighteners, dead-code removers).
     let full_span = match item {
         syn::Item::Fn(i) => Some(syn::spanned::Spanned::span(i)),
         syn::Item::Struct(i) => Some(syn::spanned::Spanned::span(i)),
@@ -686,7 +707,7 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
         syn::Item::Macro(i) => Some(syn::spanned::Spanned::span(i)),
         _ => None,
     };
-    let (byte_start, byte_end) = full_span.map(byte_range).unwrap_or((0, 0));
+    let byte_range = full_span.and_then(byte_range);
 
     let (name, kind, vis, line) = match item {
         syn::Item::Fn(i) => (
@@ -766,8 +787,7 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
                     file: file.to_path_buf(),
                     line: i.ident.as_ref().unwrap().span().start().line as u32,
                     column: 1,
-                    byte_start,
-                    byte_end,
+                    byte_range: byte_range.clone(),
                 }),
             });
         }
@@ -785,8 +805,7 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
             file: file.to_path_buf(),
             line: line as u32,
             column: 1,
-            byte_start,
-            byte_end,
+            byte_range,
         }),
     })
 }
@@ -880,8 +899,8 @@ mod tests {
     #[test]
     fn missing_mod_target_is_recorded_as_broken() {
         // `mod ghost;` with no file should not panic; the resolver records a
-        // BrokenModDecl entry on the parent module so the module-tree lint
-        // can flag it.
+        // BrokenModDecl entry on the parent module so consumers can flag
+        // the dangling declaration.
         let root = build_crate_tree(&manifest_dir("missing_mod"), "missing_mod").expect("build");
         assert!(root.submodules.iter().all(|m| m.name != "ghost"));
         assert!(
@@ -897,12 +916,21 @@ mod tests {
         syn::parse_file(src).expect("valid file").items
     }
 
+    fn default_markers() -> Vec<String> {
+        vec!["workspace_syn".into(), "syn_workspace_marker".into()]
+    }
+
     fn collect_refs(src: &str, crate_name: &str) -> Vec<String> {
         let parent_canonical = ResolvedPath::new([crate_name.to_string()]);
         let items = parse_items(src);
-        let contents =
-            collect_module_contents(&items, std::path::Path::new("<test>"), &parent_canonical)
-                .expect("collect");
+        let markers = default_markers();
+        let contents = collect_module_contents(
+            &items,
+            std::path::Path::new("<test>"),
+            &parent_canonical,
+            &markers,
+        )
+        .expect("collect");
         let mut out: Vec<String> = contents.references.iter().map(|p| p.display()).collect();
         out.sort();
         out

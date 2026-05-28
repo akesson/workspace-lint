@@ -6,15 +6,14 @@
 //! parse such bodies into structured ASTs and emit precise reference lists.
 //!
 //! **This is an internal extension point**, not a public API. The trait,
-//! the context type, the registry, and the [`matches`]/[`refs`] dispatch
+//! the context type, the registry, and the [`matches()`]/[`refs()`] dispatch
 //! functions are all `pub(crate)` and exist so that built-in parsers can be
 //! added in one place. Downstream consumers do not implement this trait;
 //! they consume the resolved references via [`crate::Workspace`].
 //!
 //! ## Adding a built-in parser
 //!
-//! Each plugin lives in its own folder (mirroring the layout of
-//! `crates/workspace-lint/src/lints/`). To add one:
+//! Each plugin lives in its own folder. To add one:
 //!
 //! 1. Create `plugins/<name>/mod.rs`. Define your parser struct and
 //!    `impl MacroBodyParser for ...`. Colocate unit tests in a
@@ -28,11 +27,9 @@
 //!    same `#[cfg]` gate if your parser is feature-flagged).
 //! 4. Add a `builtin_parsers_includes_<name>` test in the registry tests
 //!    below (cfg-gated to match).
-//! 5. Add fixtures under
-//!    `crates/workspace-lint/tests/cases/<lint>/{true_negatives,known_false_positives}/`.
 //!
 //! There is no separate gating table to update — the module-tree walker
-//! goes through [`matches`], which iterates [`builtin_parsers`] and asks
+//! goes through [`matches()`], which iterates [`builtin_parsers`] and asks
 //! each parser whether it claims the macro path.
 
 use proc_macro2::TokenStream;

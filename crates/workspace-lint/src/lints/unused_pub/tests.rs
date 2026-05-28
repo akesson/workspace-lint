@@ -35,8 +35,11 @@ fn span_for(file: PathBuf, byte_start: u32, byte_end: u32) -> SourceSpan {
         file,
         line: 1,
         column: 1,
-        byte_start,
-        byte_end,
+        byte_range: if byte_start == 0 && byte_end == 0 {
+            None
+        } else {
+            Some(byte_start..byte_end)
+        },
     }
 }
 

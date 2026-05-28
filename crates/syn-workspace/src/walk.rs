@@ -17,7 +17,7 @@
 //! and attached to [`Crate::orphan_files`].
 //!
 //! External crates (transitive cargo deps) are not yet materialized — the
-//! list is just workspace members. The [`Workspace`] model carries
+//! list is just workspace members. The [`Crate`] model carries
 //! `is_workspace_member` so external crates can be added later without an
 //! API change.
 
@@ -27,7 +27,9 @@ use std::path::{Path, PathBuf};
 use cargo_metadata::{MetadataCommand, TargetKind as CargoTargetKind};
 
 use crate::manifest::Manifest;
-use crate::resolve::{Crate, Error, Module, ResolvedPath, Result, Target, TargetKind, module_tree};
+use crate::resolve::{
+    Crate, Error, LoadWarning, ResolvedPath, Result, Target, TargetKind, module_tree,
+};
 
 /// Run `cargo metadata` on the workspace at `root` and return the absolute
 /// path of every workspace member's `Cargo.toml`.
@@ -38,15 +40,7 @@ use crate::resolve::{Crate, Error, Module, ResolvedPath, Result, Target, TargetK
 /// silently diverges on `exclude` and non-trivial globs.
 pub fn member_manifests(root: &Path) -> Result<Vec<PathBuf>> {
     let manifest = root.join("Cargo.toml");
-    let metadata = MetadataCommand::new()
-        .manifest_path(&manifest)
-        .exec()
-        .map_err(|e| {
-            Error::Manifest(format!(
-                "cargo metadata failed for {}: {e}",
-                manifest.display()
-            ))
-        })?;
+    let metadata = MetadataCommand::new().manifest_path(&manifest).exec()?;
     Ok(metadata
         .workspace_packages()
         .into_iter()
@@ -55,32 +49,35 @@ pub fn member_manifests(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Run `cargo metadata` on the workspace at `root` and return the root
-/// [`Manifest`] alongside one [`Crate`] per workspace member.
-pub fn load_members(root: &Path) -> Result<(Manifest, Vec<Crate>)> {
+/// [`Manifest`] alongside one [`Crate`] per workspace member, plus any
+/// non-fatal warnings collected during the walk.
+///
+/// `marker_crates` is forwarded through the module-tree pipeline so the
+/// `expansion_uses!` annotation can match against caller-configured
+/// crate names (see [`crate::LoadOptions::marker_crates`]).
+pub fn load_members(
+    root: &Path,
+    marker_crates: &[String],
+) -> Result<(Manifest, Vec<Crate>, Vec<LoadWarning>)> {
     let root_manifest_path = root.join("Cargo.toml");
     let metadata = MetadataCommand::new()
         .manifest_path(&root_manifest_path)
-        .exec()
-        .map_err(|e| {
-            Error::Manifest(format!(
-                "cargo metadata failed for {}: {e}",
-                root_manifest_path.display()
-            ))
-        })?;
+        .exec()?;
 
     let root_manifest = Manifest::load(&root_manifest_path)?;
 
     let mut out = Vec::new();
+    let mut warnings: Vec<LoadWarning> = Vec::new();
     for pkg in metadata.workspace_packages() {
         let manifest_path = pkg.manifest_path.as_std_path().to_path_buf();
         let manifest_dir = manifest_path
             .parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| {
-                Error::Manifest(format!(
-                    "manifest path has no parent: {}",
-                    pkg.manifest_path
-                ))
+                Error::manifest(
+                    &manifest_path,
+                    std::io::Error::other("manifest path has no parent"),
+                )
             })?;
 
         // Cargo crate names use hyphens (e.g. `data-models`), but source code
@@ -103,13 +100,15 @@ pub fn load_members(root: &Path) -> Result<(Manifest, Vec<Crate>)> {
             // Each target gets its own module tree, rooted at its
             // `src_path` and using the parent crate's code_name as the
             // canonical root. Build failures on auxiliary targets
-            // (test/example) shouldn't crash the whole resolver — log
-            // and skip. For lib/bin we propagate.
+            // (test/example) shouldn't crash the whole resolver — they
+            // get recorded as `LoadWarning::TargetParseFailed` so the
+            // caller can decide what to do. For lib/bin we propagate.
             let canonical = ResolvedPath::new([code_name.clone()]);
             let root_module = match module_tree::build_module_from_file(
                 &src_path,
                 code_name.clone(),
                 canonical,
+                marker_crates,
             ) {
                 Ok(m) => m,
                 Err(e) => {
@@ -119,11 +118,11 @@ pub fn load_members(root: &Path) -> Result<(Manifest, Vec<Crate>)> {
                     ) {
                         return Err(e);
                     }
-                    eprintln!(
-                        "syn-workspace: skipping target {} ({}): {e}",
-                        cargo_target.name,
-                        src_path.display()
-                    );
+                    warnings.push(LoadWarning::TargetParseFailed {
+                        target: cargo_target.name.clone(),
+                        path: src_path.clone(),
+                        message: e.to_string(),
+                    });
                     continue;
                 }
             };
@@ -155,7 +154,7 @@ pub fn load_members(root: &Path) -> Result<(Manifest, Vec<Crate>)> {
         });
     }
 
-    Ok((root_manifest, out))
+    Ok((root_manifest, out, warnings))
 }
 
 /// Map cargo's per-target `kind: Vec<TargetKind>` (which may report
@@ -261,9 +260,3 @@ fn rs_files_under(dir: &Path) -> Vec<PathBuf> {
     }
     out
 }
-
-// `Module` only used through `target.all_modules()` (a `Target` method);
-// silence unused-import for the direct import otherwise needed when this
-// file is read top-down.
-#[allow(dead_code)]
-fn _module_type_hint(_: &Module) {}

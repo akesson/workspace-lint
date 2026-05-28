@@ -162,12 +162,17 @@ fn run_single_check(rule: CheckRule) -> (Vec<Diagnostic>, Option<Workspace>) {
 
 /// Load the resolver-backed `Workspace` and (when configured) register the
 /// external-macro expansion-uses set. Loud-fail on resolver error: a silent
-/// `Vec::new()` would mask a broken state in CI.
+/// `Vec::new()` would mask a broken state in CI. Non-fatal load warnings
+/// (auxiliary targets that failed to parse) are surfaced to stderr —
+/// `Workspace` no longer prints them itself.
 fn load_workspace(macros: Option<&MacrosConfig>) -> Workspace {
     let mut ws = Workspace::load(".").unwrap_or_else(|e| {
         eprintln!("failed to load workspace for resolver-backed lints: {e}");
         std::process::exit(1);
     });
+    for w in ws.warnings() {
+        eprintln!("workspace-lint: {w}");
+    }
     if let Some(m) = macros {
         let paths = m.external.iter().flat_map(|m| {
             m.expansion_uses

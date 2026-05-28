@@ -9,19 +9,31 @@
 //! execution. The library trades precision for speed; built-in macro-body
 //! parsers cover the cases where token-level scanning is insufficient.
 //!
+//! The whole resolved model is `Send + Sync`, so consumers are free to
+//! parallelize their own analyses across crates.
+//!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use syn_workspace::Workspace;
 //!
 //! let ws = Workspace::load(".")?;
-//! for cr in ws.crates() {
+//! for cr in ws.members() {
 //!     for item in cr.pub_items() {
-//!         println!("{}::{}", cr.name(), item.canonical_path());
+//!         println!("{} :: {}", cr.name, item.canonical);
 //!     }
 //! }
 //! # Ok::<(), syn_workspace::Error>(())
 //! ```
+//!
+//! # `toml_edit` re-export
+//!
+//! [`toml_edit`] is re-exported so callers that inspect dependency
+//! entries via [`Manifest::deps`] don't have to add their own dep. This
+//! is part of the public API stability contract: a major-version bump
+//! in `toml_edit` is a major-version bump in `syn-workspace`. If you
+//! only need version strings, prefer `Manifest::get_dep_version` —
+//! it doesn't expose `toml_edit` types.
 
 #![forbid(unsafe_code)]
 
@@ -37,7 +49,7 @@ pub use toml_edit;
 
 pub use manifest::{DeclaredDep, DepLocation, DepSection, Manifest};
 pub use resolve::{
-    BrokenModDecl, Crate, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan, Target,
-    TargetKind, Visibility, Workspace, re_export::ReExportIndex,
+    BrokenModDecl, Crate, Error, Item, ItemKind, LoadOptions, LoadWarning, Module, ResolvedPath,
+    Result, SourceSpan, Target, TargetKind, Visibility, Workspace, re_export::ReExportIndex,
 };
 pub use walk::member_manifests;

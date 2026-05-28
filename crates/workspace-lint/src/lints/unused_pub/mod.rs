@@ -247,14 +247,14 @@ enum DeleteOutcome {
 }
 
 fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
-    if !span.has_byte_range() {
+    let Some(range) = &span.byte_range else {
         return DeleteOutcome::Unavailable;
-    }
+    };
     let Ok(source) = fs_err::read_to_string(&span.file) else {
         return DeleteOutcome::Unavailable;
     };
-    let start = span.byte_start as usize;
-    let mut end = (span.byte_end as usize).min(source.len());
+    let start = range.start as usize;
+    let mut end = (range.end as usize).min(source.len());
     if start >= end {
         return DeleteOutcome::Unavailable;
     }

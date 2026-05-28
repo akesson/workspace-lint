@@ -7,27 +7,22 @@
 //! shadow). This parser walks the dioxus-rsx AST directly and emits
 //! every Component path it finds.
 //!
-//! ## v1 dispatch model
+//! ## Dispatch
 //!
-//! The resolver currently dispatches via
-//! [`crate::resolve::module_tree::matches_known_plugin_macro`] for body
-//! scanning — same as [`super::QuoteParser`]. So the references this
-//! plugin emits via the [`MacroBodyParser::references`] trait method are
-//! not yet read by the resolver pipeline. The implementation exists to:
+//! The resolver's module-tree walker gates on `plugins::matches` (which
+//! iterates [`super::builtin_parsers`] and asks each parser whether it
+//! claims the macro path). Bodies of matching macros are token-scanned
+//! by Layer 1 — same as `quote!` — and additionally passed through
+//! `plugins::refs`, which calls every matching parser's
+//! [`super::MacroBodyParser::references`] method. The AST walk below
+//! catches Component refs the token scanner misses:
 //!
-//! 1. **Use the `dioxus-rsx` dependency.** Without a real consumer the
-//!    crate would be flagged as unused (the dogfood lint catches this).
-//! 2. **Document the intended extraction.** When v2 of the plugin
-//!    architecture lands, the references() method already does the work.
-//! 3. **Provide structured AST parsing.** Catches Component refs that
-//!    token-scanning misses — single-ident components without imports,
-//!    interpolated identifiers in `"{x}"` segments, and component paths
-//!    inside `for`/`if` template bodies.
+//! - single-ident components without imports
+//! - interpolated identifiers in `"{x}"` text segments
+//! - component paths inside `for` / `if` template bodies
 //!
-//! Until v2 dispatch, the resolver's token-scanner (kicked in by the
-//! `rsx`/`dioxus::rsx` matchers in `matches_known_plugin_macro`) handles
-//! the multi-segment and use-binding cases. The AST parser here covers
-//! the remaining single-ident and interpolation cases.
+//! Malformed `rsx!` bodies return an empty reference list; the rustc /
+//! dx toolchain is responsible for reporting parse failures, not us.
 
 use proc_macro2::TokenStream;
 use syn::parse2;
