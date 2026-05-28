@@ -1,6 +1,6 @@
 //! Parsed-and-located `Cargo.toml` view.
 //!
-//! Owns the raw source bytes plus a `toml_edit::ImDocument` parse for
+//! Owns the raw source bytes plus a `toml_edit::Document` parse for
 //! structural reads. Stays *read-only* — the syn-workspace model contract.
 //! Mutation needed for fix-mode replacements happens in
 //! [`Manifest::format_workspace_dep`] on a local `DocumentMut` scratch and
@@ -21,14 +21,14 @@
 //! returns the *whole `key = value` line* including indent — which is what
 //! both consumers want — without needing to walk decor/whitespace around the
 //! value span. Multi-line inline tables (entry wraps across `\n`) are
-//! outside TOML 1.0 spec and `toml_edit::ImDocument::parse` rejects them at
+//! outside TOML 1.0 spec and `toml_edit::Document::parse` rejects them at
 //! load time; we don't try to handle them. Real-world Cargo.toml files use
 //! `[dependencies.<name>]` table blocks instead — those parse fine.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use toml_edit::{ImDocument, Item, Table, TableLike, Value};
+use toml_edit::{Document, Item, Table, TableLike, Value};
 
 use crate::resolve::{Error, Result};
 
@@ -97,7 +97,7 @@ pub struct DeclaredDep {
 pub struct Manifest {
     path: PathBuf,
     raw: String,
-    doc: ImDocument<String>,
+    doc: Document<String>,
 }
 
 impl Manifest {
@@ -107,7 +107,7 @@ impl Manifest {
         let path = path.into();
         let raw = std::fs::read_to_string(&path)
             .map_err(|e| Error::Manifest(format!("failed to read {}: {e}", path.display())))?;
-        let doc: ImDocument<String> = ImDocument::parse(raw.clone())
+        let doc: Document<String> = Document::parse(raw.clone())
             .map_err(|e| Error::Manifest(format!("failed to parse {}: {e}", path.display())))?;
         Ok(Self { path, raw, doc })
     }
@@ -120,7 +120,7 @@ impl Manifest {
         Self {
             path: PathBuf::new(),
             raw: String::new(),
-            doc: ImDocument::parse(String::new()).expect("empty toml is parseable"),
+            doc: Document::parse(String::new()).expect("empty toml is parseable"),
         }
     }
 
@@ -137,7 +137,7 @@ impl Manifest {
     }
 
     /// The parsed read-only document.
-    pub fn doc(&self) -> &ImDocument<String> {
+    pub fn doc(&self) -> &Document<String> {
         &self.doc
     }
 
@@ -335,7 +335,7 @@ mod tests {
         Manifest {
             path: PathBuf::from("/tmp/Cargo.toml"),
             raw: content.to_string(),
-            doc: ImDocument::parse(content.to_string()).unwrap(),
+            doc: Document::parse(content.to_string()).unwrap(),
         }
     }
 
