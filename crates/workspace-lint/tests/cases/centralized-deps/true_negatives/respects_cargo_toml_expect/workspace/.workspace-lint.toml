@@ -1,0 +1,5 @@
+[checks]
+centralized-deps = true
+
+[lints]
+centralized-deps = "deny"

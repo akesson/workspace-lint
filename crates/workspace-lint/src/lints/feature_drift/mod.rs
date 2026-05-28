@@ -77,7 +77,11 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             let msg =
                 format!("feature `{feat}` is declared in `[features]` but never gated in source");
             diagnostics.push(
-                at_crate(lint_id, msg, krate.manifest_dir.clone())
+                at_crate(
+                    lint_id,
+                    msg,
+                    workspace.crate_relative_path(&krate.manifest_dir),
+                )
                     .help(format!(
                         "either gate code with `#[cfg(feature = \"{feat}\")]` or remove `{feat}` from `[features]`",
                     ))
@@ -93,7 +97,11 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             let msg =
                 format!("feature `{feat}` is gated in source but not declared in `[features]`");
             diagnostics.push(
-                at_crate(lint_id, msg, krate.manifest_dir.clone())
+                at_crate(
+                    lint_id,
+                    msg,
+                    workspace.crate_relative_path(&krate.manifest_dir),
+                )
                     .help(format!(
                         "add `{feat} = []` to the `[features]` table of `{}/Cargo.toml`, or remove the `cfg(feature = \"{feat}\")` references",
                         krate.name,

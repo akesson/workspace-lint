@@ -67,14 +67,20 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
 
         if !crate_errors.is_empty() {
             let n = crate_errors.len();
+            // Workspace-relative paths everywhere — both the in-message
+            // path and the suppression anchor — so a per-Cargo.toml
+            // directive (`# workspace-lint: allow(centralized-deps)`)
+            // can actually match the diagnostic's `SilenceAnchor::Crate`.
+            let manifest_path_rel = workspace.crate_relative_path(manifest.path());
+            let manifest_dir_rel = workspace.crate_relative_path(&krate.manifest_dir);
             let mut builder = at_crate(
                 lint_id,
                 format!(
                     "{n} dependenc{} in {} should use `workspace = true`",
                     if n == 1 { "y" } else { "ies" },
-                    manifest.path().display()
+                    manifest_path_rel.display()
                 ),
-                krate.manifest_dir.clone(),
+                manifest_dir_rel,
             );
             for err in crate_errors {
                 builder = builder.help(err);

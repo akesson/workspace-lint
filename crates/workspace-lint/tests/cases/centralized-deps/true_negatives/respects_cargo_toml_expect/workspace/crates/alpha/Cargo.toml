@@ -1,0 +1,21 @@
+# The dep below intentionally violates centralized-deps (own version, no
+# `workspace = true`); the expect directive must successfully suppress it.
+# Pre-fix this would silently fail because the diagnostic's crate anchor
+# was an absolute cargo_metadata path while the directive scanner emitted
+# a workspace-relative anchor — `SilenceAnchor::Crate.contains` never
+# matched. This fixture is a regression guard for that path-normalization.
+#
+# The `allow(stale-expect)` below silences the dogfood's view of this
+# file: the outer workspace-lint run sees an `expect` it can't match
+# (no centralized-deps diagnostic fires here from outside) and would
+# otherwise emit a stale-expect warning. Within the fixture's own
+# workspace the expect *does* match, so it's never stale there.
+# workspace-lint: allow(stale-expect)
+# workspace-lint: expect(centralized-deps)
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = "1.0.200"

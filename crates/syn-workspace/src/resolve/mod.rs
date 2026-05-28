@@ -803,6 +803,15 @@ impl Workspace {
     /// (mostly diagnostic-builder lints) one-liners regardless of
     /// whether the input was inside or outside the workspace tree.
     ///
+    /// `cargo_metadata` always hands back absolute paths for member
+    /// `manifest_dir`s, but [`Workspace::load`] stores the user's input
+    /// root unchanged — so when the caller invoked us with `.`, the
+    /// stored root is `.` and a plain `strip_prefix` of an absolute
+    /// `manifest_dir` would always fail. We canonicalize the root once
+    /// before comparison (lazy: only when the literal strip misses) so
+    /// the call site doesn't have to think about which form the root
+    /// came in as.
+    ///
     /// Use this for any anchor or rendered path that's expected to round-
     /// trip with a `# workspace-lint: …` suppression directive: the
     /// directive scanner emits anchors against workspace-relative paths,
@@ -810,9 +819,15 @@ impl Workspace {
     /// through here before being passed to `at_crate` / `at_file` /
     /// `at_line`.
     pub fn crate_relative_path(&self, path: &Path) -> PathBuf {
-        path.strip_prefix(&self.root)
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|_| path.to_path_buf())
+        if let Ok(rel) = path.strip_prefix(&self.root) {
+            return rel.to_path_buf();
+        }
+        if let Ok(abs_root) = self.root.canonicalize()
+            && let Ok(rel) = path.strip_prefix(&abs_root)
+        {
+            return rel.to_path_buf();
+        }
+        path.to_path_buf()
     }
 
     /// Read and parse the given source file with `syn::parse_file`.

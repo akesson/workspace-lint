@@ -1,10 +1,11 @@
 use globset::{Glob, GlobSetBuilder};
 use std::path::Path;
+use syn_workspace::Workspace;
 use tokei::{Config as TokeiConfig, Languages};
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
-use crate::lints::{Lint, LintContext, LintId};
+use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
 #[cfg(test)]
@@ -41,17 +42,31 @@ impl Lint for CrateSize {
         LintId::CrateSize
     }
 
-    fn check(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        check(&self.config)
+    fn requirements(&self) -> Requirements {
+        Requirements {
+            needs_workspace: true,
+        }
+    }
+
+    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        let workspace = cx
+            .workspace
+            .expect("crate-size lint requires Workspace (Requirements::needs_workspace)");
+        check(&self.config, workspace)
     }
 }
 
-pub(crate) fn check(config: &CrateSizeConfig) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let lint_id = LintId::CrateSize.id();
     let mut diagnostics = Vec::new();
 
     for rule in &config.rules {
-        let dirs = expand_glob(&rule.glob);
+        let glob = Glob::new(&rule.glob).unwrap_or_else(|e| {
+            eprintln!("invalid crate-size glob '{}': {e}", rule.glob);
+            std::process::exit(1);
+        });
+        let matcher = glob.compile_matcher();
+
         let include_set = rule.include.as_ref().map(|patterns| {
             let mut builder = GlobSetBuilder::new();
             for p in patterns {
@@ -63,9 +78,39 @@ pub(crate) fn check(config: &CrateSizeConfig) -> Vec<Diagnostic> {
             builder.build().unwrap()
         });
 
-        for dir in &dirs {
+        // Iterate every workspace member whose workspace-relative manifest
+        // directory matches the rule's glob. Replaces the previous
+        // `read_dir`-based scan: now the lint can only target real cargo
+        // workspace members (cargo's `members`/`exclude`/glob semantics
+        // are honored), and the resulting anchor path is workspace-
+        // relative for free — `# workspace-lint: allow(crate-size)` in a
+        // member Cargo.toml now matches.
+        let mut matches: Vec<(String, std::path::PathBuf)> = workspace
+            .members()
+            .map(|krate| {
+                (
+                    workspace.crate_relative_path(&krate.manifest_dir),
+                    krate.manifest_dir.clone(),
+                )
+            })
+            .filter_map(|(rel, abs)| {
+                let key = rel.display().to_string();
+                if matcher.is_match(&key) {
+                    Some((key, abs))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        matches.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (rel, abs) in matches {
             let mut languages = Languages::new();
-            languages.get_statistics(&[dir.as_str()], &[], &TokeiConfig::default());
+            // tokei walks the on-disk crate dir for line counting. Pass
+            // the absolute path so the walker doesn't depend on the
+            // process's working directory.
+            let abs_str = abs.display().to_string();
+            languages.get_statistics(&[abs_str.as_str()], &[], &TokeiConfig::default());
 
             let mut total_code: usize = 0;
             for language in languages.values() {
@@ -88,7 +133,7 @@ pub(crate) fn check(config: &CrateSizeConfig) -> Vec<Diagnostic> {
                             "crate exceeds {} code lines ({total_code})",
                             rule.max_code_lines
                         ),
-                        dir.clone(),
+                        rel.clone(),
                     )
                     .help("split the crate into smaller, more focused crates")
                     .note(format!(
@@ -102,43 +147,4 @@ pub(crate) fn check(config: &CrateSizeConfig) -> Vec<Diagnostic> {
     }
 
     diagnostics
-}
-
-fn expand_glob(pattern: &str) -> Vec<String> {
-    let glob = Glob::new(pattern).unwrap_or_else(|e| {
-        eprintln!("invalid crate-size glob '{pattern}': {e}");
-        std::process::exit(1);
-    });
-    let matcher = glob.compile_matcher();
-
-    let parent = pattern
-        .find(['*', '?', '['])
-        .map(|pos| &pattern[..pattern[..pos].rfind('/').map(|i| i + 1).unwrap_or(0)])
-        .unwrap_or(pattern);
-
-    let parent_path = if parent.is_empty() {
-        Path::new(".")
-    } else {
-        Path::new(parent)
-    };
-
-    let mut dirs = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(parent_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let rel = path
-                    .strip_prefix("./")
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string();
-                if matcher.is_match(&rel) {
-                    dirs.push(rel);
-                }
-            }
-        }
-    }
-
-    dirs.sort();
-    dirs
 }

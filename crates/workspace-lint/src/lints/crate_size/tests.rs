@@ -1,7 +1,6 @@
 use super::*;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
-use tempfile::TempDir;
 
 fn find_crate_violations(
     dir_line_counts: &[(String, usize)],
@@ -63,33 +62,7 @@ fn multiple_violations_each_emit_diagnostic() {
     assert!(messages.iter().any(|m| m.contains("700")));
 }
 
-#[test]
-fn expand_glob_finds_dirs() {
-    let tmp = TempDir::new().unwrap();
-    let parent = tmp.path().join("crates");
-    std::fs::create_dir(&parent).unwrap();
-    std::fs::create_dir(parent.join("alpha")).unwrap();
-    std::fs::create_dir(parent.join("beta")).unwrap();
-    std::fs::write(parent.join("readme.md"), "").unwrap();
-
-    let pattern = format!("{}/*", parent.display());
-    let dirs = expand_glob(&pattern);
-    assert_eq!(dirs.len(), 2);
-}
-
-#[test]
-fn expand_glob_empty_parent() {
-    let tmp = TempDir::new().unwrap();
-    let parent = tmp.path().join("empty");
-    std::fs::create_dir(&parent).unwrap();
-
-    let pattern = format!("{}/*", parent.display());
-    let dirs = expand_glob(&pattern);
-    assert!(dirs.is_empty());
-}
-
-#[test]
-fn expand_glob_nonexistent_parent() {
-    let dirs = expand_glob("/nonexistent/path/*");
-    assert!(dirs.is_empty());
-}
+// `expand_glob` was removed when this lint switched to iterating
+// `workspace.members()` for its discovery walk; integration coverage now
+// lives in `tests/cases/crate-size/` (when those fixtures land) instead
+// of synthesizing filesystem trees in unit tests.

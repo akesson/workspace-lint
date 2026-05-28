@@ -1,5 +1,5 @@
 error: feature `extra` is declared in `[features]` but never gated in source
- --> <TMP>/crates/demo/Cargo.toml:1:1
+ --> crates/demo/Cargo.toml:1:1
   |
   = help: either gate code with `#[cfg(feature = "extra")]` or remove `extra` from `[features]`
   = note: declared in `demo/Cargo.toml`

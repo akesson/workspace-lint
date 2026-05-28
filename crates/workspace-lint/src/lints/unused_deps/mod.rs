@@ -85,20 +85,11 @@ pub(crate) fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Dia
         }
 
         let n = unused.len();
-        // Anchor and message both use the workspace-relative path. The anchor
-        // form matters for suppression: directives in Cargo.toml are scanned
-        // with relative paths (stripped against `workspace.root()`), so a
-        // crate-level diagnostic anchor must match the same shape or
-        // `SilenceAnchor::Crate.contains` never fires.
-        let manifest_dir_rel = krate
-            .manifest_dir
-            .strip_prefix(workspace.root())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|_| krate.manifest_dir.clone());
-        let manifest_path_rel = manifest
-            .path()
-            .strip_prefix(workspace.root())
-            .unwrap_or(manifest.path());
+        // Anchor and message both use the workspace-relative path so a
+        // per-Cargo.toml `# workspace-lint: allow(unused-deps)` directive
+        // matches the crate-anchored diagnostic shape.
+        let manifest_dir_rel = workspace.crate_relative_path(&krate.manifest_dir);
+        let manifest_path_rel = workspace.crate_relative_path(manifest.path());
         let cargo_path_str = manifest_path_rel.display().to_string().replace('\\', "/");
         let mut builder = at_crate(
             lint_id,
