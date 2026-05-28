@@ -39,7 +39,6 @@ impl UnusedPub {
     }
 
     pub fn from_cli(
-        on_ci_only: bool,
         exclude_crates: Vec<String>,
         allowlist: Vec<String>,
         kinds: Vec<String>,
@@ -47,7 +46,6 @@ impl UnusedPub {
         suppress_intra_crate: bool,
     ) -> Self {
         Self::new(UnusedPubConfig {
-            on_ci_only: Some(on_ci_only),
             exclude_crates,
             allowlist,
             kinds,
@@ -82,10 +80,6 @@ impl Lint for UnusedPub {
 }
 
 pub(crate) fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
-    if config.effective_on_ci_only() && std::env::var("CI").is_err() {
-        return Vec::new();
-    }
-
     let kind_filter = parse_kind_filter(&config.kinds);
     let allowlist = build_glob_set(&config.allowlist, "allowlist");
     let exclude_paths = build_glob_set(&config.exclude_paths, "exclude-paths");

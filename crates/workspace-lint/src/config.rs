@@ -15,12 +15,6 @@ pub(crate) use crate::lints::unused_pub::UnusedPubConfig;
 
 #[derive(Deserialize, Default)]
 pub(crate) struct Config {
-    /// Config schema version. Missing or `< 2` triggers a one-time migration
-    /// warning when `[unused-pub]` is present without an explicit
-    /// `on-ci-only` setting (the default flipped from `false` to `true`).
-    /// Set `schema = 2` in your config to silence the warning.
-    #[serde(default)]
-    pub schema: Option<u32>,
     #[serde(default)]
     pub checks: Checks,
     /// Per-lint severity overrides. Keys are short kebab names
@@ -148,13 +142,6 @@ pub(crate) fn load() -> Config {
     }
 }
 
-/// Public wrapper so `main.rs` can emit the schema-migration warning at
-/// the right moment in the pipeline (after the output format is parsed,
-/// so the JSON/GitHub renderers don't get prose mixed into their channel).
-pub(crate) fn maybe_warn_on_old_schema(config: &Config) {
-    warn_on_old_schema(config);
-}
-
 /// Best-effort variant of [`load`]: returns `None` (instead of exiting) if
 /// no config file is present. Used by single-check runs that should still
 /// honor a project's `[lints]` levels when available but mustn't fail when
@@ -169,28 +156,6 @@ pub(crate) fn try_load() -> Option<Config> {
         }
         (false, Some(raw)) => toml::from_str(&raw).ok(),
         _ => None,
-    }
-}
-
-/// Emit a one-time stderr warning if the user's config predates the schema
-/// flip that made `unused-pub.on-ci-only` default to `true`. They opt out by
-/// setting `schema = 2` (or by explicitly choosing `on-ci-only`).
-fn warn_on_old_schema(config: &Config) {
-    let has_unused_pub_block = config.unused_pub.is_some();
-    let on_ci_only_missing = config
-        .unused_pub
-        .as_ref()
-        .is_some_and(|u| u.on_ci_only.is_none());
-    let schema_old = config.schema.is_none_or(|v| v < 2);
-
-    if has_unused_pub_block && on_ci_only_missing && schema_old {
-        eprintln!(
-            "warning: [unused-pub] is present but `on-ci-only` is not set. \
-             As of schema 2, this check defaults to `on-ci-only = true` (it only runs \
-             when the CI env var is set). To restore the old behavior, set \
-             `on-ci-only = false`. To acknowledge the new default and silence this \
-             warning, add `schema = 2` to your config."
-        );
     }
 }
 
@@ -368,10 +333,6 @@ max-code-lines = 400
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         let up = config.unused_pub.unwrap();
-        // `on_ci_only` is None when not specified, but effective_on_ci_only()
-        // returns the new default of true.
-        assert!(up.on_ci_only.is_none());
-        assert!(up.effective_on_ci_only());
         assert!(up.exclude_crates.is_empty());
         assert!(up.allowlist.is_empty());
         assert!(up.kinds.is_empty());
@@ -379,34 +340,21 @@ max-code-lines = 400
     }
 
     #[test]
-    fn parse_unused_pub_on_ci_only() {
+    fn legacy_on_ci_only_and_schema_are_silently_ignored() {
+        // Forward-compat with configs written for the SCIP-era schema. The
+        // `on-ci-only` knob (which gated the slow rust-analyzer subprocess)
+        // and the `schema` migration version are both gone, but old configs
+        // that still carry them must continue to parse — serde drops
+        // unknown fields by default and we never opted into
+        // `deny_unknown_fields`.
         let toml = r#"
+schema = 2
+
 [unused-pub]
 on-ci-only = true
 "#;
-        let config: Config = toml::from_str(toml).unwrap();
-        let up = config.unused_pub.unwrap();
-        assert_eq!(up.on_ci_only, Some(true));
-        assert!(up.effective_on_ci_only());
-    }
-
-    #[test]
-    fn explicit_on_ci_only_false_is_respected() {
-        let toml = r#"
-[unused-pub]
-on-ci-only = false
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        let up = config.unused_pub.unwrap();
-        assert_eq!(up.on_ci_only, Some(false));
-        assert!(!up.effective_on_ci_only());
-    }
-
-    #[test]
-    fn schema_field_parses() {
-        let toml = "schema = 2\n";
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.schema, Some(2));
+        let config: Config = toml::from_str(toml).expect("legacy fields must not break parse");
+        assert!(config.unused_pub.is_some());
     }
 
     #[test]

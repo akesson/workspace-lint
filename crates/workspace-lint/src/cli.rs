@@ -103,9 +103,6 @@ pub(crate) enum CheckRule {
     },
     /// Check for unused public items via the resolver-backed cross-crate index
     UnusedPub {
-        /// Only run this check in CI environments (when CI env var is set)
-        #[arg(long, default_value_t = false)]
-        on_ci_only: bool,
         /// Crates to exclude from analysis
         #[arg(long)]
         exclude_crates: Vec<String>,
@@ -152,14 +149,12 @@ impl CheckRule {
             } => Box::new(CliCrateVersion::from_cli(command, pattern, crate_name)),
             CheckRule::UnusedDeps { ignore } => Box::new(UnusedDeps::from_cli(ignore)),
             CheckRule::UnusedPub {
-                on_ci_only,
                 exclude_crates,
                 allowlist,
                 kinds,
                 exclude_paths,
                 suppress_intra_crate,
             } => Box::new(UnusedPub::from_cli(
-                on_ci_only,
                 exclude_crates,
                 allowlist,
                 kinds,
@@ -253,7 +248,6 @@ mod tests {
     #[test]
     fn into_lint_unused_pub() {
         let lint = CheckRule::UnusedPub {
-            on_ci_only: false,
             exclude_crates: vec![],
             allowlist: vec![],
             kinds: vec![],

@@ -5,12 +5,10 @@
 # expect(...)` directive so the silence is load-bearing — when the file shrinks
 # back under the limit, `stale-expect` nudges us to clean up.
 
-schema = 2
-
-# Lint levels. After B2 (the `[lints]` table), only `Deny`-level findings
-# flip the exit code. The dogfood test asserts a clean run, so anything we
-# want to keep enforced must be listed here as `deny`. Lints we want to see
-# but not break on stay `warn` (the implicit default).
+# Lint levels. Only `Deny`-level findings flip the exit code. The dogfood test
+# asserts a clean run, so anything we want to keep enforced must be listed here
+# as `deny`. Lints we want to see but not break on stay `warn` (the implicit
+# default).
 [lints]
 centralized-deps = "deny"
 crate-size = "deny"
@@ -54,13 +52,10 @@ ignore = [
     "rustfix",
 ]
 
-# `unused-pub` is now resolver-backed (no SCIP, no rust-analyzer subprocess) so
-# it can run in CI without extra installs. `on-ci-only = false` is explicit so
-# the dogfood test exercises this lint locally too, and silences the schema-2
-# default-flip migration warning. The lint consults
-# `Workspace::re_exports().is_target(...)` and skips items reachable via a
-# `pub use` chain, so no `exclude-crates` is needed for the publishable
-# library crates — their re-exported public API surface is correctly
-# preserved without an opt-out.
+# `unused-pub` is resolver-backed (no SCIP, no rust-analyzer subprocess), so it
+# runs everywhere — local + CI dogfood — without extra installs. The lint
+# consults `Workspace::re_exports().is_target(...)` and
+# `Workspace::is_externally_reachable(...)` to skip items that form part of a
+# library crate's public API surface, so no `exclude-crates` is needed for the
+# publishable libraries.
 [unused-pub]
-on-ci-only = false

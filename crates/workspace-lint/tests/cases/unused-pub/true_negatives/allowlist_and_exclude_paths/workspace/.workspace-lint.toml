@@ -1,6 +1,3 @@
-schema = 2
-
 [unused-pub]
-on-ci-only = false
 allowlist = ["*MyHelper"]
 exclude-paths = ["**/generated/**"]
