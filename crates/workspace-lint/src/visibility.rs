@@ -31,10 +31,10 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let cross_crate_refs = collect_cross_crate_refs(workspace);
     let mut diagnostics = Vec::new();
 
-    for krate in workspace.crates() {
-        if !krate.is_workspace_member {
-            continue;
-        }
+    // Only inspect each member's primary unit — tests/benches/examples
+    // legitimately use `pub` for cross-test plumbing, and flagging them
+    // would amount to noise.
+    for (krate, target) in workspace.primary_units() {
         let code_name = krate.code_name();
         // Items reachable via macro-rules expansion should not be flagged
         // even if no `use` binding mentions them. Layer 1 autodetect
@@ -43,70 +43,55 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         // crate's items (its own macros + macros from every dependent
         // crate). See `macro_implicit_refs_for` for the full rule.
         let macro_refs = workspace.macro_implicit_refs_for(krate);
-        // Only inspect the primary unit — tests/benches/examples
-        // legitimately use `pub` for cross-test plumbing, and flagging
-        // them would amount to noise.
-        let Some(target) = krate.lib_or_main() else {
-            continue;
-        };
-        collect_overpermissive(
-            &target.root,
-            &code_name,
-            &cross_crate_refs,
-            &macro_refs,
-            &mut diagnostics,
-        );
+        for (module, item) in target.root.walk_items() {
+            if let Some(d) = check_item(module, item, &code_name, &cross_crate_refs, &macro_refs) {
+                diagnostics.push(d);
+            }
+        }
     }
     diagnostics
 }
 
-fn collect_overpermissive(
+fn check_item(
     module: &Module,
+    item: &Item,
     crate_code_name: &str,
     cross_crate_refs: &HashSet<ResolvedPath>,
     macro_refs: &HashSet<ResolvedPath>,
-    out: &mut Vec<Diagnostic>,
-) {
-    for item in &module.items {
-        if !checkable(item) {
-            continue;
-        }
-        if item.visibility != Visibility::Public {
-            continue;
-        }
-        // The crate root's own `pub fn main()` is special — bins need pub
-        // for cargo's entry-point resolution machinery.
-        if item.name == "main" && module.canonical.segments().len() == 1 {
-            continue;
-        }
-        if cross_crate_refs.contains(&item.canonical) {
-            continue;
-        }
-        // Suppress if the item is reachable through any workspace
-        // `macro_rules!` body — that's a real cross-crate use channel
-        // even if no explicit `use` binding points at it.
-        if macro_refs.contains(&item.canonical) {
-            continue;
-        }
+) -> Option<Diagnostic> {
+    if !checkable(item) {
+        return None;
+    }
+    if item.visibility != Visibility::Public {
+        return None;
+    }
+    // The crate root's own `pub fn main()` is special — bins need pub
+    // for cargo's entry-point resolution machinery.
+    if item.name == "main" && module.canonical.segments().len() == 1 {
+        return None;
+    }
+    if cross_crate_refs.contains(&item.canonical) {
+        return None;
+    }
+    // Suppress if the item is reachable through any workspace
+    // `macro_rules!` body — that's a real cross-crate use channel
+    // even if no explicit `use` binding points at it.
+    if macro_refs.contains(&item.canonical) {
+        return None;
+    }
 
-        let Some(span) = &item.source else {
-            continue;
-        };
-        let msg = format!(
-            "pub `{}` in crate `{}` is not referenced from any other workspace crate",
-            item.name, crate_code_name,
-        );
-        let mut builder = at_line(LINT, msg, span.file.clone(), span.line)
-            .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
-            .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked");
-        if let Some(s) = build_tighten_suggestion(span) {
-            builder = builder.suggestion(s);
-        }
-        out.push(builder.build());
+    let span = item.source.as_ref()?;
+    let msg = format!(
+        "pub `{}` in crate `{}` is not referenced from any other workspace crate",
+        item.name, crate_code_name,
+    );
+    let mut builder = at_line(LINT, msg, span.file.clone(), span.line)
+        .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
+        .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked");
+    if let Some(s) = build_tighten_suggestion(span) {
+        builder = builder.suggestion(s);
     }
-    for sub in &module.submodules {
-        collect_overpermissive(sub, crate_code_name, cross_crate_refs, macro_refs, out);
-    }
+    Some(builder.build())
 }
 
 /// Locate the `pub` token within an item's span and return its byte range,
