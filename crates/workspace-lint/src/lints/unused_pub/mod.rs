@@ -10,22 +10,76 @@
 //! sibling visibility lint):
 //!
 //! - Trait methods dispatched through `dyn Trait` or generic method calls
-//!   are not tracked — the resolver doesn't do type inference.
-//! - Pub items inside `impl` blocks (`pub fn` on inherent impls, `pub`
-//!   associated consts/types) are not yet enumerated as separate items.
-//!   The resolver currently models module-level items only.
-//! - `#[derive(Serialize, Deserialize, ...)]`-suppressed cases that the
-//!   SCIP backend handled need to be papered over with explicit `allowlist`
-//!   globs or `#[derive(...)]`-aware suppression in a follow-up.
+//!   are not tracked.
+//! - Pub items inside `impl` blocks are not yet enumerated as separate items.
+//! - `#[derive(Serialize, Deserialize, ...)]`-suppressed cases need explicit
+//!   `allowlist` globs or `#[derive(...)]`-aware suppression in a follow-up.
 
-use crate::config::UnusedPubConfig;
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_line;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::HashSet;
 use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace};
 
-pub const LINT: &str = crate::lints::LintId::UnusedPub.id();
+use crate::diagnostic::Diagnostic;
+use crate::diagnostic::builder::at_line;
+use crate::lints::{Lint, LintContext, LintId, Requirements};
+
+pub mod config;
+#[cfg(test)]
+mod tests;
+
+pub use config::UnusedPubConfig;
+
+pub struct UnusedPub {
+    config: UnusedPubConfig,
+}
+
+impl UnusedPub {
+    pub fn new(config: UnusedPubConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn from_cli(
+        on_ci_only: bool,
+        exclude_crates: Vec<String>,
+        allowlist: Vec<String>,
+        kinds: Vec<String>,
+        exclude_paths: Vec<String>,
+        suppress_intra_crate: bool,
+    ) -> Self {
+        Self::new(UnusedPubConfig {
+            on_ci_only: Some(on_ci_only),
+            exclude_crates,
+            allowlist,
+            kinds,
+            exclude_paths,
+            suppress_intra_crate,
+            // `--fix` deletion is opt-in via config only — there's no CLI
+            // override because deletion is irreversible-without-git and we
+            // want the choice to live in the project's config file (not a
+            // forgotten shell history line).
+            auto_delete: false,
+        })
+    }
+}
+
+impl Lint for UnusedPub {
+    fn id(&self) -> LintId {
+        LintId::UnusedPub
+    }
+
+    fn requirements(&self) -> Requirements {
+        Requirements {
+            needs_workspace: true,
+        }
+    }
+
+    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        let workspace = cx
+            .workspace
+            .expect("unused-pub lint requires Workspace (Requirements::needs_workspace)");
+        check(&self.config, workspace)
+    }
+}
 
 pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     if config.effective_on_ci_only() && std::env::var("CI").is_err() {
@@ -50,9 +104,6 @@ pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic>
         {
             continue;
         }
-        // Macros that could plausibly suppress this crate's items: its own
-        // macros plus macros from every crate that references this one.
-        // See `macro_implicit_refs_for` for the rule.
         let macro_refs = workspace.macro_implicit_refs_for(krate);
         let ctx = CheckCtx {
             workspace,
@@ -92,8 +143,6 @@ fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagno
     if item.visibility != Visibility::Public {
         return None;
     }
-    // Crate-root `pub fn main()` is the bin entry point; cargo needs it
-    // pub for entry-point resolution.
     if item.name == "main" && module.canonical.segments().len() == 1 {
         return None;
     }
@@ -113,9 +162,6 @@ fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagno
     {
         return None;
     }
-    // Macro-body reachability is a workspace-wide suppression channel:
-    // any item appearing in any `macro_rules!` body is potentially
-    // reachable from any macro call site, so don't flag.
     if ctx.macro_refs.contains(&item.canonical) {
         return None;
     }
@@ -157,7 +203,7 @@ fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagno
         )
     };
 
-    let mut builder = at_line(LINT, message, span.file.clone(), span.line)
+    let mut builder = at_line(LintId::UnusedPub.id(), message, span.file.clone(), span.line)
         .help(suggestion)
         .note(
             "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
@@ -178,12 +224,12 @@ fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagno
                 builder = builder.suggestion(s).note(reason);
             }
             DeleteOutcome::Unavailable => {
-                if let Some(s) = crate::visibility::build_tighten_suggestion(span) {
+                if let Some(s) = crate::lints::visibility::build_tighten_suggestion(span) {
                     builder = builder.suggestion(s);
                 }
             }
         }
-    } else if let Some(s) = crate::visibility::build_tighten_suggestion(span) {
+    } else if let Some(s) = crate::lints::visibility::build_tighten_suggestion(span) {
         builder = builder.suggestion(s);
     }
     Some(builder.build())
@@ -212,8 +258,6 @@ fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
     if start >= end {
         return DeleteOutcome::Unavailable;
     }
-    // Extend deletion through the trailing newline so the file doesn't
-    // accumulate blank lines.
     if end < source.len() && source.as_bytes()[end] == b'\n' {
         end += 1;
     }
@@ -249,16 +293,12 @@ fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
     }
 }
 
-/// `true` iff `path` is tracked by git AND has no uncommitted changes
-/// (per `git status --porcelain`). The git-safety net for the `auto-delete`
-/// variant of unused-pub: we only nuke an item if the user has a backup.
-///
+/// `true` iff `path` is tracked by git AND has no uncommitted changes.
 /// Returns `false` if we can't determine the state — git missing, not a
 /// repo, path outside the repo, command failure. The safer default is to
 /// downgrade the suggestion's applicability so `--fix` skips it.
 fn is_file_clean_in_git(path: &std::path::Path) -> bool {
     use std::process::Command;
-    // 1. Path is tracked.
     let ls = Command::new("git")
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(path)
@@ -267,7 +307,6 @@ fn is_file_clean_in_git(path: &std::path::Path) -> bool {
     if !out.status.success() {
         return false;
     }
-    // 2. No pending modifications.
     let st = Command::new("git")
         .args(["status", "--porcelain", "--"])
         .arg(path)
@@ -339,33 +378,4 @@ fn build_glob_set(patterns: &[String], label: &str) -> Option<GlobSet> {
         eprintln!("failed to build {label} filter: {e}");
         std::process::exit(1);
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn kind_filter_parses_aliases() {
-        let filter = parse_kind_filter(&["fn".into(), "function".into(), "type".into()]).unwrap();
-        assert!(filter.contains(&ItemKind::Fn));
-        assert!(filter.contains(&ItemKind::TypeAlias));
-    }
-
-    #[test]
-    fn kind_filter_ignores_unknown_kinds() {
-        let filter = parse_kind_filter(&["banana".into(), "fn".into()]).unwrap();
-        assert_eq!(filter.len(), 1);
-        assert!(filter.contains(&ItemKind::Fn));
-    }
-
-    #[test]
-    fn kind_filter_empty_returns_none() {
-        assert!(parse_kind_filter(&[]).is_none());
-    }
-
-    #[test]
-    fn glob_set_returns_none_for_empty() {
-        assert!(build_glob_set(&[], "test").is_none());
-    }
 }

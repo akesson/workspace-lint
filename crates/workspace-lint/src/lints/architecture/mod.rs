@@ -12,32 +12,56 @@
 //!
 //! Pattern grammar: `::` separates path segments; converted to `/` for
 //! globset matching. `*` matches one segment, `**` matches zero or more.
-//! `data-models::internal::*` matches a one-segment-deep item under
-//! `internal`; `data-models::internal::**` is the transitive form.
 //!
 //! ## Known scope limits
 //!
 //! - **Only `use` bindings are inspected.** Fully-qualified call sites like
-//!   `other_crate::forbidden::Type::call()` written without a `use` statement
-//!   will *not* trigger a rule. Treat architecture rules as guard-rails, not
-//!   as a hard sandbox — a determined caller can bypass them by inlining the
-//!   path. (Tightening to all path expressions would require a full
-//!   expression-level walker; out of scope for v1.)
-//! - **`pub(crate) use` re-export hops are invisible.** Tier 2.5 follows only
-//!   `pub use` edges, so a `pub(crate) use forbidden::T as Renamed;` in some
-//!   middle crate breaks the chain — the rule will see the local alias's
-//!   canonical instead of the original target. See
-//!   `syn_workspace::resolve::re_export` for the rationale.
+//!   `other_crate::forbidden::Type::call()` without a `use` will *not* fire.
+//! - **`pub(crate) use` re-export hops are invisible** — Tier 2.5 follows
+//!   only `pub use` edges.
 
 use globset::{Glob, GlobMatcher};
 use syn_workspace::{Module, ResolvedPath, Workspace};
 
-use crate::config::{ArchSeverity, ArchitectureConfig, ArchitectureRule};
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::Level;
 use crate::diagnostic::builder::at_crate;
+use crate::lints::{Lint, LintContext, LintId, Requirements};
 
-pub const LINT: &str = crate::lints::LintId::Architecture.id();
+pub mod config;
+#[cfg(test)]
+mod tests;
+
+pub use config::{ArchSeverity, ArchitectureConfig, ArchitectureRule};
+
+pub struct Architecture {
+    config: ArchitectureConfig,
+}
+
+impl Architecture {
+    pub fn new(config: ArchitectureConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Lint for Architecture {
+    fn id(&self) -> LintId {
+        LintId::Architecture
+    }
+
+    fn requirements(&self) -> Requirements {
+        Requirements {
+            needs_workspace: true,
+        }
+    }
+
+    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        let workspace = cx
+            .workspace
+            .expect("architecture lint requires Workspace (Requirements::needs_workspace)");
+        check(&self.config, workspace)
+    }
+}
 
 pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -50,11 +74,10 @@ pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnost
         return diagnostics;
     }
 
-    // Architecture rules govern production layering — apply to each
-    // member's primary unit (lib / proc-macro / main bin) only. Tests,
-    // examples, benches, and build scripts legitimately reach across
-    // layers (a test for the data layer may import the API layer for
-    // setup) and shouldn't enforce production constraints.
+    // Architecture rules govern production layering — apply to each member's
+    // primary unit (lib / proc-macro / main bin) only. Tests, examples,
+    // benches, and build scripts legitimately reach across layers and
+    // shouldn't enforce production constraints.
     for (krate, target) in workspace.primary_units() {
         let from_name = krate.name.as_str();
         for (module, binding) in target.root.walk_use_bindings() {
@@ -92,10 +115,12 @@ fn build_diagnostic(
         rule_name,
     );
 
-    let mut builder = at_crate(LINT, msg, krate.manifest_dir.clone()).level(match rule.severity {
-        ArchSeverity::Warn => Level::Warn,
-        ArchSeverity::Deny => Level::Deny,
-    });
+    let mut builder = at_crate(LintId::Architecture.id(), msg, krate.manifest_dir.clone()).level(
+        match rule.severity {
+            ArchSeverity::Warn => Level::Warn,
+            ArchSeverity::Deny => Level::Deny,
+        },
+    );
 
     if let Some(suggest) = &rule.suggest {
         builder = builder.help(suggest.clone());
@@ -141,12 +166,7 @@ impl CompiledRule {
         if rule.from.is_empty() || rule.deny.is_empty() {
             return None;
         }
-        // `from` matches against cargo crate names verbatim (which use
-        // hyphens, e.g. `data-models`); no normalization.
         let from = compile_globs(&rule.from, |s| s.to_string());
-        // `deny`/`exceptions` match against canonical paths which use code
-        // form (underscores) and `/` separators; normalize the user pattern
-        // to match.
         let deny = compile_globs(&rule.deny, path_pattern_to_glob_form);
         let exceptions = compile_globs(&rule.exceptions, path_pattern_to_glob_form);
         Some(Self {
@@ -186,68 +206,13 @@ fn compile_globs<F: Fn(&str) -> String>(items: &[String], normalize: F) -> Vec<G
 /// Convert a config-level pattern (`crate::module::*`) to globset's path form
 /// (`crate/module/*`) for matching against canonical paths.
 ///
-/// Also normalizes cargo-style crate names with hyphens (`data-models`) to
-/// their in-code form (`data_models`) so the user's pattern matches the
-/// canonical path that the resolver actually stores (always in code form).
+/// Normalizes cargo-style crate names with hyphens (`data-models`) to their
+/// in-code form (`data_models`) so the user's pattern matches the canonical
+/// path the resolver stores.
 fn path_pattern_to_glob_form(pattern: &str) -> String {
     pattern.replace('-', "_").replace("::", "/")
 }
 
 fn path_to_glob_form(path: &ResolvedPath) -> String {
     path.segments().join("/")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rule(from: &[&str], deny: &[&str]) -> ArchitectureRule {
-        ArchitectureRule {
-            name: Some("test-rule".into()),
-            from: from.iter().map(|s| s.to_string()).collect(),
-            deny: deny.iter().map(|s| s.to_string()).collect(),
-            exceptions: Vec::new(),
-            severity: ArchSeverity::Warn,
-            reason: None,
-            suggest: None,
-        }
-    }
-
-    #[test]
-    fn empty_config_yields_no_diagnostics() {
-        let cfg = ArchitectureConfig::default();
-        // Skip the workspace dep by going through a manually-built one is
-        // intricate; treat this test as a sanity check that the compile
-        // pipeline tolerates an empty rule set.
-        assert!(CompiledRule::compile(&rule(&[], &["x"])).is_none());
-        assert!(CompiledRule::compile(&rule(&["x"], &[])).is_none());
-        let _ = cfg;
-    }
-
-    #[test]
-    fn deny_pattern_matches_via_glob_form() {
-        let r = CompiledRule::compile(&rule(&["apps-*"], &["data-models::internal::**"])).unwrap();
-        // `from` matches against cargo names verbatim (hyphens preserved).
-        assert!(r.matches_from("apps-dashboard"));
-        assert!(!r.matches_from("ui-shared"));
-
-        // Canonical paths use code form (underscores) — that's what the
-        // resolver stores. The user's deny pattern with hyphens is
-        // normalized at compile time so the match still succeeds.
-        let denied = ResolvedPath::new(["data_models", "internal", "User"]);
-        let allowed = ResolvedPath::new(["data_models", "api", "User"]);
-        assert!(r.denies(&denied));
-        assert!(!r.denies(&allowed));
-    }
-
-    #[test]
-    fn exception_overrides_deny() {
-        let mut rl = rule(&["apps-*"], &["sqlx::**"]);
-        rl.exceptions = vec!["sqlx::query::Query".into()];
-        let r = CompiledRule::compile(&rl).unwrap();
-        let denied = ResolvedPath::new(["sqlx", "Pool"]);
-        let exception = ResolvedPath::new(["sqlx", "query", "Query"]);
-        assert!(r.denies(&denied) && !r.is_exception(&denied));
-        assert!(r.denies(&exception) && r.is_exception(&exception));
-    }
 }

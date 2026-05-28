@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 
-use crate::config::{
-    CliCrateVersionConfig, CliCrateVersionRule, CrateSizeConfig, CrateSizeRule, ExpandConfig,
-    ExpandRule, FileSizeConfig, FileSizeRule, FreshnessConfig, FreshnessRule, UnusedDepsConfig,
-    UnusedPubConfig,
+use crate::config::{ExpandConfig, ExpandRule};
+use crate::lints::Lint;
+use crate::lints::{
+    centralized_deps::CentralizedDeps, cli_crate_version::CliCrateVersion, crate_size::CrateSize,
+    file_size::FileSize, freshness::Freshness, unused_deps::UnusedDeps, unused_pub::UnusedPub,
 };
 
 #[derive(Parser)]
@@ -125,80 +126,51 @@ pub enum CheckRule {
 }
 
 impl CheckRule {
-    pub fn into_file_size_config(glob: String, max_code_lines: usize) -> FileSizeConfig {
-        FileSizeConfig {
-            rules: vec![FileSizeRule {
+    /// Map a single `check <rule>` subcommand invocation to the concrete
+    /// `Lint` it exercises. Every lint construction lives in its own
+    /// `from_cli` constructor inside `lints/<name>/`; this method is the
+    /// thin dispatch table that wires the CheckRule variants to them.
+    pub fn into_lint(self) -> Box<dyn Lint> {
+        match self {
+            CheckRule::CentralizedDeps => Box::new(CentralizedDeps::new()),
+            CheckRule::FileSize {
                 glob,
                 max_code_lines,
-            }],
-        }
-    }
-
-    pub fn into_crate_size_config(
-        glob: String,
-        max_code_lines: usize,
-        include: Vec<String>,
-    ) -> CrateSizeConfig {
-        CrateSizeConfig {
-            rules: vec![CrateSizeRule {
+            } => Box::new(FileSize::from_cli(glob, max_code_lines)),
+            CheckRule::CrateSize {
                 glob,
                 max_code_lines,
-                include: if include.is_empty() {
-                    None
-                } else {
-                    Some(include)
-                },
-            }],
-        }
-    }
-
-    pub fn into_freshness_config(glob: String, depends_on: String) -> FreshnessConfig {
-        FreshnessConfig {
-            rules: vec![FreshnessRule { glob, depends_on }],
-        }
-    }
-
-    pub fn into_cli_crate_version_config(
-        command: String,
-        pattern: String,
-        crate_name: String,
-    ) -> CliCrateVersionConfig {
-        CliCrateVersionConfig {
-            rules: vec![CliCrateVersionRule {
-                command: command.split_whitespace().map(String::from).collect(),
+                include,
+            } => Box::new(CrateSize::from_cli(glob, max_code_lines, include)),
+            CheckRule::Freshness { glob, depends_on } => {
+                Box::new(Freshness::from_cli(glob, depends_on))
+            }
+            CheckRule::CliCrateVersion {
+                command,
                 pattern,
                 crate_name,
-            }],
+            } => Box::new(CliCrateVersion::from_cli(command, pattern, crate_name)),
+            CheckRule::UnusedDeps { ignore } => Box::new(UnusedDeps::from_cli(ignore)),
+            CheckRule::UnusedPub {
+                on_ci_only,
+                exclude_crates,
+                allowlist,
+                kinds,
+                exclude_paths,
+                suppress_intra_crate,
+            } => Box::new(UnusedPub::from_cli(
+                on_ci_only,
+                exclude_crates,
+                allowlist,
+                kinds,
+                exclude_paths,
+                suppress_intra_crate,
+            )),
         }
     }
 
-    pub fn into_unused_deps_config(ignore: Vec<String>) -> UnusedDepsConfig {
-        UnusedDepsConfig { ignore }
-    }
-
-    pub fn into_unused_pub_config(
-        on_ci_only: bool,
-        exclude_crates: Vec<String>,
-        allowlist: Vec<String>,
-        kinds: Vec<String>,
-        exclude_paths: Vec<String>,
-        suppress_intra_crate: bool,
-    ) -> UnusedPubConfig {
-        UnusedPubConfig {
-            on_ci_only: Some(on_ci_only),
-            exclude_crates,
-            allowlist,
-            kinds,
-            exclude_paths,
-            suppress_intra_crate,
-            // `--fix` deletion is opt-in via config only — there's no CLI
-            // override because deletion is irreversible-without-git and
-            // we want the choice to live in the project's config file
-            // (not a forgotten shell history line).
-            auto_delete: false,
-        }
-    }
-
+    /// Build an `ExpandConfig` from the `expand` subcommand's CLI args.
+    /// `expand` is not a lint (it side-effects), so it keeps its own helper.
     pub fn into_expand_config(
         command: String,
         glob: String,

@@ -1,15 +1,11 @@
-//! Visibility tightening — pub items that are only used inside their own
-//! crate could be `pub(crate)` instead.
+//! Visibility tightening — `pub` items only used inside their own crate
+//! could be `pub(crate)` instead.
 //!
 //! Walks every workspace member's `pub` items and checks whether the item's
 //! canonical path is referenced from any module in a *different* workspace
-//! crate. Items with no cross-crate references are flagged as candidates
-//! for `pub(crate)`. References are resolved through Tier 2.5's pub-use
-//! chain index, so re-exported items still count as used when the
-//! re-export itself is consumed cross-crate.
+//! crate. Items with no cross-crate references are flagged.
 //!
-//! Known limitations (v1) — documented in fixtures under
-//! `known_false_positives/`:
+//! Known limitations (v1):
 //!
 //! - Items referenced via fully-qualified path (`my_crate::Foo::bar()`)
 //!   instead of a `use` statement are not tracked.
@@ -19,28 +15,55 @@
 
 use std::collections::HashSet;
 
-use syn_workspace::{Item, ItemKind, Module, ResolvedPath, SourceSpan, Visibility, Workspace};
+use syn_workspace::{
+    Item, ItemKind, Module, ResolvedPath, SourceSpan, Visibility as SynVisibility, Workspace,
+};
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::Suggestion;
 use crate::diagnostic::builder::at_line;
+use crate::lints::{Lint, LintContext, LintId, Requirements};
 
-pub const LINT: &str = crate::lints::LintId::Visibility.id();
+pub struct Visibility;
+
+impl Visibility {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Lint for Visibility {
+    fn id(&self) -> LintId {
+        LintId::Visibility
+    }
+
+    fn requirements(&self) -> Requirements {
+        Requirements {
+            needs_workspace: true,
+        }
+    }
+
+    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        let workspace = cx
+            .workspace
+            .expect("visibility lint requires Workspace (Requirements::needs_workspace)");
+        check(workspace)
+    }
+}
 
 pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // Only inspect each member's primary unit — tests/benches/examples
-    // legitimately use `pub` for cross-test plumbing, and flagging them
-    // would amount to noise.
+    // legitimately use `pub` for cross-test plumbing.
     for (krate, target) in workspace.primary_units() {
         let code_name = krate.code_name();
-        // Items reachable via macro-rules expansion should not be flagged
-        // even if no `use` binding mentions them. Layer 1 autodetect
-        // collects these per defining crate; here we union the refs from
-        // every crate that could plausibly invoke a macro touching this
-        // crate's items (its own macros + macros from every dependent
-        // crate). See `macro_implicit_refs_for` for the full rule.
         let macro_refs = workspace.macro_implicit_refs_for(krate);
         for (module, item) in target.root.walk_items() {
             if let Some(d) = check_item(workspace, module, item, &code_name, &macro_refs) {
@@ -58,32 +81,21 @@ fn check_item(
     crate_code_name: &str,
     macro_refs: &HashSet<ResolvedPath>,
 ) -> Option<Diagnostic> {
-    // Visibility tightening doesn't apply to `macro_rules!` — those are
-    // exported via `#[macro_export]`, not the syn `pub` keyword, so the
-    // tightening suggestion ("pub → pub(crate)") doesn't have a target.
     if !item.kind.is_definition() || matches!(item.kind, ItemKind::Macro) {
         return None;
     }
-    if item.visibility != Visibility::Public {
+    if item.visibility != SynVisibility::Public {
         return None;
     }
-    // The crate root's own `pub fn main()` is special — bins need pub
-    // for cargo's entry-point resolution machinery.
     if item.name == "main" && module.canonical.segments().len() == 1 {
         return None;
     }
-    // Used from any other crate? Consult the workspace's canonical-ref
-    // index directly — built once at load time so per-crate lookups don't
-    // re-chase pub-use chains.
     let cross_crate_used = workspace
         .referring_crates(&item.canonical)
         .is_some_and(|set| set.iter().any(|c| c != crate_code_name));
     if cross_crate_used {
         return None;
     }
-    // Suppress if the item is reachable through any workspace
-    // `macro_rules!` body — that's a real cross-crate use channel
-    // even if no explicit `use` binding points at it.
     if macro_refs.contains(&item.canonical) {
         return None;
     }
@@ -93,7 +105,7 @@ fn check_item(
         "pub `{}` in crate `{}` is not referenced from any other workspace crate",
         item.name, crate_code_name,
     );
-    let mut builder = at_line(LINT, msg, span.file.clone(), span.line)
+    let mut builder = at_line(LintId::Visibility.id(), msg, span.file.clone(), span.line)
         .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
         .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked");
     if let Some(s) = build_tighten_suggestion(span) {
@@ -104,16 +116,10 @@ fn check_item(
 
 /// Locate the `pub` token within an item's span and return its byte range,
 /// or `None` if the heuristic can't pin it down. When this returns `None`
-/// the diagnostic still fires — `--fix` simply has nothing to apply and
-/// leaves the file alone for the human to address. Cases we punt on:
+/// the diagnostic still fires — `--fix` simply has nothing to apply.
 ///
-/// - Item starts with `#[...]` attributes — the `pub` keyword is deeper
-///   inside the span and disambiguating it from `#[allow(...)]` or
-///   attribute argument tokens needs syn rather than a string scan.
-/// - The keyword we find is `pub(...)` already (`pub(super)`,
-///   `pub(in path)`) — those are explicit author choices and the lint
-///   shouldn't downgrade them.
-/// - We can't read the source file (deleted on disk, permissions, …).
+/// Cases punted on: items starting with attributes (the `pub` keyword is
+/// deeper inside the span), items already `pub(...)`, files we can't read.
 pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> {
     if !span.has_byte_range() {
         return None;
@@ -125,20 +131,14 @@ pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> 
         return None;
     }
     let slice = source.get(start..end)?;
-    // Bail if the span starts with an outer attribute — the `pub` keyword
-    // is buried among tokens we can't safely identify by string scan.
     if slice.starts_with('#') {
         return None;
     }
-    // Find first `pub` at a word boundary.
     let pub_offset = find_word_boundary_pub(slice)?;
     let after_pub = slice.get(pub_offset + 3..)?;
-    // Already `pub(...)` — leave it alone.
     if after_pub.starts_with('(') {
         return None;
     }
-    // Require a whitespace separator after `pub` so we don't grab
-    // identifiers like `public_field`.
     if !after_pub
         .chars()
         .next()
@@ -166,8 +166,7 @@ pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> 
 }
 
 /// Find `pub` in `slice` at the first position where it's a standalone
-/// keyword (preceded by whitespace, start of slice, or punctuation —
-/// `pub` cannot follow an identifier character).
+/// keyword (preceded by whitespace, start of slice, or punctuation).
 fn find_word_boundary_pub(slice: &str) -> Option<usize> {
     let bytes = slice.as_bytes();
     for (i, w) in bytes.windows(3).enumerate() {
