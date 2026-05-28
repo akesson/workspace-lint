@@ -121,12 +121,10 @@ fn check_item(
 /// Cases punted on: items starting with attributes (the `pub` keyword is
 /// deeper inside the span), items already `pub(...)`, files we can't read.
 pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> {
-    if !span.has_byte_range() {
-        return None;
-    }
+    let range = span.byte_range.clone()?;
     let source = fs_err::read_to_string(&span.file).ok()?;
-    let start = span.byte_start as usize;
-    let end = (span.byte_end as usize).min(source.len());
+    let start = range.start as usize;
+    let end = (range.end as usize).min(source.len());
     if start >= end {
         return None;
     }

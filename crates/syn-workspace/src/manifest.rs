@@ -2,28 +2,27 @@
 //!
 //! Owns the raw source bytes plus a `toml_edit::Document` parse for
 //! structural reads. Stays *read-only* — the syn-workspace model contract.
-//! Mutation needed for fix-mode replacements happens in
-//! [`Manifest::format_workspace_dep`] on a local `DocumentMut` scratch and
-//! returns a `String`; the stored doc is never modified.
+//! Mutation needed by callers that want to suggest replacements (e.g.
+//! [`Manifest::format_workspace_dep`]) happens on a local `DocumentMut`
+//! scratch and returns a `String`; the stored doc is never modified.
 //!
-//! Two consumers today:
+//! Typical uses:
 //!
-//! - `centralized_deps`: enumerates `[dependencies]` / `[dev-dependencies]` /
-//!   `[build-dependencies]` per crate, checks each against the workspace's
-//!   `[workspace.dependencies]` table, and constructs `workspace = true`
-//!   rewrites via [`Manifest::format_workspace_dep`].
-//! - `unused_deps`: enumerates declared deps via `Crate::declared_deps` (a
-//!   thin wrapper on [`Manifest::deps`]) and uses [`Manifest::locate_dep`] to
-//!   build delete-line suggestions.
+//! - Enumerating `[dependencies]` / `[dev-dependencies]` /
+//!   `[build-dependencies]` per crate, then checking each against the
+//!   workspace's `[workspace.dependencies]` table.
+//! - Building delete- or rewrite-line suggestions for `--fix`-style
+//!   tooling via [`Manifest::locate_dep`] / [`Manifest::format_workspace_dep`].
 //!
 //! Locator note: [`Manifest::locate_dep`] uses a line-based byte scanner
 //! rather than `toml_edit`'s value-level span info. The line-based form
-//! returns the *whole `key = value` line* including indent — which is what
-//! both consumers want — without needing to walk decor/whitespace around the
-//! value span. Multi-line inline tables (entry wraps across `\n`) are
-//! outside TOML 1.0 spec and `toml_edit::Document::parse` rejects them at
-//! load time; we don't try to handle them. Real-world Cargo.toml files use
-//! `[dependencies.<name>]` table blocks instead — those parse fine.
+//! returns the *whole `key = value` line* including indent — which is
+//! usually what callers want — without needing to walk decor/whitespace
+//! around the value span. Multi-line inline tables (entry wraps across
+//! `\n`) are outside TOML 1.0 spec and `toml_edit::Document::parse`
+//! rejects them at load time; we don't try to handle them. Real-world
+//! Cargo.toml files use `[dependencies.<name>]` table blocks instead —
+//! those parse fine.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -53,8 +52,8 @@ impl DepSection {
         }
     }
 
-    /// The non-workspace sections in iteration order. Most lints want all
-    /// three; `WorkspaceDependencies` is queried explicitly.
+    /// The non-workspace sections in iteration order. Most consumers
+    /// want all three; `WorkspaceDependencies` is queried explicitly.
     pub fn member_sections() -> [DepSection; 3] {
         [
             Self::Dependencies,
@@ -80,8 +79,8 @@ pub struct DepLocation {
 }
 
 /// One declared dependency, as enumerated by [`Manifest::declared_deps`] or
-/// `Crate::declared_deps`. Carries enough for unused-deps to match against
-/// the resolver's references_by_crate index.
+/// `Crate::declared_deps`. Carries enough to match a dep entry against
+/// the resolver's per-crate reference index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredDep {
     pub section: DepSection,
@@ -105,10 +104,9 @@ impl Manifest {
     /// [`Error::Manifest`] with the path embedded.
     pub fn load(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| Error::Manifest(format!("failed to read {}: {e}", path.display())))?;
-        let doc: Document<String> = Document::parse(raw.clone())
-            .map_err(|e| Error::Manifest(format!("failed to parse {}: {e}", path.display())))?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| Error::manifest(&path, e))?;
+        let doc: Document<String> =
+            Document::parse(raw.clone()).map_err(|e| Error::manifest(&path, e))?;
         Ok(Self { path, raw, doc })
     }
 
@@ -129,9 +127,8 @@ impl Manifest {
         &self.path
     }
 
-    /// Raw source bytes. Used by fix suggestions to address the file by byte
-    /// offset, and by `directives` to scan comment-form `# workspace-lint:`
-    /// markers.
+    /// Raw source bytes. Useful for byte-addressed fix suggestions and
+    /// for callers that scan comment-form directives in the manifest text.
     pub fn raw(&self) -> &str {
         &self.raw
     }
@@ -154,11 +151,32 @@ impl Manifest {
     }
 
     /// All dep names in `[workspace.dependencies]`. Convenience for
-    /// centralized-deps' workspace-membership check.
+    /// callers that need to test "is this dep centralized?".
     pub fn workspace_dep_names(&self) -> BTreeSet<String> {
         self.section_table(DepSection::WorkspaceDependencies)
             .map(|t| t.iter().map(|(k, _)| k.to_string()).collect())
             .unwrap_or_default()
+    }
+
+    /// The version string for `dep_name` in `section`, if the entry uses
+    /// the plain-string form (`serde = "1.0"`) or an inline table with a
+    /// `version` key (`serde = { version = "1.0", ... }`).
+    ///
+    /// Returns `None` if the entry is absent, uses `workspace = true`, or
+    /// is a shape that doesn't carry a version literal (e.g. pure-`git`
+    /// or `path` deps).
+    ///
+    /// Lets callers stay off the raw `toml_edit::Item` API for the common
+    /// "read this dep's version" lookup.
+    pub fn get_dep_version(&self, section: DepSection, dep_name: &str) -> Option<&str> {
+        let table = self.section_table(section)?;
+        let item = table.get(dep_name)?;
+        let value = item.as_value()?;
+        if let Some(s) = value.as_str() {
+            return Some(s);
+        }
+        let table = value.as_inline_table()?;
+        table.get("version")?.as_str()
     }
 
     /// Enumerate declared deps across `[dependencies]`, `[dev-dependencies]`,
@@ -521,5 +539,63 @@ my-crate = "1"
             .map(|(k, _)| k.to_string())
             .collect();
         assert_eq!(pairs, vec!["serde", "tokio"]);
+    }
+
+    // --- get_dep_version ---
+
+    #[test]
+    fn get_dep_version_reads_plain_string_form() {
+        let m = parse("[dependencies]\nserde = \"1.0.200\"\n");
+        assert_eq!(
+            m.get_dep_version(DepSection::Dependencies, "serde"),
+            Some("1.0.200")
+        );
+    }
+
+    #[test]
+    fn get_dep_version_reads_inline_table_version_key() {
+        let m = parse("[dependencies]\nserde = { version = \"1.0\", features = [\"derive\"] }\n");
+        assert_eq!(
+            m.get_dep_version(DepSection::Dependencies, "serde"),
+            Some("1.0")
+        );
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_workspace_inherit() {
+        let m = parse("[dependencies]\nserde = { workspace = true }\n");
+        assert_eq!(m.get_dep_version(DepSection::Dependencies, "serde"), None);
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_git_only() {
+        let m = parse(
+            "[dependencies]\ntonic = { git = \"https://github.com/hyperium/tonic\", branch = \"master\" }\n",
+        );
+        assert_eq!(m.get_dep_version(DepSection::Dependencies, "tonic"), None);
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_missing_dep() {
+        let m = parse("[dependencies]\nserde = \"1\"\n");
+        assert_eq!(m.get_dep_version(DepSection::Dependencies, "missing"), None);
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_wrong_section() {
+        let m = parse("[dependencies]\nserde = \"1\"\n");
+        assert_eq!(
+            m.get_dep_version(DepSection::DevDependencies, "serde"),
+            None
+        );
+    }
+
+    #[test]
+    fn get_dep_version_returns_none_for_table_block_form() {
+        // `[dependencies.<name>]` is `Item::Table`, not a `Value` — the helper
+        // only handles single-line entries, so this returns None rather than
+        // returning a misleading partial result.
+        let m = parse("[dependencies.serde]\nversion = \"1.0\"\n");
+        assert_eq!(m.get_dep_version(DepSection::Dependencies, "serde"), None);
     }
 }

@@ -13,7 +13,6 @@ use ignore::WalkBuilder;
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::OnceLock;
 use syn_workspace::Workspace;
 
@@ -56,23 +55,22 @@ pub struct DirectiveOrigin {
 /// - Other TOML/MD: [`SilenceAnchor::File`].
 ///
 /// Workspace-wide directive scan, parsing every `.rs` file on demand. Use
-/// [`scan_with_workspace`] in production code paths — it reuses the
-/// already-parsed `syn::File` ASTs held by [`syn_workspace::Workspace`] and
-/// avoids a second per-file parse.
+/// [`scan_with_workspace`] in production code paths — it parses each file
+/// known to the resolver once, up-front, and reuses the cache.
 pub fn scan(root: &Path) -> Vec<Directive> {
     scan_inner(root, &HashMap::new())
 }
 
-/// Same as [`scan`], but consults `workspace`'s cached `Module::parsed_file`
-/// entries to skip re-parsing `.rs` files the resolver already processed.
-/// Orphan `.rs` files (under `src/` but unreached) and `.rs` files outside
-/// any workspace member fall back to on-demand parsing.
+/// Same as [`scan`], but pre-parses every `.rs` file the resolver reached
+/// (deduped by canonical path) so the directive walk doesn't pay a second
+/// parse per file. Files outside the resolver's reach fall back to
+/// on-demand parsing inside [`scan_inner`].
 pub fn scan_with_workspace(workspace: &Workspace) -> Vec<Directive> {
     let lookup = build_parsed_lookup(workspace);
     scan_inner(workspace.root(), &lookup)
 }
 
-fn scan_inner(root: &Path, parsed_lookup: &HashMap<PathBuf, Rc<syn::File>>) -> Vec<Directive> {
+fn scan_inner(root: &Path, parsed_lookup: &HashMap<PathBuf, syn::File>) -> Vec<Directive> {
     let mut directives = Vec::new();
     for entry in WalkBuilder::new(root).build().flatten() {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -89,19 +87,24 @@ fn scan_inner(root: &Path, parsed_lookup: &HashMap<PathBuf, Rc<syn::File>>) -> V
     directives
 }
 
-/// Build a map from absolute file path → cached `syn::File` AST, drawn
-/// from every workspace member's parsed modules. Inline `mod foo { ... }`
-/// submodules don't contribute (their AST lives in the parent's file).
-fn build_parsed_lookup(workspace: &Workspace) -> HashMap<PathBuf, Rc<syn::File>> {
+/// Build a map from canonical absolute file path → `syn::File` by walking
+/// every workspace member's modules and parsing each unique backing file
+/// once via `Workspace::parse_file`. Inline `mod foo { ... }` submodules
+/// don't contribute (their content lives in the parent's file). Files
+/// that fail to parse are silently skipped — the directive scan will hit
+/// them via the on-demand fallback path and surface the same failure
+/// shape it always did.
+fn build_parsed_lookup(workspace: &Workspace) -> HashMap<PathBuf, syn::File> {
     let mut map = HashMap::new();
     for krate in workspace.members() {
         for module in krate.all_modules() {
-            if let (Some(file), Some(parsed)) = (&module.file, &module.parsed_file) {
-                // Canonicalize so lookups through symlinks / `.`-prefixed
-                // walk paths match the absolute paths cargo_metadata
-                // emitted.
-                let key = file.canonicalize().unwrap_or_else(|_| file.clone());
-                map.insert(key, parsed.clone());
+            let Some(file) = &module.file else { continue };
+            let key = file.canonicalize().unwrap_or_else(|_| file.clone());
+            if map.contains_key(&key) {
+                continue;
+            }
+            if let Ok(parsed) = workspace.parse_file(file) {
+                map.insert(key, parsed);
             }
         }
     }
@@ -130,7 +133,7 @@ fn kind_for(rel: &Path) -> FileKind {
 fn scan_rust(
     abs_path: &Path,
     rel: &Path,
-    parsed_lookup: &HashMap<PathBuf, Rc<syn::File>>,
+    parsed_lookup: &HashMap<PathBuf, syn::File>,
     out: &mut Vec<Directive>,
 ) {
     // Fast path: the resolver already parsed this file. Lookup by the

@@ -7,7 +7,16 @@
 
 use std::path::PathBuf;
 
-use syn_workspace::Workspace;
+use syn_workspace::{Crate, Module, Target, Workspace};
+
+#[test]
+fn workspace_model_is_send_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Workspace>();
+    assert_send_sync::<Crate>();
+    assert_send_sync::<Target>();
+    assert_send_sync::<Module>();
+}
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<repo>/crates/syn-workspace`; jump two levels up.
