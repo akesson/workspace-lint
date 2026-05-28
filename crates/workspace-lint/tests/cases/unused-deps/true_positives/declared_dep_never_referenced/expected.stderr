@@ -11,7 +11,7 @@ help: remove unused dependency `provider`
   |
 help: if intentional, silence with:
   |
-1 + # workspace-lint: allow(unused-deps)
+1 + # workspace-lint: expect(unused-deps)
   |
   = note: `#[deny(workspace_lint::unused_deps)]` on by default
 

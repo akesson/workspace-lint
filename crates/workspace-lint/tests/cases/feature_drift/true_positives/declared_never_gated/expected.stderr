@@ -5,7 +5,7 @@ error: feature `extra` is declared in `[features]` but never gated in source
   = note: declared in `demo/Cargo.toml`
 help: if intentional, silence with:
   |
-1 + # workspace-lint: allow(feature-drift)
+1 + # workspace-lint: expect(feature-drift)
   |
   = note: `#[deny(workspace_lint::feature_drift)]` on by default
 

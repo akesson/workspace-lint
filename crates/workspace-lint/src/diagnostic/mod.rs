@@ -216,10 +216,15 @@ impl Diagnostic {
             SilenceAnchor::Workspace => (Span::file_anchor(PathBuf::from("Cargo.toml")), false),
         };
 
+        // `expect!` is preferred over `allow!` because workspace-lint emits
+        // `stale-expect` when the underlying lint stops firing — silences
+        // can't quietly rot. `allow!` remains in the marker crate for
+        // genuinely permanent silences and for items the lint can't reach
+        // (e.g. `unused-pub` items inside `exclude-crates`).
         let replacement = if is_rust {
-            format!("workspace_lint::allow!({});\n", self.lint_ident())
+            format!("workspace_lint::expect!({});\n", self.lint_ident())
         } else {
-            format!("# workspace-lint: allow({})\n", self.lint_short())
+            format!("# workspace-lint: expect({})\n", self.lint_short())
         };
 
         Some(Suggestion {
@@ -324,7 +329,7 @@ mod tests {
             file: PathBuf::from("src/lib.rs"),
         });
         let s = d.silence_suggestion().unwrap();
-        assert_eq!(s.replacement, "workspace_lint::allow!(file_size);\n");
+        assert_eq!(s.replacement, "workspace_lint::expect!(file_size);\n");
         assert_eq!(s.applicability, Applicability::MachineApplicable);
     }
 
@@ -335,7 +340,7 @@ mod tests {
             line: 42,
         });
         let s = d.silence_suggestion().unwrap();
-        assert_eq!(s.replacement, "workspace_lint::allow!(file_size);\n");
+        assert_eq!(s.replacement, "workspace_lint::expect!(file_size);\n");
         assert_eq!(s.span.line_start, 42);
     }
 
@@ -346,7 +351,7 @@ mod tests {
             line: 7,
         });
         let s = d.silence_suggestion().unwrap();
-        assert_eq!(s.replacement, "# workspace-lint: allow(file-size)\n");
+        assert_eq!(s.replacement, "# workspace-lint: expect(file-size)\n");
     }
 
     #[test]
@@ -356,7 +361,7 @@ mod tests {
         });
         let s = d.silence_suggestion().unwrap();
         assert_eq!(s.span.file, PathBuf::from("crates/foo/Cargo.toml"));
-        assert!(s.replacement.starts_with("# workspace-lint: allow"));
+        assert!(s.replacement.starts_with("# workspace-lint: expect"));
     }
 
     #[test]

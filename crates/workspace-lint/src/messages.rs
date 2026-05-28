@@ -320,7 +320,7 @@ mod tests {
               = help: [dependencies] serde: has own version "1.0.200" — use { workspace = true } instead
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(centralized-deps)
+            1 + # workspace-lint: expect(centralized-deps)
               |
               = note: `#[warn(workspace_lint::centralized_deps)]` on by default
             "#);
@@ -336,7 +336,7 @@ mod tests {
               = help: [dev-dependencies] rand: version "0.8" not in [workspace.dependencies]
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(centralized-deps)
+            1 + # workspace-lint: expect(centralized-deps)
               |
               = note: `#[warn(workspace_lint::centralized_deps)]` on by default
             "#);
@@ -353,7 +353,7 @@ mod tests {
               = note: configured by [[file-size.rules]] glob = "**/*.rs"
             help: if intentional, silence with:
               |
-            1 + workspace_lint::allow!(file_size);
+            1 + workspace_lint::expect!(file_size);
               |
               = note: `#[warn(workspace_lint::file_size)]` on by default
             "#);
@@ -369,7 +369,7 @@ mod tests {
               = note: configured by [[crate-size.rules]] glob = "crates/*"
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(crate-size)
+            1 + # workspace-lint: expect(crate-size)
               |
               = note: `#[warn(workspace_lint::crate_size)]` on by default
             "#);
@@ -377,7 +377,7 @@ mod tests {
 
         #[test]
         fn freshness_stale() {
-            insta::assert_snapshot!(render(&scenario("freshness_stale")), @r#"
+            insta::assert_snapshot!(render(&scenario("freshness_stale")), @r"
             warning: `crates/api/CLAUDE.md` is older than source files it depends on
              --> crates/api/CLAUDE.md:1:1
               |
@@ -385,29 +385,29 @@ mod tests {
               = help: run `workspace-lint done` once the tracked file is up to date
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(freshness)
+            1 + # workspace-lint: expect(freshness)
               |
               = note: `#[warn(workspace_lint::freshness)]` on by default
-            "#);
+            ");
         }
 
         #[test]
         fn cli_crate_version_mismatch() {
-            insta::assert_snapshot!(render(&scenario("cli_crate_version_mismatch")), @r#"
+            insta::assert_snapshot!(render(&scenario("cli_crate_version_mismatch")), @r"
             warning: `wasm-bindgen` CLI version 0.2.89 does not match Cargo.lock 0.2.90
               = help: update or reinstall `wasm-bindgen` to match the workspace version
               = note: ran `wasm-bindgen --version`
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(cli-crate-version)
+            1 + # workspace-lint: expect(cli-crate-version)
               |
               = note: `#[warn(workspace_lint::cli_crate_version)]` on by default
-            "#);
+            ");
         }
 
         #[test]
         fn unused_deps_one() {
-            insta::assert_snapshot!(render(&scenario("unused_deps_one")), @r#"
+            insta::assert_snapshot!(render(&scenario("unused_deps_one")), @r"
             warning: 1 possibly unused dependency in crates/alpha/Cargo.toml
              --> crates/alpha/Cargo.toml:1:1
               |
@@ -417,15 +417,15 @@ mod tests {
               = note: if the build breaks, add the dep to [unused-deps] ignore in your config
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(unused-deps)
+            1 + # workspace-lint: expect(unused-deps)
               |
               = note: `#[warn(workspace_lint::unused_deps)]` on by default
-            "#);
+            ");
         }
 
         #[test]
         fn unused_deps_multiple() {
-            insta::assert_snapshot!(render(&scenario("unused_deps_multiple")), @r#"
+            insta::assert_snapshot!(render(&scenario("unused_deps_multiple")), @r"
             warning: 2 possibly unused dependencies in crates/beta/Cargo.toml
              --> crates/beta/Cargo.toml:1:1
               |
@@ -436,15 +436,15 @@ mod tests {
               = note: if the build breaks, add the dep to [unused-deps] ignore in your config
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(unused-deps)
+            1 + # workspace-lint: expect(unused-deps)
               |
               = note: `#[warn(workspace_lint::unused_deps)]` on by default
-            "#);
+            ");
         }
 
         #[test]
         fn unused_pub_removal_candidate() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_removal_candidate")), @r#"
+            insta::assert_snapshot!(render(&scenario("unused_pub_removal_candidate")), @r"
             warning: pub fn `helper` in crate `mycrate` appears unused — consider removing
              --> crates/mycrate/src/lib.rs:42:1
               |
@@ -452,15 +452,15 @@ mod tests {
               = note: #[cfg]-gated items, proc-macro usage, and re-exports may cause false positives
             help: if intentional, silence with:
               |
-            42 + workspace_lint::allow!(unused_pub);
+            42 + workspace_lint::expect!(unused_pub);
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
-            "#);
+            ");
         }
 
         #[test]
         fn unused_pub_tighten_visibility() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r#"
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r"
             warning: pub struct `Builder` in crate `mycrate` is only used inside the crate
              --> crates/mycrate/src/builder.rs:7:1
               |
@@ -468,15 +468,15 @@ mod tests {
               = note: #[cfg]-gated items, proc-macro usage, and re-exports may cause false positives
             help: if intentional, silence with:
               |
-            7 + workspace_lint::allow!(unused_pub);
+            7 + workspace_lint::expect!(unused_pub);
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
-            "#);
+            ");
         }
 
         #[test]
         fn stale_expect() {
-            insta::assert_snapshot!(render(&scenario("stale_expect")), @r#"
+            insta::assert_snapshot!(render(&scenario("stale_expect")), @r"
             warning: expect directive for `file-size` did not match any diagnostic
              --> crates/api/src/lib.rs:1:1
               |
@@ -484,23 +484,23 @@ mod tests {
               = note: a stale expect usually means the underlying issue has been fixed
             help: if intentional, silence with:
               |
-            1 + workspace_lint::allow!(stale_expect);
+            1 + workspace_lint::expect!(stale_expect);
               |
               = note: `#[warn(workspace_lint::stale_expect)]` on by default
-            "#);
+            ");
         }
 
         #[test]
         fn stale_git_index() {
-            insta::assert_snapshot!(render(&scenario("stale_git_index")), @r#"
+            insta::assert_snapshot!(render(&scenario("stale_git_index")), @r"
             warning: deleted file `crates/old/src/legacy.rs` is still tracked by git
               = help: run `git rm crates/old/src/legacy.rs` to stage the removal
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(stale-git-index)
+            1 + # workspace-lint: expect(stale-git-index)
               |
               = note: `#[warn(workspace_lint::stale_git_index)]` on by default
-            "#);
+            ");
         }
 
         #[test]
@@ -513,7 +513,7 @@ mod tests {
               = note: internal types are not part of the published API surface
             help: if intentional, silence with:
               |
-            7 + workspace_lint::allow!(architecture);
+            7 + workspace_lint::expect!(architecture);
               |
               = note: `#[warn(workspace_lint::architecture)]` on by default
             ");
@@ -529,7 +529,7 @@ mod tests {
               = note: `mod foo;` with no inline body must resolve to a source file
             help: if intentional, silence with:
               |
-            3 + workspace_lint::allow!(module_tree);
+            3 + workspace_lint::expect!(module_tree);
               |
               = note: `#[warn(workspace_lint::module_tree)]` on by default
             "#);
@@ -545,7 +545,7 @@ mod tests {
               = note: crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`
             help: if intentional, silence with:
               |
-            1 + workspace_lint::allow!(module_tree);
+            1 + workspace_lint::expect!(module_tree);
               |
               = note: `#[warn(workspace_lint::module_tree)]` on by default
             "#);
@@ -561,7 +561,7 @@ mod tests {
               = note: declared in `demo/Cargo.toml`
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(feature-drift)
+            1 + # workspace-lint: expect(feature-drift)
               |
               = note: `#[warn(workspace_lint::feature_drift)]` on by default
             "#);
@@ -576,7 +576,7 @@ mod tests {
               = help: add `nightly = []` to the `[features]` table of `demo/Cargo.toml`, or remove the `cfg(feature = "nightly")` references
             help: if intentional, silence with:
               |
-            1 + # workspace-lint: allow(feature-drift)
+            1 + # workspace-lint: expect(feature-drift)
               |
               = note: `#[warn(workspace_lint::feature_drift)]` on by default
             "#);
@@ -592,7 +592,7 @@ mod tests {
               = note: references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked
             help: if intentional, silence with:
               |
-            5 + workspace_lint::allow!(visibility);
+            5 + workspace_lint::expect!(visibility);
               |
               = note: `#[warn(workspace_lint::visibility)]` on by default
             ");
@@ -628,7 +628,7 @@ mod tests {
 
         #[test]
         fn centralized_deps_one_dep() {
-            insta::assert_snapshot!(render(&scenario("centralized_deps_one_dep")), @r##"{"level":"warning","message":"1 dependency in crates/alpha/Cargo.toml should use `workspace = true`","code":{"code":"workspace-lint::centralized-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: allow(centralized-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] serde: has own version \"1.0.200\" — use { workspace = true } instead","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("centralized_deps_one_dep")), @r##"{"level":"warning","message":"1 dependency in crates/alpha/Cargo.toml should use `workspace = true`","code":{"code":"workspace-lint::centralized-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(centralized-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] serde: has own version \"1.0.200\" — use { workspace = true } instead","spans":[]}],"rendered":null}"##);
         }
 
         #[test]
@@ -636,7 +636,7 @@ mod tests {
             // Validates the most important JSON contract: a Rust file
             // diagnostic carries a suggested_replacement with the `allow!`
             // macro text so the IDE quick-fix Just Works.
-            insta::assert_snapshot!(render(&scenario("file_size_over_limit")), @r##"{"level":"warning","message":"file exceeds 500 code lines (612)","code":{"code":"workspace-lint::file-size","explanation":null},"spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(file_size);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"split #[cfg(test)] modules into separate test files","spans":[]},{"level":"help","message":"extract related structs, enums, or trait impls into their own modules","spans":[]},{"level":"note","message":"configured by [[file-size.rules]] glob = \"**/*.rs\"","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("file_size_over_limit")), @r#"{"level":"warning","message":"file exceeds 500 code lines (612)","code":{"code":"workspace-lint::file-size","explanation":null},"spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(file_size);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"split #[cfg(test)] modules into separate test files","spans":[]},{"level":"help","message":"extract related structs, enums, or trait impls into their own modules","spans":[]},{"level":"note","message":"configured by [[file-size.rules]] glob = \"**/*.rs\"","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
@@ -650,7 +650,7 @@ mod tests {
             assert_eq!(silence_span["line_start"], 42);
             assert_eq!(
                 silence_span["suggested_replacement"],
-                "workspace_lint::allow!(unused_pub);\n"
+                "workspace_lint::expect!(unused_pub);\n"
             );
         }
 
@@ -670,32 +670,32 @@ mod tests {
 
         #[test]
         fn architecture_denied_import() {
-            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r#"{"level":"warning","message":"import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(architecture);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r#"{"level":"warning","message":"import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(architecture);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn module_tree_broken_mod_decl() {
-            insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @r#"{"level":"warning","message":"`mod missing` declared but no `missing.rs` or `missing/mod.rs` found","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = \"…\"]` attribute","spans":[]},{"level":"note","message":"`mod foo;` with no inline body must resolve to a source file","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @r#"{"level":"warning","message":"`mod missing` declared but no `missing.rs` or `missing/mod.rs` found","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = \"…\"]` attribute","spans":[]},{"level":"note","message":"`mod foo;` with no inline body must resolve to a source file","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn module_tree_orphan_file() {
-            insta::assert_snapshot!(render(&scenario("module_tree_orphan_file")), @r#"{"level":"warning","message":"orphan source file `src/orphan.rs` is not reachable from any `mod` declaration","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add `mod orphan;` (or a `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module, or delete the file","spans":[]},{"level":"note","message":"crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("module_tree_orphan_file")), @r#"{"level":"warning","message":"orphan source file `src/orphan.rs` is not reachable from any `mod` declaration","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add `mod orphan;` (or a `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module, or delete the file","spans":[]},{"level":"note","message":"crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn feature_drift_declared_never_gated() {
-            insta::assert_snapshot!(render(&scenario("feature_drift_declared_never_gated")), @r##"{"level":"warning","message":"feature `experimental` is declared in `[features]` but never gated in source","code":{"code":"workspace-lint::feature-drift","explanation":null},"spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: allow(feature-drift)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"either gate code with `#[cfg(feature = \"experimental\")]` or remove `experimental` from `[features]`","spans":[]},{"level":"note","message":"declared in `demo/Cargo.toml`","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("feature_drift_declared_never_gated")), @r##"{"level":"warning","message":"feature `experimental` is declared in `[features]` but never gated in source","code":{"code":"workspace-lint::feature-drift","explanation":null},"spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(feature-drift)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"either gate code with `#[cfg(feature = \"experimental\")]` or remove `experimental` from `[features]`","spans":[]},{"level":"note","message":"declared in `demo/Cargo.toml`","spans":[]}],"rendered":null}"##);
         }
 
         #[test]
         fn feature_drift_gated_undeclared() {
-            insta::assert_snapshot!(render(&scenario("feature_drift_gated_undeclared")), @r##"{"level":"warning","message":"feature `nightly` is gated in source but not declared in `[features]`","code":{"code":"workspace-lint::feature-drift","explanation":null},"spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: allow(feature-drift)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add `nightly = []` to the `[features]` table of `demo/Cargo.toml`, or remove the `cfg(feature = \"nightly\")` references","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("feature_drift_gated_undeclared")), @r##"{"level":"warning","message":"feature `nightly` is gated in source but not declared in `[features]`","code":{"code":"workspace-lint::feature-drift","explanation":null},"spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(feature-drift)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add `nightly = []` to the `[features]` table of `demo/Cargo.toml`, or remove the `cfg(feature = \"nightly\")` references","spans":[]}],"rendered":null}"##);
         }
 
         #[test]
         fn visibility_pub_used_only_intra_crate() {
-            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @r#"{"level":"warning","message":"pub `Helper` in crate `lib_a` is not referenced from any other workspace crate","code":{"code":"workspace-lint::visibility","explanation":null},"spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::allow!(visibility);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"tighten to `pub(crate)` if this item is intentionally crate-internal","spans":[]},{"level":"note","message":"references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @r#"{"level":"warning","message":"pub `Helper` in crate `lib_a` is not referenced from any other workspace crate","code":{"code":"workspace-lint::visibility","explanation":null},"spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(visibility);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"tighten to `pub(crate)` if this item is intentionally crate-internal","spans":[]},{"level":"note","message":"references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked","spans":[]}],"rendered":null}"#);
         }
     }
 

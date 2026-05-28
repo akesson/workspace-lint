@@ -205,7 +205,7 @@ warning: file exceeds 500 code lines (612)
   = note: configured by [[file-size.rules]] glob = "**/*.rs"
 help: if intentional, silence with:
   |
-1 + workspace_lint::allow!(file_size);
+1 + workspace_lint::expect!(file_size);
   |
   = note: `#[warn(workspace_lint::file_size)]` on by default
 
@@ -243,14 +243,17 @@ check yet). Use the kebab-case short name (no `workspace-lint::` prefix).
 
 Silence directives are always author-written — `--fix` never inserts them
 on your behalf. Every diagnostic prints the exact text to paste; two
-forms, picked by file kind:
+forms, picked by file kind. The suggested directive uses `expect!` (and
+its `expect(…)` comment form): silences a diagnostic but emits a
+`workspace-lint::stale-expect` warning if the underlying lint stops
+firing, so silences don't quietly rot.
 
 **Rust files** — declarative macro from `workspace-lint-marker`:
 
 ```rust
-workspace_lint::allow!(file_size);
-workspace_lint::allow!(file_size, unused_pub);   // comma-separated list
-workspace_lint::expect!(unused_pub);             // silence; warn if stale
+workspace_lint::expect!(file_size);                // silence; warn if stale
+workspace_lint::expect!(file_size, unused_pub);    // comma-separated list
+workspace_lint::allow!(file_size);                 // silence permanently — no stale warning
 ```
 
 **`Cargo.toml`, Markdown, anything non-Rust** — comment directive:
@@ -263,16 +266,17 @@ workspace-lint: allow(stale-expect)
 -->
 
 ```toml
-# workspace-lint: allow(centralized-deps)
+# workspace-lint: expect(centralized-deps)
 [dependencies]
 serde = "1.0.200"
 
-# workspace-lint: expect(unused-deps)
+# workspace-lint: allow(unused-deps)   # permanent: lint can't reach this scope
 ```
 
-`expect!` (and its `expect(…)` comment form) silences a diagnostic but emits
-a `workspace-lint::stale-expect` warning if the underlying lint stops firing
-— so silences don't quietly rot.
+Reach for `allow!` (and `# workspace-lint: allow(...)`) only when you want
+a permanent silence — e.g. a file the lint genuinely can't reach (an
+`unused-pub` item inside `exclude-crates`), or a constraint that will
+never relax. `expect` is preferred everywhere else.
 
 ## Updating expected outputs
 

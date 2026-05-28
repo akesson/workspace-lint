@@ -226,7 +226,7 @@ mod tests {
         let d = at_file("workspace-lint::file-size", "x", "src/lib.rs").build();
         let s = render_one(&d);
         assert!(s.contains("help: if intentional, silence with:"));
-        assert!(s.contains("workspace_lint::allow!(file_size);"));
+        assert!(s.contains("workspace_lint::expect!(file_size);"));
         assert!(s.contains("on by default"));
     }
 

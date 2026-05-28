@@ -10,10 +10,15 @@
 //! ```
 //!
 //! ```ignore
-//! workspace_lint::allow!(file_size);          // silence one lint
-//! workspace_lint::allow!(file_size, unused_pub);  // silence several
-//! workspace_lint::expect!(unused_deps);       // silence but warn if stale
+//! workspace_lint::expect!(file_size);              // silence; warn if stale
+//! workspace_lint::expect!(file_size, unused_pub);  // silence several
+//! workspace_lint::allow!(unused_deps);             // silence permanently — no stale warning
 //! ```
+//!
+//! Prefer `expect!`: if the underlying issue is fixed, workspace-lint emits
+//! `stale-expect`, nudging you to remove the now-redundant directive. Use
+//! `allow!` only for permanent silences — items the lint genuinely can't
+//! reach, or constraints that will never relax.
 //!
 //! At compile time the macros expand to nothing. workspace-lint scans the
 //! source text and treats each invocation as a suppression directive for the

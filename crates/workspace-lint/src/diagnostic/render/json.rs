@@ -207,7 +207,7 @@ mod tests {
         let span = &silence["spans"][0];
         assert_eq!(
             span["suggested_replacement"],
-            "workspace_lint::allow!(file_size);\n"
+            "workspace_lint::expect!(file_size);\n"
         );
         assert_eq!(span["suggestion_applicability"], "MachineApplicable");
         assert_eq!(span["file_name"], "src/lib.rs");
