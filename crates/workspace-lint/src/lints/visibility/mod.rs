@@ -24,7 +24,7 @@ use crate::diagnostic::Suggestion;
 use crate::diagnostic::builder::at_line;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
-pub struct Visibility;
+pub(crate) struct Visibility;
 
 impl Visibility {
     pub fn new() -> Self {
@@ -57,7 +57,7 @@ impl Lint for Visibility {
     }
 }
 
-pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // Only inspect each member's primary unit — tests/benches/examples
@@ -129,9 +129,6 @@ pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> 
         return None;
     }
     let slice = source.get(start..end)?;
-    if slice.starts_with('#') {
-        return None;
-    }
     let pub_offset = find_word_boundary_pub(slice)?;
     let after_pub = slice.get(pub_offset + 3..)?;
     if after_pub.starts_with('(') {
@@ -165,8 +162,39 @@ pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> 
 
 /// Find `pub` in `slice` at the first position where it's a standalone
 /// keyword (preceded by whitespace, start of slice, or punctuation).
+///
+/// Lines that look like comments (`//` or `///`) or single-line attributes
+/// (`#[...]`) are skipped before searching — `pub` inside doc comments or
+/// attribute string literals is not a visibility keyword. Block comments
+/// (`/* ... */`) and multi-line attributes spanning newlines are not yet
+/// handled — items using those rare forms may still misfire.
 fn find_word_boundary_pub(slice: &str) -> Option<usize> {
-    let bytes = slice.as_bytes();
+    let mut offset = 0;
+    for line in slice.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        // Skip whole-line attributes — `#[derive(...)]` etc. Multi-line
+        // attribute lists won't be fully skipped, but those are rare.
+        if trimmed.starts_with('#') {
+            offset += line.len();
+            continue;
+        }
+        // Anything from the first `//` to end-of-line is a comment and must
+        // not be searched — `pub` inside a doc comment is documentation,
+        // not a visibility keyword.
+        let code = match line.find("//") {
+            Some(comment_start) => &line[..comment_start],
+            None => line,
+        };
+        if let Some(pos) = find_pub_in_code(code) {
+            return Some(offset + pos);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn find_pub_in_code(code: &str) -> Option<usize> {
+    let bytes = code.as_bytes();
     for (i, w) in bytes.windows(3).enumerate() {
         if w == b"pub" {
             let before_ok =
@@ -177,4 +205,44 @@ fn find_word_boundary_pub(slice: &str) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod find_pub_tests {
+    use super::find_word_boundary_pub;
+
+    #[test]
+    fn finds_pub_at_start() {
+        let slice = "pub struct Foo {}\n";
+        assert_eq!(find_word_boundary_pub(slice), Some(0));
+    }
+
+    #[test]
+    fn skips_pub_inside_doc_comment() {
+        let slice = "/// `pub use` is documented here.\npub struct Foo {}\n";
+        let pos = find_word_boundary_pub(slice).unwrap();
+        assert_eq!(&slice[pos..pos + 3], "pub");
+        // The hit must be on the second line, not on `pub use` in the docs.
+        assert!(slice[..pos].ends_with('\n'));
+    }
+
+    #[test]
+    fn skips_pub_inside_line_attribute() {
+        let slice = "#[doc = \"pub example\"]\npub struct Foo {}\n";
+        let pos = find_word_boundary_pub(slice).unwrap();
+        assert!(slice[..pos].ends_with('\n'));
+    }
+
+    #[test]
+    fn skips_doc_then_derive_then_finds_struct_pub() {
+        let slice = "/// doc with `pub` keyword inside.\n#[derive(Debug)]\npub enum E {}\n";
+        let pos = find_word_boundary_pub(slice).unwrap();
+        assert_eq!(&slice[pos..pos + 3], "pub");
+        assert!(slice[..pos].ends_with('\n'));
+    }
+
+    #[test]
+    fn returns_none_when_no_pub() {
+        assert_eq!(find_word_boundary_pub("struct Foo {}\n"), None);
+    }
 }
