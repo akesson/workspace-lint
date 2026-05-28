@@ -12,7 +12,7 @@
 //!   `[build-dependencies]` per crate, checks each against the workspace's
 //!   `[workspace.dependencies]` table, and constructs `workspace = true`
 //!   rewrites via [`Manifest::format_workspace_dep`].
-//! - `unused_deps`: enumerates declared deps via [`Crate::declared_deps`] (a
+//! - `unused_deps`: enumerates declared deps via `Crate::declared_deps` (a
 //!   thin wrapper on [`Manifest::deps`]) and uses [`Manifest::locate_dep`] to
 //!   build delete-line suggestions.
 //!
@@ -80,7 +80,7 @@ pub struct DepLocation {
 }
 
 /// One declared dependency, as enumerated by [`Manifest::declared_deps`] or
-/// [`Crate::declared_deps`]. Carries enough for unused-deps to match against
+/// `Crate::declared_deps`. Carries enough for unused-deps to match against
 /// the resolver's references_by_crate index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredDep {
@@ -114,7 +114,7 @@ impl Manifest {
 
     /// An empty manifest at a synthetic path. Provided for tests and
     /// synthesized `Crate` fixtures — callers building a workspace by hand
-    /// (rather than via [`Workspace::load`]) can use this to satisfy the
+    /// (rather than via `Workspace::load`) can use this to satisfy the
     /// `manifest` field without touching disk.
     pub fn empty() -> Self {
         Self {

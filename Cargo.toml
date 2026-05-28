@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["crates/*"]
 
+[workspace.package]
+rust-version = "1.88"
+
 [workspace.dependencies]
 # Bin deps
 cargo_metadata = "0.23"

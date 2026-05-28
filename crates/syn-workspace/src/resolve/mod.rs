@@ -489,7 +489,7 @@ impl Crate {
 
     /// All declared dependencies across `[dependencies]`,
     /// `[dev-dependencies]`, and `[build-dependencies]`. Delegates to
-    /// [`Manifest::declared_deps`].
+    /// [`crate::manifest::Manifest::declared_deps`].
     pub fn declared_deps(&self) -> impl Iterator<Item = crate::manifest::DeclaredDep> + '_ {
         self.manifest.declared_deps()
     }
@@ -610,9 +610,9 @@ impl Workspace {
 
     /// Register implicit references for macros defined outside the workspace
     /// (Layer 3 — config-driven). Each call appends; deduplication happens
-    /// in the underlying [`HashSet`]. Typically invoked by the lint harness
-    /// once after [`Workspace::load`], passing entries derived from the
-    /// `[[macros.external]]` table in the config file.
+    /// in the underlying [`std::collections::HashSet`]. Typically invoked by
+    /// the lint harness once after [`Workspace::load`], passing entries derived
+    /// from the `[[macros.external]]` table in the config file.
     ///
     /// External-macro refs are treated as workspace-wide (broadcast to
     /// every crate) because `cargo_metadata` can't tell us which workspace

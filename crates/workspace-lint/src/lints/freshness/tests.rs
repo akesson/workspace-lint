@@ -135,3 +135,46 @@ fn ci_env_skips_check() {
     let issues = check_with_root(&config, tmp.path());
     assert_eq!(issues.len(), 1);
 }
+
+// --- mark_done_with_root ---
+
+#[test]
+fn mark_done_touches_tracked_files() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("CLAUDE.md"), "# doc").unwrap();
+    let old = SystemTime::now() - Duration::from_secs(3600);
+    set_mtime(&tmp.path().join("CLAUDE.md"), old);
+
+    let config = make_config(vec![("CLAUDE.md", "*.rs")]);
+    mark_done_with_root(&config, tmp.path());
+
+    let new_mtime = mtime(&tmp.path().join("CLAUDE.md")).unwrap();
+    assert!(new_mtime > old);
+}
+
+#[test]
+fn mark_done_no_matching_files_is_noop() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("readme.md"), "").unwrap();
+
+    let config = make_config(vec![("CLAUDE.md", "*.rs")]);
+    mark_done_with_root(&config, tmp.path());
+    // No panic, no side effect on the unrelated file's existence.
+    assert!(tmp.path().join("readme.md").exists());
+}
+
+#[test]
+fn mark_done_multiple_rules_touches_all_matches() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("CLAUDE.md"), "").unwrap();
+    std::fs::write(tmp.path().join("NOTES.md"), "").unwrap();
+    let old = SystemTime::now() - Duration::from_secs(3600);
+    set_mtime(&tmp.path().join("CLAUDE.md"), old);
+    set_mtime(&tmp.path().join("NOTES.md"), old);
+
+    let config = make_config(vec![("CLAUDE.md", "*.rs"), ("NOTES.md", "*.rs")]);
+    mark_done_with_root(&config, tmp.path());
+
+    assert!(mtime(&tmp.path().join("CLAUDE.md")).unwrap() > old);
+    assert!(mtime(&tmp.path().join("NOTES.md")).unwrap() > old);
+}

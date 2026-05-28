@@ -187,3 +187,95 @@ impl CheckRule {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lints::LintId;
+
+    #[test]
+    fn into_lint_centralized_deps() {
+        let lint = CheckRule::CentralizedDeps.into_lint();
+        assert_eq!(lint.id(), LintId::CentralizedDeps);
+    }
+
+    #[test]
+    fn into_lint_file_size() {
+        let lint = CheckRule::FileSize {
+            glob: "**/*.rs".into(),
+            max_code_lines: 500,
+        }
+        .into_lint();
+        assert_eq!(lint.id(), LintId::FileSize);
+    }
+
+    #[test]
+    fn into_lint_crate_size() {
+        let lint = CheckRule::CrateSize {
+            glob: "crates/*".into(),
+            max_code_lines: 5000,
+            include: vec!["*.rs".into()],
+        }
+        .into_lint();
+        assert_eq!(lint.id(), LintId::CrateSize);
+    }
+
+    #[test]
+    fn into_lint_freshness() {
+        let lint = CheckRule::Freshness {
+            glob: "**/CLAUDE.md".into(),
+            depends_on: "**/*.rs".into(),
+        }
+        .into_lint();
+        assert_eq!(lint.id(), LintId::Freshness);
+    }
+
+    #[test]
+    fn into_lint_cli_crate_version() {
+        let lint = CheckRule::CliCrateVersion {
+            command: "wasm-bindgen --version".into(),
+            pattern: r"wasm-bindgen (\S+)".into(),
+            crate_name: "wasm-bindgen".into(),
+        }
+        .into_lint();
+        assert_eq!(lint.id(), LintId::CliCrateVersion);
+    }
+
+    #[test]
+    fn into_lint_unused_deps() {
+        let lint = CheckRule::UnusedDeps {
+            ignore: vec!["serde".into()],
+        }
+        .into_lint();
+        assert_eq!(lint.id(), LintId::UnusedDeps);
+    }
+
+    #[test]
+    fn into_lint_unused_pub() {
+        let lint = CheckRule::UnusedPub {
+            on_ci_only: false,
+            exclude_crates: vec![],
+            allowlist: vec![],
+            kinds: vec![],
+            exclude_paths: vec![],
+            suppress_intra_crate: false,
+        }
+        .into_lint();
+        assert_eq!(lint.id(), LintId::UnusedPub);
+    }
+
+    #[test]
+    fn into_expand_config_splits_command_whitespace() {
+        let cfg = CheckRule::into_expand_config(
+            "mise tasks".into(),
+            "CLAUDE.md".into(),
+            "MISE_TASKS".into(),
+            true,
+        );
+        assert_eq!(cfg.rules.len(), 1);
+        assert_eq!(cfg.rules[0].command, vec!["mise", "tasks"]);
+        assert_eq!(cfg.rules[0].glob, "CLAUDE.md");
+        assert_eq!(cfg.rules[0].marker, "MISE_TASKS");
+        assert!(cfg.rules[0].auto_stage);
+    }
+}

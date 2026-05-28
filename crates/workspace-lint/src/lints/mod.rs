@@ -12,7 +12,7 @@
 //! 2. Add a [`LintId`] variant in `lints_id.rs`.
 //! 3. Add a line in [`registry`] wiring the lint up to its config block.
 //! 4. Add a scenario in `messages::scenarios()` (asserted by the registry
-//!    coverage test in [`lints_id::tests`]).
+//!    coverage test in `lints_id::tests`).
 //! 5. Add fixtures under `tests/cases/<name>/` (and `tests/fixtures/fix__<name>/`
 //!    if the lint emits machine-applicable structural fixes).
 

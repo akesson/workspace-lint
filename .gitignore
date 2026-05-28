@@ -3,6 +3,10 @@
 debug
 target
 
+# cargo-llvm-cov output
+lcov.info
+*.profraw
+
 # Cargo.lock files inside test fixture workspaces — the resolver-backed
 # lints invoke `cargo metadata` which writes a Cargo.lock under each
 # fixture workspace as a side effect. Fixture tests intentionally don't

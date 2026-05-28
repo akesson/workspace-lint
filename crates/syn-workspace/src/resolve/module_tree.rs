@@ -384,7 +384,7 @@ fn extract_code_paths(
 /// apply use-binding / sibling lookups to the next segment — those rules
 /// only apply to externally-anchored paths). Returns `None` if a `super::`
 /// would escape the crate root: rustc errors on those, so we drop the
-/// reference rather than mis-attribute it to `crate::remaining`.
+/// reference rather than misattribute it to `crate::remaining`.
 fn peel_path_prefix(
     iter: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
     scope: &use_tree::Scope,

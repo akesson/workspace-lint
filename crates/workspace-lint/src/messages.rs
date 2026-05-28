@@ -9,9 +9,9 @@
 //! Three sub-modules — one per renderer — each named after the lint and
 //! scenario it exercises:
 //!
-//! - [`human`] : clippy-style text written to stderr.
-//! - [`json`] : `--message-format=json`, rustc-compatible per-line records.
-//! - [`github`] : `--message-format=github`, Actions workflow command.
+//! - `human` : clippy-style text written to stderr.
+//! - `json` : `--message-format=json`, rustc-compatible per-line records.
+//! - `github` : `--message-format=github`, Actions workflow command.
 //!
 //! Add a new scenario by extending [`scenarios`] with one builder per case,
 //! then re-running `cargo test` — insta will prompt you to accept the new
