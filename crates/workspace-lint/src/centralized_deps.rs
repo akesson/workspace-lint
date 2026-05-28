@@ -155,8 +155,13 @@ pub(crate) fn locate_dep_entry(
     let header = format!("[{section}]");
     let mut in_section = false;
     let mut byte_offset = 0usize;
-    for (i, line) in content.split('\n').enumerate() {
-        let line_with_newline_len = line.len() + 1; // counting the \n we split on
+    for (i, raw_line) in content.split('\n').enumerate() {
+        // `split('\n')` leaves a trailing `\r` on CRLF files. Trim it for
+        // structural matching (section headers etc.) but keep the original
+        // length for byte-offset accounting so callers can still address
+        // the file accurately.
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let line_with_newline_len = raw_line.len() + 1; // raw_line + the \n we split on
         let trimmed = line.trim_start();
         if let Some(name) = parse_section_header(trimmed) {
             in_section = name == section || name == header.trim_matches(['[', ']']);
@@ -170,6 +175,9 @@ pub(crate) fn locate_dep_entry(
                 return None;
             }
             let start = byte_offset;
+            // `end` excludes any trailing CR/LF so the structural rewriter
+            // replaces only the dep line's content and leaves the file's
+            // EOL bytes untouched.
             let end = byte_offset + line.len();
             return Some((start, end, (i + 1) as u32));
         }
@@ -675,6 +683,23 @@ serde = {
 }
 ";
         assert!(locate_dep_entry(content, "dependencies", "serde").is_none());
+    }
+
+    // --- CRLF tolerance ---
+
+    #[test]
+    fn locate_finds_dep_in_crlf_file() {
+        // Regression: `split('\n')` leaves a trailing `\r` on each line in a
+        // CRLF file, which previously broke `parse_section_header`'s
+        // `strip_suffix(']')` check — `in_section` never flipped and the
+        // dep was never found. The byte range must still address the
+        // original CRLF content correctly, excluding the EOL bytes.
+        let content = "[package]\r\nname = \"a\"\r\n\r\n[dependencies]\r\nserde = \"1.0\"\r\n";
+        let (start, end, line) = locate_dep_entry(content, "dependencies", "serde").unwrap();
+        assert_eq!(&content[start..end], "serde = \"1.0\"");
+        assert_eq!(line, 5);
+        // The byte after `end` must still be the original `\r`, untouched.
+        assert_eq!(&content[end..end + 2], "\r\n");
     }
 
     // --- end-to-end suggestion construction ---

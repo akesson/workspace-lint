@@ -110,9 +110,14 @@ fn build_delete_suggestion(
 ) -> Option<Suggestion> {
     let (line_start, line_end, line_number) =
         crate::centralized_deps::locate_dep_entry(content, &entry.section, &entry.original_name)?;
-    // Extend the end-of-line to include the trailing newline so we don't
-    // leave a stray blank line behind.
+    // Extend the end past the trailing CR/LF so we don't leave a stray
+    // blank line behind. `locate_dep_entry` returns the line's content
+    // range only (no EOL bytes), so consume up to `\r\n` (Windows) or
+    // `\n` (Unix) here.
     let mut end = line_end;
+    if end < content.len() && content.as_bytes()[end] == b'\r' {
+        end += 1;
+    }
     if end < content.len() && content.as_bytes()[end] == b'\n' {
         end += 1;
     }
@@ -291,5 +296,30 @@ mod tests {
         refs.insert("serde".into());
         let unused = find_unused_deps(deps, &refs);
         assert_eq!(unused, vec![entry("dependencies", "rand")]);
+    }
+
+    // --- build_delete_suggestion: EOL handling ---
+
+    #[test]
+    fn delete_consumes_lf_after_dep_line() {
+        let content = "[dependencies]\nrand = \"0.8\"\nfoo = \"1\"\n";
+        let path = std::path::PathBuf::from("/tmp/Cargo.toml");
+        let s = build_delete_suggestion(content, &path, &entry("dependencies", "rand")).unwrap();
+        let start = s.span.byte_start as usize;
+        let end = s.span.byte_end as usize;
+        assert_eq!(&content[start..end], "rand = \"0.8\"\n");
+    }
+
+    #[test]
+    fn delete_consumes_crlf_after_dep_line() {
+        // Regression: on Windows, dep lines are terminated by `\r\n`. The
+        // deletion must consume both bytes so we don't leave behind a stray
+        // `\r` that produces a blank line.
+        let content = "[dependencies]\r\nrand = \"0.8\"\r\nfoo = \"1\"\r\n";
+        let path = std::path::PathBuf::from("/tmp/Cargo.toml");
+        let s = build_delete_suggestion(content, &path, &entry("dependencies", "rand")).unwrap();
+        let start = s.span.byte_start as usize;
+        let end = s.span.byte_end as usize;
+        assert_eq!(&content[start..end], "rand = \"0.8\"\r\n");
     }
 }
