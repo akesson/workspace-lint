@@ -68,6 +68,10 @@ pub fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module>
         root_file,
         crate_name.to_string(),
         crate_root_path,
+        // Crate roots are the crate boundary itself, not a `mod foo;`
+        // declaration, so there's no enclosing visibility — Public is the
+        // semantically correct default for any external-reachability check.
+        Visibility::Public,
         &default_markers,
     )
 }
@@ -77,6 +81,7 @@ fn empty_root(crate_name: &str) -> Module {
     Module {
         name: crate_name.to_string(),
         canonical: ResolvedPath::new([crate_name.to_string()]),
+        visibility: Visibility::Public,
         items: Vec::new(),
         submodules: Vec::new(),
         use_bindings: Vec::new(),
@@ -92,6 +97,7 @@ pub(crate) fn build_module_from_file(
     file_path: &Path,
     mod_name: String,
     canonical: ResolvedPath,
+    visibility: Visibility,
     marker_crates: &[String],
 ) -> Result<Module> {
     let source = std::fs::read_to_string(file_path)?;
@@ -105,6 +111,7 @@ pub(crate) fn build_module_from_file(
     Ok(Module {
         name: mod_name,
         canonical,
+        visibility,
         items: contents.items,
         submodules: contents.submodules,
         use_bindings: contents.use_bindings,
@@ -227,6 +234,7 @@ fn collect_module_contents(
                 submodules.push(Module {
                     name: child_name,
                     canonical: child_canonical,
+                    visibility: Visibility::from_syn(&item_mod.vis),
                     items: inline.items,
                     submodules: inline.submodules,
                     use_bindings: inline.use_bindings,
@@ -241,6 +249,7 @@ fn collect_module_contents(
                     &child_file,
                     child_name,
                     child_canonical,
+                    Visibility::from_syn(&item_mod.vis),
                     marker_crates,
                 )?);
             } else {

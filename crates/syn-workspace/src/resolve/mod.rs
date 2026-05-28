@@ -386,6 +386,14 @@ pub struct BrokenModDecl {
 pub struct Module {
     pub name: String,
     pub canonical: ResolvedPath,
+    /// Visibility of the `mod foo;` declaration in the parent. Crate roots
+    /// (lib.rs / main.rs / proc-macro entry) are always [`Visibility::Public`]
+    /// — they're the crate boundary itself, not a `mod` declaration. Used by
+    /// downstream lints (visibility, unused-pub) to determine whether items
+    /// are externally reachable: an item at a `pub(crate) mod` (or private
+    /// `mod`) hop in its path is not part of the crate's public API even
+    /// if the item itself is `pub`.
+    pub visibility: Visibility,
     pub items: Vec<Item>,
     pub submodules: Vec<Module>,
     /// `use` bindings active in this module's scope (renames resolved to
@@ -817,6 +825,57 @@ impl Workspace {
         &self.re_exports
     }
 
+    /// Returns `true` if `path` names an item in a crate that publishes a
+    /// stable external API (a library or proc-macro), and every `mod` hop
+    /// from the crate root down to (but not including) the item's own name
+    /// is declared `pub mod` — i.e. the item is reachable from an external
+    /// consumer through ordinary path resolution.
+    ///
+    /// Used by structural-fix lints (visibility, unused-pub) to refuse
+    /// narrowing items that form part of a published crate's public API
+    /// even when no in-workspace consumer references them: external
+    /// consumers of a library crate live outside the resolver's view.
+    ///
+    /// Returns `false` for: items whose owning crate isn't a workspace
+    /// member, items in a `[[bin]]`-only crate (binaries don't publish an
+    /// API), items in non-primary targets (test/example/build-script),
+    /// items the resolver couldn't walk to, and items inside a private or
+    /// `pub(crate)` module hop.
+    pub fn is_externally_reachable(&self, path: &ResolvedPath) -> bool {
+        let segments = path.segments();
+        // Need at least `[crate_name, item_name]` to talk about reachability.
+        if segments.len() < 2 {
+            return false;
+        }
+        let Some(krate) = self.member_by_code_name(&segments[0]) else {
+            return false;
+        };
+        let Some(target) = krate.lib_or_main() else {
+            return false;
+        };
+        // Only lib / proc-macro publish a stable API surface. Bin targets
+        // don't expose items to external consumers, so pub items inside a
+        // binary crate aren't "reachable from outside" in any meaningful
+        // sense — the visibility lint should still suggest narrowing them.
+        if !matches!(target.kind, TargetKind::Lib | TargetKind::ProcMacro) {
+            return false;
+        }
+        // Walk every intermediate module hop (skip the crate-root segment
+        // and the item name itself). Any non-Public hop breaks reachability.
+        let intermediate = &segments[1..segments.len() - 1];
+        let mut module = &target.root;
+        for seg in intermediate {
+            let Some(child) = module.submodules.iter().find(|m| m.name == *seg) else {
+                return false;
+            };
+            if child.visibility != Visibility::Public {
+                return false;
+            }
+            module = child;
+        }
+        true
+    }
+
     /// Canonical paths reachable through macro expansions that could
     /// plausibly affect items inside `target_crate`. Built per call by
     /// unioning:
@@ -993,6 +1052,7 @@ mod tests {
         Module {
             name: name.into(),
             canonical: ResolvedPath::new([krate.to_string(), name.to_string()]),
+            visibility: Visibility::Public,
             items,
             submodules,
             use_bindings: Vec::new(),

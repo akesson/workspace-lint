@@ -97,6 +97,20 @@ fn check_item(
     if macro_refs.contains(&item.canonical) {
         return None;
     }
+    // Skip items reachable via a `pub use` chain in the workspace — those
+    // are load-bearing for the re-export's compilation (E0364 / E0365) and
+    // are part of the containing crate's public API surface even if no
+    // in-workspace consumer references the re-exported name.
+    if workspace.re_exports().is_target(&item.canonical) {
+        return None;
+    }
+    // Skip items in a published library's public API surface — `pub fn`
+    // in a `pub mod` in a `[lib]` crate is consumable by any downstream,
+    // not just by in-workspace callers. The lint can't see external uses;
+    // narrowing would silently break those consumers.
+    if workspace.is_externally_reachable(&item.canonical) {
+        return None;
+    }
 
     let span = item.source.as_ref()?;
     let msg = format!(

@@ -165,6 +165,21 @@ fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagno
     if ctx.macro_refs.contains(&item.canonical) {
         return None;
     }
+    // Skip items reachable via a `pub use` chain — those are load-bearing
+    // for the re-export's compilation and form part of the containing
+    // crate's public API surface (the workspace resolver may see no
+    // in-workspace consumer for the re-exported name, but external
+    // consumers of a library crate do). Narrowing them to `pub(crate)`
+    // produces E0364 / E0365 at the re-export site.
+    if ctx.workspace.re_exports().is_target(&item.canonical) {
+        return None;
+    }
+    // Skip items in a published library's public API surface — same logic
+    // as the `is_target` gate above, but for items reached via ordinary
+    // `pub mod` chains rather than `pub use` re-exports.
+    if ctx.workspace.is_externally_reachable(&item.canonical) {
+        return None;
+    }
 
     let referring = ctx.workspace.referring_crates(&item.canonical);
     let used_cross_crate = referring
