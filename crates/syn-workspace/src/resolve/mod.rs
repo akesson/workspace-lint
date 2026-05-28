@@ -76,6 +76,23 @@ impl ResolvedPath {
         }
     }
 
+    /// Parse a `::`-separated path written by a human (config files, CLI
+    /// arguments). Splits on `::`, trims each segment, and drops empties.
+    /// Normalizes the leading crate segment from cargo form (`data-models`)
+    /// to in-code form (`data_models`) so the result lines up with the
+    /// canonical paths the resolver stores.
+    pub fn from_user_str(s: &str) -> Self {
+        let mut segments: Vec<String> = s
+            .split("::")
+            .map(|seg| seg.trim().to_string())
+            .filter(|seg| !seg.is_empty())
+            .collect();
+        if let Some(first) = segments.first_mut() {
+            *first = first.replace('-', "_");
+        }
+        Self { segments }
+    }
+
     /// All segments, including the leading crate name.
     pub fn segments(&self) -> &[String] {
         &self.segments
@@ -150,6 +167,49 @@ pub enum ItemKind {
     ExternCrate,
 }
 
+impl ItemKind {
+    /// True for items that define a named API surface (`Fn`, `Struct`,
+    /// `Enum`, `Union`, `Trait`, `TypeAlias`, `Const`, `Static`, `Macro`).
+    /// False for `Module`, `Impl`, `Use`, `ExternCrate` — those are
+    /// containers, declarations, or non-named blocks rather than definitions
+    /// that participate in cross-crate API consumption.
+    pub fn is_definition(self) -> bool {
+        matches!(
+            self,
+            Self::Fn
+                | Self::Struct
+                | Self::Enum
+                | Self::Union
+                | Self::Trait
+                | Self::TypeAlias
+                | Self::Const
+                | Self::Static
+                | Self::Macro
+        )
+    }
+}
+
+impl std::fmt::Display for ItemKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Fn => "fn",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Union => "union",
+            Self::Trait => "trait",
+            Self::TypeAlias => "type",
+            Self::Const => "const",
+            Self::Static => "static",
+            Self::Module => "mod",
+            Self::Macro => "macro",
+            Self::Impl => "impl",
+            Self::Use => "use",
+            Self::ExternCrate => "extern crate",
+        };
+        f.write_str(s)
+    }
+}
+
 /// A single declared item in a module.
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -177,6 +237,16 @@ pub struct SourceSpan {
     pub byte_start: u32,
     /// Exclusive byte offset of the span end within the file.
     pub byte_end: u32,
+}
+
+impl SourceSpan {
+    /// True iff `byte_start`/`byte_end` are populated (not the synthetic
+    /// `0..0` sentinel). Lints that drive structural fixes by byte-range
+    /// replacement gate on this — `file`/`line` may still be useful for
+    /// diagnostic messages on synthetic spans.
+    pub fn has_byte_range(&self) -> bool {
+        self.byte_start != 0 || self.byte_end != 0
+    }
 }
 
 /// A `mod foo;` declaration that didn't resolve to a backing file.
@@ -253,6 +323,30 @@ pub struct Module {
     pub parsed_file: Option<std::rc::Rc<syn::File>>,
 }
 
+impl Module {
+    /// Recursively iterate this module and all its submodules, depth-first,
+    /// root first. The most common entry point for lints that need to scan
+    /// every module under a crate target.
+    pub fn walk(&self) -> impl Iterator<Item = &Module> + '_ {
+        ModuleWalk::new(self)
+    }
+
+    /// Iterate every `(module, item)` pair under this module's subtree.
+    /// Preserves the enclosing module so callers can consult its
+    /// `canonical`, `file`, etc. without a second lookup.
+    pub fn walk_items(&self) -> impl Iterator<Item = (&Module, &Item)> + '_ {
+        self.walk()
+            .flat_map(|m| m.items.iter().map(move |i| (m, i)))
+    }
+
+    /// Iterate every `(module, use_binding)` pair under this module's
+    /// subtree. Mirrors [`Module::walk_items`] for `use` declarations.
+    pub fn walk_use_bindings(&self) -> impl Iterator<Item = (&Module, &use_tree::UseBinding)> + '_ {
+        self.walk()
+            .flat_map(|m| m.use_bindings.iter().map(move |b| (m, b)))
+    }
+}
+
 /// Kind of a Cargo target. Library crate-types (`lib`/`rlib`/`dylib`/
 /// `cdylib`/`staticlib`) are coalesced into [`TargetKind::Lib`] since
 /// downstream lints rarely distinguish them.
@@ -291,7 +385,7 @@ pub struct Target {
 impl Target {
     /// Recursively iterate every module in this target's tree, root first.
     pub fn all_modules(&self) -> impl Iterator<Item = &Module> + '_ {
-        ModuleWalk::new(&self.root)
+        self.root.walk()
     }
 }
 
@@ -347,7 +441,7 @@ impl Crate {
     /// Use this when a lint needs the whole crate's surface (e.g.
     /// `feature_drift` reads `cfg_features` regardless of target).
     pub fn all_modules(&self) -> impl Iterator<Item = &Module> + '_ {
-        self.targets.iter().flat_map(|t| t.all_modules())
+        self.targets.iter().flat_map(|t| t.root.walk())
     }
 
     /// Iterate items in the crate's primary unit (lib_or_main).
@@ -357,13 +451,15 @@ impl Crate {
     pub fn items(&self) -> impl Iterator<Item = &Item> + '_ {
         self.lib_or_main()
             .into_iter()
-            .flat_map(|t| ModuleItems::new(&t.root))
+            .flat_map(|t| t.root.walk_items().map(|(_, i)| i))
     }
 
     /// Items in *every* target. Rarely needed — most lints want
     /// [`Crate::items`].
     pub fn all_items(&self) -> impl Iterator<Item = &Item> + '_ {
-        self.targets.iter().flat_map(|t| ModuleItems::new(&t.root))
+        self.targets
+            .iter()
+            .flat_map(|t| t.root.walk_items().map(|(_, i)| i))
     }
 
     /// Iterate items whose visibility is reachable outside the crate
@@ -429,6 +525,15 @@ pub struct Workspace {
     /// once at load time so unused-deps / unused-pub / visibility don't
     /// re-walk the tree.
     references_by_crate: std::collections::HashMap<String, std::collections::HashSet<ResolvedPath>>,
+    /// Reverse index: for each canonical path, the set of code-form crate
+    /// names that reference it. Built from `references_by_crate` with each
+    /// path passed through the `pub use` chain in `re_exports`. Same
+    /// referrer may appear because intra-crate refs are retained — callers
+    /// that want "cross-crate only" filter on `path.crate_name() !=
+    /// referrer`. Lifted from per-lint ad-hoc index builds so the
+    /// re-export resolution runs once.
+    canonical_refs_by_path:
+        std::collections::HashMap<ResolvedPath, std::collections::HashSet<String>>,
 }
 
 impl Workspace {
@@ -471,6 +576,19 @@ impl Workspace {
                 collect_module_references(&target.root, entry);
             }
         }
+        let mut canonical_refs_by_path: std::collections::HashMap<
+            ResolvedPath,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
+        for (referring_crate, refs) in &references_by_crate {
+            for path in refs {
+                let canonical = re_exports.canonical(path);
+                canonical_refs_by_path
+                    .entry(canonical)
+                    .or_default()
+                    .insert(referring_crate.clone());
+            }
+        }
         Ok(Self {
             crates,
             root,
@@ -479,6 +597,7 @@ impl Workspace {
             macro_refs_by_crate,
             external_macro_refs: std::collections::HashSet::new(),
             references_by_crate,
+            canonical_refs_by_path,
         })
     }
 
@@ -514,6 +633,29 @@ impl Workspace {
     /// Just the workspace member crates.
     pub fn members(&self) -> impl Iterator<Item = &Crate> {
         self.crates.iter().filter(|c| c.is_workspace_member)
+    }
+
+    /// Each workspace member paired with its primary unit (lib / proc-macro /
+    /// main bin). Members without a primary target — proc-macro-less binaries
+    /// without a `[[bin]]` entry, etc. — are skipped. The pair iterator
+    /// subsumes the common "for member; if let Some(target) = lib_or_main"
+    /// ladder.
+    pub fn primary_units(&self) -> impl Iterator<Item = (&Crate, &Target)> + '_ {
+        self.members()
+            .filter_map(|c| c.lib_or_main().map(|t| (c, t)))
+    }
+
+    /// Look up a workspace member by its Cargo-form name (the value users
+    /// write in `Cargo.toml`, hyphens preserved).
+    pub fn member_by_name(&self, name: &str) -> Option<&Crate> {
+        self.members().find(|c| c.name == name)
+    }
+
+    /// Look up a workspace member by its in-code form name (hyphens replaced
+    /// with `_` — the form that appears as the leading segment of canonical
+    /// paths).
+    pub fn member_by_code_name(&self, code_name: &str) -> Option<&Crate> {
+        self.members().find(|c| c.code_name() == code_name)
     }
 
     /// Workspace root directory.
@@ -607,14 +749,38 @@ impl Workspace {
             .iter()
             .flat_map(|(crate_name, refs)| refs.iter().map(move |r| (crate_name.as_str(), r)))
     }
+
+    /// Like [`Workspace::iter_references`] but each path is already passed
+    /// through the `pub use` chain in [`Workspace::re_exports`]. Yields one
+    /// `(referring_crate, canonical_path)` pair per (referrer, canonical)
+    /// combination — the index dedupes referrers, so two `use` statements
+    /// from the same crate pointing at the same canonical produce one
+    /// pair.
+    ///
+    /// Includes intra-crate referrers (a crate's own use of its own item).
+    /// Callers that want cross-crate-only filter on
+    /// `canonical.crate_name() != referring`.
+    pub fn iter_canonical_references(&self) -> impl Iterator<Item = (&str, &ResolvedPath)> + '_ {
+        self.canonical_refs_by_path
+            .iter()
+            .flat_map(|(path, crates)| crates.iter().map(move |c| (c.as_str(), path)))
+    }
+
+    /// Set of code-form crate names that reference `canonical` (after
+    /// `pub use` chain resolution). `None` means no recorded reference at
+    /// all. The returned set may include `canonical.crate_name()` itself
+    /// when the defining crate references its own item.
+    pub fn referring_crates(
+        &self,
+        canonical: &ResolvedPath,
+    ) -> Option<&std::collections::HashSet<String>> {
+        self.canonical_refs_by_path.get(canonical)
+    }
 }
 
 fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
-    for path in &module.macro_implicit_refs {
-        out.insert(path.clone());
-    }
-    for sub in &module.submodules {
-        collect_macro_implicit_refs(sub, out);
+    for m in module.walk() {
+        out.extend(m.macro_implicit_refs.iter().cloned());
     }
 }
 
@@ -631,23 +797,17 @@ fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::Hash
 /// set is a different concept — it's used as a suppression channel by
 /// visibility/unused-pub to flag items reachable through any macro.
 fn collect_module_references(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
-    for binding in &module.use_bindings {
-        out.insert(binding.canonical.clone());
-    }
-    for path in &module.references {
-        out.insert(path.clone());
-    }
-    for path in &module.macro_implicit_refs {
-        out.insert(path.clone());
-    }
-    for sub in &module.submodules {
-        collect_module_references(sub, out);
+    for m in module.walk() {
+        out.extend(m.use_bindings.iter().map(|b| b.canonical.clone()));
+        out.extend(m.references.iter().cloned());
+        out.extend(m.macro_implicit_refs.iter().cloned());
     }
 }
 
 /// Recursive iterator over modules in a tree, yielding the root first
-/// then descending into submodules depth-first. Used by [`Target::all_modules`]
-/// and [`Crate::all_modules`].
+/// then descending into submodules depth-first. The public entry points
+/// are [`Module::walk`], [`Module::walk_items`], and
+/// [`Module::walk_use_bindings`].
 struct ModuleWalk<'a> {
     stack: Vec<&'a Module>,
 }
@@ -667,43 +827,6 @@ impl<'a> Iterator for ModuleWalk<'a> {
             self.stack.push(sub);
         }
         Some(module)
-    }
-}
-
-/// Recursive iterator over items in a module tree.
-struct ModuleItems<'a> {
-    stack: Vec<&'a Module>,
-    cursor: Option<(&'a Module, usize)>,
-}
-
-impl<'a> ModuleItems<'a> {
-    fn new(root: &'a Module) -> Self {
-        Self {
-            stack: vec![root],
-            cursor: None,
-        }
-    }
-}
-
-impl<'a> Iterator for ModuleItems<'a> {
-    type Item = &'a Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some((module, idx)) = self.cursor.as_mut() {
-                if *idx < module.items.len() {
-                    let item = &module.items[*idx];
-                    *idx += 1;
-                    return Some(item);
-                }
-                self.cursor = None;
-            }
-            let next = self.stack.pop()?;
-            for sub in next.submodules.iter().rev() {
-                self.stack.push(sub);
-            }
-            self.cursor = Some((next, 0));
-        }
     }
 }
 
@@ -753,7 +876,7 @@ mod tests {
             vec![item("a", "demo"), item("b", "demo")],
             vec![leaf],
         );
-        let names: Vec<_> = ModuleItems::new(&root).map(|i| i.name.clone()).collect();
+        let names: Vec<_> = root.walk_items().map(|(_, i)| i.name.clone()).collect();
         assert_eq!(names, vec!["a", "b", "inner"]);
     }
 
