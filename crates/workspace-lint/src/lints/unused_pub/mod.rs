@@ -224,12 +224,12 @@ fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagno
                 builder = builder.suggestion(s).note(reason);
             }
             DeleteOutcome::Unavailable => {
-                if let Some(s) = crate::lints::visibility::build_tighten_suggestion(span) {
+                if let Some(s) = crate::lints::visibility::build_tighten_suggestion(item) {
                     builder = builder.suggestion(s);
                 }
             }
         }
-    } else if let Some(s) = crate::lints::visibility::build_tighten_suggestion(span) {
+    } else if let Some(s) = crate::lints::visibility::build_tighten_suggestion(item) {
         builder = builder.suggestion(s);
     }
     Some(builder.build())

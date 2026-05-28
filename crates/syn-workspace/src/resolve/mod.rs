@@ -331,6 +331,13 @@ pub struct Item {
     /// File and line where the item is declared. `None` for synthesized
     /// items (e.g. crate roots).
     pub source: Option<SourceSpan>,
+    /// Byte range of the `pub` keyword itself, when [`Self::visibility`] is
+    /// [`Visibility::Public`]. Lets structural fixes (e.g. visibility
+    /// tighteners) rewrite the keyword precisely without scanning past
+    /// preceding doc comments and attributes. `None` for non-public items,
+    /// macros (which have no `pub` token), or spans the resolver couldn't
+    /// pin to byte offsets.
+    pub vis_byte_range: Option<std::ops::Range<u32>>,
 }
 
 /// File location of a syntactic element.
@@ -978,6 +985,7 @@ mod tests {
             visibility: Visibility::Public,
             canonical: ResolvedPath::new([krate.to_string(), name.to_string()]),
             source: None,
+            vis_byte_range: None,
         }
     }
 

@@ -707,7 +707,7 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
         syn::Item::Macro(i) => Some(syn::spanned::Spanned::span(i)),
         _ => None,
     };
-    let byte_range = full_span.and_then(byte_range);
+    let item_byte_range = full_span.and_then(byte_range);
 
     let (name, kind, vis, line) = match item {
         syn::Item::Fn(i) => (
@@ -787,13 +787,25 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
                     file: file.to_path_buf(),
                     line: i.ident.as_ref().unwrap().span().start().line as u32,
                     column: 1,
-                    byte_range: byte_range.clone(),
+                    byte_range: item_byte_range.clone(),
                 }),
+                // Macros don't expose a `pub` token; visibility is governed
+                // by `#[macro_export]` instead, so structural-fix consumers
+                // have nothing to rewrite here.
+                vis_byte_range: None,
             });
         }
         _ => return None,
     };
 
+    // For public items, capture the byte range of the `pub` keyword itself.
+    // Structural-fix consumers narrow `pub` to `pub(crate)` (etc.) by
+    // overwriting that range — no scanning past preceding doc comments
+    // or attributes required.
+    let vis_byte_range = match vis {
+        syn::Visibility::Public(token) => byte_range(token.span),
+        _ => None,
+    };
     let mut canonical = parent_canonical.segments().to_vec();
     canonical.push(name.clone());
     Some(Item {
@@ -805,8 +817,9 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
             file: file.to_path_buf(),
             line: line as u32,
             column: 1,
-            byte_range,
+            byte_range: item_byte_range,
         }),
+        vis_byte_range,
     })
 }
 

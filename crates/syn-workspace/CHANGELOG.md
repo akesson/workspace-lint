@@ -4,7 +4,23 @@ All notable changes to this crate will be documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [SemVer](https://semver.org/).
 
-## [Unreleased] — 0.2.0
+## [Unreleased] — 0.3.0
+
+### Added
+- `Item::vis_byte_range: Option<Range<u32>>` captures the byte range of the
+  `pub` keyword itself (when `visibility == Public`). Structural-fix
+  consumers (visibility tighteners, dead-code removers) can rewrite the
+  keyword precisely, without scanning past preceding doc comments or
+  attributes. `None` for non-public items, macros (`#[macro_export]`-only),
+  and synthetic / orphan spans where the resolver couldn't pin byte offsets.
+
+### Migration
+Adding a public field to `Item` is a SemVer-breaking change. In-tree consumers
+construct `Item` only via the resolver, so they're unaffected. Out-of-tree
+consumers that build `Item` directly (e.g. in tests) must add
+`vis_byte_range: None` to their initializers.
+
+## [0.2.0]
 
 Library-grade pass. Most changes are breaking; the in-tree consumer
 (`workspace-lint`) migrates in lockstep.
