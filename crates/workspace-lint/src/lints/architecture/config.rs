@@ -1,13 +1,13 @@
 use serde::Deserialize;
 
 #[derive(Deserialize, Default, Clone)]
-pub struct ArchitectureConfig {
+pub(crate) struct ArchitectureConfig {
     #[serde(default)]
     pub rules: Vec<ArchitectureRule>,
 }
 
 #[derive(Deserialize, Clone)]
-pub struct ArchitectureRule {
+pub(crate) struct ArchitectureRule {
     /// Display name surfaced in diagnostics. Optional but recommended.
     #[serde(default)]
     pub name: Option<String>,
@@ -33,7 +33,7 @@ pub struct ArchitectureRule {
 
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum ArchSeverity {
+pub(crate) enum ArchSeverity {
     #[default]
     Warn,
     Deny,

@@ -331,6 +331,13 @@ pub struct Item {
     /// File and line where the item is declared. `None` for synthesized
     /// items (e.g. crate roots).
     pub source: Option<SourceSpan>,
+    /// Byte range of the `pub` keyword itself, when [`Self::visibility`] is
+    /// [`Visibility::Public`]. Lets structural fixes (e.g. visibility
+    /// tighteners) rewrite the keyword precisely without scanning past
+    /// preceding doc comments and attributes. `None` for non-public items,
+    /// macros (which have no `pub` token), or spans the resolver couldn't
+    /// pin to byte offsets.
+    pub vis_byte_range: Option<std::ops::Range<u32>>,
 }
 
 /// File location of a syntactic element.
@@ -379,6 +386,14 @@ pub struct BrokenModDecl {
 pub struct Module {
     pub name: String,
     pub canonical: ResolvedPath,
+    /// Visibility of the `mod foo;` declaration in the parent. Crate roots
+    /// (lib.rs / main.rs / proc-macro entry) are always [`Visibility::Public`]
+    /// — they're the crate boundary itself, not a `mod` declaration. Used by
+    /// downstream lints (visibility, unused-pub) to determine whether items
+    /// are externally reachable: an item at a `pub(crate) mod` (or private
+    /// `mod`) hop in its path is not part of the crate's public API even
+    /// if the item itself is `pub`.
+    pub visibility: Visibility,
     pub items: Vec<Item>,
     pub submodules: Vec<Module>,
     /// `use` bindings active in this module's scope (renames resolved to
@@ -782,6 +797,52 @@ impl Workspace {
         &self.root
     }
 
+    /// Strip the workspace root prefix from `path` and return a path
+    /// relative to [`Self::root`]. Falls back to a clone of `path` when
+    /// the input doesn't start with the workspace root — keeps callers
+    /// (mostly diagnostic-builder lints) one-liners regardless of
+    /// whether the input was inside or outside the workspace tree.
+    ///
+    /// `cargo_metadata` always hands back absolute paths for member
+    /// `manifest_dir`s, but [`Workspace::load`] stores the user's input
+    /// root unchanged — so when the caller invoked us with `.`, the
+    /// stored root is `.` and a plain `strip_prefix` of an absolute
+    /// `manifest_dir` would always fail. We canonicalize the root once
+    /// before comparison (lazy: only when the literal strip misses) so
+    /// the call site doesn't have to think about which form the root
+    /// came in as.
+    ///
+    /// Use this for any anchor or rendered path that's expected to round-
+    /// trip with a `# workspace-lint: …` suppression directive: the
+    /// directive scanner emits anchors against workspace-relative paths,
+    /// so any absolute `cargo_metadata`-derived path needs to come back
+    /// through here before being passed to `at_crate` / `at_file` /
+    /// `at_line`.
+    pub fn crate_relative_path(&self, path: &Path) -> PathBuf {
+        if let Ok(rel) = path.strip_prefix(&self.root) {
+            return rel.to_path_buf();
+        }
+        // Two follow-up attempts handle the platform asymmetries that bite
+        // in CI:
+        //   - macOS: `/var` ↔ `/private/var` symlink dance — only one side
+        //     canonicalizes.
+        //   - Windows: `Path::canonicalize` returns a `\\?\` UNC prefix that
+        //     the cargo_metadata-derived `manifest_dir` doesn't carry,
+        //     so canonicalising only the root still leaves a mismatch.
+        // Canonicalising both sides at once normalises away both.
+        if let Ok(abs_root) = self.root.canonicalize() {
+            if let Ok(rel) = path.strip_prefix(&abs_root) {
+                return rel.to_path_buf();
+            }
+            if let Ok(abs_path) = path.canonicalize()
+                && let Ok(rel) = abs_path.strip_prefix(&abs_root)
+            {
+                return rel.to_path_buf();
+            }
+        }
+        path.to_path_buf()
+    }
+
     /// Read and parse the given source file with `syn::parse_file`.
     ///
     /// `Module` only stores the file *path*, not the parsed AST — that
@@ -808,6 +869,57 @@ impl Workspace {
     /// need to enumerate all known re-export edges.
     pub fn re_exports(&self) -> &re_export::ReExportIndex {
         &self.re_exports
+    }
+
+    /// Returns `true` if `path` names an item in a crate that publishes a
+    /// stable external API (a library or proc-macro), and every `mod` hop
+    /// from the crate root down to (but not including) the item's own name
+    /// is declared `pub mod` — i.e. the item is reachable from an external
+    /// consumer through ordinary path resolution.
+    ///
+    /// Used by structural-fix lints (visibility, unused-pub) to refuse
+    /// narrowing items that form part of a published crate's public API
+    /// even when no in-workspace consumer references them: external
+    /// consumers of a library crate live outside the resolver's view.
+    ///
+    /// Returns `false` for: items whose owning crate isn't a workspace
+    /// member, items in a `[[bin]]`-only crate (binaries don't publish an
+    /// API), items in non-primary targets (test/example/build-script),
+    /// items the resolver couldn't walk to, and items inside a private or
+    /// `pub(crate)` module hop.
+    pub fn is_externally_reachable(&self, path: &ResolvedPath) -> bool {
+        let segments = path.segments();
+        // Need at least `[crate_name, item_name]` to talk about reachability.
+        if segments.len() < 2 {
+            return false;
+        }
+        let Some(krate) = self.member_by_code_name(&segments[0]) else {
+            return false;
+        };
+        let Some(target) = krate.lib_or_main() else {
+            return false;
+        };
+        // Only lib / proc-macro publish a stable API surface. Bin targets
+        // don't expose items to external consumers, so pub items inside a
+        // binary crate aren't "reachable from outside" in any meaningful
+        // sense — the visibility lint should still suggest narrowing them.
+        if !matches!(target.kind, TargetKind::Lib | TargetKind::ProcMacro) {
+            return false;
+        }
+        // Walk every intermediate module hop (skip the crate-root segment
+        // and the item name itself). Any non-Public hop breaks reachability.
+        let intermediate = &segments[1..segments.len() - 1];
+        let mut module = &target.root;
+        for seg in intermediate {
+            let Some(child) = module.submodules.iter().find(|m| m.name == *seg) else {
+                return false;
+            };
+            if child.visibility != Visibility::Public {
+                return false;
+            }
+            module = child;
+        }
+        true
     }
 
     /// Canonical paths reachable through macro expansions that could
@@ -978,6 +1090,7 @@ mod tests {
             visibility: Visibility::Public,
             canonical: ResolvedPath::new([krate.to_string(), name.to_string()]),
             source: None,
+            vis_byte_range: None,
         }
     }
 
@@ -985,6 +1098,7 @@ mod tests {
         Module {
             name: name.into(),
             canonical: ResolvedPath::new([krate.to_string(), name.to_string()]),
+            visibility: Visibility::Public,
             items,
             submodules,
             use_bindings: Vec::new(),

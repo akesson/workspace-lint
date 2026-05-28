@@ -55,7 +55,7 @@ pub fn member_manifests(root: &Path) -> Result<Vec<PathBuf>> {
 /// `marker_crates` is forwarded through the module-tree pipeline so the
 /// `expansion_uses!` annotation can match against caller-configured
 /// crate names (see [`crate::LoadOptions::marker_crates`]).
-pub fn load_members(
+pub(crate) fn load_members(
     root: &Path,
     marker_crates: &[String],
 ) -> Result<(Manifest, Vec<Crate>, Vec<LoadWarning>)> {
@@ -108,6 +108,9 @@ pub fn load_members(
                 &src_path,
                 code_name.clone(),
                 canonical,
+                // The target's root module IS the crate boundary, not a
+                // `mod foo;` declaration — Public by definition.
+                crate::resolve::Visibility::Public,
                 marker_crates,
             ) {
                 Ok(m) => m,

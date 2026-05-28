@@ -17,7 +17,7 @@ use crate::diagnostic::builder::{at_file, at_line};
 use crate::diagnostic::render::display_path;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
-pub struct ModuleTree;
+pub(crate) struct ModuleTree;
 
 impl ModuleTree {
     pub fn new() -> Self {
@@ -50,18 +50,18 @@ impl Lint for ModuleTree {
     }
 }
 
-pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for krate in workspace.members() {
         for module in krate.all_modules() {
-            collect_broken_mod_decls(module, &mut diagnostics);
+            collect_broken_mod_decls(workspace, module, &mut diagnostics);
         }
-        collect_orphan_files(krate, &mut diagnostics);
+        collect_orphan_files(workspace, krate, &mut diagnostics);
     }
     diagnostics
 }
 
-fn collect_broken_mod_decls(module: &Module, out: &mut Vec<Diagnostic>) {
+fn collect_broken_mod_decls(workspace: &Workspace, module: &Module, out: &mut Vec<Diagnostic>) {
     let lint_id = LintId::ModuleTree.id();
     for decl in &module.broken_mod_decls {
         let msg = format!(
@@ -69,7 +69,12 @@ fn collect_broken_mod_decls(module: &Module, out: &mut Vec<Diagnostic>) {
             decl.name, decl.name, decl.name,
         );
         out.push(
-            at_line(lint_id, msg, decl.declared_in.clone(), decl.line)
+            at_line(
+                lint_id,
+                msg,
+                workspace.crate_relative_path(&decl.declared_in),
+                decl.line,
+            )
                 .help(format!(
                     "create `{}.rs` adjacent to this file, or `{}/mod.rs`, or add a `#[path = \"…\"]` attribute",
                     decl.name, decl.name,
@@ -80,20 +85,26 @@ fn collect_broken_mod_decls(module: &Module, out: &mut Vec<Diagnostic>) {
     }
 }
 
-fn collect_orphan_files(krate: &Crate, out: &mut Vec<Diagnostic>) {
+fn collect_orphan_files(workspace: &Workspace, krate: &Crate, out: &mut Vec<Diagnostic>) {
     let lint_id = LintId::ModuleTree.id();
     for path in &krate.orphan_files {
-        let rel = path
+        // Crate-relative is still the right form for the in-message
+        // `src/orphan.rs` snippet (the crate root is the natural origin
+        // for the user's mental model of `mod` declarations). The anchor,
+        // however, has to be workspace-relative so a directive in a
+        // sibling file can match.
+        let crate_rel = path
             .strip_prefix(&krate.manifest_dir)
             .map(display_path)
             .unwrap_or_else(|_| display_path(path));
+        let workspace_rel = workspace.crate_relative_path(path);
 
         out.push(
-            at_file(lint_id, format!("orphan source file `{rel}` is not reachable from any `mod` declaration"), path.clone())
+            at_file(lint_id, format!("orphan source file `{crate_rel}` is not reachable from any `mod` declaration"), workspace_rel)
                 .help(format!(
                     "add `mod {};` (or a `#[path = \"{}\"] mod ...;`) in the appropriate parent module, or delete the file",
                     path.file_stem().and_then(|s| s.to_str()).unwrap_or(""),
-                    rel,
+                    crate_rel,
                 ))
                 .note(format!("crate `{}`'s module tree was built from `src/lib.rs` or `src/main.rs`", krate.name))
                 .build(),

@@ -25,16 +25,16 @@ use syn_workspace::{Module, ResolvedPath, Workspace};
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::Level;
-use crate::diagnostic::builder::at_crate;
+use crate::diagnostic::builder::{at_crate, at_line};
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{ArchSeverity, ArchitectureConfig, ArchitectureRule};
+pub(crate) use config::{ArchSeverity, ArchitectureConfig, ArchitectureRule};
 
-pub struct Architecture {
+pub(crate) struct Architecture {
     config: ArchitectureConfig,
 }
 
@@ -63,7 +63,7 @@ impl Lint for Architecture {
     }
 }
 
-pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let compiled: Vec<CompiledRule> = config
         .rules
@@ -92,7 +92,9 @@ pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnost
                 if rule.is_exception(&canonical) {
                     continue;
                 }
-                diagnostics.push(build_diagnostic(rule, krate, module, binding, &canonical));
+                diagnostics.push(build_diagnostic(
+                    rule, workspace, krate, module, binding, &canonical,
+                ));
             }
         }
     }
@@ -102,6 +104,7 @@ pub fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnost
 
 fn build_diagnostic(
     rule: &CompiledRule,
+    workspace: &Workspace,
     krate: &syn_workspace::Crate,
     module: &Module,
     binding: &syn_workspace::resolve::use_tree::UseBinding,
@@ -115,12 +118,28 @@ fn build_diagnostic(
         rule_name,
     );
 
-    let mut builder = at_crate(LintId::Architecture.id(), msg, krate.manifest_dir.clone()).level(
-        match rule.severity {
-            ArchSeverity::Warn => Level::Warn,
-            ArchSeverity::Deny => Level::Deny,
-        },
-    );
+    // Prefer line-accurate anchoring at the offending `use` ident itself
+    // (UseBinding::source landed in syn-workspace 0.4.0). For bindings
+    // built outside the parser (test mocks, future synthesized sources)
+    // fall back to a workspace-relative crate anchor.
+    let level = match rule.severity {
+        ArchSeverity::Warn => Level::Warn,
+        ArchSeverity::Deny => Level::Deny,
+    };
+    let mut builder = match binding.source.as_ref() {
+        Some(span) => at_line(
+            LintId::Architecture.id(),
+            msg,
+            workspace.crate_relative_path(&span.file),
+            span.line,
+        ),
+        None => at_crate(
+            LintId::Architecture.id(),
+            msg,
+            workspace.crate_relative_path(&krate.manifest_dir),
+        ),
+    }
+    .level(level);
 
     if let Some(suggest) = &rule.suggest {
         builder = builder.help(suggest.clone());
@@ -135,17 +154,28 @@ fn build_diagnostic(
         builder = builder.note(reason.clone());
     }
 
-    if binding.local_name != resolved.segments().last().cloned().unwrap_or_default() {
-        builder = builder.note(format!(
-            "imported locally as `{}` in module `{}`",
-            binding.local_name,
-            module.canonical.display(),
-        ));
-    } else {
-        builder = builder.note(format!(
-            "imported in module `{}`",
-            module.canonical.display(),
-        ));
+    // The "imported in module" / "imported locally as ..." note loses
+    // most of its value once the diagnostic carries a file:line anchor —
+    // the source line is one click away. Keep it only for the rename
+    // case (where the local alias is non-obvious) and only as a
+    // fallback when the binding has no recorded source.
+    let local_differs =
+        binding.local_name != resolved.segments().last().cloned().unwrap_or_default();
+    if binding.source.is_none() {
+        if local_differs {
+            builder = builder.note(format!(
+                "imported locally as `{}` in module `{}`",
+                binding.local_name,
+                module.canonical.display(),
+            ));
+        } else {
+            builder = builder.note(format!(
+                "imported in module `{}`",
+                module.canonical.display(),
+            ));
+        }
+    } else if local_differs {
+        builder = builder.note(format!("imported locally as `{}`", binding.local_name));
     }
 
     builder.build()

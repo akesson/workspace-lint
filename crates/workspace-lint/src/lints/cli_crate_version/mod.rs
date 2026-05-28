@@ -10,9 +10,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{CliCrateVersionConfig, CliCrateVersionRule};
+pub(crate) use config::{CliCrateVersionConfig, CliCrateVersionRule};
 
-pub struct CliCrateVersion {
+pub(crate) struct CliCrateVersion {
     config: CliCrateVersionConfig,
 }
 
@@ -42,7 +42,7 @@ impl Lint for CliCrateVersion {
     }
 }
 
-pub fn check(config: &CliCrateVersionConfig) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &CliCrateVersionConfig) -> Vec<Diagnostic> {
     let lint_id = LintId::CliCrateVersion.id();
     let lock_packages = read_lock_packages();
     let mut diagnostics = Vec::new();

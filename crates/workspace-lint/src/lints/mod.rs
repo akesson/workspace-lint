@@ -31,7 +31,7 @@ pub mod unused_deps;
 pub mod unused_pub;
 pub mod visibility;
 
-pub use lints_id::LintId;
+pub(crate) use lints_id::LintId;
 
 use crate::config::Config;
 use crate::diagnostic::Diagnostic;
@@ -41,7 +41,7 @@ use syn_workspace::Workspace;
 /// instances built once at startup from the user's [`Config`]; the
 /// [`LintContext`] passed to [`Lint::check`] carries only state shared across
 /// lints (currently just the resolver-loaded [`Workspace`]).
-pub trait Lint: 'static {
+pub(crate) trait Lint: 'static {
     /// Stable identity used by the suppression map, the `[lints]` severity
     /// table, and the snapshot-coverage tests.
     fn id(&self) -> LintId;
@@ -63,19 +63,19 @@ pub trait Lint: 'static {
 /// before any check runs so the runner can skip expensive setup (notably
 /// `Workspace::load`) when no enabled lint requires it.
 #[derive(Default, Clone, Copy, Debug)]
-pub struct Requirements {
+pub(crate) struct Requirements {
     pub needs_workspace: bool,
 }
 
 /// Shared, per-run inputs passed to every [`Lint::check`] call.
-pub struct LintContext<'a> {
+pub(crate) struct LintContext<'a> {
     pub workspace: Option<&'a Workspace>,
 }
 
 /// Build the runtime registry of enabled lints from the user's configuration.
 ///
 /// Adding a lint is one new line here plus one folder under `lints/`.
-pub fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
+pub(crate) fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
     let mut out: Vec<Box<dyn Lint>> = Vec::new();
 
     if let Some(ref ac) = config.architecture

@@ -19,7 +19,9 @@
 //! the canonical path; rename loss would silently turn "imported and used"
 //! into "unknown reference."
 
-use super::{ResolvedPath, Visibility};
+use std::path::Path;
+
+use super::{ResolvedPath, SourceSpan, Visibility};
 
 /// One rename entry produced by walking a `use` declaration.
 ///
@@ -28,11 +30,18 @@ use super::{ResolvedPath, Visibility};
 /// `canonical` is the fully-qualified path the name refers to at the
 /// definition site. `visibility` reflects the `use` declaration's own
 /// visibility — `pub use` produces re-export edges followed by Tier 2.5.
+///
+/// `source` carries the location of the leaf ident that produced this
+/// binding (the imported / renamed name itself). For a group like
+/// `use foo::{Bar, Baz};` the two bindings get distinct spans, so
+/// downstream lints can point at the specific offending leaf. `None`
+/// for bindings synthesized outside the parser (test helpers, mocks).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseBinding {
     pub local_name: String,
     pub canonical: ResolvedPath,
     pub visibility: Visibility,
+    pub source: Option<SourceSpan>,
 }
 
 /// Where in the workspace a file lives, for resolving `crate`/`self`/`super`
@@ -71,7 +80,11 @@ impl Scope {
 ///
 /// All bindings inherit the visibility of the `use` declaration itself —
 /// `pub use foo::{Bar, Baz};` produces two bindings, both `Public`.
-pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope) -> Vec<UseBinding> {
+///
+/// `file` is the path of the source file the `use` was parsed from; it's
+/// recorded on each binding's [`UseBinding::source`] so downstream lints
+/// can emit line-accurate diagnostics.
+pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope, file: &Path) -> Vec<UseBinding> {
     let mut prefix: Vec<String> = Vec::new();
     let mut tree: &syn::UseTree = &item.tree;
 
@@ -81,7 +94,7 @@ pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope) -> Vec<UseBinding> 
 
     let visibility = Visibility::from_syn(&item.vis);
     let mut out = Vec::new();
-    walk(tree, &prefix, visibility, &mut out);
+    walk(tree, &prefix, visibility, file, &mut out);
     out
 }
 
@@ -128,12 +141,18 @@ fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scop
     }
 }
 
-fn walk(tree: &syn::UseTree, prefix: &[String], visibility: Visibility, out: &mut Vec<UseBinding>) {
+fn walk(
+    tree: &syn::UseTree,
+    prefix: &[String],
+    visibility: Visibility,
+    file: &Path,
+    out: &mut Vec<UseBinding>,
+) {
     match tree {
         syn::UseTree::Path(p) => {
             let mut new_prefix = prefix.to_vec();
             new_prefix.push(p.ident.to_string());
-            walk(&p.tree, &new_prefix, visibility, out);
+            walk(&p.tree, &new_prefix, visibility, file, out);
         }
         syn::UseTree::Name(n) => {
             let name = n.ident.to_string();
@@ -143,6 +162,7 @@ fn walk(tree: &syn::UseTree, prefix: &[String], visibility: Visibility, out: &mu
                 local_name: name,
                 canonical: ResolvedPath::new(canon),
                 visibility,
+                source: Some(source_span_from_ident(file, &n.ident)),
             });
         }
         syn::UseTree::Rename(r) => {
@@ -152,6 +172,10 @@ fn walk(tree: &syn::UseTree, prefix: &[String], visibility: Visibility, out: &mu
                 local_name: r.rename.to_string(),
                 canonical: ResolvedPath::new(canon),
                 visibility,
+                // Anchor at the canonical (LHS) ident — that's what the
+                // binding *resolves to*, and what downstream lints will
+                // most often want to flag.
+                source: Some(source_span_from_ident(file, &r.ident)),
             });
         }
         syn::UseTree::Glob(_) => {
@@ -162,9 +186,22 @@ fn walk(tree: &syn::UseTree, prefix: &[String], visibility: Visibility, out: &mu
         }
         syn::UseTree::Group(g) => {
             for item in &g.items {
-                walk(item, prefix, visibility, out);
+                walk(item, prefix, visibility, file, out);
             }
         }
+    }
+}
+
+/// Convert a `syn::Ident`'s span into a [`SourceSpan`] anchored at `file`.
+/// The `byte_range` helper lives in `module_tree.rs`; we re-use it so the
+/// "synthetic span → `None`" sentinel logic stays in one place.
+fn source_span_from_ident(file: &Path, ident: &proc_macro2::Ident) -> SourceSpan {
+    let start = ident.span().start();
+    SourceSpan {
+        file: file.to_path_buf(),
+        line: start.line as u32,
+        column: start.column as u32,
+        byte_range: super::module_tree::byte_range(ident.span()),
     }
 }
 
@@ -220,8 +257,14 @@ mod tests {
         Scope::new(crate_name).with_module(modules.iter().copied())
     }
 
+    /// Stand-in path for unit tests — `bindings_from_use` records this as
+    /// the source file for every binding it emits. Tests that compare
+    /// local name + canonical only just discard it; tests that assert
+    /// against the source span use it as a sentinel.
+    const FAKE_FILE: &str = "tests/fixture.rs";
+
     fn bindings(src: &str, scope: &Scope) -> Vec<(String, String)> {
-        bindings_from_use(&parse(src), scope)
+        bindings_from_use(&parse(src), scope, Path::new(FAKE_FILE))
             .into_iter()
             .map(|b| (b.local_name, b.canonical.display()))
             .collect()
@@ -361,7 +404,7 @@ mod tests {
     #[test]
     fn private_use_carries_private_visibility() {
         let s = scope("demo", &[]);
-        let got = bindings_from_use(&parse("use foo::Bar;"), &s);
+        let got = bindings_from_use(&parse("use foo::Bar;"), &s, Path::new(FAKE_FILE));
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].visibility, Visibility::Private);
     }
@@ -369,7 +412,7 @@ mod tests {
     #[test]
     fn pub_use_carries_public_visibility() {
         let s = scope("demo", &[]);
-        let got = bindings_from_use(&parse("pub use foo::Bar;"), &s);
+        let got = bindings_from_use(&parse("pub use foo::Bar;"), &s, Path::new(FAKE_FILE));
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].visibility, Visibility::Public);
     }
@@ -377,7 +420,7 @@ mod tests {
     #[test]
     fn pub_crate_use_carries_pub_crate_visibility() {
         let s = scope("demo", &[]);
-        let got = bindings_from_use(&parse("pub(crate) use foo::Bar;"), &s);
+        let got = bindings_from_use(&parse("pub(crate) use foo::Bar;"), &s, Path::new(FAKE_FILE));
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].visibility, Visibility::PubCrate);
     }
@@ -385,9 +428,56 @@ mod tests {
     #[test]
     fn group_inherits_use_declaration_visibility() {
         let s = scope("demo", &[]);
-        let got = bindings_from_use(&parse("pub use foo::{Bar, Baz};"), &s);
+        let got = bindings_from_use(&parse("pub use foo::{Bar, Baz};"), &s, Path::new(FAKE_FILE));
         assert_eq!(got.len(), 2);
         assert!(got.iter().all(|b| b.visibility == Visibility::Public));
+    }
+
+    // --- source spans ---
+
+    #[test]
+    fn source_records_file_and_line_for_each_leaf() {
+        let s = scope("demo", &[]);
+        let got = bindings_from_use(&parse("use foo::Bar;"), &s, Path::new(FAKE_FILE));
+        let span = got[0].source.as_ref().expect("source populated");
+        assert_eq!(span.file, Path::new(FAKE_FILE));
+        // `proc_macro2` reports the ident on the first (only) line of a
+        // single-line parse; that's enough to prove the line plumbing
+        // is wired. Byte range is `Some` for synthesized parses too,
+        // since they get real byte offsets.
+        assert_eq!(span.line, 1);
+        assert!(span.byte_range.is_some());
+    }
+
+    #[test]
+    fn group_leaves_get_distinct_source_byte_ranges() {
+        let s = scope("demo", &[]);
+        let got = bindings_from_use(&parse("use foo::{Bar, Baz};"), &s, Path::new(FAKE_FILE));
+        assert_eq!(got.len(), 2);
+        let by_name: std::collections::HashMap<_, _> = got
+            .iter()
+            .map(|b| (b.local_name.as_str(), b.source.as_ref().unwrap()))
+            .collect();
+        let bar = by_name["Bar"].byte_range.as_ref().unwrap();
+        let baz = by_name["Baz"].byte_range.as_ref().unwrap();
+        assert_ne!(bar, baz, "each leaf must carry its own byte range");
+    }
+
+    #[test]
+    fn rename_anchors_at_canonical_ident_not_local_alias() {
+        let s = scope("demo", &[]);
+        let got = bindings_from_use(&parse("use foo::Bar as Quux;"), &s, Path::new(FAKE_FILE));
+        assert_eq!(got.len(), 1);
+        let span = got[0].source.as_ref().unwrap();
+        // The canonical-side `Bar` ident should be the anchor. Its byte
+        // range starts before the ` as Quux` suffix in the input source,
+        // so the start offset must fall inside the `foo::Bar` portion.
+        let br = span.byte_range.as_ref().unwrap();
+        let source = "use foo::Bar as Quux;";
+        let bar_start = source.find("Bar").unwrap() as u32;
+        let bar_end = bar_start + "Bar".len() as u32;
+        assert_eq!(br.start, bar_start);
+        assert_eq!(br.end, bar_end);
     }
 
     // --- glob_targets_from_use ---

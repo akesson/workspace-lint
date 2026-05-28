@@ -59,6 +59,10 @@ use super::{Crate, Module, ResolvedPath, Visibility};
 #[derive(Debug, Clone, Default)]
 pub struct ReExportIndex {
     edges: HashMap<ResolvedPath, ResolvedPath>,
+    /// All paths that appear as the *target* of some `pub use` edge — i.e.
+    /// items reachable via re-export. Built once at construction so
+    /// [`Self::is_target`] is O(1).
+    targets: HashSet<ResolvedPath>,
 }
 
 impl ReExportIndex {
@@ -74,7 +78,8 @@ impl ReExportIndex {
                 collect_edges(&target.root, &mut edges);
             }
         }
-        Self { edges }
+        let targets = edges.values().cloned().collect();
+        Self { edges, targets }
     }
 
     /// Follow the chain from `path` to its canonical definition.
@@ -94,6 +99,20 @@ impl ReExportIndex {
             current = next.clone();
         }
         current
+    }
+
+    /// Returns `true` if `path` is the target of any `pub use` edge in the
+    /// index — i.e. some `pub use X;` in the workspace ultimately resolves
+    /// to (or hops through) `path`.
+    ///
+    /// Structural-fix consumers gate on this before narrowing visibility:
+    /// rewriting `pub X` to `pub(crate) X` would break the re-export
+    /// (E0364 / E0365). Items that are *only* `pub use`'d (no other use)
+    /// still appear as targets, so the lint should also skip narrowing for
+    /// them or emit a coordinated multi-edit fix that narrows the
+    /// `pub use` line in lockstep.
+    pub fn is_target(&self, path: &ResolvedPath) -> bool {
+        self.targets.contains(path)
     }
 
     /// Returns the number of `pub use` edges stored in the index.
@@ -144,6 +163,7 @@ mod tests {
         Module {
             name: canonical.last().copied().unwrap_or_default().to_string(),
             canonical: ResolvedPath::new(canonical.iter().map(|s| s.to_string())),
+            visibility: Visibility::Public,
             items: Vec::new(),
             submodules,
             use_bindings,
@@ -179,6 +199,7 @@ mod tests {
             local_name: local.into(),
             canonical: ResolvedPath::new(canonical.iter().map(|s| s.to_string())),
             visibility: Visibility::Public,
+            source: None,
         }
     }
 
@@ -187,6 +208,7 @@ mod tests {
             local_name: local.into(),
             canonical: ResolvedPath::new(canonical.iter().map(|s| s.to_string())),
             visibility: Visibility::Private,
+            source: None,
         }
     }
 
@@ -288,6 +310,51 @@ mod tests {
         let idx = ReExportIndex::build(&[krate("demo", m)]);
         let q = ResolvedPath::new(["other", "Y"]);
         assert_eq!(idx.canonical(&q), q);
+    }
+
+    #[test]
+    fn is_target_flags_pub_use_destinations() {
+        // `pub use internal::User;` in crate `demo` makes
+        // `demo::internal::User` a re-export target — narrowing it would
+        // break the `pub use`.
+        let m = module(
+            &["demo"],
+            vec![pub_use("User", &["demo", "internal", "User"])],
+            vec![],
+        );
+        let idx = ReExportIndex::build(&[krate("demo", m)]);
+
+        assert!(idx.is_target(&ResolvedPath::new(["demo", "internal", "User"])));
+        // The source side (the re-exported name) is not itself a target.
+        assert!(!idx.is_target(&ResolvedPath::new(["demo", "User"])));
+        // Unrelated paths are not targets.
+        assert!(!idx.is_target(&ResolvedPath::new(["other", "Thing"])));
+    }
+
+    #[test]
+    fn is_target_covers_intermediate_chain_hops() {
+        // Two-hop chain: data_api::User -> data_models::User -> data_models::internal::User.
+        // Both the intermediate (data_models::User) and the leaf
+        // (data_models::internal::User) are targets — narrowing either
+        // breaks the chain.
+        let crate_a_root = module(
+            &["data_models"],
+            vec![pub_use("User", &["data_models", "internal", "User"])],
+            vec![],
+        );
+        let crate_b_root = module(
+            &["data_api"],
+            vec![pub_use("User", &["data_models", "User"])],
+            vec![],
+        );
+        let idx = ReExportIndex::build(&[
+            krate("data_models", crate_a_root),
+            krate("data_api", crate_b_root),
+        ]);
+
+        assert!(idx.is_target(&ResolvedPath::new(["data_models", "User"])));
+        assert!(idx.is_target(&ResolvedPath::new(["data_models", "internal", "User"])));
+        assert!(!idx.is_target(&ResolvedPath::new(["data_api", "User"])));
     }
 
     // Sanity: ItemKind import is unused here, suppress.

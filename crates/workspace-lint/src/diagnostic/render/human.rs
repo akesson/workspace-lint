@@ -24,7 +24,7 @@ use std::io::{self, Write};
 use super::display_path;
 use crate::diagnostic::{Diagnostic, Level, SilenceAnchor};
 
-pub fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
+pub(crate) fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
     for d in diagnostics {
         write_one(d, out)?;
         writeln!(out)?;
@@ -33,7 +33,7 @@ pub fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> 
     Ok(())
 }
 
-pub fn write_one(d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
+pub(crate) fn write_one(d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "{}: {}", d.level.as_str(), d.message)?;
 
     if let Some(loc) = location_line(d) {

@@ -40,11 +40,6 @@ fn main() {
     match cli.command {
         None => {
             let config = config::load();
-            // Schema-2 warning is human-only — JSON / GitHub channels
-            // shouldn't get prose mixed into their stderr.
-            if format == Format::Human {
-                config::maybe_warn_on_old_schema(&config);
-            }
             let (mut diagnostics, workspace) = run_all(&config);
             apply_lint_levels(&config, &mut diagnostics);
             apply_suppression(workspace.as_ref(), &mut diagnostics);

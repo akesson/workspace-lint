@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::{Diagnostic, Level, SilenceAnchor, Span};
 
-pub struct DiagnosticBuilder {
+pub(crate) struct DiagnosticBuilder {
     lint: Cow<'static, str>,
     level: Level,
     message: String,
@@ -73,12 +73,12 @@ impl DiagnosticBuilder {
 }
 
 /// Build a diagnostic anchored at the workspace root.
-pub fn at_workspace(lint: &'static str, message: impl Into<String>) -> DiagnosticBuilder {
+pub(crate) fn at_workspace(lint: &'static str, message: impl Into<String>) -> DiagnosticBuilder {
     DiagnosticBuilder::new(lint, message, SilenceAnchor::Workspace)
 }
 
 /// Build a diagnostic anchored at a single crate.
-pub fn at_crate(
+pub(crate) fn at_crate(
     lint: &'static str,
     message: impl Into<String>,
     manifest_dir: impl Into<PathBuf>,
@@ -93,7 +93,7 @@ pub fn at_crate(
 }
 
 /// Build a diagnostic anchored at a whole file.
-pub fn at_file(
+pub(crate) fn at_file(
     lint: &'static str,
     message: impl Into<String>,
     file: impl Into<PathBuf>,
@@ -104,7 +104,7 @@ pub fn at_file(
 }
 
 /// Build a diagnostic anchored at a single line.
-pub fn at_line(
+pub(crate) fn at_line(
     lint: &'static str,
     message: impl Into<String>,
     file: impl Into<PathBuf>,
@@ -132,17 +132,17 @@ pub fn at_line(
 
 /// Strip the leading `./` that `tokei` and others tack onto relative paths,
 /// so the rendered diagnostic shows `src/foo.rs` rather than `./src/foo.rs`.
-pub fn normalize_path(p: &str) -> &str {
+pub(crate) fn normalize_path(p: &str) -> &str {
     p.strip_prefix("./").unwrap_or(p)
 }
 
 /// Convenience wrapper to build a path with the `./` prefix stripped.
-pub fn clean_path(p: &str) -> PathBuf {
+pub(crate) fn clean_path(p: &str) -> PathBuf {
     PathBuf::from(normalize_path(p))
 }
 
 /// Strip `./` from a Path's string form (when the caller has a Path, not a str).
-pub fn clean_pathbuf(p: &Path) -> PathBuf {
+pub(crate) fn clean_pathbuf(p: &Path) -> PathBuf {
     clean_path(&p.display().to_string())
 }
 

@@ -4,7 +4,7 @@ use globset::Glob;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub fn run(config: &ExpandConfig) {
+pub(crate) fn run(config: &ExpandConfig) {
     run_with_root(config, Path::new("."));
 }
 

@@ -31,9 +31,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::UnusedDepsConfig;
+pub(crate) use config::UnusedDepsConfig;
 
-pub struct UnusedDeps {
+pub(crate) struct UnusedDeps {
     config: UnusedDepsConfig,
 }
 
@@ -66,7 +66,7 @@ impl Lint for UnusedDeps {
     }
 }
 
-pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let lint_id = LintId::UnusedDeps.id();
     let mut diagnostics = Vec::new();
 
@@ -85,14 +85,19 @@ pub fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic
         }
 
         let n = unused.len();
-        let cargo_path_str = manifest.path().display().to_string().replace('\\', "/");
+        // Anchor and message both use the workspace-relative path so a
+        // per-Cargo.toml `# workspace-lint: allow(unused-deps)` directive
+        // matches the crate-anchored diagnostic shape.
+        let manifest_dir_rel = workspace.crate_relative_path(&krate.manifest_dir);
+        let manifest_path_rel = workspace.crate_relative_path(manifest.path());
+        let cargo_path_str = manifest_path_rel.display().to_string().replace('\\', "/");
         let mut builder = at_crate(
             lint_id,
             format!(
                 "{n} possibly unused dependenc{} in {cargo_path_str}",
                 if n == 1 { "y" } else { "ies" },
             ),
-            krate.manifest_dir.clone(),
+            manifest_dir_rel,
         );
         for entry in &unused {
             builder = builder.help(format!(

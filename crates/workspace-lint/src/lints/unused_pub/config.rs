@@ -1,12 +1,7 @@
 use serde::Deserialize;
 
 #[derive(Deserialize, Default, Clone)]
-pub struct UnusedPubConfig {
-    /// `None` means "not set in the config" — used to detect old configs in
-    /// the schema-migration check. `Some(value)` is an explicit user choice.
-    /// At runtime, treat `None` as `true` (the new default).
-    #[serde(default, rename = "on-ci-only")]
-    pub on_ci_only: Option<bool>,
+pub(crate) struct UnusedPubConfig {
     #[serde(default, rename = "exclude-crates")]
     pub exclude_crates: Vec<String>,
     #[serde(default)]
@@ -31,11 +26,4 @@ pub struct UnusedPubConfig {
     /// `git checkout`).
     #[serde(default, rename = "auto-delete")]
     pub auto_delete: bool,
-}
-
-impl UnusedPubConfig {
-    /// Effective on-ci-only value after applying the (new) default.
-    pub fn effective_on_ci_only(&self) -> bool {
-        self.on_ci_only.unwrap_or(true)
-    }
 }

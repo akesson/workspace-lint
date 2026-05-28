@@ -27,9 +27,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::UnusedPubConfig;
+pub(crate) use config::UnusedPubConfig;
 
-pub struct UnusedPub {
+pub(crate) struct UnusedPub {
     config: UnusedPubConfig,
 }
 
@@ -39,7 +39,6 @@ impl UnusedPub {
     }
 
     pub fn from_cli(
-        on_ci_only: bool,
         exclude_crates: Vec<String>,
         allowlist: Vec<String>,
         kinds: Vec<String>,
@@ -47,7 +46,6 @@ impl UnusedPub {
         suppress_intra_crate: bool,
     ) -> Self {
         Self::new(UnusedPubConfig {
-            on_ci_only: Some(on_ci_only),
             exclude_crates,
             allowlist,
             kinds,
@@ -81,11 +79,7 @@ impl Lint for UnusedPub {
     }
 }
 
-pub fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
-    if config.effective_on_ci_only() && std::env::var("CI").is_err() {
-        return Vec::new();
-    }
-
+pub(crate) fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
     let kind_filter = parse_kind_filter(&config.kinds);
     let allowlist = build_glob_set(&config.allowlist, "allowlist");
     let exclude_paths = build_glob_set(&config.exclude_paths, "exclude-paths");
@@ -136,103 +130,177 @@ struct CheckCtx<'a> {
     auto_delete: bool,
 }
 
+/// Cross-crate usage classification, computed once per candidate item.
+/// Drives both the per-item skip decision (Cross or intra-crate-suppressed
+/// are both no-ops) and the diagnostic message shape (intra-crate use ⇒
+/// "tighten", unused entirely ⇒ "remove").
+enum Usage {
+    /// Referenced from at least one other workspace crate — leave alone.
+    CrossCrate,
+    /// Only referenced inside the owning crate; suggest `pub(crate)`.
+    IntraCrate,
+    /// No references anywhere the resolver can see; suggest removing or
+    /// (with `auto_delete = true`) delete outright.
+    Unused,
+}
+
 fn check_item(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> Option<Diagnostic> {
-    if !item.kind.is_definition() {
+    if item_skipped_by_filters(module, item, ctx) {
         return None;
+    }
+    let usage = classify_usage(item, ctx);
+    if matches!(usage, Usage::CrossCrate) {
+        return None;
+    }
+    if matches!(usage, Usage::IntraCrate) && ctx.suppress_intra_crate {
+        return None;
+    }
+    let span = item.source.as_ref()?;
+    Some(build_diagnostic(item, ctx, span, &usage))
+}
+
+/// Pure filter cascade: every reason to bail before doing the expensive
+/// reference-set lookup goes here. Kept side-effect-free so the
+/// fast-path early-out logic doesn't tangle with the diagnostic
+/// composition in `check_item`, and so the CC of `check_item` itself
+/// stays manageable (CRAP gate fix).
+fn item_skipped_by_filters(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> bool {
+    if !item.kind.is_definition() {
+        return true;
     }
     if item.visibility != Visibility::Public {
-        return None;
+        return true;
     }
     if item.name == "main" && module.canonical.segments().len() == 1 {
-        return None;
+        return true;
     }
     if let Some(kf) = ctx.kind_filter
         && !kf.contains(&item.kind)
     {
-        return None;
+        return true;
     }
     if let Some(al) = ctx.allowlist
         && al.is_match(item.canonical.display())
     {
-        return None;
+        return true;
     }
     if let Some(ex) = ctx.exclude_paths
         && let Some(span) = &item.source
         && ex.is_match(span.file.to_string_lossy().as_ref())
     {
-        return None;
+        return true;
     }
     if ctx.macro_refs.contains(&item.canonical) {
-        return None;
+        return true;
     }
+    // Reachability through a `pub use` chain or via a `pub mod` chain in
+    // a published library both make the item part of the crate's external
+    // API surface — narrowing would break re-exports (E0364 / E0365) or
+    // silently break out-of-workspace consumers.
+    if ctx.workspace.re_exports().is_target(&item.canonical) {
+        return true;
+    }
+    if ctx.workspace.is_externally_reachable(&item.canonical) {
+        return true;
+    }
+    false
+}
 
+fn classify_usage(item: &Item, ctx: &CheckCtx<'_>) -> Usage {
     let referring = ctx.workspace.referring_crates(&item.canonical);
-    let used_cross_crate = referring
+    let used_cross = referring
         .map(|set| set.iter().any(|c| c != ctx.crate_code))
         .unwrap_or(false);
-    if used_cross_crate {
-        return None;
+    if used_cross {
+        return Usage::CrossCrate;
     }
-    let used_same_crate = referring
+    let used_same = referring
         .map(|set| set.contains(ctx.crate_code))
         .unwrap_or(false);
-
-    if used_same_crate && ctx.suppress_intra_crate {
-        return None;
+    if used_same {
+        Usage::IntraCrate
+    } else {
+        Usage::Unused
     }
+}
 
-    let span = item.source.as_ref()?;
-
+fn build_diagnostic(
+    item: &Item,
+    ctx: &CheckCtx<'_>,
+    span: &syn_workspace::SourceSpan,
+    usage: &Usage,
+) -> Diagnostic {
     let kind_str = item.kind;
     let crate_code = ctx.crate_code;
-    let (message, suggestion) = if used_same_crate {
-        (
+    let (message, suggestion) = match usage {
+        Usage::IntraCrate => (
             format!(
                 "pub {kind_str} `{}` in crate `{crate_code}` is only used inside the crate",
                 item.name
             ),
             "consider `pub(crate)` to tighten visibility",
-        )
-    } else {
-        (
+        ),
+        Usage::Unused | Usage::CrossCrate => (
             format!(
                 "pub {kind_str} `{}` in crate `{crate_code}` appears unused — consider removing",
                 item.name
             ),
             "remove the item or its `pub` visibility",
-        )
+        ),
     };
 
-    let mut builder = at_line(LintId::UnusedPub.id(), message, span.file.clone(), span.line)
+    let builder = at_line(LintId::UnusedPub.id(), message, span.file.clone(), span.line)
         .help(suggestion)
         .note(
             "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
         );
-    // Structural fix policy:
-    //  - "only used inside the crate" → always pub → pub(crate).
-    //  - "appears unused" + auto_delete on + file is git-tracked-clean
-    //    → delete the item.
-    //  - "appears unused" + auto_delete on + file is dirty/untracked
-    //    → emit deletion suggestion as MaybeIncorrect (--fix skips
-    //    those) with an extra note explaining why.
-    //  - "appears unused" + auto_delete off → pub → pub(crate).
-    let want_delete = !used_same_crate && ctx.auto_delete;
-    if want_delete {
-        match delete_suggestion(span) {
-            DeleteOutcome::Apply(s) => builder = builder.suggestion(s),
-            DeleteOutcome::Skip(s, reason) => {
-                builder = builder.suggestion(s).note(reason);
-            }
-            DeleteOutcome::Unavailable => {
-                if let Some(s) = crate::lints::visibility::build_tighten_suggestion(span) {
-                    builder = builder.suggestion(s);
-                }
-            }
-        }
-    } else if let Some(s) = crate::lints::visibility::build_tighten_suggestion(span) {
-        builder = builder.suggestion(s);
+    apply_structural_fix(builder, item, ctx.auto_delete, span, usage).build()
+}
+
+/// Structural fix policy:
+///  - `IntraCrate` → always `pub` → `pub(crate)`.
+///  - `Unused` + `auto_delete = true` + git-tracked-clean → delete.
+///  - `Unused` + `auto_delete = true` + dirty/untracked → emit deletion
+///    as `MaybeIncorrect` (so `--fix` skips it) plus an explanatory note.
+///  - `Unused` + `auto_delete = false` → narrow to `pub(crate)`.
+///
+/// `auto_delete` is passed as a `bool` rather than reaching into [`CheckCtx`]
+/// so this is independently unit-testable.
+fn apply_structural_fix(
+    builder: crate::diagnostic::builder::DiagnosticBuilder,
+    item: &Item,
+    auto_delete: bool,
+    span: &syn_workspace::SourceSpan,
+    usage: &Usage,
+) -> crate::diagnostic::builder::DiagnosticBuilder {
+    if let Some((sugg, note)) = pick_deletion_fix(auto_delete, span, usage) {
+        let with_sugg = builder.suggestion(sugg);
+        return note.into_iter().fold(with_sugg, |b, reason| b.note(reason));
     }
-    Some(builder.build())
+    crate::lints::visibility::build_tighten_suggestion(item)
+        .into_iter()
+        .fold(builder, |b, s| b.suggestion(s))
+}
+
+/// Pick a deletion suggestion when the user asked for one (`auto_delete`)
+/// and the item is genuinely unused. Returns `None` to mean "fall back to
+/// the tightening suggestion" — either the usage class doesn't warrant
+/// deletion, the user didn't opt in, or the file's byte range is
+/// unavailable. The `Option<String>` second element carries the
+/// "git-dirty file" caveat note when present.
+fn pick_deletion_fix(
+    auto_delete: bool,
+    span: &syn_workspace::SourceSpan,
+    usage: &Usage,
+) -> Option<(crate::diagnostic::Suggestion, Option<String>)> {
+    if !auto_delete || !matches!(usage, Usage::Unused) {
+        return None;
+    }
+    match delete_suggestion(span) {
+        DeleteOutcome::Apply(s) => Some((s, None)),
+        DeleteOutcome::Skip(s, reason) => Some((s, Some(reason))),
+        DeleteOutcome::Unavailable => None,
+    }
 }
 
 enum DeleteOutcome {

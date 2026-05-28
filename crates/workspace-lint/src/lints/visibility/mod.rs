@@ -15,16 +15,14 @@
 
 use std::collections::HashSet;
 
-use syn_workspace::{
-    Item, ItemKind, Module, ResolvedPath, SourceSpan, Visibility as SynVisibility, Workspace,
-};
+use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility as SynVisibility, Workspace};
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::Suggestion;
 use crate::diagnostic::builder::at_line;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
-pub struct Visibility;
+pub(crate) struct Visibility;
 
 impl Visibility {
     pub fn new() -> Self {
@@ -57,7 +55,7 @@ impl Lint for Visibility {
     }
 }
 
-pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // Only inspect each member's primary unit — tests/benches/examples
@@ -99,6 +97,20 @@ fn check_item(
     if macro_refs.contains(&item.canonical) {
         return None;
     }
+    // Skip items reachable via a `pub use` chain in the workspace — those
+    // are load-bearing for the re-export's compilation (E0364 / E0365) and
+    // are part of the containing crate's public API surface even if no
+    // in-workspace consumer references the re-exported name.
+    if workspace.re_exports().is_target(&item.canonical) {
+        return None;
+    }
+    // Skip items in a published library's public API surface — `pub fn`
+    // in a `pub mod` in a `[lib]` crate is consumable by any downstream,
+    // not just by in-workspace callers. The lint can't see external uses;
+    // narrowing would silently break those consumers.
+    if workspace.is_externally_reachable(&item.canonical) {
+        return None;
+    }
 
     let span = item.source.as_ref()?;
     let msg = format!(
@@ -108,45 +120,23 @@ fn check_item(
     let mut builder = at_line(LintId::Visibility.id(), msg, span.file.clone(), span.line)
         .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
         .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked");
-    if let Some(s) = build_tighten_suggestion(span) {
+    if let Some(s) = build_tighten_suggestion(item) {
         builder = builder.suggestion(s);
     }
     Some(builder.build())
 }
 
-/// Locate the `pub` token within an item's span and return its byte range,
-/// or `None` if the heuristic can't pin it down. When this returns `None`
-/// the diagnostic still fires — `--fix` simply has nothing to apply.
-///
-/// Cases punted on: items starting with attributes (the `pub` keyword is
-/// deeper inside the span), items already `pub(...)`, files we can't read.
-pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> {
-    let range = span.byte_range.clone()?;
-    let source = fs_err::read_to_string(&span.file).ok()?;
-    let start = range.start as usize;
-    let end = (range.end as usize).min(source.len());
-    if start >= end {
-        return None;
-    }
-    let slice = source.get(start..end)?;
-    if slice.starts_with('#') {
-        return None;
-    }
-    let pub_offset = find_word_boundary_pub(slice)?;
-    let after_pub = slice.get(pub_offset + 3..)?;
-    if after_pub.starts_with('(') {
-        return None;
-    }
-    if !after_pub
-        .chars()
-        .next()
-        .map(char::is_whitespace)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-    let abs_start = (start + pub_offset) as u32;
-    let abs_end = abs_start + 3;
+/// Build a `MachineApplicable` suggestion that overwrites the item's `pub`
+/// keyword with `pub(crate)`. The byte range comes from
+/// [`Item::vis_byte_range`], which is set by `syn-workspace` from the
+/// `Visibility::Public` token's `proc-macro2` span — no source scanning,
+/// no risk of matching a `pub` token inside doc comments or attribute
+/// string literals. Returns `None` for items without a captured visibility
+/// span (synthetic items, macros, or non-`pub` items that shouldn't be
+/// reaching this code path anyway).
+pub(crate) fn build_tighten_suggestion(item: &Item) -> Option<Suggestion> {
+    let span = item.source.as_ref()?;
+    let vis_range = item.vis_byte_range.clone()?;
     Some(Suggestion {
         span: crate::diagnostic::Span {
             file: span.file.clone(),
@@ -154,27 +144,11 @@ pub(crate) fn build_tighten_suggestion(span: &SourceSpan) -> Option<Suggestion> 
             line_end: span.line,
             col_start: 1,
             col_end: 1,
-            byte_start: abs_start,
-            byte_end: abs_end,
+            byte_start: vis_range.start,
+            byte_end: vis_range.end,
         },
         message: "tighten to `pub(crate)`".into(),
         replacement: "pub(crate)".into(),
         applicability: crate::diagnostic::Applicability::MachineApplicable,
     })
-}
-
-/// Find `pub` in `slice` at the first position where it's a standalone
-/// keyword (preceded by whitespace, start of slice, or punctuation).
-fn find_word_boundary_pub(slice: &str) -> Option<usize> {
-    let bytes = slice.as_bytes();
-    for (i, w) in bytes.windows(3).enumerate() {
-        if w == b"pub" {
-            let before_ok =
-                i == 0 || !matches!(bytes[i - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
-            if before_ok {
-                return Some(i);
-            }
-        }
-    }
-    None
 }

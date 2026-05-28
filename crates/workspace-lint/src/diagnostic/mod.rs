@@ -18,7 +18,7 @@ pub mod render;
 /// override per-diagnostic levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Level {
+pub(crate) enum Level {
     Warn,
     Deny,
 }
@@ -34,7 +34,7 @@ impl Level {
 
 /// Confidence in a suggested fix. Mirrors `rustc::lint::Applicability`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Applicability {
+pub(crate) enum Applicability {
     MachineApplicable,
     MaybeIncorrect,
     HasPlaceholders,
@@ -55,7 +55,7 @@ impl Applicability {
 /// Pointer at a region of source. Carries everything needed by the three
 /// renderers and by rustfix.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Span {
+pub(crate) struct Span {
     pub file: PathBuf,
     pub line_start: u32,
     pub line_end: u32,
@@ -85,7 +85,7 @@ impl Span {
 
 /// Concrete suggested rewrite. `MachineApplicable` ones drive `--fix`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Suggestion {
+pub(crate) struct Suggestion {
     pub span: Span,
     pub message: String,
     pub replacement: String,
@@ -99,7 +99,7 @@ pub struct Suggestion {
 /// `Line ⊂ File ⊂ Crate ⊂ Workspace`: a directive at a wider scope silences
 /// every diagnostic at a narrower one inside it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum SilenceAnchor {
+pub(crate) enum SilenceAnchor {
     Line { file: PathBuf, line: u32 },
     File { file: PathBuf },
     Crate { manifest_dir: PathBuf },
@@ -155,7 +155,7 @@ impl SilenceAnchor {
 
 /// One emitted finding. Every check produces these; renderers consume them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Diagnostic {
+pub(crate) struct Diagnostic {
     pub lint: Cow<'static, str>,
     pub level: Level,
     pub message: String,

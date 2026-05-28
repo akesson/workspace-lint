@@ -68,6 +68,10 @@ pub fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module>
         root_file,
         crate_name.to_string(),
         crate_root_path,
+        // Crate roots are the crate boundary itself, not a `mod foo;`
+        // declaration, so there's no enclosing visibility — Public is the
+        // semantically correct default for any external-reachability check.
+        Visibility::Public,
         &default_markers,
     )
 }
@@ -77,6 +81,7 @@ fn empty_root(crate_name: &str) -> Module {
     Module {
         name: crate_name.to_string(),
         canonical: ResolvedPath::new([crate_name.to_string()]),
+        visibility: Visibility::Public,
         items: Vec::new(),
         submodules: Vec::new(),
         use_bindings: Vec::new(),
@@ -92,6 +97,7 @@ pub(crate) fn build_module_from_file(
     file_path: &Path,
     mod_name: String,
     canonical: ResolvedPath,
+    visibility: Visibility,
     marker_crates: &[String],
 ) -> Result<Module> {
     let source = std::fs::read_to_string(file_path)?;
@@ -105,6 +111,7 @@ pub(crate) fn build_module_from_file(
     Ok(Module {
         name: mod_name,
         canonical,
+        visibility,
         items: contents.items,
         submodules: contents.submodules,
         use_bindings: contents.use_bindings,
@@ -144,7 +151,7 @@ fn collect_module_contents(
         }
 
         if let syn::Item::Use(item_use) = syn_item {
-            let mut bindings = use_tree::bindings_from_use(item_use, &scope);
+            let mut bindings = use_tree::bindings_from_use(item_use, &scope, parent_file);
             for binding in &mut bindings {
                 rewrite_sibling_local(binding, parent_canonical, &sibling_names);
             }
@@ -227,6 +234,7 @@ fn collect_module_contents(
                 submodules.push(Module {
                     name: child_name,
                     canonical: child_canonical,
+                    visibility: Visibility::from_syn(&item_mod.vis),
                     items: inline.items,
                     submodules: inline.submodules,
                     use_bindings: inline.use_bindings,
@@ -241,6 +249,7 @@ fn collect_module_contents(
                     &child_file,
                     child_name,
                     child_canonical,
+                    Visibility::from_syn(&item_mod.vis),
                     marker_crates,
                 )?);
             } else {
@@ -682,7 +691,7 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 /// offsets within the source file. Returns `None` for synthetic spans
 /// (where `byte_range` is empty), so the resulting `SourceSpan` carries
 /// `byte_range: None` rather than a zero-zero sentinel.
-fn byte_range(span: proc_macro2::Span) -> Option<std::ops::Range<u32>> {
+pub(crate) fn byte_range(span: proc_macro2::Span) -> Option<std::ops::Range<u32>> {
     let r = span.byte_range();
     if r.start == 0 && r.end == 0 {
         None
@@ -707,7 +716,7 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
         syn::Item::Macro(i) => Some(syn::spanned::Spanned::span(i)),
         _ => None,
     };
-    let byte_range = full_span.and_then(byte_range);
+    let item_byte_range = full_span.and_then(byte_range);
 
     let (name, kind, vis, line) = match item {
         syn::Item::Fn(i) => (
@@ -787,13 +796,25 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
                     file: file.to_path_buf(),
                     line: i.ident.as_ref().unwrap().span().start().line as u32,
                     column: 1,
-                    byte_range: byte_range.clone(),
+                    byte_range: item_byte_range.clone(),
                 }),
+                // Macros don't expose a `pub` token; visibility is governed
+                // by `#[macro_export]` instead, so structural-fix consumers
+                // have nothing to rewrite here.
+                vis_byte_range: None,
             });
         }
         _ => return None,
     };
 
+    // For public items, capture the byte range of the `pub` keyword itself.
+    // Structural-fix consumers narrow `pub` to `pub(crate)` (etc.) by
+    // overwriting that range — no scanning past preceding doc comments
+    // or attributes required.
+    let vis_byte_range = match vis {
+        syn::Visibility::Public(token) => byte_range(token.span),
+        _ => None,
+    };
     let mut canonical = parent_canonical.segments().to_vec();
     canonical.push(name.clone());
     Some(Item {
@@ -805,8 +826,9 @@ fn item_from_syn(item: &syn::Item, parent_canonical: &ResolvedPath, file: &Path)
             file: file.to_path_buf(),
             line: line as u32,
             column: 1,
-            byte_range,
+            byte_range: item_byte_range,
         }),
+        vis_byte_range,
     })
 }
 

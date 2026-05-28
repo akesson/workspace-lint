@@ -32,7 +32,7 @@ use crate::plugins::{MacroBodyParser, ResolveContext};
 use crate::resolve::ResolvedPath;
 
 /// Built-in parser for `rsx!` and `dioxus::rsx!` invocations.
-pub struct DioxusRsxParser;
+pub(crate) struct DioxusRsxParser;
 
 impl MacroBodyParser for DioxusRsxParser {
     fn matches(&self, macro_path: &ResolvedPath) -> bool {

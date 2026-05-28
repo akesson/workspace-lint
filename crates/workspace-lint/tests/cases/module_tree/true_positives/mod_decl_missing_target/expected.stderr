@@ -1,5 +1,5 @@
 error: `mod ghost` declared but no `ghost.rs` or `ghost/mod.rs` found
- --> <TMP>/crates/demo/src/lib.rs:2:1
+ --> crates/demo/src/lib.rs:2:1
   |
   = help: create `ghost.rs` adjacent to this file, or `ghost/mod.rs`, or add a `#[path = "…"]` attribute
   = note: `mod foo;` with no inline body must resolve to a source file

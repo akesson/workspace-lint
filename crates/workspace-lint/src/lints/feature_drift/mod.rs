@@ -23,7 +23,7 @@ use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
-pub struct FeatureDrift;
+pub(crate) struct FeatureDrift;
 
 impl FeatureDrift {
     pub fn new() -> Self {
@@ -56,7 +56,7 @@ impl Lint for FeatureDrift {
     }
 }
 
-pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let lint_id = LintId::FeatureDrift.id();
     let mut diagnostics = Vec::new();
     for krate in workspace.members() {
@@ -77,7 +77,11 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             let msg =
                 format!("feature `{feat}` is declared in `[features]` but never gated in source");
             diagnostics.push(
-                at_crate(lint_id, msg, krate.manifest_dir.clone())
+                at_crate(
+                    lint_id,
+                    msg,
+                    workspace.crate_relative_path(&krate.manifest_dir),
+                )
                     .help(format!(
                         "either gate code with `#[cfg(feature = \"{feat}\")]` or remove `{feat}` from `[features]`",
                     ))
@@ -93,7 +97,11 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             let msg =
                 format!("feature `{feat}` is gated in source but not declared in `[features]`");
             diagnostics.push(
-                at_crate(lint_id, msg, krate.manifest_dir.clone())
+                at_crate(
+                    lint_id,
+                    msg,
+                    workspace.crate_relative_path(&krate.manifest_dir),
+                )
                     .help(format!(
                         "add `{feat} = []` to the `[features]` table of `{}/Cargo.toml`, or remove the `cfg(feature = \"{feat}\")` references",
                         krate.name,

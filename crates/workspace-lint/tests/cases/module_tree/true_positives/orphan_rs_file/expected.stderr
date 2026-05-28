@@ -1,5 +1,5 @@
 error: orphan source file `src/orphan.rs` is not reachable from any `mod` declaration
- --> <TMP>/crates/demo/src/orphan.rs:1:1
+ --> crates/demo/src/orphan.rs:1:1
   |
   = help: add `mod orphan;` (or a `#[path = "src/orphan.rs"] mod ...;`) in the appropriate parent module, or delete the file
   = note: crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`

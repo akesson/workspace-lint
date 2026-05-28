@@ -10,9 +10,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{FreshnessConfig, FreshnessRule};
+pub(crate) use config::{FreshnessConfig, FreshnessRule};
 
-pub struct Freshness {
+pub(crate) struct Freshness {
     config: FreshnessConfig,
 }
 
@@ -38,7 +38,7 @@ impl Lint for Freshness {
     }
 }
 
-pub fn check(config: &FreshnessConfig) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &FreshnessConfig) -> Vec<Diagnostic> {
     if std::env::var("CI").is_ok() {
         return Vec::new();
     }
@@ -95,7 +95,7 @@ fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
     diagnostics
 }
 
-pub fn mark_done(config: &FreshnessConfig) {
+pub(crate) fn mark_done(config: &FreshnessConfig) {
     mark_done_with_root(config, Path::new("."));
 }
 

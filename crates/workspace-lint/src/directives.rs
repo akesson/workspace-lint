@@ -18,7 +18,7 @@ use syn_workspace::Workspace;
 
 /// One parsed suppression directive.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Directive {
+pub(crate) struct Directive {
     pub kind: DirectiveKind,
     /// Kebab-case short lint name (`file-size`, `unused-pub`, …). The map
     /// stores diagnostics keyed by the same kebab form.
@@ -30,13 +30,13 @@ pub struct Directive {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum DirectiveKind {
+pub(crate) enum DirectiveKind {
     Allow,
     Expect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DirectiveOrigin {
+pub(crate) struct DirectiveOrigin {
     pub file: PathBuf,
     pub line: u32,
 }
@@ -57,7 +57,7 @@ pub struct DirectiveOrigin {
 /// Workspace-wide directive scan, parsing every `.rs` file on demand. Use
 /// [`scan_with_workspace`] in production code paths — it parses each file
 /// known to the resolver once, up-front, and reuses the cache.
-pub fn scan(root: &Path) -> Vec<Directive> {
+pub(crate) fn scan(root: &Path) -> Vec<Directive> {
     scan_inner(root, &HashMap::new())
 }
 
@@ -65,7 +65,7 @@ pub fn scan(root: &Path) -> Vec<Directive> {
 /// (deduped by canonical path) so the directive walk doesn't pay a second
 /// parse per file. Files outside the resolver's reach fall back to
 /// on-demand parsing inside [`scan_inner`].
-pub fn scan_with_workspace(workspace: &Workspace) -> Vec<Directive> {
+pub(crate) fn scan_with_workspace(workspace: &Workspace) -> Vec<Directive> {
     let lookup = build_parsed_lookup(workspace);
     scan_inner(workspace.root(), &lookup)
 }

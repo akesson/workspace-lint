@@ -10,7 +10,7 @@ use crate::lints::{Lint, LintContext, LintId, Requirements};
 #[cfg(test)]
 mod tests;
 
-pub struct CentralizedDeps;
+pub(crate) struct CentralizedDeps;
 
 impl CentralizedDeps {
     pub fn new() -> Self {
@@ -43,7 +43,7 @@ impl Lint for CentralizedDeps {
     }
 }
 
-pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     let lint_id = LintId::CentralizedDeps.id();
     let workspace_dep_names = workspace.root_manifest().workspace_dep_names();
 
@@ -67,14 +67,23 @@ pub fn check(workspace: &Workspace) -> Vec<Diagnostic> {
 
         if !crate_errors.is_empty() {
             let n = crate_errors.len();
+            // Workspace-relative paths everywhere — both the in-message
+            // path and the suppression anchor — so a per-Cargo.toml
+            // directive (`# workspace-lint: allow(centralized-deps)`)
+            // can actually match the diagnostic's `SilenceAnchor::Crate`.
+            // Force forward-slash separators in the rendered string so
+            // Windows runs of this lint produce the same diagnostic text
+            // as Linux/macOS (snapshot fixtures lock that in).
+            let manifest_path_rel = workspace.crate_relative_path(manifest.path());
+            let manifest_dir_rel = workspace.crate_relative_path(&krate.manifest_dir);
+            let cargo_path_str = manifest_path_rel.display().to_string().replace('\\', "/");
             let mut builder = at_crate(
                 lint_id,
                 format!(
-                    "{n} dependenc{} in {} should use `workspace = true`",
+                    "{n} dependenc{} in {cargo_path_str} should use `workspace = true`",
                     if n == 1 { "y" } else { "ies" },
-                    manifest.path().display()
                 ),
-                krate.manifest_dir.clone(),
+                manifest_dir_rel,
             );
             for err in crate_errors {
                 builder = builder.help(err);
