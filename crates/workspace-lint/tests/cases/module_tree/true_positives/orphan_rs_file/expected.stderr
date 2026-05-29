@@ -5,7 +5,7 @@ error: orphan source file `src/orphan.rs` is not reachable from any `mod` declar
   = note: crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`
 help: if intentional, silence with:
   |
-1 + workspace_lint::allow!(module_tree);
+1 + workspace_lint::expect!(module_tree);
   |
   = note: `#[deny(workspace_lint::module_tree)]` on by default
 

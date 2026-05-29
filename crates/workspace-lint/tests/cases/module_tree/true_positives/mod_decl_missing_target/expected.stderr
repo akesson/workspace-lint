@@ -5,7 +5,7 @@ error: `mod ghost` declared but no `ghost.rs` or `ghost/mod.rs` found
   = note: `mod foo;` with no inline body must resolve to a source file
 help: if intentional, silence with:
   |
-2 + workspace_lint::allow!(module_tree);
+2 + workspace_lint::expect!(module_tree);
   |
   = note: `#[deny(workspace_lint::module_tree)]` on by default
 
