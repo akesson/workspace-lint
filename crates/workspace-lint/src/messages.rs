@@ -272,7 +272,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 5,
             )
             .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
-            .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked")
+            .note("references via trait dispatch or proc-macro expansion are not tracked")
             .build(),
         ),
     ]
@@ -589,7 +589,7 @@ mod tests {
              --> crates/lib-a/src/inner.rs:5:1
               |
               = help: tighten to `pub(crate)` if this item is intentionally crate-internal
-              = note: references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked
+              = note: references via trait dispatch or proc-macro expansion are not tracked
             help: if intentional, silence with:
               |
             5 + workspace_lint::expect!(visibility);
@@ -695,7 +695,7 @@ mod tests {
 
         #[test]
         fn visibility_pub_used_only_intra_crate() {
-            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @r#"{"level":"warning","message":"pub `Helper` in crate `lib_a` is not referenced from any other workspace crate","code":{"code":"workspace-lint::visibility","explanation":null},"spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(visibility);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"tighten to `pub(crate)` if this item is intentionally crate-internal","spans":[]},{"level":"note","message":"references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @r#"{"level":"warning","message":"pub `Helper` in crate `lib_a` is not referenced from any other workspace crate","code":{"code":"workspace-lint::visibility","explanation":null},"spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(visibility);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"tighten to `pub(crate)` if this item is intentionally crate-internal","spans":[]},{"level":"note","message":"references via trait dispatch or proc-macro expansion are not tracked","spans":[]}],"rendered":null}"#);
         }
     }
 

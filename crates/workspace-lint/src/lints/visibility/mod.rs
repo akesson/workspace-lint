@@ -5,13 +5,18 @@
 //! canonical path is referenced from any module in a *different* workspace
 //! crate. Items with no cross-crate references are flagged.
 //!
-//! Known limitations (v1):
+//! Cross-crate use is detected by token-scanning regular code (function
+//! bodies, type signatures, attribute paths), so a fully-qualified path like
+//! `other_crate::Foo::bar()` counts as a use even with no `use` statement
+//! bringing the name into scope.
 //!
-//! - Items referenced via fully-qualified path (`my_crate::Foo::bar()`)
-//!   instead of a `use` statement are not tracked.
-//! - Items referenced only inside macro bodies are not tracked.
-//! - Trait methods dispatched via `dyn Trait` are not tracked (would need
-//!   type inference).
+//! Known limitations (v1) — an item reachable *only* one of these ways may
+//! be wrongly flagged:
+//!
+//! - Method calls resolved by trait dispatch (`x.method()`, `dyn Trait`):
+//!   the call site carries no path to scan; would need type inference.
+//! - References introduced by proc-macro expansion. (`macro_rules!` bodies
+//!   are covered separately via macro implicit-refs.)
 
 use std::collections::HashSet;
 
@@ -119,7 +124,7 @@ fn check_item(
     );
     let mut builder = at_line(LintId::Visibility.id(), msg, span.file.clone(), span.line)
         .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
-        .note("references via fully-qualified path, trait dispatch, or proc-macro bodies are not tracked");
+        .note("references via trait dispatch or proc-macro expansion are not tracked");
     if let Some(s) = build_tighten_suggestion(item) {
         builder = builder.suggestion(s);
     }
