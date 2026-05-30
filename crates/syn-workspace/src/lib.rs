@@ -41,6 +41,7 @@ pub mod macros;
 pub mod manifest;
 pub(crate) mod plugins;
 pub mod resolve;
+pub mod scip_emit;
 mod walk;
 
 /// Re-export `toml_edit` so lint crates can name [`toml_edit::Item`] and
@@ -53,4 +54,5 @@ pub use resolve::{
     Origin, ResolvedPath, Result, SourceSpan, Target, TargetKind, Visibility, Workspace,
     re_export::ReExportIndex,
 };
+pub use scip_emit::{ScipOccurrence, ScipRole, is_definition_kind};
 pub use walk::member_manifests;

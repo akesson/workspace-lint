@@ -356,33 +356,16 @@ fn member<'a>(ws: &'a Workspace, name: &str) -> &'a Crate {
 
 /// Item kinds the rustdoc/SCIP oracles treat as module-level definitions.
 ///
-/// Written as an exhaustive `match` (not `matches!`) on purpose: adding an
-/// `ItemKind` variant breaks this test's compile and forces a conscious call on
-/// whether the new kind is an oracle-visible def — and whether the parallel
-/// rustdoc-string list `RD_DEF_KINDS` in `tools/oracle-bless/src/main.rs` (the
-/// generator side of the same classification) needs a matching entry.
-///
-/// This intentionally diverges from the crate's own [`ItemKind::is_definition`],
-/// which counts `Macro`: rustdoc's def-kind set has no `macro` entry and these
-/// fixtures declare none, so the oracle and this helper must agree on excluding
-/// it. Revisit `is_def_kind`, `RD_DEF_KINDS`, and `is_definition` together if a
+/// Delegates to [`syn_workspace::is_definition_kind`] — the single source of
+/// truth shared with the SCIP emitter — so this net and `scip_diff.rs` can't
+/// drift in what counts as a def. It intentionally diverges from the crate's own
+/// [`ItemKind::is_definition`], which counts `Macro`: rustdoc's def-kind set has
+/// no `macro` entry and these fixtures declare none. The parallel rustdoc-string
+/// list `RD_DEF_KINDS` in `tools/oracle-bless/src/main.rs` (the generator side of
+/// the same classification) must stay in lockstep; revisit all three if a
 /// macro-bearing fixture ever lands.
 fn is_def_kind(k: ItemKind) -> bool {
-    match k {
-        ItemKind::Fn
-        | ItemKind::Struct
-        | ItemKind::Enum
-        | ItemKind::Union
-        | ItemKind::Trait
-        | ItemKind::TypeAlias
-        | ItemKind::Const
-        | ItemKind::Static => true,
-        ItemKind::Macro
-        | ItemKind::Module
-        | ItemKind::Impl
-        | ItemKind::Use
-        | ItemKind::ExternCrate => false,
-    }
+    syn_workspace::is_definition_kind(k)
 }
 
 fn seg_vec(v: &Value) -> Vec<String> {
