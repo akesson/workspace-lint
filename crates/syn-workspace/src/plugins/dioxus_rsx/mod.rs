@@ -26,8 +26,7 @@ use syn::parse2;
 use syn::visit::Visit;
 
 use crate::plugins::{LowerCtx, Lowered, MacroLowerer, MacroSite};
-use crate::resolve::ResolvedPath;
-use crate::resolve::module_tree::{Occurrence, Origin};
+use crate::resolve::{Occurrence, Origin, ResolvedPath};
 
 /// Built-in lowerer for `rsx!` and `dioxus::rsx!` invocations. Token-scans the
 /// body (like any macro) AND adds the structured Component paths the scanner
@@ -60,6 +59,7 @@ impl MacroLowerer for DioxusRsxLowerer {
             .into_iter()
             .map(|p| Occurrence {
                 segments: p.segments().to_vec(),
+                path: None,
                 span: cx.macro_span.clone(),
                 origin: Origin::Macro,
             })

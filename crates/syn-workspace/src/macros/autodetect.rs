@@ -28,7 +28,8 @@
 
 use std::path::Path;
 
-use crate::resolve::module_tree::{Occurrence, Origin, span_to_source_span};
+use crate::resolve::module_tree::span_to_source_span;
+use crate::resolve::{Occurrence, Origin};
 
 /// Scan a `macro_rules!` body token-stream for path-like sequences
 /// (`Ident :: Ident (:: Ident)*`) and resolve each through the macro's
@@ -65,6 +66,7 @@ pub(crate) fn extract_macro_paths(
             if segments.len() >= 2 {
                 out.push(Occurrence {
                     segments,
+                    path: None,
                     span: Some(span_to_source_span(file, first.span())),
                     origin: Origin::Macro,
                 });

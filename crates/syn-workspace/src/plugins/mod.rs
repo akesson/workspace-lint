@@ -24,9 +24,7 @@
 use proc_macro2::TokenStream;
 
 use crate::macros::annotation::is_expansion_uses;
-use crate::resolve::ResolvedPath;
-use crate::resolve::SourceSpan;
-use crate::resolve::module_tree::Occurrence;
+use crate::resolve::{Occurrence, ResolvedPath, SourceSpan};
 
 pub(crate) mod quote;
 
