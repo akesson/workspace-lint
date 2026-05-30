@@ -2,4 +2,4 @@
 cov = "llvm-cov --workspace --lcov --output-path lcov.info"
 cov-html = "llvm-cov --workspace --open"
 cov-summary = "llvm-cov --workspace --summary-only"
-cov-crap = ["crap", "--lcov", "lcov.info", "--exclude", "**/tests/**", "--exclude", "**/tests.rs", "--allow", "*::fmt"]
+cov-crap = ["crap", "--lcov", "lcov.info", "--exclude", "**/tests/**", "--exclude", "**/tests.rs", "--exclude", "**/tools/**", "--allow", "*::fmt"]

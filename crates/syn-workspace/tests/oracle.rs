@@ -68,7 +68,7 @@ fn check_def_visibility(ws: &Workspace, krate: &str, rustdoc: &Value) {
     let extra: Vec<_> = syn.difference(&oracle).collect();
     assert!(
         extra.is_empty(),
-        "REGRESSION: syn-workspace enumerated public defs rustdoc does not (spurious or mis-pathed): {extra:?}"
+        "REGRESSION: syn-workspace enumerated public defs rustdoc does not (spurious or wrong-path): {extra:?}"
     );
 
     // The documented enumeration gap must stay a gap, not silently start firing.
