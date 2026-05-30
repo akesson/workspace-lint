@@ -32,6 +32,14 @@ use syn_workspace::{Crate, DepSection, ItemKind, ResolvedPath, Workspace};
 /// alignment this net relies on assumes it. Drift here fails loudly.
 const EXPECTED_POSITION_ENCODING: &str = "UTF8CodeUnitOffsetFromLineStart";
 
+/// rustdoc JSON schema version the committed oracles were distilled against —
+/// the fast-path twin of `oracle-bless`'s `EXPECTED_RUSTDOC_FORMAT`. Because the
+/// bless tool isn't run in CI (it needs nightly + rust-analyzer), a stale or
+/// newer-schema oracle could otherwise slip in unnoticed; asserting the
+/// committed `format_version` here makes any re-bless under a changed schema
+/// fail on the fast path until the distiller's field-lookups are re-validated.
+const EXPECTED_RUSTDOC_FORMAT: u64 = 57;
+
 #[test]
 fn multi_crate() {
     let base = fixture_dir("multi_crate");
@@ -45,6 +53,15 @@ fn multi_crate() {
     let ws = Workspace::load(base.join("workspace")).expect("load multi_crate fixture");
     let rustdoc = load_json(&base.join("expected/rustdoc.json"));
     let scip = load_json(&base.join("expected/scip.json"));
+
+    // Provenance guard (see EXPECTED_RUSTDOC_FORMAT): the committed oracle must
+    // carry the schema version the distiller was written against, so a re-bless
+    // under a newer nightly can't quietly change what these checks compare to.
+    assert_eq!(
+        rustdoc["format_version"].as_u64(),
+        Some(EXPECTED_RUSTDOC_FORMAT),
+        "committed rustdoc oracle schema drifted; re-validate tools/oracle-bless::rustdoc_oracle, then bump EXPECTED_RUSTDOC_FORMAT"
+    );
 
     check_def_visibility(&ws, "oracle-core", &rustdoc);
     check_scip_def_witness(&ws, "oracle-core", &scip);
@@ -65,10 +82,16 @@ fn check_def_visibility(ws: &Workspace, krate: &str, rustdoc: &Value) {
         missing.is_empty(),
         "REGRESSION: syn-workspace stopped enumerating public defs the compiler reports: {missing:?}"
     );
+    // Exact equality (not just `syn ⊇ rustdoc`) holds only because every `pub`
+    // item in *this* fixture is externally reachable. A maintainer who adds a
+    // `pub` item inside a private, non-re-exported module will trip this: the
+    // resolver enumerates it syntactically but rustdoc omits it (unreachable),
+    // so the path lands in `extra`. That's fixture drift, not a resolver bug —
+    // re-export the item or move it out of the externally-reachable set.
     let extra: Vec<_> = syn.difference(&oracle).collect();
     assert!(
         extra.is_empty(),
-        "REGRESSION: syn-workspace enumerated public defs rustdoc does not (spurious or wrong-path): {extra:?}"
+        "syn-workspace enumerated public defs rustdoc does not — a resolver regression (spurious / wrong-path def) OR fixture drift (a new `pub` item that isn't externally reachable, which rustdoc omits): {extra:?}"
     );
 
     // The documented enumeration gap must stay a gap, not silently start firing.
@@ -193,18 +216,35 @@ fn member<'a>(ws: &'a Workspace, name: &str) -> &'a Crate {
         .unwrap_or_else(|| panic!("fixture member `{name}` not found"))
 }
 
+/// Item kinds the rustdoc/SCIP oracles treat as module-level definitions.
+///
+/// Written as an exhaustive `match` (not `matches!`) on purpose: adding an
+/// `ItemKind` variant breaks this test's compile and forces a conscious call on
+/// whether the new kind is an oracle-visible def — and whether the parallel
+/// rustdoc-string list `RD_DEF_KINDS` in `tools/oracle-bless/src/main.rs` (the
+/// generator side of the same classification) needs a matching entry.
+///
+/// This intentionally diverges from the crate's own [`ItemKind::is_definition`],
+/// which counts `Macro`: rustdoc's def-kind set has no `macro` entry and these
+/// fixtures declare none, so the oracle and this helper must agree on excluding
+/// it. Revisit `is_def_kind`, `RD_DEF_KINDS`, and `is_definition` together if a
+/// macro-bearing fixture ever lands.
 fn is_def_kind(k: ItemKind) -> bool {
-    matches!(
-        k,
+    match k {
         ItemKind::Fn
-            | ItemKind::Struct
-            | ItemKind::Enum
-            | ItemKind::Union
-            | ItemKind::Trait
-            | ItemKind::TypeAlias
-            | ItemKind::Const
-            | ItemKind::Static
-    )
+        | ItemKind::Struct
+        | ItemKind::Enum
+        | ItemKind::Union
+        | ItemKind::Trait
+        | ItemKind::TypeAlias
+        | ItemKind::Const
+        | ItemKind::Static => true,
+        ItemKind::Macro
+        | ItemKind::Module
+        | ItemKind::Impl
+        | ItemKind::Use
+        | ItemKind::ExternCrate => false,
+    }
 }
 
 fn seg_vec(v: &Value) -> Vec<String> {

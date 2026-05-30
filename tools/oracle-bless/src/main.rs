@@ -89,6 +89,11 @@ fn bless(repo: &Path, fx: &Fixture) -> Result<()> {
 // rustdoc → normalized oracle
 // ---------------------------------------------------------------------------
 
+/// rustdoc `inner` kind strings counted as module-level definitions. This is the
+/// generator-side twin of `is_def_kind` in
+/// `crates/syn-workspace/tests/oracle.rs` (the `ItemKind` side of the same
+/// classification) — keep the two lists in lockstep. Deliberately omits `macro`:
+/// the fixtures declare none and the syn side excludes it too.
 const RD_DEF_KINDS: &[&str] = &[
     "function",
     "struct",
