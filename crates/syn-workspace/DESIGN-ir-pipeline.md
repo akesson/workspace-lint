@@ -205,3 +205,50 @@ demand-driven by a failing SCIP/case test.
    + empty Phase B `resolve()` hook.
 6. *(later, test-gated — ROADMAP Phase 4)* per-site external macros; framework
    Phase B semantics.
+
+## 8. Spike-validated normalization + encoding spec (2026-05-30)
+
+A throwaway harness diffed the resolver against rustdoc JSON and rust-analyzer
+SCIP on a controlled fixture and on this repo. Results the Phase 1 emitter /
+diff harness must encode:
+
+**Identity normalization** — project all three schemes to canonical segments
+(`Vec<String>`):
+
+- syn-workspace `ResolvedPath::segments()` is the reference form.
+- rustdoc: `paths[id].path` is already the segment vector.
+- SCIP: `[package.name] ++ descriptor names` via `scip::symbol::parse_symbol`
+  (which un-escapes backtick-wrapped non-ASCII idents like `` `café` ``). Two
+  required rewrites:
+  - **package name** is the cargo (hyphenated) name; syn uses the code name →
+    map `-` → `_` (`syn-workspace` → `syn_workspace`). Sysroot crates carry a
+    *URL* in the version field, but the package name is still the 3rd
+    space-delimited token.
+  - **inherent methods** are encoded `impl#[Type]method().`, **not**
+    `Type#method` → needs an `impl#[T]m` → `T::m` rewrite. Only relevant once the
+    impl-block item-enumeration gap (`item_from_syn`, §6) closes, or for
+    reference-level diffs; module-level defs need no rewrite.
+- Measured: **27/27 (100%)** of this repo's module-level public def-kind items
+  (all in `syn-workspace`'s public API; the binary + marker crates expose none)
+  normalize to identical segments across syn + SCIP; **4/4** on the fixture
+  across all three schemes (incl. the non-ASCII and re-exported cases).
+
+**Range encoding** — rust-analyzer's SCIP sets
+`Document.position_encoding = UTF8CodeUnitOffsetFromLineStart`, and the measured
+width of `café` was 5 (UTF-8 bytes), so SCIP columns align with
+`SourceSpan.byte_range` **for rust-analyzer**. The harness must *read*
+`position_encoding` rather than assume — another SCIP producer may emit
+UTF-16/32. Keep a non-ASCII fixture (`café`) as the regression guard.
+
+**`pub(crate)`-hop clarification (sharpens §6).** A *public* re-export chain
+cannot pass through a `pub(crate)` hop — `pub use` of a `pub(crate)` item is a
+hard error (E0364, verified). So the re-export index dropping `pub(crate)` hops
+can only ever miss *crate-internal* references (which matter for `unused-pub`'s
+within-workspace usage), never a *public-surface* false negative; the rustdoc
+public oracle neither catches that case nor needs to.
+
+**Parsing choices that worked.** rustdoc JSON parsed via `serde_json::Value`
+(sidesteps the `rustdoc-types` ↔ format-version lock; a typed harness must pin
+the release whose `FORMAT_VERSION == 57`); SCIP via `scip` 0.7.1
+(`Index::parse_from_bytes`, `parse_symbol`, `Document.position_encoding`) with
+`protobuf = "=3.7.2"`.

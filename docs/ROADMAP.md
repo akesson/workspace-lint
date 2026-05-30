@@ -118,6 +118,29 @@ item/visibility graph (no occurrence data — complements SCIP for the
 re-export / `pub_items` side); **cargo-udeps** as a compiler-backed oracle
 specifically for `unused-deps`.
 
+**Spike-validated (2026-05-30).** A throwaway differential harness (a controlled
+fixture + this repo) confirmed the approach end-to-end on the pinned toolchain —
+rust-analyzer 1.95 `scip`; nightly 1.97 rustdoc JSON `format_version` 57; `scip`
+0.7.1 / `protobuf` 3.7.2 (SCIP gen: ~1.6 s fixture, ~4.6 s repo). What it changes:
+
+- **Buildable before Phase 0.** The rustdoc def/visibility oracle and the
+  set-level SCIP dependency oracle run against *today's* `pub_items()` /
+  `references_from_crate()` — land them first as a semantic regression net
+  *ahead of* the IR refactor. The rustdoc oracle flagged the `impl`-block method
+  enumeration gap with zero tuning.
+- **Dep oracle = intersect, not equate.** SCIP's per-document package set also
+  contains sysroot crates (`core`/`std`) and the crate itself, so `unused-deps`
+  must compare *declared deps* ∩ SCIP-packages, not raw sets.
+- **Cross-validate the oracles.** rustdoc ⇄ SCIP agreed on the re-export
+  canonical; make oracle-vs-oracle agreement a Phase 1 guard so a weak
+  normalization can't pass for the wrong reason.
+- **RA `scip` quirks to tolerate:** duplicate `crate/` symbols across
+  bin/example/test targets and occasional "definition should have been in an
+  SCIP document" / nested-in-fn misses (rust-analyzer#18771). Commit the index
+  and dedupe/skip defensively.
+- Normalization + range-encoding specifics:
+  [`DESIGN-ir-pipeline.md` §8](../crates/syn-workspace/DESIGN-ir-pipeline.md).
+
 ### C. Testing at four altitudes
 
 A pyramid, cheapest/most-precise at the base:
