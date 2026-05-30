@@ -1,0 +1,9 @@
+# Hyphenated package name (lib code-name `oracle_core`) — deliberately exercises
+# the cargo-name → code-name (`-` → `_`) normalization in the SCIP dep oracle.
+[package]
+name = "oracle-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"

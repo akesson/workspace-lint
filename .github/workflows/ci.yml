@@ -40,6 +40,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Docs
         run: cargo doc --workspace --no-deps --locked
+      - name: Build oracle-bless tool (detached harness; compile-only, catches API drift)
+        run: cargo build --manifest-path tools/oracle-bless/Cargo.toml --locked
       - name: Publish dry-run (publishable libs)
         run: |
           cargo publish --dry-run -p syn-workspace-marker --allow-dirty

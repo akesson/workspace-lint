@@ -212,6 +212,17 @@ is one pure function, and the old fragmented channels are deleted.
 index for at least the `unused-deps` fixtures, and a discrepancy points at a
 specific occurrence.
 
+**Landed (pre-Phase-0, committed regression net):** the "buildable today"
+slice is in `crates/syn-workspace/tests/oracle.rs` — a fast (`serde_json`-only,
+no RA/nightly) differential test that diffs committed, normalized
+rustdoc + SCIP oracles against the live resolver across four dimensions
+(def/visibility, an independent SCIP def witness, re-export canonicalization,
+and the set-level `unused-deps` dependency oracle). Regeneration lives in the
+detached `tools/oracle-bless` crate (keeps `scip`/`protobuf` + the nightly/RA
+toolchain off the common path); it pins rustdoc `format_version` 57 and fails
+loudly on toolchain drift. The full occurrence-level precision/recall harness
+above still needs Phase 0 spans.
+
 ### Phase 2 — Public-crate corpus
 **Goal:** confidence at scale, on code we didn't write.
 Vendor / submodule a curated, diverse set of real crates spanning the variant
