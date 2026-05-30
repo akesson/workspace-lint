@@ -247,6 +247,20 @@ can only ever miss *crate-internal* references (which matter for `unused-pub`'s
 within-workspace usage), never a *public-surface* false negative; the rustdoc
 public oracle neither catches that case nor needs to.
 
+**Syntactic vs. effective visibility (private-tree oracle).** The committed net's
+`--document-private-items` rustdoc oracle validates the *full* module tree
+(including private / `pub(crate)` items) and a visibility **tier**
+(public / crate / internal) against the resolver. It is deliberately scoped to
+those three tiers: `syn-workspace` records **syntactic** visibility (the written
+`pub(super)` / `pub(in …)`), whereas rustdoc reports **effective** visibility, and
+the two legitimately diverge for `pub(super)`/`pub(in …)`. A `pub(super)` item in a
+*crate-root* module, for instance, is effectively crate-visible — rustdoc renders
+it `"crate"`, not `"restricted"`. Reconciling those would require an
+effective-visibility model the resolver intentionally doesn't build, so the oracle
+excludes them and checks only `public`/`crate`/`private`, where syntactic and
+effective coincide. (Found while adding the private-tree oracle: a `pub(super)`
+probe tripped the tier check with `syn PubSuper vs rustdoc "crate"`.)
+
 **Parsing choices that worked.** rustdoc JSON parsed via `serde_json::Value`
 (sidesteps the `rustdoc-types` ↔ format-version lock; a typed harness must pin
 the release whose `FORMAT_VERSION == 57`); SCIP via `scip` 0.7.1
