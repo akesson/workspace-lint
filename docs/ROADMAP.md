@@ -220,8 +220,24 @@ rustdoc + SCIP oracles against the live resolver across four dimensions
 and the set-level `unused-deps` dependency oracle). Regeneration lives in the
 detached `tools/oracle-bless` crate (keeps `scip`/`protobuf` + the nightly/RA
 toolchain off the common path); it pins rustdoc `format_version` 57 and fails
-loudly on toolchain drift. The full occurrence-level precision/recall harness
-above still needs Phase 0 spans.
+loudly on toolchain drift.
+
+**Landed (Phase 1, occurrence-level harness):** `Workspace::scip_occurrences()`
+(`crates/syn-workspace/src/scip_emit.rs`) projects the resolved model into a
+normalized, SCIP-aligned occurrence list — **not** a foreign `scip::Index`. That
+"lean projection" keeps `scip`/`protobuf` out of the published crate's
+dependency surface entirely; the literal `Workspace → scip::Index` wrapper is a
+feature-gated future addition, deferred until a consumer needs to *emit* a real
+`.scip`. `tests/scip_diff.rs` diffs that projection against a committed
+per-occurrence rust-analyzer oracle (`expected/scip-occurrences.json`, distilled
+by `oracle-bless` with an `impl`/`Method`-suffix in-class filter) and reports
+**precision** (gated at 100 %) and **in-class recall** (a ratcheting matched
+floor) for the first cut: **cross-crate references** + a symbol-level def
+witness. On the `multi_crate` fixture: precision 100 %, in-class recall 12/18 —
+the misses are all rust-analyzer's per-path-*segment* occurrences (bare crate /
+module prefixes) and field references the resolver structurally can't produce.
+Range comparison derives UTF-8 byte columns from byte ranges (the `café` fixture
+guards non-ASCII). Still fast-path / `serde_json`-only.
 
 ### Phase 2 — Public-crate corpus
 **Goal:** confidence at scale, on code we didn't write.

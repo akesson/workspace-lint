@@ -201,8 +201,14 @@ demand-driven by a failing SCIP/case test.
    accessors; **rewrite `workspace-lint` to consume them**; delete the old
    fields and the step-1 adapter. Snapshots unchanged (behavior identical,
    call sites updated).
-5. *(separate effort — ROADMAP Phase 1)* SCIP emitter over resolved occurrences
-   + empty Phase B `resolve()` hook.
+5. *(landed — ROADMAP Phase 1)* SCIP emitter over resolved occurrences. Shipped
+   as `Workspace::scip_occurrences() -> Vec<ScipOccurrence>` (`src/scip_emit.rs`):
+   a normalized, SCIP-aligned projection rather than a foreign `scip::types::Index`,
+   so the published crate gains **no `scip`/`protobuf` dependency** and the diff
+   harness (`tests/scip_diff.rs`) stays `serde_json`-only. A feature-gated
+   `to_scip_index()` wrapper that emits the real foreign type is deferred until a
+   consumer needs to produce a `.scip` (none in Phase 1). The empty Phase B
+   `resolve()` hook remains a Phase 4 item.
 6. *(later, test-gated — ROADMAP Phase 4)* per-site external macros; framework
    Phase B semantics.
 
