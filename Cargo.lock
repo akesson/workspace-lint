@@ -1370,6 +1370,7 @@ dependencies = [
  "quote",
  "serde_json",
  "syn",
+ "tempfile",
  "toml_edit 0.25.12+spec-1.1.0",
 ]
 

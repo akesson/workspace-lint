@@ -30,3 +30,6 @@ toml_edit = { workspace = true }
 # committed normalized JSON oracles. Generation of those oracles lives in the
 # detached `tools/oracle-bless` crate, so the fast test path needs only serde_json.
 serde_json = { workspace = true }
+# tests/corpus.rs copies each submoduled corpus crate to a tempdir before loading
+# it, so `cargo metadata`'s side effects never touch the read-only checkout.
+tempfile = { workspace = true }

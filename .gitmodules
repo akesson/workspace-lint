@@ -1,0 +1,12 @@
+[submodule "corpus/anyhow"]
+	path = corpus/anyhow
+	url = https://github.com/dtolnay/anyhow.git
+[submodule "corpus/bitflags"]
+	path = corpus/bitflags
+	url = https://github.com/bitflags/bitflags.git
+[submodule "corpus/heck"]
+	path = corpus/heck
+	url = https://github.com/withoutboats/heck.git
+[submodule "corpus/itertools"]
+	path = corpus/itertools
+	url = https://github.com/rust-itertools/itertools.git

@@ -58,7 +58,13 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # Phase-2 corpus crates are git submodules under `corpus/`. The corpus
+      # tests (smoke / lint-FP audit / set-level SCIP differential) load them via
+      # `cargo metadata --no-deps`, so they need no network — but they do need the
+      # submodule sources checked out. Without them the corpus tests skip cleanly.
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
