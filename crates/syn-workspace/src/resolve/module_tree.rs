@@ -25,7 +25,6 @@ use super::use_tree::{self, UseBinding};
 use super::{
     BrokenModDecl, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan, Visibility,
 };
-use crate::macros::annotation::is_expansion_uses;
 use crate::macros::autodetect::extract_macro_paths;
 use crate::plugins;
 
@@ -202,40 +201,45 @@ fn collect_module_contents(
         }
 
         if let syn::Item::Macro(item_macro) = syn_item {
-            if item_macro.ident.is_some() {
-                // `macro_rules!` definition — scan its body for path-like
-                // token sequences and resolve through this scope.
-                extract_macro_paths(item_macro.mac.tokens.clone(), parent_file, &mut occurrences);
-            } else if is_expansion_uses(&item_macro.mac.path, marker_crates) {
-                // Layer 2: explicit `expansion_uses!(path, path, ...)`
-                // annotation. Each argument resolves through the same
-                // scope rules as a macro_rules! body path.
-                extract_macro_paths(item_macro.mac.tokens.clone(), parent_file, &mut occurrences);
-            } else if plugins::matches(&item_macro.mac.path) {
-                // Plugin path: known macro invocations (e.g. `quote!`,
-                // `quote::quote!`, `rsx!`) get their bodies scanned the same
-                // way `macro_rules!` bodies are. Token scanning is the
-                // baseline — it catches every multi-segment path inside
-                // groups.
-                extract_macro_paths(item_macro.mac.tokens.clone(), parent_file, &mut occurrences);
-                // Structured plugin dispatch: parsers that walk a macro's
-                // real AST (currently `DioxusRsxParser`) may surface refs
-                // the token scanner misses or misclassifies. Each raw path
-                // gets canonicalized through `resolve_macro_path` so the
-                // resolver's scope rules apply. Span: the macro invocation
-                // site (the plugin AST doesn't expose per-ref spans).
+            // Macro lowering is the single Phase-A extension point: the first
+            // built-in lowerer that claims this site decides whether to run the
+            // baseline token scan, add structured occurrences, or both.
+            let site = plugins::MacroSite {
+                is_macro_rules: item_macro.ident.is_some(),
+                path: &item_macro.mac.path,
+                tokens: &item_macro.mac.tokens,
+                marker_crates,
+            };
+            let lowerers = plugins::builtin_lowerers();
+            if let Some(lowerer) = lowerers.iter().find(|l| l.claims(&site)) {
+                // Span for structured occurrences: the macro-invocation site
+                // (the plugin AST doesn't expose per-ref spans).
                 let mac_span = item_macro
                     .mac
                     .path
                     .segments
                     .first()
                     .map(|s| span_to_source_span(parent_file, s.ident.span()));
-                for raw in plugins::refs(&item_macro.mac.path, &item_macro.mac.tokens) {
-                    occurrences.push(Occurrence {
-                        segments: raw.segments().to_vec(),
-                        span: mac_span.clone(),
-                        origin: Origin::Macro,
-                    });
+                let cx = plugins::LowerCtx {
+                    macro_span: mac_span,
+                };
+                match lowerer.lower(&site, &cx) {
+                    plugins::Lowered::TokenScan => {
+                        extract_macro_paths(
+                            item_macro.mac.tokens.clone(),
+                            parent_file,
+                            &mut occurrences,
+                        );
+                    }
+                    plugins::Lowered::Exact(occs) => occurrences.extend(occs),
+                    plugins::Lowered::ScanPlus(occs) => {
+                        extract_macro_paths(
+                            item_macro.mac.tokens.clone(),
+                            parent_file,
+                            &mut occurrences,
+                        );
+                        occurrences.extend(occs);
+                    }
                 }
             }
         }
@@ -317,13 +321,16 @@ fn collect_module_contents(
                 continue;
             }
             syn::Item::Mod(_) => continue,
-            // macro_rules! bodies (and Layer 2/3 annotation macros) already
-            // contribute to macro_implicit_refs. Skip to avoid double-counting
-            // and to keep regular-code refs separate from macro-body refs.
+            // Macro bodies claimed by a lowerer already contributed their
+            // occurrences in the macro pass. Skip to avoid double-counting them
+            // as regular code.
             syn::Item::Macro(item_macro)
-                if item_macro.ident.is_some()
-                    || is_expansion_uses(&item_macro.mac.path, marker_crates)
-                    || plugins::matches(&item_macro.mac.path) =>
+                if plugins::claims_any(&plugins::MacroSite {
+                    is_macro_rules: item_macro.ident.is_some(),
+                    path: &item_macro.mac.path,
+                    tokens: &item_macro.mac.tokens,
+                    marker_crates,
+                }) =>
             {
                 continue;
             }

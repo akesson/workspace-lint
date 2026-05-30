@@ -9,13 +9,11 @@
 //!
 //! ## Dispatch
 //!
-//! The resolver's module-tree walker gates on `plugins::matches` (which
-//! iterates [`super::builtin_parsers`] and asks each parser whether it
-//! claims the macro path). Bodies of matching macros are token-scanned
-//! by Layer 1 — same as `quote!` — and additionally passed through
-//! `plugins::refs`, which calls every matching parser's
-//! [`super::MacroBodyParser::references`] method. The AST walk below
-//! catches Component refs the token scanner misses:
+//! The module-tree walker finds the first [`super::MacroLowerer`] that
+//! [`claims`](super::MacroLowerer::claims) the macro site; this lowerer returns
+//! [`Lowered::ScanPlus`](super::Lowered::ScanPlus), so the body is token-scanned
+//! (the baseline, like `quote!`) AND the AST walk below adds the Component refs
+//! the token scanner misses:
 //!
 //! - single-ident components without imports
 //! - interpolated identifiers in `"{x}"` text segments
@@ -24,36 +22,49 @@
 //! Malformed `rsx!` bodies return an empty reference list; the rustc /
 //! dx toolchain is responsible for reporting parse failures, not us.
 
-use proc_macro2::TokenStream;
 use syn::parse2;
 use syn::visit::Visit;
 
-use crate::plugins::{MacroBodyParser, ResolveContext};
+use crate::plugins::{LowerCtx, Lowered, MacroLowerer, MacroSite};
 use crate::resolve::ResolvedPath;
+use crate::resolve::module_tree::{Occurrence, Origin};
 
-/// Built-in parser for `rsx!` and `dioxus::rsx!` invocations.
-pub(crate) struct DioxusRsxParser;
+/// Built-in lowerer for `rsx!` and `dioxus::rsx!` invocations. Token-scans the
+/// body (like any macro) AND adds the structured Component paths the scanner
+/// misses — i.e. [`Lowered::ScanPlus`].
+pub(crate) struct DioxusRsxLowerer;
 
-impl MacroBodyParser for DioxusRsxParser {
-    fn matches(&self, macro_path: &ResolvedPath) -> bool {
-        let segs = macro_path.segments();
-        match segs {
+impl MacroLowerer for DioxusRsxLowerer {
+    fn claims(&self, site: &MacroSite) -> bool {
+        if site.is_macro_rules {
+            return false;
+        }
+        match site.path_segments().segments() {
             [single] => single == "rsx",
             [a, b] => b == "rsx" && (a == "dioxus" || a == "dioxus_core"),
             _ => false,
         }
     }
 
-    fn references(&self, body: &TokenStream, _cx: &ResolveContext<'_>) -> Vec<ResolvedPath> {
-        let Ok(call_body) = parse2::<dioxus_rsx::CallBody>(body.clone()) else {
-            // Malformed rsx! bodies aren't our problem — the rustc / dx
-            // toolchain surfaces those. Return empty so we don't manufacture
-            // spurious references from a partial parse.
-            return Vec::new();
-        };
-        let mut out: Vec<ResolvedPath> = Vec::new();
-        visit_template_body(&call_body.body, &mut out);
-        out
+    fn lower(&self, site: &MacroSite, cx: &LowerCtx) -> Lowered {
+        let mut raw: Vec<ResolvedPath> = Vec::new();
+        // Malformed rsx! bodies aren't our problem — the rustc / dx toolchain
+        // surfaces those; we just contribute no structured refs from a partial
+        // parse (the baseline token scan still runs).
+        if let Ok(call_body) = parse2::<dioxus_rsx::CallBody>(site.tokens.clone()) {
+            visit_template_body(&call_body.body, &mut raw);
+        }
+        // Structured refs carry the macro-invocation span (the rsx AST doesn't
+        // expose per-ref spans).
+        let occurrences = raw
+            .into_iter()
+            .map(|p| Occurrence {
+                segments: p.segments().to_vec(),
+                span: cx.macro_span.clone(),
+                origin: Origin::Macro,
+            })
+            .collect();
+        Lowered::ScanPlus(occurrences)
     }
 }
 
@@ -147,70 +158,75 @@ fn path_to_resolved(path: &syn::Path) -> Option<ResolvedPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proc_macro2::TokenStream;
     use quote::quote;
 
-    fn cx() -> ResolveContext<'static> {
-        ResolveContext::placeholder()
+    fn claims(path: &str) -> bool {
+        let p = syn::parse_str(path).expect("valid path");
+        let t = TokenStream::new();
+        DioxusRsxLowerer.claims(&MacroSite {
+            is_macro_rules: false,
+            path: &p,
+            tokens: &t,
+            marker_crates: &[],
+        })
+    }
+
+    /// Lower an `rsx!` body and return the `::`-joined structured component paths.
+    fn component_paths(body: TokenStream) -> Vec<String> {
+        let p = syn::parse_str("rsx").expect("valid path");
+        let site = MacroSite {
+            is_macro_rules: false,
+            path: &p,
+            tokens: &body,
+            marker_crates: &[],
+        };
+        match DioxusRsxLowerer.lower(&site, &LowerCtx { macro_span: None }) {
+            Lowered::ScanPlus(occs) => occs.iter().map(|o| o.segments.join("::")).collect(),
+            other => panic!(
+                "rsx lowerer should ScanPlus, got {:?}",
+                matches!(other, Lowered::TokenScan)
+            ),
+        }
     }
 
     #[test]
-    fn matches_unqualified_rsx() {
-        let p = DioxusRsxParser;
-        assert!(p.matches(&ResolvedPath::new(["rsx"])));
+    fn claims_unqualified_and_qualified_rsx() {
+        assert!(claims("rsx"));
+        assert!(claims("dioxus::rsx"));
+        assert!(claims("dioxus_core::rsx"));
     }
 
     #[test]
-    fn matches_dioxus_qualified() {
-        let p = DioxusRsxParser;
-        assert!(p.matches(&ResolvedPath::new(["dioxus", "rsx"])));
-        assert!(p.matches(&ResolvedPath::new(["dioxus_core", "rsx"])));
-    }
-
-    #[test]
-    fn does_not_match_unrelated() {
-        let p = DioxusRsxParser;
-        assert!(!p.matches(&ResolvedPath::new(["quote"])));
-        assert!(!p.matches(&ResolvedPath::new(["serde_json", "json"])));
+    fn does_not_claim_unrelated() {
+        assert!(!claims("quote"));
+        assert!(!claims("serde_json::json"));
     }
 
     #[test]
     fn extracts_qualified_component_path() {
-        let p = DioxusRsxParser;
-        let body = quote! {
+        let paths = component_paths(quote! {
             crate::components::Button { label: "go" }
-        };
-        let refs = p.references(&body, &cx());
-        let displays: Vec<String> = refs.iter().map(|r| r.display()).collect();
+        });
         assert!(
-            displays.iter().any(|d| d == "crate::components::Button"),
-            "got {displays:?}"
+            paths.iter().any(|p| p == "crate::components::Button"),
+            "got {paths:?}"
         );
     }
 
     #[test]
     fn extracts_components_inside_for_loop() {
-        let p = DioxusRsxParser;
-        let body = quote! {
+        let paths = component_paths(quote! {
             for item in items.iter() {
                 crate::Card { item: item }
             }
-        };
-        let refs = p.references(&body, &cx());
-        let displays: Vec<String> = refs.iter().map(|r| r.display()).collect();
-        assert!(
-            displays.iter().any(|d| d == "crate::Card"),
-            "got {displays:?}"
-        );
+        });
+        assert!(paths.iter().any(|p| p == "crate::Card"), "got {paths:?}");
     }
 
     #[test]
-    fn malformed_body_returns_empty() {
-        let p = DioxusRsxParser;
-        let body = quote! { this is { not valid rsx } at all };
-        let refs = p.references(&body, &cx());
-        assert!(
-            refs.is_empty(),
-            "malformed body should return empty, got {refs:?}"
-        );
+    fn malformed_body_yields_no_components() {
+        let paths = component_paths(quote! { this is { not valid rsx } at all });
+        assert!(paths.is_empty(), "got {paths:?}");
     }
 }

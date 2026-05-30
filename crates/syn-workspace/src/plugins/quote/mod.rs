@@ -1,59 +1,77 @@
-//! Plugin: `quote!` / `quote::quote!` body parser (gate only).
+//! Lowerer: `quote!` / `quote::quote!` bodies.
 //!
-//! See [`crate::plugins`] for the contributor recipe. `quote!` bodies are
-//! token streams the proc-macro emits as Rust source at expansion time;
-//! their contents reference items the caller will see at the expansion
-//! site, and Layer 1 token scanning (extract multi-segment path tokens,
-//! resolve through the call-site scope) handles them. This parser only
-//! contributes the [`MacroBodyParser::matches`] predicate that gates the
-//! token scan — [`MacroBodyParser::references`] is intentionally empty.
+//! `quote!` bodies are token streams the proc-macro emits as Rust source at
+//! expansion time; their contents reference items the caller sees at the
+//! expansion site, which the baseline token scan (multi-segment path tokens,
+//! resolved through the call-site scope) handles. So this lowerer simply
+//! [`claims`](MacroLowerer::claims) the `quote!` paths and asks for a
+//! [`Lowered::TokenScan`] — no structured extraction, and no fake-empty
+//! reference list to gate the scan (the old `MacroBodyParser` no-op hack).
 
-use proc_macro2::TokenStream;
+use crate::plugins::{LowerCtx, Lowered, MacroLowerer, MacroSite};
 
-use crate::plugins::{MacroBodyParser, ResolveContext};
-use crate::resolve::ResolvedPath;
+/// Built-in lowerer for `quote!` and `quote::quote!` invocations.
+pub(crate) struct QuoteLowerer;
 
-/// Built-in parser for `quote!` and `quote::quote!` invocations.
-pub(crate) struct QuoteParser;
-
-impl MacroBodyParser for QuoteParser {
-    fn matches(&self, macro_path: &ResolvedPath) -> bool {
-        let segs = macro_path.segments();
+impl MacroLowerer for QuoteLowerer {
+    fn claims(&self, site: &MacroSite) -> bool {
+        if site.is_macro_rules {
+            return false;
+        }
         // Match bare `quote!` and `quote::quote!`. Other suffixes
         // (`quote_spanned!`, `format_ident!`) intentionally don't match —
         // their body semantics differ.
-        match segs {
+        match site.path_segments().segments() {
             [single] => single == "quote",
             [a, b] => a == "quote" && b == "quote",
             _ => false,
         }
     }
 
-    fn references(&self, _body: &TokenStream, _cx: &ResolveContext<'_>) -> Vec<ResolvedPath> {
-        Vec::new()
+    fn lower(&self, _site: &MacroSite, _cx: &LowerCtx) -> Lowered {
+        Lowered::TokenScan
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proc_macro2::TokenStream;
 
-    #[test]
-    fn matches_bare_quote() {
-        let p = QuoteParser;
-        assert!(p.matches(&ResolvedPath::new(["quote"])));
+    fn site(path: &str) -> (syn::Path, TokenStream) {
+        (
+            syn::parse_str(path).expect("valid path"),
+            TokenStream::new(),
+        )
+    }
+
+    fn claims(path: &str) -> bool {
+        let (p, t) = site(path);
+        QuoteLowerer.claims(&MacroSite {
+            is_macro_rules: false,
+            path: &p,
+            tokens: &t,
+            marker_crates: &[],
+        })
     }
 
     #[test]
-    fn matches_quote_qualified() {
-        let p = QuoteParser;
-        assert!(p.matches(&ResolvedPath::new(["quote", "quote"])));
+    fn claims_bare_and_qualified_quote() {
+        assert!(claims("quote"));
+        assert!(claims("quote::quote"));
     }
 
     #[test]
-    fn does_not_match_unrelated_macros() {
-        let p = QuoteParser;
-        assert!(!p.matches(&ResolvedPath::new(["lazy_static"])));
-        assert!(!p.matches(&ResolvedPath::new(["quote_spanned"])));
+    fn does_not_claim_unrelated_or_macro_rules() {
+        assert!(!claims("lazy_static"));
+        assert!(!claims("quote_spanned"));
+        // A `macro_rules!` definition is owned by MacroRulesLowerer.
+        let (p, t) = site("quote");
+        assert!(!QuoteLowerer.claims(&MacroSite {
+            is_macro_rules: true,
+            path: &p,
+            tokens: &t,
+            marker_crates: &[],
+        }));
     }
 }

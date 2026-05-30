@@ -1,191 +1,202 @@
-//! Macro-body parser plugins (internal).
+//! Macro-body lowerers (internal).
 //!
-//! Some macros — `rsx!`, `quote!`, `serde_json::json!` — encode meaningful
-//! references inside their bodies as full Rust syntax. Token-level scanning
-//! (Layer 1 autodetect) often misses these or misclassifies them. Plugins
-//! parse such bodies into structured ASTs and emit precise reference lists.
+//! Macro lowering is the single Phase-A extension point of the resolver:
+//! everything else (regular-code path scan, use-trees, mod resolution,
+//! extern-crate) is core. A [`MacroLowerer`] claims a class of macro sites and
+//! lowers each into [`Lowered`] — either a request to run the baseline token
+//! scan over the body ([`Lowered::TokenScan`]), structured occurrences that
+//! replace the scan ([`Lowered::Exact`]), or both ([`Lowered::ScanPlus`]).
 //!
-//! **This is an internal extension point**, not a public API. The trait,
-//! the context type, the registry, and the [`matches()`]/[`refs()`] dispatch
-//! functions are all `pub(crate)` and exist so that built-in parsers can be
-//! added in one place. Downstream consumers do not implement this trait;
-//! they consume the resolved references via [`crate::Workspace`].
+//! **This is an internal extension point**, not a public API. The trait, the
+//! site/context types, and the registry are all `pub(crate)`; downstream
+//! consumers see only the resolved references via [`crate::Workspace`].
 //!
-//! ## Adding a built-in parser
+//! ## Adding a built-in lowerer
 //!
-//! Each plugin lives in its own folder. To add one:
-//!
-//! 1. Create `plugins/<name>/mod.rs`. Define your parser struct and
-//!    `impl MacroBodyParser for ...`. Colocate unit tests in a
-//!    `#[cfg(test)] mod tests` block in the same file.
-//! 2. **If your parser brings an extra crate dep**: mark that dep
-//!    `optional = true` in `crates/syn-workspace/Cargo.toml`, add a
-//!    `<name>` entry to the `[features]` table (and to `default` if it
-//!    should ship enabled by default), and gate the `mod <name>;` line
-//!    below with `#[cfg(feature = "<name>")]`.
-//! 3. Append `Box::new(<name>::Parser)` to [`builtin_parsers`] (with the
-//!    same `#[cfg]` gate if your parser is feature-flagged).
-//! 4. Add a `builtin_parsers_includes_<name>` test in the registry tests
-//!    below (cfg-gated to match).
-//!
-//! There is no separate gating table to update — the module-tree walker
-//! goes through [`matches()`], which iterates [`builtin_parsers`] and asks
-//! each parser whether it claims the macro path.
+//! 1. Define a struct and `impl MacroLowerer for ...` — colocate unit tests in
+//!    a `#[cfg(test)] mod tests` block. Path-matching lowerers live in their own
+//!    `plugins/<name>/mod.rs` folder.
+//! 2. **If it brings an extra crate dep**: mark that dep `optional = true` in
+//!    `Cargo.toml`, add a `<name>` feature, and `#[cfg(feature = "<name>")]`-gate
+//!    both the `mod <name>;` line and the [`builtin_lowerers`] push.
+//! 3. Append it to [`builtin_lowerers`] (claim-priority order).
 
 use proc_macro2::TokenStream;
 
+use crate::macros::annotation::is_expansion_uses;
 use crate::resolve::ResolvedPath;
+use crate::resolve::SourceSpan;
+use crate::resolve::module_tree::Occurrence;
 
 pub(crate) mod quote;
 
 #[cfg(feature = "dioxus")]
 pub(crate) mod dioxus_rsx;
 
-/// Context passed to a plugin while it's resolving references inside a
-/// macro body. Currently carries no state; the type exists so the trait
-/// method's signature is stable when scope-aware resolution lands.
-pub(crate) struct ResolveContext<'a> {
-    _phantom: std::marker::PhantomData<&'a ()>,
+/// A macro item encountered during the module walk.
+pub(crate) struct MacroSite<'a> {
+    /// `macro_rules! name { ... }` definition (as opposed to an invocation).
+    pub is_macro_rules: bool,
+    /// The macro path (`quote`, `dioxus::rsx`, the marker path for
+    /// `expansion_uses!`, or `macro_rules` for a definition).
+    pub path: &'a syn::Path,
+    /// The macro body / argument token stream.
+    pub tokens: &'a TokenStream,
+    /// Marker crates that flag an `expansion_uses!` annotation.
+    pub marker_crates: &'a [String],
 }
 
-impl ResolveContext<'_> {
-    pub(crate) fn placeholder() -> Self {
-        Self {
-            _phantom: std::marker::PhantomData,
-        }
+impl MacroSite<'_> {
+    /// The macro path as raw segment strings, for path-matching lowerers.
+    pub(crate) fn path_segments(&self) -> ResolvedPath {
+        ResolvedPath::new(self.path.segments.iter().map(|s| s.ident.to_string()))
     }
 }
 
-/// A pluggable parser for specific macro bodies. Plugins extend the resolver
-/// with structured knowledge of macros whose contents are richer than raw
-/// token streams.
-pub(crate) trait MacroBodyParser: Send + Sync {
-    /// Returns `true` if this parser knows the macro at `macro_path`.
-    ///
-    /// Implementations should match both unqualified and crate-qualified
-    /// forms (e.g. `rsx!` and `dioxus::rsx!`) since the call site may use
-    /// either depending on its `use` statements.
-    fn matches(&self, macro_path: &ResolvedPath) -> bool;
-
-    /// Extract references from the macro's body. Implementations that rely
-    /// solely on Layer 1 token-scanning (currently [`quote::QuoteParser`])
-    /// return an empty vec — they exist only to gate Layer 1 via
-    /// [`Self::matches`].
-    fn references(&self, body: &TokenStream, cx: &ResolveContext<'_>) -> Vec<ResolvedPath>;
+/// Context for lowering. Carries the span to attach to structured occurrences —
+/// the macro-invocation site, since the plugin AST doesn't expose per-ref spans.
+pub(crate) struct LowerCtx {
+    pub macro_span: Option<SourceSpan>,
 }
 
-/// All built-in plugin parsers shipped with `syn-workspace`.
-pub(crate) fn builtin_parsers() -> Vec<Box<dyn MacroBodyParser>> {
-    // `mut` only needed when at least one feature-gated parser is enabled.
+/// What a lowerer does with a claimed macro body.
+pub(crate) enum Lowered {
+    /// Run the baseline token scan over the body (the old Layer-1 behavior).
+    TokenScan,
+    /// Structured occurrences fully replace the scan. Reserved for Layer-3
+    /// external macros (a test-gated follow-up); no built-in lowerer emits it
+    /// yet, but the dispatch handles it.
+    #[allow(dead_code)]
+    Exact(Vec<Occurrence>),
+    /// Run the baseline scan AND add these structured occurrences.
+    ScanPlus(Vec<Occurrence>),
+}
+
+/// A pluggable lowerer for a class of macro bodies — the resolver's only
+/// Phase-A extension point.
+pub(crate) trait MacroLowerer: Send + Sync {
+    /// Whether this lowerer owns the given macro site.
+    fn claims(&self, site: &MacroSite) -> bool;
+    /// Lower the claimed site to its [`Lowered`] behavior.
+    fn lower(&self, site: &MacroSite, cx: &LowerCtx) -> Lowered;
+}
+
+/// `macro_rules! name { ... }` bodies — token-scanned at the definition scope.
+struct MacroRulesLowerer;
+
+impl MacroLowerer for MacroRulesLowerer {
+    fn claims(&self, site: &MacroSite) -> bool {
+        site.is_macro_rules
+    }
+
+    fn lower(&self, _site: &MacroSite, _cx: &LowerCtx) -> Lowered {
+        Lowered::TokenScan
+    }
+}
+
+/// `expansion_uses!(path, ...)` annotations — arguments token-scanned.
+struct AnnotationLowerer;
+
+impl MacroLowerer for AnnotationLowerer {
+    fn claims(&self, site: &MacroSite) -> bool {
+        !site.is_macro_rules && is_expansion_uses(site.path, site.marker_crates)
+    }
+
+    fn lower(&self, _site: &MacroSite, _cx: &LowerCtx) -> Lowered {
+        Lowered::TokenScan
+    }
+}
+
+/// All built-in macro lowerers, in claim-priority order.
+pub(crate) fn builtin_lowerers() -> Vec<Box<dyn MacroLowerer>> {
+    // `mut` only needed when a feature-gated lowerer is enabled.
     #[allow(unused_mut)]
-    let mut v: Vec<Box<dyn MacroBodyParser>> = vec![Box::new(quote::QuoteParser)];
+    let mut v: Vec<Box<dyn MacroLowerer>> = vec![
+        Box::new(MacroRulesLowerer),
+        Box::new(AnnotationLowerer),
+        Box::new(quote::QuoteLowerer),
+    ];
     #[cfg(feature = "dioxus")]
-    v.push(Box::new(dioxus_rsx::DioxusRsxParser));
+    v.push(Box::new(dioxus_rsx::DioxusRsxLowerer));
     v
 }
 
-/// Returns `true` if any built-in plugin parser claims the macro at `path`.
-///
-/// Single source of truth for the "is this a known plugin macro?" gate
-/// used by the module-tree walker — both to enable Layer 1 token scanning
-/// of bodies and to suppress double-counting in the implicit-refs filter.
-/// The matched path set is derived from each parser's `matches()`, so
-/// adding a plugin does not require any edits here.
-pub(crate) fn matches(path: &syn::Path) -> bool {
-    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-    let rp = ResolvedPath::new(segs);
-    builtin_parsers().iter().any(|p| p.matches(&rp))
-}
-
-/// Dispatch a macro invocation to the built-in plugin registry and collect
-/// any references the matching parser emits. Returned paths are in raw
-/// (uncanonicalized) form — the caller runs them through
-/// [`crate::resolve::module_tree::resolve_macro_path`] to apply scope rules.
-pub(crate) fn refs(macro_path: &syn::Path, body: &TokenStream) -> Vec<ResolvedPath> {
-    let segs: Vec<String> = macro_path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect();
-    let mp = ResolvedPath::new(segs);
-    let cx = ResolveContext::placeholder();
-    let mut out: Vec<ResolvedPath> = Vec::new();
-    for parser in builtin_parsers() {
-        if parser.matches(&mp) {
-            out.extend(parser.references(body, &cx));
-        }
-    }
-    out
+/// Whether any built-in lowerer claims this macro site — the single source of
+/// truth for "was this macro handled in the macro pass?", used by the
+/// code-path pass to avoid double-counting macro bodies as regular code.
+pub(crate) fn claims_any(site: &MacroSite) -> bool {
+    builtin_lowerers().iter().any(|l| l.claims(site))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    struct AlwaysMatches;
+    fn syn_path(s: &str) -> syn::Path {
+        syn::parse_str(s).expect("valid path")
+    }
 
-    impl MacroBodyParser for AlwaysMatches {
-        fn matches(&self, _macro_path: &ResolvedPath) -> bool {
-            true
-        }
-
-        fn references(&self, _body: &TokenStream, _cx: &ResolveContext<'_>) -> Vec<ResolvedPath> {
-            vec![ResolvedPath::new(["dummy", "Thing"])]
+    fn site<'a>(
+        is_macro_rules: bool,
+        path: &'a syn::Path,
+        tokens: &'a TokenStream,
+    ) -> MacroSite<'a> {
+        MacroSite {
+            is_macro_rules,
+            path,
+            tokens,
+            marker_crates: &[],
         }
     }
 
     #[test]
     fn trait_is_object_safe() {
-        let parsers: Vec<Box<dyn MacroBodyParser>> = vec![Box::new(AlwaysMatches)];
-        let path = ResolvedPath::new(["foo", "bar"]);
-        let cx = ResolveContext::placeholder();
+        let lowerers = builtin_lowerers();
+        assert!(
+            !lowerers.is_empty(),
+            "ships at least macro_rules + annotation + quote"
+        );
+    }
+
+    #[test]
+    fn macro_rules_definition_is_claimed_and_token_scanned() {
+        let path = syn_path("macro_rules");
         let tokens = TokenStream::new();
-        for p in &parsers {
-            assert!(p.matches(&path));
-            assert_eq!(p.references(&tokens, &cx).len(), 1);
-        }
+        let s = site(true, &path, &tokens);
+        assert!(claims_any(&s));
+        let lowerer = builtin_lowerers();
+        let claimer = lowerer
+            .iter()
+            .find(|l| l.claims(&s))
+            .expect("a lowerer claims macro_rules");
+        assert!(matches!(
+            claimer.lower(&s, &LowerCtx { macro_span: None }),
+            Lowered::TokenScan
+        ));
     }
 
     #[test]
-    fn builtin_parsers_includes_quote() {
-        let parsers = builtin_parsers();
-        assert!(!parsers.is_empty(), "ships at least the quote parser");
-        let quote_path = ResolvedPath::new(["quote"]);
-        let quote_qualified = ResolvedPath::new(["quote", "quote"]);
-        assert!(parsers.iter().any(|p| p.matches(&quote_path)));
-        assert!(parsers.iter().any(|p| p.matches(&quote_qualified)));
+    fn quote_invocation_token_scans() {
+        let path = syn_path("quote");
+        let tokens = TokenStream::new();
+        let s = site(false, &path, &tokens);
+        assert!(claims_any(&s));
+    }
+
+    #[test]
+    fn unrelated_macro_is_unclaimed() {
+        let path = syn_path("lazy_static");
+        let tokens = TokenStream::new();
+        assert!(!claims_any(&site(false, &path, &tokens)));
     }
 
     #[cfg(feature = "dioxus")]
     #[test]
-    fn builtin_parsers_includes_dioxus_rsx() {
-        let parsers = builtin_parsers();
-        let rsx = ResolvedPath::new(["rsx"]);
-        let dioxus_rsx_qualified = ResolvedPath::new(["dioxus", "rsx"]);
-        assert!(parsers.iter().any(|p| p.matches(&rsx)));
-        assert!(parsers.iter().any(|p| p.matches(&dioxus_rsx_qualified)));
-    }
-
-    fn syn_path(s: &str) -> syn::Path {
-        syn::parse_str(s).expect("valid path")
-    }
-
-    #[test]
-    fn matches_gates_known_plugin_macros() {
-        assert!(matches(&syn_path("quote")));
-        assert!(matches(&syn_path("quote::quote")));
-    }
-
-    #[cfg(feature = "dioxus")]
-    #[test]
-    fn matches_gates_rsx_when_dioxus_enabled() {
-        assert!(matches(&syn_path("rsx")));
-        assert!(matches(&syn_path("dioxus::rsx")));
-    }
-
-    #[test]
-    fn matches_rejects_unrelated_macros() {
-        assert!(!matches(&syn_path("lazy_static")));
-        assert!(!matches(&syn_path("serde_json::json")));
+    fn rsx_invocation_is_claimed() {
+        let path = syn_path("rsx");
+        let tokens = TokenStream::new();
+        assert!(claims_any(&site(false, &path, &tokens)));
+        let qualified = syn_path("dioxus::rsx");
+        assert!(claims_any(&site(false, &qualified, &tokens)));
     }
 }

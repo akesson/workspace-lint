@@ -1,9 +1,8 @@
 //! Layer 1: automatic reference inference for workspace-owned macros.
 //!
 //! Token-level scanning of macro bodies for path-like `Ident :: Ident
-//! (:: Ident)*` sequences. Resolves each through the macro's defining
-//! scope (using `crate::resolve::module_tree::resolve_macro_path`) and
-//! records the canonical path in the caller's output set.
+//! (:: Ident)*` sequences. Emits each as a raw `Macro`-origin `Occurrence`
+//! (spanned); canonicalization happens centrally in `resolve_occurrence`.
 //!
 //! **Recall vs. precision.** Any multi-segment path shape *anywhere*
 //! inside *any* `macro_rules!` body ends up in the implicit-refs set.
