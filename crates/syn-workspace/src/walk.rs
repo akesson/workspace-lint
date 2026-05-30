@@ -40,7 +40,13 @@ use crate::resolve::{
 /// silently diverges on `exclude` and non-trivial globs.
 pub fn member_manifests(root: &Path) -> Result<Vec<PathBuf>> {
     let manifest = root.join("Cargo.toml");
-    let metadata = MetadataCommand::new().manifest_path(&manifest).exec()?;
+    // `--no-deps` for the same reason as `load_members`: only workspace member
+    // manifests are needed, so dependency resolution (and the network / lockfile
+    // it would require) is pure overhead.
+    let metadata = MetadataCommand::new()
+        .manifest_path(&manifest)
+        .no_deps()
+        .exec()?;
     Ok(metadata
         .workspace_packages()
         .into_iter()
@@ -60,8 +66,15 @@ pub(crate) fn load_members(
     marker_crates: &[String],
 ) -> Result<(Manifest, Vec<Crate>, Vec<LoadWarning>)> {
     let root_manifest_path = root.join("Cargo.toml");
+    // `--no-deps`: we materialize only workspace members (see the
+    // `workspace_packages()` loop below) and represent external crates by name
+    // alone, so cargo's dependency *resolution* is pure overhead — and it would
+    // force a resolvable graph (network / a populated registry / a lockfile)
+    // just to load. Skipping it makes `Workspace::load` work offline on any
+    // crate, which the Phase-2 corpus relies on.
     let metadata = MetadataCommand::new()
         .manifest_path(&root_manifest_path)
+        .no_deps()
         .exec()?;
 
     let root_manifest = Manifest::load(&root_manifest_path)?;

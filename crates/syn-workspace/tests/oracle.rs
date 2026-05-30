@@ -223,6 +223,93 @@ fn check_dependency_set(ws: &Workspace, krate: &str, scip: &Value) {
     );
 }
 
+/// A real third-party crate vendored as a git submodule under `corpus/`, paired
+/// with its committed set-level SCIP oracle under `tests/corpus_oracle/<name>/`.
+struct CorpusCrate {
+    /// Crate code-form name (matches the SCIP `referenced_packages` key and the
+    /// `corpus/` submodule dir).
+    name: &'static str,
+}
+
+const CORPUS: &[CorpusCrate] = &[CorpusCrate { name: "itertools" }];
+
+/// Phase-2 corpus set-level dependency differential — the re-export-immune gate
+/// generalized across real crates (the occurrence-level diff isn't gateable on
+/// references into registry deps; crate granularity is, per ROADMAP §B).
+///
+/// For each corpus crate with a committed oracle: every `[dependencies]` dep that
+/// rust-analyzer proves referenced must be visible to the resolver, or
+/// `unused-deps` would false-positive. **Vacuous-safe** — a dependency-free crate
+/// legitimately proves nothing. **Skips cleanly** when a submodule or its oracle
+/// is absent (fresh clone / packaged crate).
+#[test]
+fn corpus_dependency_differential() {
+    let mut ran = 0;
+    for c in CORPUS {
+        let src = corpus_root().join(c.name);
+        let oracle_path = corpus_oracle_root().join(c.name).join("scip.json");
+        if !src.join("Cargo.toml").exists() || !oracle_path.exists() {
+            eprintln!("corpus crate `{}` or its oracle absent — skipping", c.name);
+            continue;
+        }
+        ran += 1;
+        let ws = Workspace::load(&src).unwrap_or_else(|e| panic!("load corpus `{}`: {e}", c.name));
+        let scip = load_json(&oracle_path);
+        assert_eq!(
+            scip["position_encoding"].as_str(),
+            Some(EXPECTED_POSITION_ENCODING),
+            "corpus oracle `{}` position-encoding drift",
+            c.name
+        );
+
+        let krate = member(&ws, c.name);
+        let declared: BTreeSet<String> = krate
+            .declared_deps()
+            .filter(|d| matches!(d.section, DepSection::Dependencies))
+            .map(|d| d.normalized_name)
+            .collect();
+        let scip_pkgs = str_set(&scip["referenced_packages"][c.name]);
+        let proven_used: BTreeSet<&String> = declared.intersection(&scip_pkgs).collect();
+        let syn_refs: BTreeSet<String> = ws
+            .references_from_crate(krate)
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.crate_name().map(str::to_string))
+            .collect();
+        for dep in &proven_used {
+            assert!(
+                syn_refs.contains(*dep),
+                "unused-deps FALSE-POSITIVE on corpus crate `{}`: rust-analyzer proves it \
+                 references `{dep}`, but that crate is absent from references_from_crate()",
+                c.name
+            );
+        }
+        eprintln!(
+            "  corpus differential `{}`: {} of {} declared dep(s) proven-used and visible",
+            c.name,
+            proven_used.len(),
+            declared.len()
+        );
+    }
+    if ran == 0 {
+        eprintln!(
+            "no corpus crates with oracles present — skipping (run `git submodule update --init`)"
+        );
+    }
+}
+
+fn corpus_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("syn-workspace crate has a repo root two levels up")
+        .join("corpus")
+}
+
+fn corpus_oracle_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus_oracle")
+}
+
 /// Check 3 (broaden) — the FULL module tree. Every module-level def the
 /// `--document-private-items` oracle reports (any visibility) must be enumerated
 /// by the resolver at the same canonical path, and visibility tiers

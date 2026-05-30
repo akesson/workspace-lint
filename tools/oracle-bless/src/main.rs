@@ -29,37 +29,73 @@ use std::process::Command;
 /// field lookups in `rustdoc_oracle` before re-blessing. Recorded in ROADMAP §B.
 const EXPECTED_RUSTDOC_FORMAT: u64 = 57;
 
-/// Fixtures to (re)bless. Add new fixture dirs here.
-const FIXTURES: &[Fixture] = &[Fixture {
-    dir: "multi_crate",
-    rustdoc_crate: "oracle-core",
-}];
+/// Fixtures to (re)bless. Add new fixtures here.
+const FIXTURES: &[Fixture] = &[
+    Fixture {
+        source: "crates/syn-workspace/tests/oracle/multi_crate/workspace",
+        out: "crates/syn-workspace/tests/oracle/multi_crate/expected",
+        kind: FixtureKind::Workspace {
+            rustdoc_crate: "oracle-core",
+        },
+    },
+    // Phase-2 corpus crate (git submodule under `corpus/`): set-level SCIP oracle
+    // only. `rust-analyzer scip` needs the crate's deps resolvable — run the bless
+    // with network so it can fetch `either`.
+    Fixture {
+        source: "corpus/itertools",
+        out: "crates/syn-workspace/tests/corpus_oracle/itertools",
+        kind: FixtureKind::SingleCrate { member: "itertools" },
+    },
+];
 
 struct Fixture {
-    /// Directory under crates/syn-workspace/tests/oracle/
-    dir: &'static str,
-    /// Crate whose public surface the rustdoc oracle captures (cargo name).
-    rustdoc_crate: &'static str,
+    /// Loadable source dir (cargo workspace or standalone crate), relative to repo root.
+    source: &'static str,
+    /// Output dir for the committed oracle JSON, relative to repo root.
+    out: &'static str,
+    kind: FixtureKind,
+}
+
+enum FixtureKind {
+    /// Hand-authored fixture: full rustdoc (public + private) + SCIP oracles
+    /// (set-level packages, definitions, and per-occurrence rows).
+    Workspace { rustdoc_crate: &'static str },
+    /// Real third-party corpus crate: a **set-level SCIP oracle only**
+    /// (`referenced_packages` for the one member). No rustdoc — real crates have
+    /// unreachable `pub` items the equality check can't model — and no occurrence
+    /// rows, since occurrence precision into registry deps is unreachable
+    /// (re-export blindness). `member` is the crate's code-form name; every SCIP
+    /// document belongs to it.
+    SingleCrate { member: &'static str },
 }
 
 fn main() -> Result<()> {
     let repo = repo_root();
     for fx in FIXTURES {
-        bless(&repo, fx).with_context(|| format!("bless fixture `{}`", fx.dir))?;
+        bless(&repo, fx).with_context(|| format!("bless fixture `{}`", fx.source))?;
     }
     println!("\nblessed {} fixture(s).", FIXTURES.len());
     Ok(())
 }
 
 fn bless(repo: &Path, fx: &Fixture) -> Result<()> {
-    let base = repo.join("crates/syn-workspace/tests/oracle").join(fx.dir);
-    let ws = base.join("workspace");
-    let expected = base.join("expected");
+    let ws = repo.join(fx.source);
+    let expected = repo.join(fx.out);
     std::fs::create_dir_all(&expected)?;
-    println!("== fixture {} ==", fx.dir);
+    println!("== fixture {} ==", fx.source);
+    match &fx.kind {
+        FixtureKind::Workspace { rustdoc_crate } => {
+            bless_workspace(repo, ws, expected, rustdoc_crate)
+        }
+        FixtureKind::SingleCrate { member } => bless_single_crate(repo, ws, expected, member),
+    }
+}
 
+/// Full hand-authored fixture: rustdoc (public + private) + SCIP (set-level,
+/// definitions, and per-occurrence) oracles.
+fn bless_workspace(repo: &Path, ws: PathBuf, expected: PathBuf, rustdoc_crate: &str) -> Result<()> {
     // ---- rustdoc oracle (public def/visibility + re-exports) -------------
-    let rd_json = gen_rustdoc_json(&ws, fx.rustdoc_crate, false)?;
+    let rd_json = gen_rustdoc_json(&ws, rustdoc_crate, false)?;
     let rd: Value =
         serde_json::from_slice(&std::fs::read(&rd_json)?).context("parse rustdoc JSON")?;
     let rd_oracle = rustdoc_oracle(&rd)?;
@@ -78,7 +114,7 @@ fn bless(repo: &Path, fx: &Fixture) -> Result<()> {
     // The public oracle above is already distilled into an owned Value before this
     // call wipes target/doc and regenerates it with private items — keep that
     // read-before-overwrite ordering if refactoring.
-    let rd_priv_json = gen_rustdoc_json(&ws, fx.rustdoc_crate, true)?;
+    let rd_priv_json = gen_rustdoc_json(&ws, rustdoc_crate, true)?;
     let rd_priv: Value = serde_json::from_slice(&std::fs::read(&rd_priv_json)?)
         .context("parse private rustdoc JSON")?;
     let rd_priv_oracle = rustdoc_private_oracle(&rd_priv)?;
@@ -109,6 +145,25 @@ fn bless(repo: &Path, fx: &Fixture) -> Result<()> {
     let scip_occ_out = expected.join("scip-occurrences.json");
     write_json(&scip_occ_out, &scip_occ_oracle)?;
     println!("  wrote {}", rel(repo, &scip_occ_out));
+    Ok(())
+}
+
+/// Real corpus crate: a set-level SCIP oracle only — the set of packages the
+/// crate references, which the differential gate intersects with its declared
+/// `[dependencies]`. `rust-analyzer scip` resolves the crate's deps (needs
+/// network), so this distills the same `index` the workspace path would, but
+/// emits only `referenced_packages` for the single member.
+fn bless_single_crate(repo: &Path, ws: PathBuf, expected: PathBuf, member: &str) -> Result<()> {
+    let scip_path = gen_scip(&ws)?;
+    let index = Index::parse_from_bytes(&std::fs::read(&scip_path)?).context("parse SCIP")?;
+    ensure!(
+        !index.documents.is_empty(),
+        "rust-analyzer scip produced no documents for `{member}` — did it fail to resolve the crate's dependencies (run the bless with network)?"
+    );
+    let oracle = scip_setlevel_oracle(&index, member)?;
+    let out = expected.join("scip.json");
+    write_json(&out, &oracle)?;
+    println!("  wrote {}", rel(repo, &out));
     Ok(())
 }
 
@@ -348,6 +403,41 @@ fn scip_oracle(index: &Index) -> Result<Value> {
         "position_encoding": enc,
         "referenced_packages": referenced_packages,
         "definitions": definitions.into_iter().collect::<Vec<_>>(),
+    }))
+}
+
+/// Set-level SCIP oracle for a single real corpus crate: the set of package
+/// names its occurrences reference, bucketed under the one `member`. The
+/// differential gate (`oracle.rs`) intersects this with the crate's declared
+/// `[dependencies]` and asserts each proven-referenced dep is visible to the
+/// resolver — a re-export-immune false-positive check for `unused-deps`. Tiny by
+/// construction (one package-name set); a CAP guards an unexpected explosion.
+fn scip_setlevel_oracle(index: &Index, member: &str) -> Result<Value> {
+    let enc = assert_uniform_encoding(index)?;
+    let mut pkgs: BTreeSet<String> = BTreeSet::new();
+    for doc in &index.documents {
+        for occ in &doc.occurrences {
+            if let Some((pkg, _)) = parse_symbol(&occ.symbol) {
+                pkgs.insert(pkg);
+            }
+        }
+    }
+    const CAP: usize = 1000;
+    ensure!(
+        pkgs.len() < CAP,
+        "set-level oracle for `{member}` references {} packages (>= {CAP}) — unexpected; investigate before committing",
+        pkgs.len()
+    );
+    ensure!(
+        !pkgs.is_empty(),
+        "set-level oracle for `{member}` found no referenced packages — did rust-analyzer fail to index it?"
+    );
+    let mut referenced = Map::new();
+    referenced.insert(member.to_string(), json!(pkgs.into_iter().collect::<Vec<_>>()));
+    Ok(json!({
+        "_doc": "Generated by tools/oracle-bless (corpus set-level). Do not edit by hand.",
+        "position_encoding": enc,
+        "referenced_packages": Value::Object(referenced),
     }))
 }
 

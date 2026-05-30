@@ -251,6 +251,36 @@ workspace shapes). For each crate, three gates:
 **Done when:** the corpus runs in CI and regressions in precision or new FPs fail
 the build.
 
+**Landed (Phase 2, corpus harness first cut):** real crates are vendored as git
+submodules under `corpus/` (`anyhow`, `bitflags`, `heck`, `itertools`), pinned to
+release SHAs and `exclude`d from the workspace. A key enabler:
+`Workspace::load` now runs `cargo metadata --no-deps` (`walk.rs`) — the resolver
+only materializes workspace members, so dependency resolution was pure overhead;
+dropping it makes loading work **offline for any crate**. The three gates:
+- **Smoke** (`syn-workspace/tests/corpus.rs`): each crate loads without panic,
+  terminates (ceiling-gated), yields ≥1 member + ≥1 item. Copies to a tempdir so
+  the read-only checkout is never mutated.
+- **Differential** (`oracle.rs`): the re-export-immune **set-level** dep oracle
+  generalized across the corpus (`itertools`: rust-analyzer proves it references
+  `either`; assert `either` is visible to the resolver). The occurrence-level
+  diff stays `multi_crate`-only — occurrence precision into *registry* deps is
+  unreachable (re-export blindness), so crate granularity is the corpus gate, per
+  §B. Vacuous-safe (a dep-free crate proves nothing).
+- **Lint FP audit** (`workspace-lint/tests/corpus_fp.rs`): runs `unused-deps` and
+  snapshots diagnostics. It **found real false positives** — `unused-deps`
+  flagging dev-dependencies used only in doc-tests (`anyhow`'s `futures`),
+  external glob imports + derive-attribute paths (`bitflags`'s `serde_lib`), and
+  `#[cfg]`-gated test modules (`serde_test`) — all tracked in
+  `tests/corpus_fp/README.md` with a snapshot forcing-function. (`unused-pub` is
+  excluded: it flags a standalone library's whole public API by construction.)
+
+All gates run fast-path / `serde_json`-only against committed oracles (the
+`test` CI job checks out submodules; no RA/nightly in CI); the corpus crates'
+zero/light dep graphs keep `cargo metadata --no-deps` network-free. **Deferred:**
+heavier / multi-member corpus crates; resolver fixes for the found FP classes
+(doc-tests, external globs, derive paths, cfg-gated mods — Phase 3); a
+`workflow_dispatch` RA/nightly re-bless job.
+
 ### Phase 3 — Close the in-class gap (the iterable loop)
 **Goal:** grind the resolver toward in-class completeness.
 With harness + corpus in place, every in-class SCIP miss or spurious occurrence

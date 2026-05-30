@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# Phase-2 corpus: real third-party crates vendored as git submodules under
+# `corpus/`, used as test fixtures (smoke / lint-FP audit / set-level SCIP
+# differential). Excluded so cargo treats each as its own standalone package —
+# otherwise cargo would try to fold them into this workspace and error.
+exclude = ["corpus"]
 
 [workspace.package]
 rust-version = "1.88"
