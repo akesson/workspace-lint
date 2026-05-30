@@ -43,6 +43,42 @@ struct ModuleContents {
     references: Vec<ResolvedPath>,
 }
 
+/// One reference occurrence captured during the module walk (occurrence-IR
+/// refactor, step 1). Extraction emits these — carrying a span, the new
+/// capability the IR exists to preserve — and a transient adapter in
+/// [`collect_module_contents`] flattens them back into today's `references` /
+/// `macro_implicit_refs` by [`Origin`]. The `span` is not yet read by the model
+/// surface; that lands when occurrences become the primary reference surface.
+pub(crate) struct Occurrence {
+    pub path: ResolvedPath,
+    #[allow(dead_code)] // consumed when occurrences become the model surface
+    pub span: Option<SourceSpan>,
+    pub origin: Origin,
+}
+
+/// Where a reference occurrence came from. Drives the step-1 adapter split:
+/// `Macro` → `macro_implicit_refs`, everything else → `references`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    Code,
+    GlobUse,
+    ExternCrate,
+    Macro,
+}
+
+/// Convert a `proc_macro2::Span` to a [`SourceSpan`] anchored at `file` — the
+/// generalized form of the per-site span construction (`byte_range` below /
+/// `use_tree::source_span_from_ident`).
+pub(crate) fn span_to_source_span(file: &Path, span: proc_macro2::Span) -> SourceSpan {
+    let start = span.start();
+    SourceSpan {
+        file: file.to_path_buf(),
+        line: start.line as u32,
+        column: start.column as u32,
+        byte_range: byte_range(span),
+    }
+}
+
 /// Build a fully-populated module tree for one crate, using the default
 /// marker-crate names for `expansion_uses!` detection. Most callers
 /// reach this via [`crate::Workspace::load`] rather than directly.
@@ -142,8 +178,10 @@ fn collect_module_contents(
     let mut use_bindings = Vec::new();
     let mut broken_mod_decls = Vec::new();
     let mut cfg_features: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut macro_refs: std::collections::BTreeSet<ResolvedPath> =
-        std::collections::BTreeSet::new();
+    // All reference occurrences for this module (macro-body + regular-code +
+    // glob + extern-crate). A transient adapter at the end of this function
+    // flattens them into today's `references` / `macro_implicit_refs`.
+    let mut occurrences: Vec<Occurrence> = Vec::new();
 
     for syn_item in syn_items {
         for attr in item_attrs(syn_item) {
@@ -167,7 +205,8 @@ fn collect_module_contents(
                     &scope,
                     &sibling_names,
                     parent_canonical,
-                    &mut macro_refs,
+                    parent_file,
+                    &mut occurrences,
                 );
             } else if is_expansion_uses(&item_macro.mac.path, marker_crates) {
                 // Layer 2: explicit `expansion_uses!(path, path, ...)`
@@ -178,7 +217,8 @@ fn collect_module_contents(
                     &scope,
                     &sibling_names,
                     parent_canonical,
-                    &mut macro_refs,
+                    parent_file,
+                    &mut occurrences,
                 );
             } else if plugins::matches(&item_macro.mac.path) {
                 // Plugin path: known macro invocations (e.g. `quote!`,
@@ -191,13 +231,21 @@ fn collect_module_contents(
                     &scope,
                     &sibling_names,
                     parent_canonical,
-                    &mut macro_refs,
+                    parent_file,
+                    &mut occurrences,
                 );
                 // Structured plugin dispatch: parsers that walk a macro's
                 // real AST (currently `DioxusRsxParser`) may surface refs
                 // the token scanner misses or misclassifies. Each raw path
                 // gets canonicalized through `resolve_macro_path` so the
-                // resolver's scope rules apply.
+                // resolver's scope rules apply. Span: the macro invocation
+                // site (the plugin AST doesn't expose per-ref spans).
+                let mac_span = item_macro
+                    .mac
+                    .path
+                    .segments
+                    .first()
+                    .map(|s| span_to_source_span(parent_file, s.ident.span()));
                 for raw in plugins::refs(&item_macro.mac.path, &item_macro.mac.tokens) {
                     if let Some(canonical) = resolve_macro_path(
                         raw.segments().to_vec(),
@@ -205,7 +253,11 @@ fn collect_module_contents(
                         &sibling_names,
                         parent_canonical,
                     ) {
-                        macro_refs.insert(canonical);
+                        occurrences.push(Occurrence {
+                            path: canonical,
+                            span: mac_span.clone(),
+                            origin: Origin::Macro,
+                        });
                     }
                 }
             }
@@ -267,8 +319,8 @@ fn collect_module_contents(
 
     // Second pass: extract regular-code path references. Done after the main
     // loop so the use_bindings set is complete — references can resolve any
-    // use statement in the module regardless of source order.
-    let mut refs_set: std::collections::BTreeSet<ResolvedPath> = std::collections::BTreeSet::new();
+    // use statement in the module regardless of source order. Pushes into the
+    // same `occurrences` list (origins Code / GlobUse / ExternCrate).
     for syn_item in syn_items {
         match syn_item {
             // Use produces use_bindings; nested modules contribute their
@@ -277,8 +329,13 @@ fn collect_module_contents(
             // their prefix as a reference so dep-usage analyses still
             // see the crate.
             syn::Item::Use(item_use) => {
+                let span = Some(span_to_source_span(parent_file, item_use.use_token.span));
                 for target in use_tree::glob_targets_from_use(item_use, &scope) {
-                    refs_set.insert(target);
+                    occurrences.push(Occurrence {
+                        path: target,
+                        span: span.clone(),
+                        origin: Origin::GlobUse,
+                    });
                 }
                 continue;
             }
@@ -298,7 +355,11 @@ fn collect_module_contents(
             syn::Item::ExternCrate(ec) => {
                 let crate_ident = ec.ident.to_string();
                 if crate_ident != "self" {
-                    refs_set.insert(ResolvedPath::new([crate_ident]));
+                    occurrences.push(Occurrence {
+                        path: ResolvedPath::new([crate_ident]),
+                        span: Some(span_to_source_span(parent_file, ec.ident.span())),
+                        origin: Origin::ExternCrate,
+                    });
                 }
                 continue;
             }
@@ -312,9 +373,24 @@ fn collect_module_contents(
             &sibling_names,
             &use_bindings,
             parent_canonical,
-            &mut refs_set,
+            parent_file,
+            &mut occurrences,
         );
     }
+
+    // Adapter (step-1 scaffolding): flatten occurrences back into today's two
+    // resolved-reference channels by origin — deduped + sorted exactly as the
+    // old BTreeSets were. Deleted once occurrences become the model surface.
+    let macro_implicit_refs: std::collections::BTreeSet<ResolvedPath> = occurrences
+        .iter()
+        .filter(|o| o.origin == Origin::Macro)
+        .map(|o| o.path.clone())
+        .collect();
+    let references: std::collections::BTreeSet<ResolvedPath> = occurrences
+        .iter()
+        .filter(|o| o.origin != Origin::Macro)
+        .map(|o| o.path.clone())
+        .collect();
 
     Ok(ModuleContents {
         items,
@@ -322,8 +398,8 @@ fn collect_module_contents(
         use_bindings,
         broken_mod_decls,
         cfg_features: cfg_features.into_iter().collect(),
-        macro_implicit_refs: macro_refs.into_iter().collect(),
-        references: refs_set.into_iter().collect(),
+        macro_implicit_refs: macro_implicit_refs.into_iter().collect(),
+        references: references.into_iter().collect(),
     })
 }
 
@@ -350,7 +426,8 @@ fn extract_code_paths(
     siblings: &HashSet<String>,
     use_bindings: &[UseBinding],
     parent_canonical: &ResolvedPath,
-    out: &mut std::collections::BTreeSet<ResolvedPath>,
+    file: &Path,
+    out: &mut Vec<Occurrence>,
 ) {
     let stream: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
     let mut i = 0;
@@ -377,11 +454,17 @@ fn extract_code_paths(
             let keep = segments.len() >= 2
                 || (segments.len() == 1
                     && use_bindings.iter().any(|b| b.local_name == segments[0]));
-            if keep
-                && let Some(resolved) =
+            if keep {
+                let span = span_to_source_span(file, first.span());
+                if let Some(resolved) =
                     resolve_code_path(segments, scope, siblings, use_bindings, parent_canonical)
-            {
-                out.insert(resolved);
+                {
+                    out.push(Occurrence {
+                        path: resolved,
+                        span: Some(span),
+                        origin: Origin::Code,
+                    });
+                }
             }
             i = j;
             continue;
@@ -393,6 +476,7 @@ fn extract_code_paths(
                 siblings,
                 use_bindings,
                 parent_canonical,
+                file,
                 out,
             );
         }

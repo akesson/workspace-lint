@@ -27,10 +27,11 @@
 //! nested groups are still seen. String literals are tokenized as
 //! `Literal` and so do not produce false positives.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
+use std::path::Path;
 
 use crate::resolve::ResolvedPath;
-use crate::resolve::module_tree::resolve_macro_path;
+use crate::resolve::module_tree::{Occurrence, Origin, resolve_macro_path, span_to_source_span};
 use crate::resolve::use_tree;
 
 /// Scan a `macro_rules!` body token-stream for path-like sequences
@@ -41,7 +42,8 @@ pub(crate) fn extract_macro_paths(
     scope: &use_tree::Scope,
     siblings: &HashSet<String>,
     parent_canonical: &ResolvedPath,
-    out: &mut BTreeSet<ResolvedPath>,
+    file: &Path,
+    out: &mut Vec<Occurrence>,
 ) {
     let stream: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
     let mut i = 0;
@@ -65,17 +67,23 @@ pub(crate) fn extract_macro_paths(
                 segments.push(next.to_string());
                 j += 3;
             }
-            if segments.len() >= 2
-                && let Some(resolved) =
+            if segments.len() >= 2 {
+                let span = span_to_source_span(file, first.span());
+                if let Some(resolved) =
                     resolve_macro_path(segments, scope, siblings, parent_canonical)
-            {
-                out.insert(resolved);
+                {
+                    out.push(Occurrence {
+                        path: resolved,
+                        span: Some(span),
+                        origin: Origin::Macro,
+                    });
+                }
             }
             i = j;
             continue;
         }
         if let proc_macro2::TokenTree::Group(group) = &stream[i] {
-            extract_macro_paths(group.stream(), scope, siblings, parent_canonical, out);
+            extract_macro_paths(group.stream(), scope, siblings, parent_canonical, file, out);
         }
         i += 1;
     }
