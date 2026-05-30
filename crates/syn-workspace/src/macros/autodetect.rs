@@ -27,21 +27,15 @@
 //! nested groups are still seen. String literals are tokenized as
 //! `Literal` and so do not produce false positives.
 
-use std::collections::HashSet;
 use std::path::Path;
 
-use crate::resolve::ResolvedPath;
-use crate::resolve::module_tree::{Occurrence, Origin, resolve_macro_path, span_to_source_span};
-use crate::resolve::use_tree;
+use crate::resolve::module_tree::{Occurrence, Origin, span_to_source_span};
 
 /// Scan a `macro_rules!` body token-stream for path-like sequences
 /// (`Ident :: Ident (:: Ident)*`) and resolve each through the macro's
 /// defining scope. Records the resolved path in `out`.
 pub(crate) fn extract_macro_paths(
     tokens: proc_macro2::TokenStream,
-    scope: &use_tree::Scope,
-    siblings: &HashSet<String>,
-    parent_canonical: &ResolvedPath,
     file: &Path,
     out: &mut Vec<Occurrence>,
 ) {
@@ -67,23 +61,20 @@ pub(crate) fn extract_macro_paths(
                 segments.push(next.to_string());
                 j += 3;
             }
+            // Candidate selection only (multi-segment runs) — resolution is
+            // central in `resolve_occurrence`.
             if segments.len() >= 2 {
-                let span = span_to_source_span(file, first.span());
-                if let Some(resolved) =
-                    resolve_macro_path(segments, scope, siblings, parent_canonical)
-                {
-                    out.push(Occurrence {
-                        path: resolved,
-                        span: Some(span),
-                        origin: Origin::Macro,
-                    });
-                }
+                out.push(Occurrence {
+                    segments,
+                    span: Some(span_to_source_span(file, first.span())),
+                    origin: Origin::Macro,
+                });
             }
             i = j;
             continue;
         }
         if let proc_macro2::TokenTree::Group(group) = &stream[i] {
-            extract_macro_paths(group.stream(), scope, siblings, parent_canonical, file, out);
+            extract_macro_paths(group.stream(), file, out);
         }
         i += 1;
     }
