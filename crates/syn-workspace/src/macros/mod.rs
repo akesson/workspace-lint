@@ -15,11 +15,11 @@
 //! workspace-owned macros, else `Layer 3` for declared externals, else
 //! empty.
 //!
-//! Plugins (`crate::plugins::MacroBodyParser`) are a fourth, orthogonal
+//! Plugins (`crate::plugins::MacroLowerer`) are a fourth, orthogonal
 //! mechanism: instead of declaring references statically, they parse
 //! macro bodies on demand into structured ASTs (e.g. `dioxus-rsx` for
-//! `rsx!`). The walker dispatches to them via `plugins::matches` and
-//! `plugins::refs`.
+//! `rsx!`). The module walker dispatches to the lowerer registry via
+//! `plugins::builtin_lowerers` / `plugins::claims_any`.
 
 pub mod annotation;
 pub mod autodetect;

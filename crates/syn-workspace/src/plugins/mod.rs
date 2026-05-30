@@ -38,7 +38,9 @@ pub(crate) struct MacroSite<'a> {
     /// The macro path (`quote`, `dioxus::rsx`, the marker path for
     /// `expansion_uses!`, or `macro_rules` for a definition).
     pub path: &'a syn::Path,
-    /// The macro body / argument token stream.
+    /// The macro body / argument token stream. Read only by structured lowerers
+    /// (currently the dioxus `rsx!` lowerer).
+    #[cfg_attr(not(feature = "dioxus"), allow(dead_code))]
     pub tokens: &'a TokenStream,
     /// Marker crates that flag an `expansion_uses!` annotation.
     pub marker_crates: &'a [String],
@@ -54,6 +56,8 @@ impl MacroSite<'_> {
 /// Context for lowering. Carries the span to attach to structured occurrences —
 /// the macro-invocation site, since the plugin AST doesn't expose per-ref spans.
 pub(crate) struct LowerCtx {
+    /// Read only by structured lowerers (currently the dioxus `rsx!` lowerer).
+    #[cfg_attr(not(feature = "dioxus"), allow(dead_code))]
     pub macro_span: Option<SourceSpan>,
 }
 
@@ -66,7 +70,9 @@ pub(crate) enum Lowered {
     /// yet, but the dispatch handles it.
     #[allow(dead_code)]
     Exact(Vec<Occurrence>),
-    /// Run the baseline scan AND add these structured occurrences.
+    /// Run the baseline scan AND add these structured occurrences. Currently
+    /// only the dioxus `rsx!` lowerer emits this.
+    #[cfg_attr(not(feature = "dioxus"), allow(dead_code))]
     ScanPlus(Vec<Occurrence>),
 }
 

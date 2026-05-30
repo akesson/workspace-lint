@@ -31,9 +31,10 @@ use std::path::Path;
 use crate::resolve::module_tree::span_to_source_span;
 use crate::resolve::{Occurrence, Origin};
 
-/// Scan a `macro_rules!` body token-stream for path-like sequences
-/// (`Ident :: Ident (:: Ident)*`) and resolve each through the macro's
-/// defining scope. Records the resolved path in `out`.
+/// Scan a macro body token-stream for path-like sequences
+/// (`Ident :: Ident (:: Ident)*`) and emit each as a raw `Origin::Macro`
+/// [`Occurrence`] (segments + span) into `out`. Resolution happens centrally in
+/// `resolve_occurrence`.
 pub(crate) fn extract_macro_paths(
     tokens: proc_macro2::TokenStream,
     file: &Path,

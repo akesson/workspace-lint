@@ -384,6 +384,7 @@ pub struct BrokenModDecl {
 /// into the two reference channels consumers care about: `Macro` bodies vs.
 /// everything else (regular code, `use` globs, `extern crate`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Origin {
     /// A path referenced from regular (non-macro) code.
     Code,
@@ -404,6 +405,7 @@ pub enum Origin {
 /// two diff points for the differential oracle: raw segments localize
 /// extraction bugs, resolved paths localize resolution bugs.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Occurrence {
     /// Raw path segments as written (no peeling/substitution). For `GlobUse` /
     /// `ExternCrate` origins these are already the resolved segments.
@@ -660,8 +662,8 @@ pub struct Workspace {
     root_manifest: crate::manifest::Manifest,
     re_exports: re_export::ReExportIndex,
     /// Macro implicit references partitioned by defining crate (code name).
-    /// Built eagerly at load time by unioning every module's
-    /// `macro_implicit_refs` per crate. Used by
+    /// Built eagerly at load time by unioning every module's macro-origin
+    /// occurrences ([`Module::macro_refs`]) per crate. Used by
     /// [`Workspace::macro_implicit_refs_for`] to compute per-target-crate
     /// reachability-narrowed sets — a macro defined in crate B only
     /// contributes to the set for crate A if A references B (or B == A).
@@ -672,8 +674,8 @@ pub struct Workspace {
     /// crates actually invoke an external macro — broadcasting to all
     /// keeps the model conservative for that specific shape.
     external_macro_refs: std::collections::HashSet<ResolvedPath>,
-    /// Per-crate set of canonical paths referenced from that crate's regular
-    /// code (combines `use` bindings + the `Module.references` set). Keyed
+    /// Per-crate set of canonical paths referenced from that crate's code
+    /// (unions `use` bindings + every resolved `Occurrence`, all origins). Keyed
     /// by the crate's code name (Cargo-form hyphens replaced with '_').
     /// Built once at load time so consumers don't have to re-walk the tree.
     references_by_crate: std::collections::HashMap<String, std::collections::HashSet<ResolvedPath>>,
@@ -1074,13 +1076,12 @@ fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::Hash
     }
 }
 
-/// Walk a crate's module tree and collect every canonical path it references,
-/// unioning three sources: `use` bindings (declared imports),
-/// `Module.references` (regular-code path use), and
-/// `Module.macro_implicit_refs` (paths inside the crate's own
-/// `macro_rules!` bodies). Macro-body refs belong here too — when crate A's
-/// macro body mentions `B::foo`, A genuinely depends on B, so any
-/// dep-usage analysis would otherwise wrongly flag B as unused.
+/// Walk a crate's module tree and collect every canonical path it references:
+/// `use` bindings (declared imports) plus the resolved `path` of every
+/// [`Occurrence`] in the subtree — ALL origins, including `Origin::Macro`. The
+/// macro-origin union matters — when crate A's macro body mentions `B::foo`, A
+/// genuinely depends on B, so any dep-usage analysis would otherwise wrongly
+/// flag B as unused.
 ///
 /// The result populates `Workspace::references_by_crate` once per crate at
 /// load time. Note: the per-target-crate set built by

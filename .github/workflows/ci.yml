@@ -38,6 +38,8 @@ jobs:
         run: cargo audit
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (syn-workspace, no default features)
+        run: cargo clippy -p syn-workspace --no-default-features --locked -- -D warnings
       - name: Docs
         run: cargo doc --workspace --no-deps --locked
       - name: Build oracle-bless tool (detached harness; compile-only, catches API drift)

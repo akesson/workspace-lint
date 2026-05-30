@@ -152,8 +152,8 @@ fn collect_module_contents(
     let mut broken_mod_decls = Vec::new();
     let mut cfg_features: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // All reference occurrences for this module (macro-body + regular-code +
-    // glob + extern-crate). A transient adapter at the end of this function
-    // flattens them into today's `references` / `macro_implicit_refs`.
+    // glob + extern-crate). Phase B (below) resolves each in place; this Vec is
+    // the module's reference surface, stored directly on `Module.occurrences`.
     let mut occurrences: Vec<Occurrence> = Vec::new();
 
     for syn_item in syn_items {
@@ -343,23 +343,16 @@ fn collect_module_contents(
     })
 }
 
-/// Token-scan regular (non-macro) item bodies for path references, with
-/// use-binding substitution applied to the leading segment.
+/// Candidate-select path references from a regular (non-macro) item body: scan
+/// for `Ident :: Ident (:: Ident)*` runs and emit each as a raw `Origin::Code`
+/// [`Occurrence`] (segments + span). Resolution — crate/self/super peeling,
+/// use-binding substitution, sibling rewrite — happens later and centrally in
+/// [`resolve_occurrence`].
 ///
-/// Same shape as [`extract_macro_paths`], but with three extra behaviors:
-///
-/// 1. **Use-binding substitution.** If the leading segment matches a
-///    `local_name` in `use_bindings`, the binding's canonical replaces it.
-///    So `use foo::Bar;` followed by `Bar::baz()` resolves to `foo::Bar::baz`.
-/// 2. **Single-segment paths.** A bare `Bar` is normally a local var or
-///    prelude name — skipped. But if `Bar` matches a use-binding's local
-///    name, it's recorded as a reference to that binding's canonical. This
-///    catches single-ident type/expression references that the
-///    multi-segment scanner alone would miss.
-/// 3. **Macros are non-hygienic at the call site.** Unlike `macro_rules!`
-///    bodies (which resolve at the expansion site), regular code paths
-///    resolve against the surrounding module's `use` statements. The
-///    use-binding lookup reflects that.
+/// The only resolution-aware decision kept here is candidate SELECTION: a bare
+/// single ident is emitted only if it matches a `use`-binding's `local_name`
+/// (otherwise it's a local/prelude name); multi-segment runs are always
+/// emitted. `use_bindings` is passed solely for that keep-filter.
 fn extract_code_paths(
     tokens: proc_macro2::TokenStream,
     use_bindings: &[UseBinding],
