@@ -11,8 +11,9 @@ rust-analyzer or a nightly toolchain on the common test path.
 <fixture>/
   workspace/        # a self-contained cargo workspace (own [workspace] table)
   expected/
-    rustdoc.json    # normalized public def/visibility + re-export oracle
-    scip.json       # normalized per-member referenced-packages + definitions
+    rustdoc.json         # normalized public def/visibility + re-export oracle
+    rustdoc-private.json # full module tree + visibility (--document-private-items)
+    scip.json            # normalized per-member referenced-packages + definitions
 ```
 
 `expected/*.json` are **generated** — distilled from nightly rustdoc JSON and
@@ -22,15 +23,21 @@ committed ground truth; do not edit them by hand.
 ## How the test works (`../oracle.rs`)
 
 The fast path parses the committed JSON with `serde_json` only (no rust-analyzer,
-no nightly) and diffs it against a live `Workspace::load`, asserting three things:
+no nightly) and diffs it against a live `Workspace::load`, asserting five things:
 
-1. **def/visibility** — the resolver enumerates exactly the public defs rustdoc
-   reports; impl-block methods are accounted for in `known_impl_methods` (the
-   documented enumeration gap), not silently tolerated.
-2. **re-export canonicalization** — `pub use` chains resolve to the same
-   definition rustdoc resolves them to.
-3. **dependency set** — every declared dependency SCIP proves is referenced is
-   visible to the resolver (guards `unused-deps` against false positives).
+1. **def/visibility (rustdoc)** — the resolver enumerates exactly the public defs
+   rustdoc reports; impl-block methods are accounted for in `known_impl_methods`
+   (the documented enumeration gap), not silently tolerated.
+2. **def witness (SCIP)** — an independent oracle confirms every enumerated def,
+   and the SCIP range encoding (the `café` byte-span guard) is unchanged.
+3. **module tree + visibility** — the *full* tree, including private and
+   `pub(crate)` items (via `--document-private-items`), matches, with visibility
+   tiers (public / crate / internal) agreeing.
+4. **re-export canonicalization** — `pub use` chains, including `as` renames,
+   resolve to the same definition rustdoc resolves them to.
+5. **dependency set** — every declared dependency SCIP proves is referenced is
+   visible to the resolver (guards `unused-deps` against false positives), and
+   dev/build deps are excluded by the `DepSection` filter.
 
 A resolver regression in any dimension fails `cargo nextest run --workspace`.
 

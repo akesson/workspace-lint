@@ -10,6 +10,15 @@
       "run"
     ],
     [
+      "oracle_app",
+      "tests"
+    ],
+    [
+      "oracle_app",
+      "tests",
+      "uses_extra"
+    ],
+    [
       "oracle_core",
       "Shape"
     ],
@@ -68,6 +77,20 @@
     ],
     [
       "oracle_core",
+      "hidden"
+    ],
+    [
+      "oracle_core",
+      "hidden",
+      "buried"
+    ],
+    [
+      "oracle_core",
+      "hidden",
+      "semi"
+    ],
+    [
+      "oracle_core",
       "impl",
       "Widget",
       "render"
@@ -84,6 +107,14 @@
     [
       "oracle_core",
       "top_level"
+    ],
+    [
+      "oracle_extra",
+      "crate"
+    ],
+    [
+      "oracle_extra",
+      "gadget"
     ]
   ],
   "position_encoding": "UTF8CodeUnitOffsetFromLineStart",
@@ -91,10 +122,14 @@
     "oracle_app": [
       "core",
       "oracle_app",
-      "oracle_core"
+      "oracle_core",
+      "oracle_extra"
     ],
     "oracle_core": [
       "oracle_core"
+    ],
+    "oracle_extra": [
+      "oracle_extra"
     ]
   }
 }

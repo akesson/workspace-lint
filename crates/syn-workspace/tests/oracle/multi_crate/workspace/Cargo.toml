@@ -3,4 +3,4 @@
 # parent member and never affects `cargo build`/dogfood/publish.
 [workspace]
 resolver = "2"
-members = ["crates/oracle-core", "crates/oracle-app"]
+members = ["crates/oracle-core", "crates/oracle-app", "crates/oracle-extra"]
