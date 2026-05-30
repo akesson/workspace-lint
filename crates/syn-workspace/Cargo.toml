@@ -24,3 +24,9 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
 toml_edit = { workspace = true }
+
+[dev-dependencies]
+# tests/oracle.rs (the committed differential-oracle regression net) reads the
+# committed normalized JSON oracles. Generation of those oracles lives in the
+# detached `tools/oracle-bless` crate, so the fast test path needs only serde_json.
+serde_json = { workspace = true }

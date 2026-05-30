@@ -1,0 +1,11 @@
+[package]
+name = "oracle-app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The one declared dependency the SCIP dep-set oracle proves is referenced.
+oracle-core = { path = "../oracle-core" }

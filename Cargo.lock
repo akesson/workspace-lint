@@ -1368,6 +1368,7 @@ dependencies = [
  "dioxus-rsx",
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn",
  "toml_edit 0.25.12+spec-1.1.0",
 ]
