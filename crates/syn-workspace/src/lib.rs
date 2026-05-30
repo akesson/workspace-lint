@@ -49,7 +49,8 @@ pub use toml_edit;
 
 pub use manifest::{DeclaredDep, DepLocation, DepSection, Manifest};
 pub use resolve::{
-    BrokenModDecl, Crate, Error, Item, ItemKind, LoadOptions, LoadWarning, Module, ResolvedPath,
-    Result, SourceSpan, Target, TargetKind, Visibility, Workspace, re_export::ReExportIndex,
+    BrokenModDecl, Crate, Error, Item, ItemKind, LoadOptions, LoadWarning, Module, Occurrence,
+    Origin, ResolvedPath, Result, SourceSpan, Target, TargetKind, Visibility, Workspace,
+    re_export::ReExportIndex,
 };
 pub use walk::member_manifests;

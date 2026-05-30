@@ -380,6 +380,44 @@ pub struct BrokenModDecl {
     pub line: u32,
 }
 
+/// Where a reference [`Occurrence`] came from. Splits the occurrence stream
+/// into the two reference channels consumers care about: `Macro` bodies vs.
+/// everything else (regular code, `use` globs, `extern crate`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Origin {
+    /// A path referenced from regular (non-macro) code.
+    Code,
+    /// The prefix of a glob import (`use foo::bar::*`).
+    GlobUse,
+    /// An `extern crate foo;` declaration.
+    ExternCrate,
+    /// A path inside a macro body (`macro_rules!`, `expansion_uses!`, or a
+    /// plugin-lowered macro such as `rsx!`).
+    Macro,
+}
+
+/// A single reference occurrence in a module — the resolver's primary
+/// reference surface. Carries the raw path segments as written (Phase A
+/// extraction), the canonicalized `path` (Phase B resolution; `None` when the
+/// path couldn't be resolved, e.g. an unmatched single ident), the source
+/// `span` of the reference site, and its [`Origin`]. The two path forms give
+/// two diff points for the differential oracle: raw segments localize
+/// extraction bugs, resolved paths localize resolution bugs.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Occurrence {
+    /// Raw path segments as written (no peeling/substitution). For `GlobUse` /
+    /// `ExternCrate` origins these are already the resolved segments.
+    pub segments: Vec<String>,
+    /// Canonical resolved path, or `None` if the occurrence didn't resolve.
+    pub path: Option<ResolvedPath>,
+    /// Source span of the reference site.
+    pub span: Option<SourceSpan>,
+    /// Which extraction channel produced this occurrence.
+    pub origin: Origin,
+}
+
 /// A module within a crate. Modules form a tree rooted at the crate's `lib.rs`
 /// or `main.rs`.
 #[derive(Debug, Clone)]
@@ -409,25 +447,12 @@ pub struct Module {
     /// module (outer attributes only — feature gates inside function
     /// bodies are not extracted here). Deduped, sorted lexicographically.
     pub cfg_features: Vec<String>,
-    /// Canonical paths referenced inside `macro_rules!` bodies declared in
-    /// this module (Layer 1 autodetect). Conservative: any multi-segment
-    /// path appearing in the macro RHS gets resolved through the macro's
-    /// defining scope and recorded. Useful for any analysis that wants to
-    /// know which items might be reachable through a workspace-owned macro
-    /// without expanding macros for real.
-    pub macro_implicit_refs: Vec<ResolvedPath>,
-    /// Canonical paths referenced from this module's regular code (function
-    /// bodies, type signatures, attribute paths). Distinct from
-    /// `use_bindings` (which records what `use` statements bring into scope)
-    /// and from `macro_implicit_refs` (which records paths inside
-    /// `macro_rules!` bodies). Populated by token-scanning each non-`use`,
-    /// non-`macro_rules!` item with use-binding substitution applied to the
-    /// leading segment.
-    ///
-    /// Useful for cross-crate reference graphs without paying the cost of
-    /// a full semantic index. Lints, dependency analyzers, and architectural
-    /// checks all consume this in different ways.
-    pub references: Vec<ResolvedPath>,
+    /// Every reference occurrence in this module — regular-code paths, glob
+    /// prefixes, `extern crate`, and macro-body refs — each with its raw
+    /// segments, resolved `path`, span, and [`Origin`]. The resolver's primary
+    /// reference surface; use [`Module::references`] / [`Module::macro_refs`]
+    /// for the resolved paths split by channel.
+    pub occurrences: Vec<Occurrence>,
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
@@ -454,6 +479,25 @@ impl Module {
     pub fn walk_use_bindings(&self) -> impl Iterator<Item = (&Module, &use_tree::UseBinding)> + '_ {
         self.walk()
             .flat_map(|m| m.use_bindings.iter().map(move |b| (m, b)))
+    }
+
+    /// Resolved paths referenced from this module's regular code, glob imports,
+    /// and `extern crate` declarations (every [`Origin`] except `Macro`).
+    /// Unresolved occurrences are skipped.
+    pub fn references(&self) -> impl Iterator<Item = &ResolvedPath> + '_ {
+        self.occurrences
+            .iter()
+            .filter(|o| o.origin != Origin::Macro)
+            .filter_map(|o| o.path.as_ref())
+    }
+
+    /// Resolved paths referenced inside macro bodies (`Origin::Macro`).
+    /// Unresolved occurrences are skipped.
+    pub fn macro_refs(&self) -> impl Iterator<Item = &ResolvedPath> + '_ {
+        self.occurrences
+            .iter()
+            .filter(|o| o.origin == Origin::Macro)
+            .filter_map(|o| o.path.as_ref())
     }
 }
 
@@ -618,8 +662,8 @@ pub struct Workspace {
     root_manifest: crate::manifest::Manifest,
     re_exports: re_export::ReExportIndex,
     /// Macro implicit references partitioned by defining crate (code name).
-    /// Built eagerly at load time by unioning every module's
-    /// `macro_implicit_refs` per crate. Used by
+    /// Built eagerly at load time by unioning every module's macro-origin
+    /// occurrences ([`Module::macro_refs`]) per crate. Used by
     /// [`Workspace::macro_implicit_refs_for`] to compute per-target-crate
     /// reachability-narrowed sets — a macro defined in crate B only
     /// contributes to the set for crate A if A references B (or B == A).
@@ -630,8 +674,8 @@ pub struct Workspace {
     /// crates actually invoke an external macro — broadcasting to all
     /// keeps the model conservative for that specific shape.
     external_macro_refs: std::collections::HashSet<ResolvedPath>,
-    /// Per-crate set of canonical paths referenced from that crate's regular
-    /// code (combines `use` bindings + the `Module.references` set). Keyed
+    /// Per-crate set of canonical paths referenced from that crate's code
+    /// (unions `use` bindings + every resolved `Occurrence`, all origins). Keyed
     /// by the crate's code name (Cargo-form hyphens replaced with '_').
     /// Built once at load time so consumers don't have to re-walk the tree.
     references_by_crate: std::collections::HashMap<String, std::collections::HashSet<ResolvedPath>>,
@@ -1028,17 +1072,16 @@ impl Workspace {
 
 fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
     for m in module.walk() {
-        out.extend(m.macro_implicit_refs.iter().cloned());
+        out.extend(m.macro_refs().cloned());
     }
 }
 
-/// Walk a crate's module tree and collect every canonical path it references,
-/// unioning three sources: `use` bindings (declared imports),
-/// `Module.references` (regular-code path use), and
-/// `Module.macro_implicit_refs` (paths inside the crate's own
-/// `macro_rules!` bodies). Macro-body refs belong here too — when crate A's
-/// macro body mentions `B::foo`, A genuinely depends on B, so any
-/// dep-usage analysis would otherwise wrongly flag B as unused.
+/// Walk a crate's module tree and collect every canonical path it references:
+/// `use` bindings (declared imports) plus the resolved `path` of every
+/// [`Occurrence`] in the subtree — ALL origins, including `Origin::Macro`. The
+/// macro-origin union matters — when crate A's macro body mentions `B::foo`, A
+/// genuinely depends on B, so any dep-usage analysis would otherwise wrongly
+/// flag B as unused.
 ///
 /// The result populates `Workspace::references_by_crate` once per crate at
 /// load time. Note: the per-target-crate set built by
@@ -1048,8 +1091,9 @@ fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::Hash
 fn collect_module_references(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {
     for m in module.walk() {
         out.extend(m.use_bindings.iter().map(|b| b.canonical.clone()));
-        out.extend(m.references.iter().cloned());
-        out.extend(m.macro_implicit_refs.iter().cloned());
+        // Every resolved occurrence, all origins (incl. Macro): a dep/item used
+        // only inside a macro body must still count as referenced.
+        out.extend(m.occurrences.iter().filter_map(|o| o.path.clone()));
     }
 }
 
@@ -1104,8 +1148,7 @@ mod tests {
             use_bindings: Vec::new(),
             broken_mod_decls: Vec::new(),
             cfg_features: Vec::new(),
-            macro_implicit_refs: Vec::new(),
-            references: Vec::new(),
+            occurrences: Vec::new(),
             file: None,
         }
     }

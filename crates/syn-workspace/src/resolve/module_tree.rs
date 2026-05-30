@@ -23,24 +23,35 @@ use std::path::{Path, PathBuf};
 
 use super::use_tree::{self, UseBinding};
 use super::{
-    BrokenModDecl, Error, Item, ItemKind, Module, ResolvedPath, Result, SourceSpan, Visibility,
+    BrokenModDecl, Error, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
+    SourceSpan, Visibility,
 };
-use crate::macros::annotation::is_expansion_uses;
 use crate::macros::autodetect::extract_macro_paths;
 use crate::plugins;
 
 /// Items, submodules, `use` bindings, broken `mod` declarations,
-/// `#[cfg(feature = "...")]` references, `macro_rules!`-body implicit
-/// references, and regular-code path references collected while walking a
-/// module.
+/// `#[cfg(feature = "...")]` references, and all resolved reference
+/// occurrences collected while walking a module.
 struct ModuleContents {
     items: Vec<Item>,
     submodules: Vec<Module>,
     use_bindings: Vec<UseBinding>,
     broken_mod_decls: Vec<BrokenModDecl>,
     cfg_features: Vec<String>,
-    macro_implicit_refs: Vec<ResolvedPath>,
-    references: Vec<ResolvedPath>,
+    occurrences: Vec<Occurrence>,
+}
+
+/// Convert a `proc_macro2::Span` to a [`SourceSpan`] anchored at `file` — the
+/// generalized form of the per-site span construction (`byte_range` below /
+/// `use_tree::source_span_from_ident`).
+pub(crate) fn span_to_source_span(file: &Path, span: proc_macro2::Span) -> SourceSpan {
+    let start = span.start();
+    SourceSpan {
+        file: file.to_path_buf(),
+        line: start.line as u32,
+        column: start.column as u32,
+        byte_range: byte_range(span),
+    }
 }
 
 /// Build a fully-populated module tree for one crate, using the default
@@ -87,8 +98,7 @@ fn empty_root(crate_name: &str) -> Module {
         use_bindings: Vec::new(),
         broken_mod_decls: Vec::new(),
         cfg_features: Vec::new(),
-        macro_implicit_refs: Vec::new(),
-        references: Vec::new(),
+        occurrences: Vec::new(),
         file: None,
     }
 }
@@ -117,8 +127,7 @@ pub(crate) fn build_module_from_file(
         use_bindings: contents.use_bindings,
         broken_mod_decls: contents.broken_mod_decls,
         cfg_features: contents.cfg_features,
-        macro_implicit_refs: contents.macro_implicit_refs,
-        references: contents.references,
+        occurrences: contents.occurrences,
         file: Some(file_path.to_path_buf()),
     })
 }
@@ -142,8 +151,10 @@ fn collect_module_contents(
     let mut use_bindings = Vec::new();
     let mut broken_mod_decls = Vec::new();
     let mut cfg_features: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut macro_refs: std::collections::BTreeSet<ResolvedPath> =
-        std::collections::BTreeSet::new();
+    // All reference occurrences for this module (macro-body + regular-code +
+    // glob + extern-crate). Phase B (below) resolves each in place; this Vec is
+    // the module's reference surface, stored directly on `Module.occurrences`.
+    let mut occurrences: Vec<Occurrence> = Vec::new();
 
     for syn_item in syn_items {
         for attr in item_attrs(syn_item) {
@@ -159,53 +170,44 @@ fn collect_module_contents(
         }
 
         if let syn::Item::Macro(item_macro) = syn_item {
-            if item_macro.ident.is_some() {
-                // `macro_rules!` definition — scan its body for path-like
-                // token sequences and resolve through this scope.
-                extract_macro_paths(
-                    item_macro.mac.tokens.clone(),
-                    &scope,
-                    &sibling_names,
-                    parent_canonical,
-                    &mut macro_refs,
-                );
-            } else if is_expansion_uses(&item_macro.mac.path, marker_crates) {
-                // Layer 2: explicit `expansion_uses!(path, path, ...)`
-                // annotation. Each argument resolves through the same
-                // scope rules as a macro_rules! body path.
-                extract_macro_paths(
-                    item_macro.mac.tokens.clone(),
-                    &scope,
-                    &sibling_names,
-                    parent_canonical,
-                    &mut macro_refs,
-                );
-            } else if plugins::matches(&item_macro.mac.path) {
-                // Plugin path: known macro invocations (e.g. `quote!`,
-                // `quote::quote!`, `rsx!`) get their bodies scanned the same
-                // way `macro_rules!` bodies are. Token scanning is the
-                // baseline — it catches every multi-segment path inside
-                // groups.
-                extract_macro_paths(
-                    item_macro.mac.tokens.clone(),
-                    &scope,
-                    &sibling_names,
-                    parent_canonical,
-                    &mut macro_refs,
-                );
-                // Structured plugin dispatch: parsers that walk a macro's
-                // real AST (currently `DioxusRsxParser`) may surface refs
-                // the token scanner misses or misclassifies. Each raw path
-                // gets canonicalized through `resolve_macro_path` so the
-                // resolver's scope rules apply.
-                for raw in plugins::refs(&item_macro.mac.path, &item_macro.mac.tokens) {
-                    if let Some(canonical) = resolve_macro_path(
-                        raw.segments().to_vec(),
-                        &scope,
-                        &sibling_names,
-                        parent_canonical,
-                    ) {
-                        macro_refs.insert(canonical);
+            // Macro lowering is the single Phase-A extension point: the first
+            // built-in lowerer that claims this site decides whether to run the
+            // baseline token scan, add structured occurrences, or both.
+            let site = plugins::MacroSite {
+                is_macro_rules: item_macro.ident.is_some(),
+                path: &item_macro.mac.path,
+                tokens: &item_macro.mac.tokens,
+                marker_crates,
+            };
+            let lowerers = plugins::builtin_lowerers();
+            if let Some(lowerer) = lowerers.iter().find(|l| l.claims(&site)) {
+                // Span for structured occurrences: the macro-invocation site
+                // (the plugin AST doesn't expose per-ref spans).
+                let mac_span = item_macro
+                    .mac
+                    .path
+                    .segments
+                    .first()
+                    .map(|s| span_to_source_span(parent_file, s.ident.span()));
+                let cx = plugins::LowerCtx {
+                    macro_span: mac_span,
+                };
+                match lowerer.lower(&site, &cx) {
+                    plugins::Lowered::TokenScan => {
+                        extract_macro_paths(
+                            item_macro.mac.tokens.clone(),
+                            parent_file,
+                            &mut occurrences,
+                        );
+                    }
+                    plugins::Lowered::Exact(occs) => occurrences.extend(occs),
+                    plugins::Lowered::ScanPlus(occs) => {
+                        extract_macro_paths(
+                            item_macro.mac.tokens.clone(),
+                            parent_file,
+                            &mut occurrences,
+                        );
+                        occurrences.extend(occs);
                     }
                 }
             }
@@ -240,8 +242,7 @@ fn collect_module_contents(
                     use_bindings: inline.use_bindings,
                     broken_mod_decls: inline.broken_mod_decls,
                     cfg_features: inline.cfg_features,
-                    macro_implicit_refs: inline.macro_implicit_refs,
-                    references: inline.references,
+                    occurrences: inline.occurrences,
                     file: Some(parent_file.to_path_buf()),
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, item_mod)? {
@@ -267,8 +268,8 @@ fn collect_module_contents(
 
     // Second pass: extract regular-code path references. Done after the main
     // loop so the use_bindings set is complete — references can resolve any
-    // use statement in the module regardless of source order.
-    let mut refs_set: std::collections::BTreeSet<ResolvedPath> = std::collections::BTreeSet::new();
+    // use statement in the module regardless of source order. Pushes into the
+    // same `occurrences` list (origins Code / GlobUse / ExternCrate).
     for syn_item in syn_items {
         match syn_item {
             // Use produces use_bindings; nested modules contribute their
@@ -277,19 +278,28 @@ fn collect_module_contents(
             // their prefix as a reference so dep-usage analyses still
             // see the crate.
             syn::Item::Use(item_use) => {
+                let span = Some(span_to_source_span(parent_file, item_use.use_token.span));
                 for target in use_tree::glob_targets_from_use(item_use, &scope) {
-                    refs_set.insert(target);
+                    occurrences.push(Occurrence {
+                        segments: target.segments().to_vec(),
+                        path: None,
+                        span: span.clone(),
+                        origin: Origin::GlobUse,
+                    });
                 }
                 continue;
             }
             syn::Item::Mod(_) => continue,
-            // macro_rules! bodies (and Layer 2/3 annotation macros) already
-            // contribute to macro_implicit_refs. Skip to avoid double-counting
-            // and to keep regular-code refs separate from macro-body refs.
+            // Macro bodies claimed by a lowerer already contributed their
+            // occurrences in the macro pass. Skip to avoid double-counting them
+            // as regular code.
             syn::Item::Macro(item_macro)
-                if item_macro.ident.is_some()
-                    || is_expansion_uses(&item_macro.mac.path, marker_crates)
-                    || plugins::matches(&item_macro.mac.path) =>
+                if plugins::claims_any(&plugins::MacroSite {
+                    is_macro_rules: item_macro.ident.is_some(),
+                    path: &item_macro.mac.path,
+                    tokens: &item_macro.mac.tokens,
+                    marker_crates,
+                }) =>
             {
                 continue;
             }
@@ -298,7 +308,12 @@ fn collect_module_contents(
             syn::Item::ExternCrate(ec) => {
                 let crate_ident = ec.ident.to_string();
                 if crate_ident != "self" {
-                    refs_set.insert(ResolvedPath::new([crate_ident]));
+                    occurrences.push(Occurrence {
+                        segments: vec![crate_ident],
+                        path: None,
+                        span: Some(span_to_source_span(parent_file, ec.ident.span())),
+                        origin: Origin::ExternCrate,
+                    });
                 }
                 continue;
             }
@@ -306,14 +321,16 @@ fn collect_module_contents(
         }
 
         let tokens = quote::ToTokens::to_token_stream(syn_item);
-        extract_code_paths(
-            tokens,
-            &scope,
-            &sibling_names,
-            &use_bindings,
-            parent_canonical,
-            &mut refs_set,
-        );
+        extract_code_paths(tokens, &use_bindings, parent_file, &mut occurrences);
+    }
+
+    // Phase B: resolve every raw occurrence centrally, filling in its canonical
+    // `path` in place (occurrences that don't resolve keep `path = None`). The
+    // resolved occurrences are this module's reference surface.
+    for occ in &mut occurrences {
+        let resolved =
+            resolve_occurrence(occ, &scope, &use_bindings, &sibling_names, parent_canonical);
+        occ.path = resolved;
     }
 
     Ok(ModuleContents {
@@ -322,35 +339,25 @@ fn collect_module_contents(
         use_bindings,
         broken_mod_decls,
         cfg_features: cfg_features.into_iter().collect(),
-        macro_implicit_refs: macro_refs.into_iter().collect(),
-        references: refs_set.into_iter().collect(),
+        occurrences,
     })
 }
 
-/// Token-scan regular (non-macro) item bodies for path references, with
-/// use-binding substitution applied to the leading segment.
+/// Candidate-select path references from a regular (non-macro) item body: scan
+/// for `Ident :: Ident (:: Ident)*` runs and emit each as a raw `Origin::Code`
+/// [`Occurrence`] (segments + span). Resolution — crate/self/super peeling,
+/// use-binding substitution, sibling rewrite — happens later and centrally in
+/// [`resolve_occurrence`].
 ///
-/// Same shape as [`extract_macro_paths`], but with three extra behaviors:
-///
-/// 1. **Use-binding substitution.** If the leading segment matches a
-///    `local_name` in `use_bindings`, the binding's canonical replaces it.
-///    So `use foo::Bar;` followed by `Bar::baz()` resolves to `foo::Bar::baz`.
-/// 2. **Single-segment paths.** A bare `Bar` is normally a local var or
-///    prelude name — skipped. But if `Bar` matches a use-binding's local
-///    name, it's recorded as a reference to that binding's canonical. This
-///    catches single-ident type/expression references that the
-///    multi-segment scanner alone would miss.
-/// 3. **Macros are non-hygienic at the call site.** Unlike `macro_rules!`
-///    bodies (which resolve at the expansion site), regular code paths
-///    resolve against the surrounding module's `use` statements. The
-///    use-binding lookup reflects that.
+/// The only resolution-aware decision kept here is candidate SELECTION: a bare
+/// single ident is emitted only if it matches a `use`-binding's `local_name`
+/// (otherwise it's a local/prelude name); multi-segment runs are always
+/// emitted. `use_bindings` is passed solely for that keep-filter.
 fn extract_code_paths(
     tokens: proc_macro2::TokenStream,
-    scope: &use_tree::Scope,
-    siblings: &HashSet<String>,
     use_bindings: &[UseBinding],
-    parent_canonical: &ResolvedPath,
-    out: &mut std::collections::BTreeSet<ResolvedPath>,
+    file: &Path,
+    out: &mut Vec<Occurrence>,
 ) {
     let stream: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
     let mut i = 0;
@@ -374,27 +381,26 @@ fn extract_code_paths(
                 segments.push(next.to_string());
                 j += 3;
             }
+            // Candidate selection only — resolution happens centrally in
+            // `resolve_occurrence`. Keep multi-segment runs, plus single idents
+            // that match a use-binding's local name (the binding set is needed
+            // here, but the substitution itself is deferred to resolution).
             let keep = segments.len() >= 2
                 || (segments.len() == 1
                     && use_bindings.iter().any(|b| b.local_name == segments[0]));
-            if keep
-                && let Some(resolved) =
-                    resolve_code_path(segments, scope, siblings, use_bindings, parent_canonical)
-            {
-                out.insert(resolved);
+            if keep {
+                out.push(Occurrence {
+                    segments,
+                    path: None,
+                    span: Some(span_to_source_span(file, first.span())),
+                    origin: Origin::Code,
+                });
             }
             i = j;
             continue;
         }
         if let proc_macro2::TokenTree::Group(group) = &stream[i] {
-            extract_code_paths(
-                group.stream(),
-                scope,
-                siblings,
-                use_bindings,
-                parent_canonical,
-                out,
-            );
+            extract_code_paths(group.stream(), use_bindings, file, out);
         }
         i += 1;
     }
@@ -523,6 +529,34 @@ pub(crate) fn resolve_macro_path(
     }
     prefix.extend(remaining);
     Some(ResolvedPath::new(prefix))
+}
+
+/// Canonicalize one raw occurrence — the single home for the crate/self/super
+/// peeling + use-binding substitution + sibling rewrite that used to be smeared
+/// across the extractors. Dispatches on [`Origin`]: `Code` paths resolve against
+/// the surrounding `use` bindings; `Macro` paths resolve at the defining scope
+/// (no use-binding substitution); `GlobUse`/`ExternCrate` segments are already
+/// resolved at extraction, so they pass through unchanged.
+fn resolve_occurrence(
+    occ: &Occurrence,
+    scope: &use_tree::Scope,
+    use_bindings: &[UseBinding],
+    siblings: &HashSet<String>,
+    parent_canonical: &ResolvedPath,
+) -> Option<ResolvedPath> {
+    match occ.origin {
+        Origin::Code => resolve_code_path(
+            occ.segments.clone(),
+            scope,
+            siblings,
+            use_bindings,
+            parent_canonical,
+        ),
+        Origin::Macro => {
+            resolve_macro_path(occ.segments.clone(), scope, siblings, parent_canonical)
+        }
+        Origin::GlobUse | Origin::ExternCrate => Some(ResolvedPath::new(occ.segments.clone())),
+    }
 }
 
 /// Outer attributes of a syn item. Returned as a slice so the caller can
@@ -953,9 +987,14 @@ mod tests {
             &markers,
         )
         .expect("collect");
-        let mut out: Vec<String> = contents.references.iter().map(|p| p.display()).collect();
-        out.sort();
-        out
+        let out: std::collections::BTreeSet<String> = contents
+            .occurrences
+            .iter()
+            .filter(|o| o.origin != Origin::Macro)
+            .filter_map(|o| o.path.as_ref())
+            .map(|p| p.display())
+            .collect();
+        out.into_iter().collect()
     }
 
     #[test]

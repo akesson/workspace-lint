@@ -1,9 +1,8 @@
 //! Layer 1: automatic reference inference for workspace-owned macros.
 //!
 //! Token-level scanning of macro bodies for path-like `Ident :: Ident
-//! (:: Ident)*` sequences. Resolves each through the macro's defining
-//! scope (using `crate::resolve::module_tree::resolve_macro_path`) and
-//! records the canonical path in the caller's output set.
+//! (:: Ident)*` sequences. Emits each as a raw `Macro`-origin `Occurrence`
+//! (spanned); canonicalization happens centrally in `resolve_occurrence`.
 //!
 //! **Recall vs. precision.** Any multi-segment path shape *anywhere*
 //! inside *any* `macro_rules!` body ends up in the implicit-refs set.
@@ -27,21 +26,19 @@
 //! nested groups are still seen. String literals are tokenized as
 //! `Literal` and so do not produce false positives.
 
-use std::collections::{BTreeSet, HashSet};
+use std::path::Path;
 
-use crate::resolve::ResolvedPath;
-use crate::resolve::module_tree::resolve_macro_path;
-use crate::resolve::use_tree;
+use crate::resolve::module_tree::span_to_source_span;
+use crate::resolve::{Occurrence, Origin};
 
-/// Scan a `macro_rules!` body token-stream for path-like sequences
-/// (`Ident :: Ident (:: Ident)*`) and resolve each through the macro's
-/// defining scope. Records the resolved path in `out`.
+/// Scan a macro body token-stream for path-like sequences
+/// (`Ident :: Ident (:: Ident)*`) and emit each as a raw `Origin::Macro`
+/// [`Occurrence`] (segments + span) into `out`. Resolution happens centrally in
+/// `resolve_occurrence`.
 pub(crate) fn extract_macro_paths(
     tokens: proc_macro2::TokenStream,
-    scope: &use_tree::Scope,
-    siblings: &HashSet<String>,
-    parent_canonical: &ResolvedPath,
-    out: &mut BTreeSet<ResolvedPath>,
+    file: &Path,
+    out: &mut Vec<Occurrence>,
 ) {
     let stream: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
     let mut i = 0;
@@ -65,17 +62,21 @@ pub(crate) fn extract_macro_paths(
                 segments.push(next.to_string());
                 j += 3;
             }
-            if segments.len() >= 2
-                && let Some(resolved) =
-                    resolve_macro_path(segments, scope, siblings, parent_canonical)
-            {
-                out.insert(resolved);
+            // Candidate selection only (multi-segment runs) — resolution is
+            // central in `resolve_occurrence`.
+            if segments.len() >= 2 {
+                out.push(Occurrence {
+                    segments,
+                    path: None,
+                    span: Some(span_to_source_span(file, first.span())),
+                    origin: Origin::Macro,
+                });
             }
             i = j;
             continue;
         }
         if let proc_macro2::TokenTree::Group(group) = &stream[i] {
-            extract_macro_paths(group.stream(), scope, siblings, parent_canonical, out);
+            extract_macro_paths(group.stream(), file, out);
         }
         i += 1;
     }
