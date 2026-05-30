@@ -54,6 +54,25 @@ mod internal {
 /// Single-hop public re-export — canonical target is `oracle_core::internal::deep`.
 pub use internal::deep;
 
+/// `use … as` rename re-export — exercises alias handling; canonical target is
+/// still `oracle_core::internal::deep`.
+pub use internal::deep as renamed_deep;
+
+/// Private module with non-public items. These are NOT `Visibility::Public`, so
+/// they stay out of the public-surface check, but the `--document-private-items`
+/// oracle sees them — exercising private/`pub(crate)` visibility resolution and
+/// the private module tree.
+#[allow(dead_code)]
+mod hidden {
+    pub(crate) fn semi() -> u32 {
+        1
+    }
+
+    fn buried() -> u32 {
+        2
+    }
+}
+
 /// Non-ASCII identifier — the byte length (5) differs from the char length (4),
 /// guarding against SCIP/rustdoc range-encoding drift.
 pub fn café() -> u32 {

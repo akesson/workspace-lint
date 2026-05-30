@@ -9,3 +9,8 @@ path = "src/lib.rs"
 [dependencies]
 # The one declared dependency the SCIP dep-set oracle proves is referenced.
 oracle-core = { path = "../oracle-core" }
+
+[dev-dependencies]
+# A genuinely-used DEV dependency — the dep-set oracle must classify it as
+# DevDependencies and exclude it from the [dependencies] set it checks.
+oracle-extra = { path = "../oracle-extra" }
