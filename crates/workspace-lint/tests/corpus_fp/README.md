@@ -14,15 +14,22 @@ promoting "known FP" to "fixed". Re-bless after triage with
 Scope: **`unused-deps` only** (see `corpus_fp.rs` for why `unused-pub` is
 excluded — it flags a standalone library's whole public API by construction).
 
-## Findings (audited 2026-05-30)
+## Findings (audited 2026-05-31)
 
-Every current finding is an `unused-deps` **false positive on a dev-dependency**,
-and they cluster around one theme: dev-deps are exercised by code paths the
-*syntactic* resolver under-scans (doc-tests, examples, `trybuild` UI fixtures,
-`#[cfg]`-gated test modules) and by reference positions it doesn't record
-(external globs, derive-attribute paths). This is the same reason Phase 1's
-set-level dependency oracle deliberately checks only `[dependencies]`, not
-`[dev-dependencies]`.
+Every remaining finding is an `unused-deps` **false positive on a dev-dependency**:
+a dep exercised by a code path the *syntactic* resolver under-scans (doc-tests).
+This is the same reason Phase 1's set-level dependency oracle deliberately checks
+only `[dependencies]`, not `[dev-dependencies]`.
+
+> **History (Phase 3, increment 1):** the earlier audit also reported FPs on
+> bitflags' `serde_lib`/`serde_test` and hypothesized an "external-glob /
+> derive-attribute / cfg-gated-module" gap. That root-cause was **wrong**. The
+> real bug was module-file resolution: both deps are referenced in
+> `src/external/serde.rs`, reached via `mod serde;` in `src/external.rs`, and the
+> resolver didn't implement the `foo.rs`-owns-`foo/` convention, so it never
+> loaded the file. Fixing that (see `syn-workspace/src/resolve/module_tree.rs`)
+> cleared bitflags entirely — the glob, derive, and cfg-gated-module mechanisms
+> all worked once the file was actually traversed.
 
 - **`heck`** — clean. The control crate; must stay `all passed`.
 
@@ -41,19 +48,16 @@ set-level dependency oracle deliberately checks only `[dependencies]`, not
     doc comment; likely test-infrastructure-only or vestigial. Tracked, not yet
     root-caused.
 
-- **`bitflags`**
-  - `serde_lib` (a renamed dep, `package = "serde"`) — **FP**. Used via
-    `use serde_lib::*` (an *external* glob import, which the resolver
-    intentionally does not expand — a known false-negative class) and via
-    `#[derive(serde_lib::Serialize)]` (a derive-attribute path).
-  - `serde_test` — **FP**. Used via a `use serde_test::{…}` inside a
-    `#[cfg(feature = "serde")]`-gated module.
+- **`bitflags`** — clean. Previously flagged `serde_lib` + `serde_test`; both
+  cleared by the module-file resolution fix (see History above). Must stay
+  `all passed`.
 
 ## Takeaway for follow-ups
 
-Closing these needs resolver work (scanning doc-comment code fences, recording
-external-glob and derive-attribute references, traversing cfg-gated modules) —
-each its own Phase-3 increment, out of scope for the corpus harness PR. A
-lighter alternative worth weighing: have `unused-deps` treat
-`[dev-dependencies]` more conservatively, since their usage is structurally
-harder to see than `[dependencies]`.
+The one remaining FP is anyhow's `futures` (doc-test-only). Closing it needs
+either doc-comment code-fence scanning (its own Phase-3 increment) or the lighter
+alternative worth weighing: have `unused-deps` treat `[dev-dependencies]` more
+conservatively, since their usage is structurally harder to see than
+`[dependencies]`. anyhow's `syn` finding stays open: no source reference appears
+anywhere scanned, so it is likely build-/`trybuild`-only or vestigial rather than
+a resolver miss.
