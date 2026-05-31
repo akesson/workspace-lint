@@ -120,7 +120,7 @@ pub(crate) fn load_members(
             // A target root (lib/bin/example/test/bench/build-script) is a crate
             // boundary that owns its containing directory, regardless of its
             // filename — its `mod foo;` children resolve as siblings. (Passing
-            // the file itself here would mis-resolve e.g. `tests/it.rs`'s
+            // the file itself here would wrongly resolve e.g. `tests/it.rs`'s
             // `mod common;` into `tests/it/`.)
             let mod_dir = src_path.parent().unwrap_or(std::path::Path::new("."));
             let root_module = match module_tree::build_module_from_file(

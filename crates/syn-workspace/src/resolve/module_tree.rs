@@ -8,7 +8,7 @@
 //! - A **target root** owns its own *containing* directory regardless of its
 //!   filename — it is a crate boundary, so its children are siblings
 //!   (`foo.rs` / `foo/mod.rs`). (Callers pass this dir explicitly; computing it
-//!   from the stem would mis-resolve e.g. `tests/integration.rs`'s
+//!   from the stem would wrongly resolve e.g. `tests/integration.rs`'s
 //!   `mod common;` into `tests/integration/`.)
 //! - A file reached *via* a `mod foo;` declaration owns `dir_owning_children`
 //!   of itself: `mod.rs` owns its own dir; any other `bar.rs` owns a `bar/`
