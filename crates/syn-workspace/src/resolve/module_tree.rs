@@ -33,6 +33,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use super::doc_fences;
 use super::use_tree::{self, UseBinding};
 use super::{
     BrokenModDecl, Error, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
@@ -116,6 +117,7 @@ fn empty_root(crate_name: &str) -> Module {
         cfg_features: Vec::new(),
         occurrences: Vec::new(),
         file: None,
+        doctest_crate_refs: HashSet::new(),
     }
 }
 
@@ -154,6 +156,9 @@ pub(crate) fn build_module_from_file(
         cfg_features: contents.cfg_features,
         occurrences: contents.occurrences,
         file: Some(file_path.to_path_buf()),
+        // Scanned once per file (where `source` is in hand); inline submodules
+        // share this file and carry an empty set.
+        doctest_crate_refs: doc_fences::doc_fence_crate_refs(&source),
     })
 }
 
@@ -274,6 +279,9 @@ fn collect_module_contents(
                     cfg_features: inline.cfg_features,
                     occurrences: inline.occurrences,
                     file: Some(parent_file.to_path_buf()),
+                    // Inline modules share the file; its doc fences are scanned
+                    // once on the file-backed module.
+                    doctest_crate_refs: HashSet::new(),
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, mod_dir, item_mod)? {
                 // A file reached via `mod foo;` owns `dir_owning_children` of

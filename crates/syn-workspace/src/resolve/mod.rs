@@ -9,6 +9,7 @@
 //! Each tier produces structures that the next consumes; the entry point is
 //! [`Workspace::load`], which orchestrates all three.
 
+mod doc_fences;
 pub mod module_tree;
 pub mod re_export;
 pub mod use_tree;
@@ -456,6 +457,15 @@ pub struct Module {
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
+    /// Crate names referenced inside rust-compiling code fences in this file's
+    /// doc comments (`///` / `//!`). Populated only on the file-backed module
+    /// (see [`module_tree::build_module_from_file`]); empty for inline
+    /// submodules, which share the file. Feeds the dependency lint **only**
+    /// (via [`Workspace::doctest_dep_refs`]) — a dep used solely in a doc-test
+    /// example is still genuinely used, but doc-test code is a separate
+    /// compilation unit, so these refs are deliberately kept out of the
+    /// occurrence graph that `unused-pub` / the SCIP projection read.
+    pub(crate) doctest_crate_refs: std::collections::HashSet<String>,
 }
 
 impl Module {
@@ -688,6 +698,15 @@ pub struct Workspace {
     /// regardless of how many consumers query it.
     canonical_refs_by_path:
         std::collections::HashMap<ResolvedPath, std::collections::HashSet<String>>,
+    /// Per-crate set of crate names referenced inside rust-compiling doc-test
+    /// code fences (see [`module_tree`]/`doc_fences`). Keyed by code name, like
+    /// [`Self::references_by_crate`]. Kept *separate* from the occurrence-derived
+    /// reference graph on purpose: a dependency used only in a doc-test example
+    /// is genuinely used (the dependency lint must see it), but doc-test code is
+    /// a separate compilation unit, so these refs must not reach `unused-pub`,
+    /// `architecture`, or the SCIP projection. Consumed only by
+    /// [`Self::doctest_dep_refs`].
+    doctest_dep_refs_by_crate: std::collections::HashMap<String, std::collections::HashSet<String>>,
     /// Non-fatal issues collected during the load (typically auxiliary
     /// targets that failed to parse). The library never prints these;
     /// callers decide whether to surface, log, or ignore them.
@@ -721,6 +740,10 @@ impl Workspace {
             String,
             std::collections::HashSet<ResolvedPath>,
         > = std::collections::HashMap::new();
+        let mut doctest_dep_refs_by_crate: std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
         for krate in &crates {
             if !krate.is_workspace_member {
                 continue;
@@ -728,6 +751,9 @@ impl Workspace {
             let code_name = krate.code_name();
             let macro_entry = macro_refs_by_crate.entry(code_name.clone()).or_default();
             let entry = references_by_crate.entry(code_name.clone()).or_default();
+            let doc_entry = doctest_dep_refs_by_crate
+                .entry(code_name.clone())
+                .or_default();
             // Walk every target (lib/bin/example/test/bench/build-script).
             // Each target's tree was built with the parent crate's code_name
             // as canonical root, so cross-crate references (e.g.
@@ -740,6 +766,7 @@ impl Workspace {
             for target in &krate.targets {
                 collect_macro_implicit_refs(&target.root, macro_entry);
                 collect_module_references(&target.root, entry);
+                collect_doctest_refs(&target.root, doc_entry);
             }
         }
         let mut canonical_refs_by_path: std::collections::HashMap<
@@ -764,6 +791,7 @@ impl Workspace {
             external_macro_refs: std::collections::HashSet::new(),
             references_by_crate,
             canonical_refs_by_path,
+            doctest_dep_refs_by_crate,
             warnings,
         })
     }
@@ -1033,6 +1061,17 @@ impl Workspace {
         self.references_by_crate.get(&krate.code_name())
     }
 
+    /// Crate names referenced inside `krate`'s doc-test code fences. A
+    /// dependency that appears *only* here is still genuinely used — the
+    /// doc-test won't compile without it — so the dependency lint unions this
+    /// with [`Self::references_from_crate`]. Deliberately a separate channel:
+    /// doc-test code is a separate compilation unit, so these refs must not
+    /// reach `unused-pub`, `architecture`, or the SCIP projection. `None` when
+    /// the crate has no doc-test references (or isn't a workspace member).
+    pub fn doctest_dep_refs(&self, krate: &Crate) -> Option<&std::collections::HashSet<String>> {
+        self.doctest_dep_refs_by_crate.get(&krate.code_name())
+    }
+
     /// Iterator over every `(referring_crate, canonical_path)` reference
     /// pair across the workspace. Useful for building reverse indexes (e.g.
     /// "which crates reference symbol X?").
@@ -1097,6 +1136,15 @@ fn collect_module_references(module: &Module, out: &mut std::collections::HashSe
     }
 }
 
+/// Walk a crate's module tree collecting the crate names referenced inside
+/// doc-test code fences (populated per file as [`Module::doctest_crate_refs`]).
+/// Used only by the dependency lint — see [`Workspace::doctest_dep_refs`].
+fn collect_doctest_refs(module: &Module, out: &mut std::collections::HashSet<String>) {
+    for m in module.walk() {
+        out.extend(m.doctest_crate_refs.iter().cloned());
+    }
+}
+
 /// Recursive iterator over modules in a tree, yielding the root first
 /// then descending into submodules depth-first. The public entry points
 /// are [`Module::walk`], [`Module::walk_items`], and
@@ -1150,6 +1198,7 @@ mod tests {
             cfg_features: Vec::new(),
             occurrences: Vec::new(),
             file: None,
+            doctest_crate_refs: std::collections::HashSet::new(),
         }
     }
 
