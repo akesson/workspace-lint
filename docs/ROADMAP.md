@@ -199,6 +199,14 @@ resolution. Rewrite `workspace-lint` onto the new model surface.
 **Done when:** occurrences are the model's primary reference surface, resolution
 is one pure function, and the old fragmented channels are deleted.
 
+**Landed (Phase 0).** The resolver is built around the `Occurrence { segments,
+path, span, origin }` model (`Origin = Code | GlobUse | ExternCrate | Macro`),
+lowered per-file then resolved centrally by a single `resolve_occurrence`
+(Phase A → Phase B). Macro-body lowering is the one extension point
+(`plugins`/`MacroLowerer`); `use` imports live in `use_bindings`. A module's
+reference surface is its `use_bindings` canonicals + resolved occurrences. The
+`tests/cases/` snapshots stayed green across the refactor.
+
 ### Phase 1 — SCIP emitter + differential harness
 **Goal:** turn "how good is the resolver" into a number Claude can iterate on.
 - Emit a SCIP-subset from the resolved occurrences (`Workspace → scip::Index`).
@@ -290,6 +298,22 @@ climbs. This is the open-ended, Claude-friendly loop the whole architecture
 exists to enable.
 **Done when:** in-class recall plateaus and the remaining misses are documented
 non-goals.
+
+**Landed (Phase 3, increment 1 — module-file directory resolution).** The first
+corpus FP the loop closed: the resolver now implements the `foo.rs`-owns-`foo/`
+module convention. `resolve_mod_file` resolves a plain `mod foo;` in the
+declaring module's *owning directory* (`dir_owning_children`: the file's own dir
+for a crate root / `mod.rs`, else `<dir>/<stem>/`), and inline `mod a { mod b; }`
+owns a deeper `a/` dir — threaded as `mod_dir` through `collect_module_contents`.
+`#[path]` stays relative to the declaring file's directory (unchanged). This was
+the real root cause of bitflags' `serde_lib`/`serde_test` `unused-deps` FPs — the
+referencing file (`src/external/serde.rs`) was simply never loaded, not a
+derive/glob/cfg gap as first hypothesized. The bug was invisible to `dogfood` and
+every prior fixture because they all use the `mod.rs` convention; the corpus
+(real third-party code) surfaced it. Guarded by `nested_modules` fixture tests
+(`file_module_owns_subdir`, `inline_mod_in_file_module_resolves_nested_dir`) and
+the now-clean `corpus_fp/bitflags.stderr` snapshot. Remaining corpus FP: anyhow's
+doc-test-only `futures` (next increment — see `corpus_fp/README.md`).
 
 ### Phase 4 — Framework semantics via Phase B plugins
 **Goal:** handle what token-scanning structurally can't, demand-driven.

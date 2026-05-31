@@ -1,19 +1,24 @@
 //! Tier 2: cross-file module tree assembly.
 //!
 //! For each crate, starts at `<manifest_dir>/src/lib.rs` (preferred) or
-//! `<manifest_dir>/src/main.rs` and walks every `mod foo;` declaration to:
-//!
-//! - `foo.rs` adjacent to the parent file, or
-//! - `foo/mod.rs` in a subdirectory, or
-//! - the file named by a `#[path = "..."]` attribute override (relative to
-//!   the parent file's directory).
+//! `<manifest_dir>/src/main.rs` and walks every `mod foo;` declaration to its
+//! backing file. A plain `mod foo;` is resolved in the declaring module's
+//! *owning directory* (see `dir_owning_children`): a crate root and a
+//! `mod.rs` own their own directory, so children are siblings (`foo.rs` /
+//! `foo/mod.rs`); any other file `bar.rs` owns a `bar/` subdirectory, so its
+//! children live under `bar/` (`bar/foo.rs` / `bar/foo/mod.rs`). A
+//! `#[path = "..."]` override is instead relative to the directory of the file
+//! that contains the `mod` statement.
 //!
 //! Produces a tree of [`Module`] values rooted at the crate root, each
 //! populated with the items declared at that scope. Inline `mod foo { ... }`
-//! blocks become submodules backed by the same `file` as their parent.
+//! blocks become submodules backed by the same `file` as their parent, and
+//! own a deeper `foo/` directory for any file children declared inside them.
 //!
 //! Edge cases tracked as `known_false_*` until handled:
 //! - `#[cfg_attr(cond, path = "...")]` (we don't evaluate cfg-attr expansion)
+//! - `#[path = "..."]` on a module *inside an inline block* (we resolve it
+//!   relative to the declaring file's directory, not the nested module dir)
 //! - `include!("…")` (we don't follow include directives)
 //! - Multi-target crates (libraries + binaries + examples) — currently only
 //!   the primary library or binary root is loaded.
@@ -116,7 +121,17 @@ pub(crate) fn build_module_from_file(
         source: e,
     })?;
 
-    let contents = collect_module_contents(&parsed.items, file_path, &canonical, marker_crates)?;
+    // The directory in which this file's `mod foo;` children are resolved: the
+    // file's own directory for a crate root or `mod.rs`, else `<dir>/<stem>/`
+    // (the `foo.rs`-owns-`foo/` convention).
+    let mod_dir = dir_owning_children(file_path);
+    let contents = collect_module_contents(
+        &parsed.items,
+        file_path,
+        &mod_dir,
+        &canonical,
+        marker_crates,
+    )?;
 
     Ok(Module {
         name: mod_name,
@@ -135,6 +150,7 @@ pub(crate) fn build_module_from_file(
 fn collect_module_contents(
     syn_items: &[syn::Item],
     parent_file: &Path,
+    mod_dir: &Path,
     parent_canonical: &ResolvedPath,
     marker_crates: &[String],
 ) -> Result<ModuleContents> {
@@ -224,9 +240,13 @@ fn collect_module_contents(
             let child_canonical = ResolvedPath::new(child_canonical_segs);
 
             if let Some((_, inline_items)) = &item_mod.content {
+                // An inline `mod a { … }` owns a deeper directory: any file
+                // child declared inside it resolves in `<mod_dir>/a/`, not
+                // `<mod_dir>/`.
                 let inline = collect_module_contents(
                     inline_items,
                     parent_file,
+                    &mod_dir.join(&child_name),
                     &child_canonical,
                     marker_crates,
                 )?;
@@ -245,7 +265,7 @@ fn collect_module_contents(
                     occurrences: inline.occurrences,
                     file: Some(parent_file.to_path_buf()),
                 });
-            } else if let Some(child_file) = resolve_mod_file(parent_file, item_mod)? {
+            } else if let Some(child_file) = resolve_mod_file(parent_file, mod_dir, item_mod)? {
                 submodules.push(build_module_from_file(
                     &child_file,
                     child_name,
@@ -677,25 +697,49 @@ fn scope_from(canonical: &ResolvedPath) -> use_tree::Scope {
     }
 }
 
+/// The directory in which a file's `mod foo;` children are resolved.
+///
+/// Rust's module-file convention: a crate root (`lib.rs`/`main.rs`) and a
+/// `mod.rs` own the directory they sit in, so their children are siblings;
+/// any other file `foo.rs` owns a `foo/` subdirectory, so *its* children live
+/// under `foo/`. The old code always used the parent file's directory, which
+/// silently dropped every submodule declared in a non-`mod.rs` file.
+fn dir_owning_children(file: &Path) -> PathBuf {
+    let parent = file.parent().unwrap_or(Path::new("."));
+    match file.file_stem().and_then(|s| s.to_str()) {
+        Some("mod") | Some("lib") | Some("main") => parent.to_path_buf(),
+        Some(stem) => parent.join(stem),
+        None => parent.to_path_buf(),
+    }
+}
+
 /// Locate the source file backing a `mod foo;` declaration.
 ///
-/// Honors `#[path = "..."]` overrides (relative to the parent file's
-/// directory). Falls back to `<dir>/foo.rs` then `<dir>/foo/mod.rs`.
-fn resolve_mod_file(parent_file: &Path, item_mod: &syn::ItemMod) -> Result<Option<PathBuf>> {
-    let parent_dir = parent_file.parent().unwrap_or(Path::new("."));
+/// A plain `mod foo;` resolves in `mod_dir` (the declaring module's owning
+/// directory — see `dir_owning_children`): `<mod_dir>/foo.rs` then
+/// `<mod_dir>/foo/mod.rs`. A `#[path = "..."]` override, by Rust's rule for a
+/// non-inline module, is instead relative to the directory of the file that
+/// contains the `mod` statement (`parent_file`'s directory) — which equals
+/// `mod_dir` at a crate root / `mod.rs`, so existing behavior is preserved.
+fn resolve_mod_file(
+    parent_file: &Path,
+    mod_dir: &Path,
+    item_mod: &syn::ItemMod,
+) -> Result<Option<PathBuf>> {
     let mod_name = item_mod.ident.to_string();
 
     if let Some(override_path) = path_attribute(&item_mod.attrs) {
-        let candidate = parent_dir.join(&override_path);
+        let base = parent_file.parent().unwrap_or(Path::new("."));
+        let candidate = base.join(&override_path);
         return Ok(candidate.exists().then_some(candidate));
     }
 
-    let adjacent = parent_dir.join(format!("{mod_name}.rs"));
+    let adjacent = mod_dir.join(format!("{mod_name}.rs"));
     if adjacent.exists() {
         return Ok(Some(adjacent));
     }
 
-    let nested = parent_dir.join(&mod_name).join("mod.rs");
+    let nested = mod_dir.join(&mod_name).join("mod.rs");
     if nested.exists() {
         return Ok(Some(nested));
     }
@@ -913,6 +957,55 @@ mod tests {
     }
 
     #[test]
+    fn file_module_owns_subdir() {
+        // `src/sub.rs` declares `pub mod leaf;`; because `sub.rs` is not a
+        // `mod.rs`/`lib.rs`, the child lives at `src/sub/leaf.rs`, not
+        // `src/leaf.rs`. The old `parent_file.parent()` logic dropped it.
+        let root =
+            build_crate_tree(&manifest_dir("nested_modules"), "nested_modules").expect("build");
+        let sub = root
+            .submodules
+            .iter()
+            .find(|m| m.name == "sub")
+            .expect("sub mod");
+        let leaf = sub
+            .submodules
+            .iter()
+            .find(|m| m.name == "leaf")
+            .expect("sub::leaf should resolve to src/sub/leaf.rs");
+        let item_names: Vec<_> = leaf.items.iter().map(|i| i.name.as_str()).collect();
+        assert!(item_names.contains(&"in_sub_leaf"), "got {item_names:?}");
+        assert_eq!(leaf.canonical.display(), "nested_modules::sub::leaf");
+    }
+
+    #[test]
+    fn inline_mod_in_file_module_resolves_nested_dir() {
+        // `src/sub.rs` has an inline `mod wrap { mod nested; }`. The inline
+        // `wrap` owns a deeper dir, so the file child resolves at
+        // `src/sub/wrap/nested.rs` — exercising the `mod_dir.join(inline)`
+        // threading, not just the file-stem rule.
+        let root =
+            build_crate_tree(&manifest_dir("nested_modules"), "nested_modules").expect("build");
+        let sub = root.submodules.iter().find(|m| m.name == "sub").unwrap();
+        let wrap = sub
+            .submodules
+            .iter()
+            .find(|m| m.name == "wrap")
+            .expect("inline wrap mod");
+        let nested = wrap
+            .submodules
+            .iter()
+            .find(|m| m.name == "nested")
+            .expect("wrap::nested should resolve to src/sub/wrap/nested.rs");
+        let item_names: Vec<_> = nested.items.iter().map(|i| i.name.as_str()).collect();
+        assert!(item_names.contains(&"in_wrap_nested"), "got {item_names:?}");
+        assert_eq!(
+            nested.canonical.display(),
+            "nested_modules::sub::wrap::nested"
+        );
+    }
+
+    #[test]
     fn path_attribute_overrides_resolution() {
         let root = build_crate_tree(&manifest_dir("path_attr"), "path_attr").expect("build");
         let renamed = root
@@ -982,6 +1075,7 @@ mod tests {
         let markers = default_markers();
         let contents = collect_module_contents(
             &items,
+            std::path::Path::new("<test>"),
             std::path::Path::new("<test>"),
             &parent_canonical,
             &markers,
