@@ -312,8 +312,29 @@ derive/glob/cfg gap as first hypothesized. The bug was invisible to `dogfood` an
 every prior fixture because they all use the `mod.rs` convention; the corpus
 (real third-party code) surfaced it. Guarded by `nested_modules` fixture tests
 (`file_module_owns_subdir`, `inline_mod_in_file_module_resolves_nested_dir`) and
-the now-clean `corpus_fp/bitflags.stderr` snapshot. Remaining corpus FP: anyhow's
-doc-test-only `futures` (next increment — see `corpus_fp/README.md`).
+the now-clean `corpus_fp/bitflags.stderr` snapshot.
+
+**Landed (Phase 3, increment 2 — target-root regression fix).** A follow-up to
+increment 1: `dir_owning_children` must NOT apply to *target roots* (each cargo
+target's `src_path` — lib/bin/example/test/bench/build-script), which own their
+*containing* directory regardless of filename. The fix threads the owning dir
+explicitly (roots pass `file.parent()`; `mod foo;`-descended files pass
+`dir_owning_children`), so e.g. `tests/it.rs`'s `mod common;` resolves to
+`tests/common/mod.rs` again. The **module-tree lint is now enabled + denied on
+dogfood** (`.workspace-lint.toml`) as the standing forcing function that would
+have caught the regression.
+
+**Landed (Phase 3, increment 3 — corpus broadening + reclassification).** Added
+`thiserror` (a multi-member workspace: `thiserror` lib + `thiserror-impl`
+proc-macro) — the corpus's first >1-member crate and proc-macro target — and began
+auditing `unused-pub` on multi-member crates (cross-crate referrers make it
+meaningful; the public API + proc-macro entries are correctly exempt). It
+immediately surfaced two concrete resolver gaps (bare single-ident sibling
+references; `use path::{self}` group-import binding) — captured as documented
+known-FPs in `corpus_fp/thiserror.stderr` for future increments. Also
+reclassified anyhow's prior `unused-deps` findings: `syn` is a confirmed **true
+positive** (a genuinely unused dev-dep — a lint win, not an FP), `futures` the
+lone remaining dependency FP (doc-test-only).
 
 ### Phase 4 — Framework semantics via Phase B plugins
 **Goal:** handle what token-scanning structurally can't, demand-driven.

@@ -49,6 +49,12 @@ const CORPUS: &[CorpusEntry] = &[
         name: "itertools",
         dir: "itertools",
     },
+    // Multi-member workspace (thiserror lib + thiserror-impl proc-macro): the
+    // first corpus crate with >1 member and a proc-macro target.
+    CorpusEntry {
+        name: "thiserror",
+        dir: "thiserror",
+    },
 ];
 
 /// Termination guard, not a perf gate — shared CI runners are too noisy to assert

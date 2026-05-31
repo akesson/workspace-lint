@@ -1,0 +1,129 @@
+warning: pub struct `Source` in crate `thiserror_impl` appears unused — consider removing
+ --> <TMP>/impl/src/attr.rs:33:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+33 - <existing>
+33 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+33 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `From` in crate `thiserror_impl` appears unused — consider removing
+ --> <TMP>/impl/src/attr.rs:39:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+39 - <existing>
+39 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+39 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `Transparent` in crate `thiserror_impl` appears unused — consider removing
+ --> <TMP>/impl/src/attr.rs:45:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+45 - <existing>
+45 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+45 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `Fmt` in crate `thiserror_impl` appears unused — consider removing
+ --> <TMP>/impl/src/attr.rs:51:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+51 - <existing>
+51 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+51 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `get` in crate `thiserror_impl` appears unused — consider removing
+ --> <TMP>/impl/src/attr.rs:69:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+69 - <existing>
+69 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+69 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub trait `Sealed` in crate `thiserror` appears unused — consider removing
+ --> <TMP>/src/aserror.rs:45:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+45 - <existing>
+45 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+45 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `Placeholder` in crate `thiserror` appears unused — consider removing
+ --> <TMP>/src/display.rs:64:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+64 - <existing>
+64 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+64 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub trait `Sealed` in crate `thiserror` appears unused — consider removing
+ --> <TMP>/src/provide.rs:19:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+19 - <existing>
+19 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+19 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 8 warnings (run `workspace-lint --fix` to apply 8 suggestions)

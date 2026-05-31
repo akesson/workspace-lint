@@ -10,3 +10,6 @@
 [submodule "corpus/itertools"]
 	path = corpus/itertools
 	url = https://github.com/rust-itertools/itertools.git
+[submodule "corpus/thiserror"]
+	path = corpus/thiserror
+	url = https://github.com/dtolnay/thiserror.git
