@@ -171,6 +171,7 @@ mod tests {
             cfg_features: Vec::new(),
             occurrences: Vec::new(),
             file: None,
+            doctest_crate_refs: std::collections::HashSet::new(),
         }
     }
 

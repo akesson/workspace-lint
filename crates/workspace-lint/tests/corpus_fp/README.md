@@ -39,18 +39,17 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
   `syn-workspace/tests/oracle.rs`, which independently confirms `either` is
   visible to the resolver.)
 
-- **`anyhow`** — one FP, one **true positive**:
-  - `futures` — **FP**. Referenced only inside a doc-test
-    (`/// use futures::stream::…` in `src/error.rs:62`). The resolver does not
-    parse code fences in doc comments, so a dependency used only by doc-tests
-    looks unused. Post-#30 (all targets — tests/examples/benches/build.rs — are
-    scanned), doc-tests are the *only* remaining dev-dep blind spot.
+- **`anyhow`** — one **true positive**, no FPs:
   - `syn` — **TRUE POSITIVE** (confirmed). An exhaustive search found zero
     references anywhere — not `use syn`, not `syn::`, not in `build.rs`, tests,
-    examples, or doc comments. anyhow (v1.0.102) declares a `syn` dev-dep it
-    genuinely does not use; the lint is *correctly* flagging it. (This is why
-    blanket `[dev-dependencies]` conservatism would be wrong — it would suppress
-    this real finding.)
+    examples, or doc comments. anyhow declares a `syn` dev-dep it genuinely does
+    not use; the lint is *correctly* flagging it. (This is why blanket
+    `[dev-dependencies]` conservatism would be wrong — it would suppress this
+    real finding.)
+  - `futures` — **fixed** (was the lone remaining corpus FP). Referenced only
+    inside a doc-test (`/// use futures::stream::…` in `src/error.rs:62`). Doc
+    comments are now scanned for code fences (see History below), so the dep is
+    correctly seen as used.
 
 - **`bitflags`** — clean (`unused-deps`). Previously flagged `serde_lib` +
   `serde_test`; both cleared by the module-file resolution fix (see History
@@ -75,10 +74,21 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > references, so the cross-crate SCIP precision gate is unaffected; the FPs
 > reclassify `Unused` → `IntraCrate` and `suppress-intra-crate` drops them.
 
+> **History (Phase 3, increment 5):** anyhow's `futures` FP — a dep used only in
+> a `/// use futures::stream::…` doc-test example — was the last corpus FP. The
+> resolver now scans rust-compiling code fences in line doc comments (`///` /
+> `//!`) for crate-name references (`syn-workspace/src/resolve/doc_fences.rs`).
+> These feed the dependency lint **only** (via `Workspace::doctest_dep_refs`),
+> deliberately kept out of the occurrence graph: doc-test code is a separate
+> compilation unit, so the refs must not reach `unused-pub` or the SCIP
+> projection. `text` / `ignore` / `compile_fail` / other-language fences are
+> skipped; rustdoc hidden lines (`# `) are scanned. Block doc comments
+> (`/** … */`) are a documented non-goal.
+
 ## Takeaway for follow-ups
 
+- **Corpus is FP-free.** Every audited crate is clean except anyhow's `syn`,
+  which is a confirmed *true positive*, not an FP.
 - **anyhow `syn`** — a confirmed true positive; leave it flagged (no action). It
   validates that `unused-deps` catches real unused deps, and rules out blanket
   dev-dependency conservatism (which would hide it).
-- **anyhow `futures`** — the **lone remaining corpus FP**; needs doc-comment
-  code-fence scanning (its own increment), the last dev-dep blind spot.

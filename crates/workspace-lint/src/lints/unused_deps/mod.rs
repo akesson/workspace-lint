@@ -5,12 +5,16 @@
 //! is flagged unused if its underscore-normalized name doesn't appear in
 //! that set.
 //!
-//! Inputs come from two sources, both already loaded on the resolver:
+//! Inputs come from three sources, all already loaded on the resolver:
 //!
 //! - **`Crate::declared_deps`** — the manifest's enumerated dep list across
 //!   `[dependencies]`, `[dev-dependencies]`, and `[build-dependencies]`.
 //! - **`Workspace::references_from_crate`** — the canonical-path set the
 //!   crate touches (use statements + regular code paths + macro-body refs).
+//! - **`Workspace::doctest_dep_refs`** — crate names referenced inside
+//!   doc-test code fences (a dep used only in a `/// ```rust …` example is
+//!   still genuinely used). Kept separate from the reference graph above so it
+//!   feeds only this lint, never `unused-pub` / the SCIP projection.
 //!
 //! Known limitations (documented in tests/cases/unused-deps/):
 //!
@@ -152,14 +156,21 @@ fn build_delete_suggestion(manifest: &Manifest, entry: &DeclaredDep) -> Option<S
 }
 
 fn referenced_crate_names(workspace: &Workspace, krate: &syn_workspace::Crate) -> HashSet<String> {
-    workspace
+    let mut names: HashSet<String> = workspace
         .references_from_crate(krate)
         .map(|refs| {
             refs.iter()
                 .filter_map(|p| p.crate_name().map(String::from))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // A dep referenced only inside a doc-test code fence is still genuinely
+    // used (the doc-test won't compile without it). These come from a separate
+    // channel kept out of the occurrence graph, so union them in here.
+    if let Some(doc_refs) = workspace.doctest_dep_refs(krate) {
+        names.extend(doc_refs.iter().cloned());
+    }
+    names
 }
 
 fn collect_deps(manifest: &Manifest, ignore: &[String]) -> BTreeMap<String, Vec<DeclaredDep>> {

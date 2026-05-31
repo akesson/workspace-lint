@@ -348,6 +348,20 @@ SCIP precision gate is provably unmoved (precision 100 %, recall floor 12); the
 FPs reclassify `Unused` → `IntraCrate`. The last remaining corpus FP is anyhow's
 doc-test-only `futures`.
 
+**Landed (Phase 3, increment 5 — doc-comment code-fence scanning).** The last
+corpus FP closed: anyhow's `futures`, a dep used only inside a
+`/// use futures::stream::…` doc-test example. `syn-workspace/src/resolve/doc_fences.rs`
+scans rust-compiling code fences in line doc comments (`///` / `//!`) for
+crate-name references — skipping `text` / `ignore` / `compile_fail` /
+other-language fences and honoring rustdoc hidden lines (`# `). Per the chosen
+scope, these refs feed the **dependency lint only** (`Workspace::doctest_dep_refs`,
+unioned into `unused-deps`'s referenced-crate set); they are deliberately kept
+out of the occurrence/reference graph, so `unused-pub`, `architecture`, and the
+SCIP projection are untouched by construction (doc-test code is a separate
+compilation unit). The corpus is now FP-free — every audited crate is clean
+except anyhow's `syn`, a confirmed true positive. Block doc comments (`/** … */`)
+are a documented non-goal.
+
 ### Phase 4 — Framework semantics via Phase B plugins
 **Goal:** handle what token-scanning structurally can't, demand-driven.
 When a framework causes systematic FPs no amount of scanning fixes, add a Phase B
