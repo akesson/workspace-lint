@@ -156,14 +156,30 @@ fn walk(
         }
         syn::UseTree::Name(n) => {
             let name = n.ident.to_string();
-            let mut canon = prefix.to_vec();
-            canon.push(name.clone());
-            out.push(UseBinding {
-                local_name: name,
-                canonical: ResolvedPath::new(canon),
-                visibility,
-                source: Some(source_span_from_ident(file, &n.ident)),
-            });
+            if name == "self" {
+                // `use foo::bar::{self, …};` — the `self` leaf imports the
+                // module `bar` itself, NOT a name called `self`. Bind `bar`
+                // (the last prefix segment, already crate-normalized by
+                // `peel_leading_special`) so `bar::Item` references resolve.
+                // A bare `use self;` has an empty prefix → nothing to bind.
+                if let Some(local) = prefix.last().cloned() {
+                    out.push(UseBinding {
+                        local_name: local,
+                        canonical: ResolvedPath::new(prefix.to_vec()),
+                        visibility,
+                        source: Some(source_span_from_ident(file, &n.ident)),
+                    });
+                }
+            } else {
+                let mut canon = prefix.to_vec();
+                canon.push(name.clone());
+                out.push(UseBinding {
+                    local_name: name,
+                    canonical: ResolvedPath::new(canon),
+                    visibility,
+                    source: Some(source_span_from_ident(file, &n.ident)),
+                });
+            }
         }
         syn::UseTree::Rename(r) => {
             let mut canon = prefix.to_vec();
@@ -347,6 +363,33 @@ mod tests {
             vec![
                 ("Bar".into(), "foo::Bar".into()),
                 ("Baz".into(), "foo::Baz".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn group_self_binds_the_module_itself() {
+        // `use foo::{self, Bar};` imports both the module `foo` and `foo::Bar`.
+        // The `self` leaf must bind `foo` (not a name called `self`), so that
+        // later `foo::Item` references resolve.
+        let s = scope("demo", &[]);
+        let mut got = bindings("use crate::attr::{self, Attrs};", &s);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("Attrs".into(), "demo::attr::Attrs".into()),
+                ("attr".into(), "demo::attr".into()),
+            ]
+        );
+        // External crate form: `use serde::{self, Serialize};`.
+        let mut ext = bindings("use serde::{self, Serialize};", &s);
+        ext.sort();
+        assert_eq!(
+            ext,
+            vec![
+                ("Serialize".into(), "serde::Serialize".into()),
+                ("serde".into(), "serde".into()),
             ]
         );
     }

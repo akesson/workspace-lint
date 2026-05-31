@@ -336,6 +336,18 @@ reclassified anyhow's prior `unused-deps` findings: `syn` is a confirmed **true
 positive** (a genuinely unused dev-dep — a lint win, not an FP), `futures` the
 lone remaining dependency FP (doc-test-only).
 
+**Landed (Phase 3, increment 4 — the two thiserror gaps closed).** Both
+`unused-pub` FP classes thiserror surfaced are fixed in `syn-workspace`, taking
+`corpus_fp/thiserror.stderr` from 8 → clean: (1) `extract_code_paths` now keeps a
+bare single ident that names a same-module **sibling** (not only a `use` binding),
+so a sibling referenced by bare name in a field type / struct literal / supertrait
+bound / impl position is recorded; (2) `bindings_from_use` binds the module for
+`use path::{self, …}` instead of a name called `self`. Both only add same-crate
+references (resolution's sibling branch was already in place), so the cross-crate
+SCIP precision gate is provably unmoved (precision 100 %, recall floor 12); the
+FPs reclassify `Unused` → `IntraCrate`. The last remaining corpus FP is anyhow's
+doc-test-only `futures`.
+
 ### Phase 4 — Framework semantics via Phase B plugins
 **Goal:** handle what token-scanning structurally can't, demand-driven.
 When a framework causes systematic FPs no amount of scanning fixes, add a Phase B
