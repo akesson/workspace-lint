@@ -355,7 +355,13 @@ fn collect_module_contents(
         }
 
         let tokens = quote::ToTokens::to_token_stream(syn_item);
-        extract_code_paths(tokens, &use_bindings, parent_file, &mut occurrences);
+        extract_code_paths(
+            tokens,
+            &use_bindings,
+            &sibling_names,
+            parent_file,
+            &mut occurrences,
+        );
     }
 
     // Phase B: resolve every raw occurrence centrally, filling in its canonical
@@ -384,12 +390,22 @@ fn collect_module_contents(
 /// [`resolve_occurrence`].
 ///
 /// The only resolution-aware decision kept here is candidate SELECTION: a bare
-/// single ident is emitted only if it matches a `use`-binding's `local_name`
-/// (otherwise it's a local/prelude name); multi-segment runs are always
-/// emitted. `use_bindings` is passed solely for that keep-filter.
+/// single ident is emitted only if it names a `use`-binding (`local_name`) or a
+/// same-module sibling item (`sibling_names`) — otherwise it's a local/prelude
+/// name and is dropped; multi-segment runs are always emitted. `use_bindings`
+/// and `sibling_names` are passed solely for that keep-filter; resolution is
+/// deferred to [`resolve_occurrence`] (whose sibling branch turns a kept bare
+/// sibling ident into `parent_canonical::Ident`).
+///
+/// Keeping bare sibling names can record a spurious same-crate ref when a local
+/// var/param collides with a sibling *name* (most likely a sibling fn — types
+/// are PascalCase). That only ever *suppresses* a lint finding (never invents a
+/// reference into another crate, so it can't dent the cross-crate SCIP gate), so
+/// the precision-for-recall trade is worth it.
 fn extract_code_paths(
     tokens: proc_macro2::TokenStream,
     use_bindings: &[UseBinding],
+    sibling_names: &HashSet<String>,
     file: &Path,
     out: &mut Vec<Occurrence>,
 ) {
@@ -421,7 +437,8 @@ fn extract_code_paths(
             // here, but the substitution itself is deferred to resolution).
             let keep = segments.len() >= 2
                 || (segments.len() == 1
-                    && use_bindings.iter().any(|b| b.local_name == segments[0]));
+                    && (use_bindings.iter().any(|b| b.local_name == segments[0])
+                        || sibling_names.contains(&segments[0])));
             if keep {
                 out.push(Occurrence {
                     segments,
@@ -434,7 +451,7 @@ fn extract_code_paths(
             continue;
         }
         if let proc_macro2::TokenTree::Group(group) = &stream[i] {
-            extract_code_paths(group.stream(), use_bindings, file, out);
+            extract_code_paths(group.stream(), use_bindings, sibling_names, file, out);
         }
         i += 1;
     }
@@ -1178,13 +1195,29 @@ mod tests {
             "fn helper() {} fn f() { helper(); helper::Sub::go(); }",
             "demo",
         );
-        // `helper` matches a sibling; first segment of `helper::Sub::go`
-        // resolves crate-local (note: `helper` alone is a single-ident sibling
-        // call — those are NOT recorded since they don't survive the
-        // single-ident filter without a use-binding).
+        // First segment of `helper::Sub::go` resolves crate-local.
         assert!(
             refs.contains(&"demo::helper::Sub::go".to_string()),
             "got {refs:?}"
+        );
+        // A *bare* single-ident sibling call (`helper()`) is also recorded — it
+        // matches a sibling name, so the keep-filter retains it and resolution
+        // anchors it to the current module.
+        assert!(refs.contains(&"demo::helper".to_string()), "got {refs:?}");
+    }
+
+    #[test]
+    fn code_path_records_bare_sibling_type_reference() {
+        // The thiserror FP class: a sibling type referenced by *bare* name in a
+        // field type (`Option<Sib>`) and a struct literal (`Sib { .. }`) must be
+        // recorded, so `unused-pub` doesn't think `Sib` is unused.
+        let refs = collect_refs(
+            "struct Sib; struct Wrap { inner: Option<Sib> } fn mk() -> Sib { Sib }",
+            "demo",
+        );
+        assert!(
+            refs.contains(&"demo::Sib".to_string()),
+            "bare sibling type ref not recorded; got {refs:?}"
         );
     }
 

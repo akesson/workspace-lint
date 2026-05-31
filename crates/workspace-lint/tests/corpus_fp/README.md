@@ -57,32 +57,28 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
   above). Must stay `all passed`.
 
 - **`thiserror`** (multi-member: `thiserror` lib + `thiserror-impl` proc-macro) —
-  `unused-deps` clean; **`unused-pub` surfaces 8 false positives**, all on
-  *internal* `pub` items that genuinely *are* used. The cross-crate resolution
-  itself works: the public API and `thiserror-impl`'s `#[proc_macro_derive]`
-  entry are correctly exempt, and `suppress-intra-crate` drops the noisier
-  "consider `pub(crate)`" suggestions. The 8 FPs split into two concrete resolver
-  gaps — the next increments:
+  clean (`unused-deps` + `unused-pub`). It initially surfaced 8 `unused-pub` FPs
+  on *internal* `pub` items that genuinely *are* used; the cross-crate resolution
+  was already correct (public API + `#[proc_macro_derive]` entries exempt). Both
+  root-cause gaps were then fixed (see History below):
   - **Bare single-ident sibling references** (7): `Source`/`From`/`Transparent`/
-    `Fmt` (used as `Option<Source<'a>>` field types and `Some(Source { … })`
-    literals), the two `Sealed` traits (used as supertrait bounds `: Sealed` and
-    `impl Sealed for …`), and `Placeholder` (`impl … for Placeholder`). All are
-    referenced by a *bare* same-module ident, which `extract_code_paths` drops
-    (it keeps a lone ident only if it matches a `use` binding, not a sibling).
-  - **`use path::{self, …}` group-self import** (1): `get` is called as
-    `attr::get(…)` from `ast.rs`, which imports `attr` via
-    `use crate::attr::{self, Attrs};`. The `{self}` binding for `attr` isn't
-    resolving, so `attr::get` resolves to the wrong path and `get` looks unused.
+    `Fmt` (`Option<Source<'a>>` fields, `Some(Source { … })` literals), the two
+    `Sealed` traits (supertrait bounds + `impl Sealed for …`), `Placeholder`.
+  - **`use path::{self, …}` group-self import** (1): `attr::get`.
+
+> **History (Phase 3, increment 4):** the two gaps above were closed in
+> `syn-workspace`. `extract_code_paths` now keeps a bare single ident that names
+> a same-module sibling (not just a `use` binding), so a sibling referenced by
+> bare name in a field type / literal / bound / impl is recorded.
+> `bindings_from_use` now binds the module for `use path::{self, …}` instead of a
+> name called `self`. Both only *add* same-crate (or, for `{self}`, normalized)
+> references, so the cross-crate SCIP precision gate is unaffected; the FPs
+> reclassify `Unused` → `IntraCrate` and `suppress-intra-crate` drops them.
 
 ## Takeaway for follow-ups
 
 - **anyhow `syn`** — a confirmed true positive; leave it flagged (no action). It
   validates that `unused-deps` catches real unused deps, and rules out blanket
   dev-dependency conservatism (which would hide it).
-- **anyhow `futures`** — the lone dependency FP; needs doc-comment code-fence
-  scanning (its own increment), the last dev-dep blind spot.
-- **thiserror's `unused-pub` FPs** — two resolver gaps (bare-sibling-ident
-  references; `use path::{self}` binding), each its own increment. This committed
-  snapshot is the forcing function: when a gap is closed the FPs drop and the
-  snapshot must be re-blessed, promoting them. Re-bless after triage with
-  `WORKSPACE_LINT_BLESS=1 cargo test -p workspace-lint --test corpus_fp`.
+- **anyhow `futures`** — the **lone remaining corpus FP**; needs doc-comment
+  code-fence scanning (its own increment), the last dev-dep blind spot.
