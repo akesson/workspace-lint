@@ -1,14 +1,21 @@
 //! Tier 2: cross-file module tree assembly.
 //!
-//! For each crate, starts at `<manifest_dir>/src/lib.rs` (preferred) or
-//! `<manifest_dir>/src/main.rs` and walks every `mod foo;` declaration to its
-//! backing file. A plain `mod foo;` is resolved in the declaring module's
-//! *owning directory* (see `dir_owning_children`): a crate root and a
-//! `mod.rs` own their own directory, so children are siblings (`foo.rs` /
-//! `foo/mod.rs`); any other file `bar.rs` owns a `bar/` subdirectory, so its
-//! children live under `bar/` (`bar/foo.rs` / `bar/foo/mod.rs`). A
-//! `#[path = "..."]` override is instead relative to the directory of the file
-//! that contains the `mod` statement.
+//! For each crate, starts at every target root (`lib.rs`/`main.rs` and each
+//! cargo target's `src_path` — bin/example/test/bench/build-script) and walks
+//! every `mod foo;` declaration to its backing file, resolved in the declaring
+//! module's *owning directory*:
+//!
+//! - A **target root** owns its own *containing* directory regardless of its
+//!   filename — it is a crate boundary, so its children are siblings
+//!   (`foo.rs` / `foo/mod.rs`). (Callers pass this dir explicitly; computing it
+//!   from the stem would mis-resolve e.g. `tests/integration.rs`'s
+//!   `mod common;` into `tests/integration/`.)
+//! - A file reached *via* a `mod foo;` declaration owns `dir_owning_children`
+//!   of itself: `mod.rs` owns its own dir; any other `bar.rs` owns a `bar/`
+//!   subdirectory, so its children live under `bar/` (`bar/foo.rs` /
+//!   `bar/foo/mod.rs`).
+//! - A `#[path = "..."]` override is instead relative to the directory of the
+//!   file that contains the `mod` statement.
 //!
 //! Produces a tree of [`Module`] values rooted at the crate root, each
 //! populated with the items declared at that scope. Inline `mod foo { ... }`
@@ -80,8 +87,12 @@ pub fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module>
         "workspace_syn".to_string(),
         "syn_workspace_marker".to_string(),
     ];
+    // A crate root owns its containing directory (`src/`): its `mod foo;`
+    // children are siblings, not under a `<stem>/` subdir.
+    let mod_dir = root_file.parent().unwrap_or(Path::new("."));
     build_module_from_file(
         root_file,
+        mod_dir,
         crate_name.to_string(),
         crate_root_path,
         // Crate roots are the crate boundary itself, not a `mod foo;`
@@ -108,8 +119,16 @@ fn empty_root(crate_name: &str) -> Module {
     }
 }
 
+/// `mod_dir` is the directory in which this file's `mod foo;` declarations are
+/// resolved. For a **target/crate root** (the `src_path` of any cargo target,
+/// or `lib.rs`/`main.rs`) it is the file's own directory — a root owns its
+/// containing directory regardless of filename. For a file reached *via* a
+/// `mod foo;` declaration, the caller passes [`dir_owning_children`] of that
+/// file (the `foo.rs`-owns-`foo/` convention). Computing it from the file stem
+/// here would be wrong for target roots like `tests/integration.rs`.
 pub(crate) fn build_module_from_file(
     file_path: &Path,
+    mod_dir: &Path,
     mod_name: String,
     canonical: ResolvedPath,
     visibility: Visibility,
@@ -121,17 +140,8 @@ pub(crate) fn build_module_from_file(
         source: e,
     })?;
 
-    // The directory in which this file's `mod foo;` children are resolved: the
-    // file's own directory for a crate root or `mod.rs`, else `<dir>/<stem>/`
-    // (the `foo.rs`-owns-`foo/` convention).
-    let mod_dir = dir_owning_children(file_path);
-    let contents = collect_module_contents(
-        &parsed.items,
-        file_path,
-        &mod_dir,
-        &canonical,
-        marker_crates,
-    )?;
+    let contents =
+        collect_module_contents(&parsed.items, file_path, mod_dir, &canonical, marker_crates)?;
 
     Ok(Module {
         name: mod_name,
@@ -266,8 +276,12 @@ fn collect_module_contents(
                     file: Some(parent_file.to_path_buf()),
                 });
             } else if let Some(child_file) = resolve_mod_file(parent_file, mod_dir, item_mod)? {
+                // A file reached via `mod foo;` owns `dir_owning_children` of
+                // itself: `foo.rs` owns `foo/`, `foo/mod.rs` owns `foo/`.
+                let child_mod_dir = dir_owning_children(&child_file);
                 submodules.push(build_module_from_file(
                     &child_file,
+                    &child_mod_dir,
                     child_name,
                     child_canonical,
                     Visibility::from_syn(&item_mod.vis),
@@ -954,6 +968,38 @@ mod tests {
             .expect("dir_mod");
         let item_names: Vec<_> = dir_mod.items.iter().map(|i| i.name.as_str()).collect();
         assert!(item_names.contains(&"in_dir_mod"), "got {item_names:?}");
+    }
+
+    #[test]
+    fn target_root_resolves_sibling_submodule() {
+        // Regression guard (follow-up to #29): a target root whose filename
+        // stem is not lib/main/mod — e.g. an integration-test root
+        // `tests/it.rs` — owns its *containing* directory, so `mod common;`
+        // resolves to the sibling `common/mod.rs`, not `it/common/mod.rs`.
+        // `walk.rs` builds every target this way; before the fix, every test /
+        // example / bench / build-script root silently dropped its submodules.
+        let dir = manifest_dir("nested_modules").join("target_root");
+        let root = build_module_from_file(
+            &dir.join("it.rs"),
+            &dir,
+            "it".to_string(),
+            ResolvedPath::new(["it".to_string()]),
+            Visibility::Public,
+            &default_markers(),
+        )
+        .expect("build target root");
+        let common = root
+            .submodules
+            .iter()
+            .find(|m| m.name == "common")
+            .expect("`mod common;` in a target root must resolve to the sibling common/mod.rs");
+        let item_names: Vec<_> = common.items.iter().map(|i| i.name.as_str()).collect();
+        assert!(item_names.contains(&"helper"), "got {item_names:?}");
+        assert!(
+            root.broken_mod_decls.is_empty(),
+            "no broken mod decls expected, got {:?}",
+            root.broken_mod_decls
+        );
     }
 
     #[test]

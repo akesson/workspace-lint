@@ -13,6 +13,11 @@
 centralized-deps = "deny"
 crate-size = "deny"
 file-size = "deny"
+# Module-tree integrity (broken `mod` decls / orphan src files). Denied so a
+# resolution regression — e.g. a target root failing to find a sibling
+# `mod common;`, or a renamed module leaving a stale file — fails dogfood
+# instead of silently shrinking the analyzed surface.
+module-tree = "deny"
 freshness = "deny"
 cli-crate-version = "deny"
 unused-deps = "deny"
@@ -22,6 +27,7 @@ stale-git-index = "deny"
 
 [checks]
 centralized-deps = true
+module-tree = true
 
 [[file-size.rules]]
 glob = "crates/workspace-lint/src/**/*.rs"
