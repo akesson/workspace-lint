@@ -1,0 +1,7 @@
+# Budget of 20 sits above the crate's Rust (a handful of lines) but well below
+# its committed data: data.json alone is ~30 lines. The crate passes ONLY
+# because crate-size counts Rust source (`*.rs`) and ignores the JSON/TOML.
+# If non-Rust ever counts again this case flips to a finding and fails.
+[[crate-size.rules]]
+glob = "crates/*"
+max-code-lines = 20

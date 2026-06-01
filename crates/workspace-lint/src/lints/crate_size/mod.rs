@@ -67,16 +67,24 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
         });
         let matcher = glob.compile_matcher();
 
-        let include_set = rule.include.as_ref().map(|patterns| {
-            let mut builder = GlobSetBuilder::new();
-            for p in patterns {
-                builder.add(Glob::new(p).unwrap_or_else(|e| {
-                    eprintln!("invalid include pattern '{p}': {e}");
-                    std::process::exit(1);
-                }));
-            }
-            builder.build().unwrap()
-        });
+        // A crate-size budget is about *code*, not committed data: JSON oracle
+        // snapshots and TOML fixture manifests that live under a crate dir
+        // shouldn't count against its line budget. So only Rust source (`*.rs`)
+        // is counted by default. Override per rule with `include` to count
+        // other file types or to narrow to specific Rust files. Patterns match
+        // the file name (not the full path).
+        let include_patterns = rule
+            .include
+            .clone()
+            .unwrap_or_else(|| vec!["*.rs".to_string()]);
+        let mut include_builder = GlobSetBuilder::new();
+        for p in &include_patterns {
+            include_builder.add(Glob::new(p).unwrap_or_else(|e| {
+                eprintln!("invalid include pattern '{p}': {e}");
+                std::process::exit(1);
+            }));
+        }
+        let include_set = include_builder.build().unwrap();
 
         // Iterate every workspace member whose workspace-relative manifest
         // directory matches the rule's glob. Replaces the previous
@@ -115,11 +123,9 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
             let mut total_code: usize = 0;
             for language in languages.values() {
                 for report in &language.reports {
-                    if let Some(ref gs) = include_set {
-                        let name = report.name.file_name().unwrap_or_default();
-                        if !gs.is_match(Path::new(name)) {
-                            continue;
-                        }
+                    let name = report.name.file_name().unwrap_or_default();
+                    if !include_set.is_match(Path::new(name)) {
+                        continue;
                     }
                     total_code += report.stats.code;
                 }
