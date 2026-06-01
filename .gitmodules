@@ -13,3 +13,6 @@
 [submodule "corpus/thiserror"]
 	path = corpus/thiserror
 	url = https://github.com/dtolnay/thiserror.git
+[submodule "corpus/memchr"]
+	path = corpus/memchr
+	url = https://github.com/BurntSushi/memchr.git

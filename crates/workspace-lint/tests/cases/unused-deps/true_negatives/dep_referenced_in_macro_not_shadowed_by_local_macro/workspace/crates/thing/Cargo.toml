@@ -1,0 +1,14 @@
+[package]
+name = "thing"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Referenced ONLY as `log::debug!` inside the `debug!` macro body below. A
+# local `macro_rules! log` shares this name but lives in the *macro* namespace,
+# so it must not shadow this path-position reference to the external `log` crate
+# (the unused-deps lint must still see `log` as used). Mirrors memchr 2.8.1.
+log = "0.4"

@@ -79,6 +79,14 @@ const CORPUS: &[CorpusEntry] = &[
         dir: "itertools",
         multi_member: false,
     },
+    // Deep cfg-gated arch-specific module tree (src/arch/…); single-crate, so
+    // only `unused-deps` is audited. Stresses module-file resolution and
+    // conditional `pub use` of `#[cfg(target_arch=…)]`-gated impls.
+    CorpusEntry {
+        name: "memchr",
+        dir: "memchr",
+        multi_member: false,
+    },
     // thiserror lib + thiserror-impl proc-macro: a multi-member workspace, so
     // `unused-pub` is audited here (cross-crate referrers make it meaningful).
     CorpusEntry {

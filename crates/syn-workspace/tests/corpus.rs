@@ -49,6 +49,13 @@ const CORPUS: &[CorpusEntry] = &[
         name: "itertools",
         dir: "itertools",
     },
+    // Deep, cfg-gated, arch-specific module tree (src/arch/{x86_64,aarch64,
+    // wasm32,all,generic}/…): the structural stress test for module-file
+    // resolution and `#[cfg(target_arch=…)]`-gated `mod`s + conditional `pub use`.
+    CorpusEntry {
+        name: "memchr",
+        dir: "memchr",
+    },
     // Multi-member workspace (thiserror lib + thiserror-impl proc-macro): the
     // first corpus crate with >1 member and a proc-macro target.
     CorpusEntry {

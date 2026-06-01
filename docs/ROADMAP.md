@@ -362,6 +362,22 @@ compilation unit). The corpus is now FP-free — every audited crate is clean
 except anyhow's `syn`, a confirmed true positive. Block doc comments (`/** … */`)
 are a documented non-goal.
 
+**Landed (Phase 3, increment 6 — corpus broadening: `memchr` + macro-namespace
+fix).** Added `memchr` to the corpus to stress deep, cfg-gated, arch-specific
+module trees (`src/arch/{x86_64,aarch64,wasm32,all,generic}/…`) — the
+structurally-hardest crate to date. It loaded and resolved cleanly and surfaced
+**one** real FP: the `log` dep, referenced only as `log::debug!`/`log::trace!`
+inside memchr's own `debug!`/`trace!` `macro_rules!` wrappers, with a local
+`macro_rules! log` of the same name. A `macro_rules!` definition introduces a
+name in the *macro* namespace only, so it must not shadow a path-position
+reference (`log::debug` resolves `log` in the type/module namespace). `sibling_name`
+(`syn-workspace/src/resolve/module_tree.rs`) no longer treats `macro_rules!`
+items as siblings; the change only *adds* external references that were being
+shadowed, so it is precision-neutral — the SCIP differential is unmoved
+(precision 100 %, in-class recall 12/18). Guarded by the
+`unused-deps/true_negatives/dep_referenced_in_macro_not_shadowed_by_local_macro`
+fixture. The corpus stays FP-free (anyhow's `syn` remains the lone true positive).
+
 ### Phase 4 — Framework semantics via Phase B plugins
 **Goal:** handle what token-scanning structurally can't, demand-driven.
 When a framework causes systematic FPs no amount of scanning fixes, add a Phase B

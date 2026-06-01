@@ -14,7 +14,7 @@ promoting "known FP" to "fixed". Re-bless after triage with
 Scope: **`unused-deps` only** (see `corpus_fp.rs` for why `unused-pub` is
 excluded — it flags a standalone library's whole public API by construction).
 
-## Findings (audited 2026-05-31)
+## Findings (audited 2026-06-01)
 
 Most findings are resolver **false positives** (the resolver missed a real
 reference), but not all — `unused-deps` on a genuinely-unused dependency is a
@@ -65,6 +65,15 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
     `Sealed` traits (supertrait bounds + `impl Sealed for …`), `Placeholder`.
   - **`use path::{self, …}` group-self import** (1): `attr::get`.
 
+- **`memchr`** — clean (`unused-deps`) after a fix. Its deep, cfg-gated,
+  arch-specific module tree (`src/arch/{x86_64,aarch64,wasm32,all,generic}/…`)
+  loaded and resolved without trouble. It surfaced **one** real FP: the optional
+  `log` dependency, referenced only as `log::debug!`/`log::trace!` inside
+  memchr's own `debug!`/`trace!` `macro_rules!` wrappers (`src/macros.rs`).
+  memchr also defines a `macro_rules! log` in that same module, and the resolver
+  treated that macro name as a sibling that shadowed the external `log` crate in
+  the `log::debug` path — so `log` looked unused. Fixed (see History below).
+
 > **History (Phase 3, increment 4):** the two gaps above were closed in
 > `syn-workspace`. `extract_code_paths` now keeps a bare single ident that names
 > a same-module sibling (not just a `use` binding), so a sibling referenced by
@@ -85,10 +94,28 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > skipped; rustdoc hidden lines (`# `) are scanned. Block doc comments
 > (`/** … */`) are a documented non-goal.
 
+> **History (Phase 3, increment 6):** `memchr` was added to stress deep,
+> cfg-gated, arch-specific module trees. It surfaced one real FP — the `log`
+> dep, referenced only as `log::debug!`/`log::trace!` inside `macro_rules!`
+> wrapper macros, alongside a local `macro_rules! log` of the same name. A
+> `macro_rules!` definition introduces a name in the *macro* namespace only, so
+> it must not shadow a path-position reference (`log::debug` resolves `log` in
+> the type/module namespace). `sibling_name`
+> (`syn-workspace/src/resolve/module_tree.rs`) no longer treats `macro_rules!`
+> items as siblings, so the `log` reference resolves to the external crate. The
+> change is precision-neutral (it only *adds* external references that were
+> being shadowed): the SCIP differential is unmoved (precision 100 %, recall
+> 12/18). Guarded by the
+> `unused-deps/true_negatives/dep_referenced_in_macro_not_shadowed_by_local_macro`
+> fixture.
+
 ## Takeaway for follow-ups
 
 - **Corpus is FP-free.** Every audited crate is clean except anyhow's `syn`,
   which is a confirmed *true positive*, not an FP.
+- **Structural coverage** now includes deep cfg-gated arch-specific module trees
+  (`memchr`) on top of multi-member workspaces (`thiserror`) and module-file
+  resolution (`bitflags`).
 - **anyhow `syn`** — a confirmed true positive; leave it flagged (no action). It
   validates that `unused-deps` catches real unused deps, and rules out blanket
   dev-dependency conservatism (which would hide it).

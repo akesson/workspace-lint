@@ -701,7 +701,15 @@ fn sibling_name(item: &syn::Item) -> Option<String> {
         syn::Item::Const(i) => Some(i.ident.to_string()),
         syn::Item::Static(i) => Some(i.ident.to_string()),
         syn::Item::Mod(i) => Some(i.ident.to_string()),
-        syn::Item::Macro(i) => i.ident.as_ref().map(ToString::to_string),
+        // A `macro_rules!` definition introduces a name in the *macro*
+        // namespace only. A path-position reference like `log::debug` — or a
+        // bare type/value ident — resolves in the type/value/module namespace,
+        // where the macro name does not participate, so a macro must NOT be a
+        // sibling that shadows an external-crate reference of the same name
+        // (e.g. memchr's `macro_rules! log` vs. the `log` crate, where
+        // `log::debug!` inside another macro is the only use of `log`). A name
+        // that is *also* a module/type/etc. still enters via that item's arm.
+        syn::Item::Macro(_) => None,
         _ => None,
     }
 }
