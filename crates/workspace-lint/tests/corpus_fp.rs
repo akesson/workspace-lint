@@ -107,6 +107,16 @@ const CORPUS: &[CorpusEntry] = &[
         dir: "thiserror",
         multi_member: true,
     },
+    // regex: a 7-member workspace (regex + regex-automata/-syntax/-lite/-cli
+    // /-capi/-test) whose members genuinely reference each other across crates
+    // (regex → regex-automata → regex-syntax). The biggest `unused-pub` audit
+    // target in the corpus — far more internal cross-crate `pub` surface than
+    // thiserror, so it exercises the resolver's reference completeness at scale.
+    CorpusEntry {
+        name: "regex",
+        dir: "regex",
+        multi_member: true,
+    },
 ];
 
 #[test]

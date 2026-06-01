@@ -78,7 +78,20 @@ impl ReExportIndex {
                 collect_edges(&target.root, &mut edges);
             }
         }
-        let targets = edges.values().cloned().collect();
+        let mut targets: HashSet<ResolvedPath> = edges.values().cloned().collect();
+        // Expand `pub use M::*` glob re-exports: every public item of `M` is
+        // re-exported into the crate's API, so mark each a target too — the
+        // named-`pub use` exemption (see `is_target`), applied to globs. Gated
+        // on the glob's own `pub` visibility (captured in `Module::glob_reexports`),
+        // mirroring `collect_edges`. A name-by-name edge isn't recorded (the glob
+        // doesn't rename), so `canonical()` is unaffected — only the exemption set
+        // grows.
+        let index = module_index(crates);
+        for krate in crates {
+            if let Some(target) = krate.lib_or_main() {
+                collect_glob_targets(&target.root, &index, &mut targets);
+            }
+        }
         Self { edges, targets }
     }
 
@@ -149,11 +162,54 @@ fn collect_edges(module: &Module, edges: &mut HashMap<ResolvedPath, ResolvedPath
     }
 }
 
+/// Index every module (across all crate lib roots) by its canonical path, so a
+/// glob re-export target (`pub use M::*` → `M`) can be looked up to enumerate
+/// its public items.
+fn module_index(crates: &[Crate]) -> HashMap<ResolvedPath, &Module> {
+    let mut index = HashMap::new();
+    for krate in crates {
+        if let Some(target) = krate.lib_or_main() {
+            index_module(&target.root, &mut index);
+        }
+    }
+    index
+}
+
+fn index_module<'a>(module: &'a Module, index: &mut HashMap<ResolvedPath, &'a Module>) {
+    index.insert(module.canonical.clone(), module);
+    for sub in &module.submodules {
+        index_module(sub, index);
+    }
+}
+
+/// For each `pub use M::*` glob re-export in `module` (and its submodules), mark
+/// every public item of `M` as a re-export target. `M`'s submodules aren't
+/// recursed — a glob re-exports `M`'s direct public items (and submodule names),
+/// not `M::sub::item`.
+fn collect_glob_targets<'a>(
+    module: &'a Module,
+    index: &HashMap<ResolvedPath, &'a Module>,
+    targets: &mut HashSet<ResolvedPath>,
+) {
+    for glob_target in &module.glob_reexports {
+        if let Some(target_mod) = index.get(glob_target) {
+            for item in &target_mod.items {
+                if matches!(item.visibility, Visibility::Public) {
+                    targets.insert(item.canonical.clone());
+                }
+            }
+        }
+    }
+    for sub in &module.submodules {
+        collect_glob_targets(sub, index, targets);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::resolve::use_tree::UseBinding;
-    use crate::resolve::{ItemKind, Visibility};
+    use crate::resolve::{Item, ItemKind, Visibility};
 
     fn module(
         canonical: &[&str],
@@ -170,6 +226,7 @@ mod tests {
             broken_mod_decls: Vec::new(),
             cfg_features: Vec::new(),
             occurrences: Vec::new(),
+            glob_reexports: Vec::new(),
             file: None,
             doctest_crate_refs: std::collections::HashSet::new(),
         }
@@ -230,6 +287,42 @@ mod tests {
         // Unchanged: no edge to follow.
         let q = ResolvedPath::new(["demo", "X"]);
         assert_eq!(idx.canonical(&q), q);
+    }
+
+    fn pub_struct(canonical: &[&str], visibility: Visibility) -> Item {
+        Item {
+            name: canonical.last().copied().unwrap_or_default().to_string(),
+            kind: ItemKind::Struct,
+            visibility,
+            canonical: ResolvedPath::new(canonical.iter().map(|s| s.to_string())),
+            source: None,
+            vis_byte_range: None,
+        }
+    }
+
+    #[test]
+    fn pub_glob_reexport_marks_target_items() {
+        // `pub use crate::inner::*;` at the root re-exports `inner`'s *public*
+        // items, so each must become a re-export target (regex's `Locations` FP
+        // class — a public-API item reachable only via a glob). Private items
+        // and items behind a plain (non-`pub`) glob are not re-exported.
+        let mut inner = module(&["demo", "inner"], vec![], vec![]);
+        inner.items = vec![
+            pub_struct(&["demo", "inner", "Reexported"], Visibility::Public),
+            pub_struct(&["demo", "inner", "Hidden"], Visibility::Private),
+        ];
+        let mut root = module(&["demo"], vec![], vec![inner]);
+        root.glob_reexports = vec![ResolvedPath::new(["demo", "inner"])];
+
+        let idx = ReExportIndex::build(&[krate("demo", root)]);
+        assert!(
+            idx.is_target(&ResolvedPath::new(["demo", "inner", "Reexported"])),
+            "public item re-exported via glob should be a target"
+        );
+        assert!(
+            !idx.is_target(&ResolvedPath::new(["demo", "inner", "Hidden"])),
+            "private item must not be a glob re-export target"
+        );
     }
 
     #[test]

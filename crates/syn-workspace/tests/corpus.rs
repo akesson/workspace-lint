@@ -62,6 +62,16 @@ const CORPUS: &[CorpusEntry] = &[
         name: "thiserror",
         dir: "thiserror",
     },
+    // Large 7-member workspace (regex + regex-automata/-syntax/-lite/-cli/-capi
+    // /-test) with genuine intra-workspace cross-crate references
+    // (regex → regex-automata → regex-syntax). The structural scale + generic-
+    // and cfg-heavy engine crates (200KB+ source files, large `unicode_tables`)
+    // are the load/parse stress test; the cross-crate edges give `unused-pub`
+    // real signal (see tests/corpus_fp.rs).
+    CorpusEntry {
+        name: "regex",
+        dir: "regex",
+    },
 ];
 
 /// Termination guard, not a perf gate — shared CI runners are too noisy to assert

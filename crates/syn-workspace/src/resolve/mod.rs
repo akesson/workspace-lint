@@ -454,6 +454,14 @@ pub struct Module {
     /// reference surface; use [`Module::references`] / [`Module::macro_refs`]
     /// for the resolved paths split by channel.
     pub occurrences: Vec<Occurrence>,
+    /// Canonical target prefixes of **public** glob re-exports
+    /// (`pub use M::*;`) declared in this module — e.g. `pub use crate::foo::*`
+    /// records `crate_code::foo`. A `pub use M::*` re-exports every public item
+    /// of `M` into this module's public surface, so [`ReExportIndex`] marks
+    /// those items as re-export targets (the named-`pub use` exemption,
+    /// extended to globs). Private (`use M::*`) globs are not recorded — they
+    /// import, they don't re-export.
+    pub glob_reexports: Vec<ResolvedPath>,
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
@@ -1218,6 +1226,7 @@ mod tests {
             broken_mod_decls: Vec::new(),
             cfg_features: Vec::new(),
             occurrences: Vec::new(),
+            glob_reexports: Vec::new(),
             file: None,
             doctest_crate_refs: std::collections::HashSet::new(),
         }

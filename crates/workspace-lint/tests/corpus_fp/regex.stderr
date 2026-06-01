@@ -1,0 +1,51 @@
+warning: 2 possibly unused dependencies in Cargo.toml
+ --> /Cargo.toml:1:1
+  |
+  = help: [dependencies] aho-corasick
+  = help: [dev-dependencies] quickcheck
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `quickcheck`
+  |
+208 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: pub const `BY_NAME` in crate `regex_syntax` appears unused — consider removing
+ --> <TMP>/regex-syntax/src/unicode_tables/perl_decimal.rs:9:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+9 - <existing>
+9 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+9 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub const `BY_NAME` in crate `regex_syntax` appears unused — consider removing
+ --> <TMP>/regex-syntax/src/unicode_tables/perl_space.rs:9:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+9 - <existing>
+9 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+9 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 3 warnings (run `workspace-lint --fix` to apply 3 suggestions)

@@ -1,0 +1,12 @@
+# `suppress-intra-crate` drops the "consider pub(crate)" (IntraCrate) class and
+# keeps only the resolver-FP-prone `Unused` class — the same focus the corpus
+# audit uses. `BY_NAME` is referenced (intra-crate) only through a function-local
+# `use crate::tables::age;` + `age::BY_NAME`, so the resolver must honor that
+# import: with it, `BY_NAME` is IntraCrate (suppressed → clean); without it,
+# `BY_NAME` looks Unused and fires. (regex-syntax's `age::BY_NAME` FP class.)
+[unused-pub]
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"

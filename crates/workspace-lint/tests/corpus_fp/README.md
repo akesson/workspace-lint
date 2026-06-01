@@ -11,8 +11,10 @@ documented FP stops firing, the snapshot mismatches and this file gets updated �
 promoting "known FP" to "fixed". Re-bless after triage with
 `WORKSPACE_LINT_BLESS=1 cargo test -p workspace-lint --test corpus_fp`.
 
-Scope: **`unused-deps` only** (see `corpus_fp.rs` for why `unused-pub` is
-excluded — it flags a standalone library's whole public API by construction).
+Scope: **`unused-deps` on every crate; `unused-pub` on multi-member workspaces
+only** (see `corpus_fp.rs` for why — on a standalone single-crate library
+`unused-pub` would flag the whole public API by construction, so it yields
+meaningful signal only where cross-crate referrers exist).
 
 ## Findings (audited 2026-06-01)
 
@@ -94,6 +96,54 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > skipped; rustdoc hidden lines (`# `) are scanned. Block doc comments
 > (`/** … */`) are a documented non-goal.
 
+- **`regex`** (7-member workspace: `regex` + `regex-automata` / `-syntax` /
+  `-lite` / `-cli` / `-capi` / `-test`) — the largest corpus crate (2119 items),
+  with genuine intra-workspace cross-crate references (`regex` → `regex-automata`
+  → `regex-syntax`): the `unused-pub`-at-scale stress test. It surfaced **3 true
+  positives** and **4 false positives** across three limitation classes; two of
+  the three classes were then fixed (see History below), leaving the snapshot at
+  three true positives plus one documented known-FP:
+  - **`quickcheck`** — **TRUE POSITIVE**. A `[dev-dependencies]` the *root*
+    `regex` crate declares but uses nowhere (`regex-automata` declares its own).
+    Same shape as anyhow's `syn`.
+  - **`regex_syntax::{perl_decimal,perl_space}::BY_NAME`** — **TRUE POSITIVES**.
+    Generated `pub const`s in the private `mod unicode_tables`; the lookups read
+    `DECIMAL_NUMBER` / `WHITE_SPACE`, never the `BY_NAME` variant, so these are
+    genuinely-unreferenced over-exposed items. (Other tables' `BY_NAME` *are*
+    read and are correctly seen as used.)
+  - **`aho-corasick`** — **known-FP (feature-plumbing)**. The root crate declares
+    it only to forward the `perf-literal` feature (`dep:aho-corasick`,
+    `aho-corasick?/std`) to `regex-automata`; it is never named in the root
+    crate's own code. `unused-deps` matches code references, not feature-table
+    entries — a documented limitation, left flagged.
+
+> **History (Phase 3, increment 7):** `regex` was added to exercise `unused-pub`
+> at scale on a real multi-member workspace. Two of the three resolver/lint gaps
+> it surfaced were fixed in `syn-workspace` (the third, feature-plumbing deps,
+> stays a documented `unused-deps` known-FP above):
+> - **Function-local `use` imports** (`regex-automata`'s `PERL_WORD`,
+>   `regex-syntax`'s `age::BY_NAME`): a `pub` item referenced only through a
+>   `use` *inside a fn body* — `use crate::…::age;` then `age::BY_NAME`, or a
+>   braced `use crate::util::{unicode_data::perl_word::PERL_WORD, utf8};` then a
+>   bare `PERL_WORD` — was missed, because only module-level `use`s were
+>   processed. `collect_module_contents` now also collects `use`s nested in item
+>   bodies (a `syn::visit` pass that stops at nested `mod`s) and feeds them to the
+>   same binding pipeline. The bindings are module-scoped and only *add*
+>   crate-local references the code already makes, so the cross-crate SCIP
+>   differential is unmoved (precision-neutral, mirroring the sibling-name
+>   broadening).
+> - **Glob re-export reachability** (`regex`'s `Locations`): a backwards-compat
+>   `pub type Locations` reachable only via `pub use crate::regex::string::*`
+>   (and `…::bytes::*`) was flagged, because external-reachability only walked
+>   direct module paths and the named-`pub use` exemption (`is_target`) didn't
+>   cover globs. `Module::glob_reexports` now records public glob targets
+>   (canonicalized: `crate`/`self`/`super`-anchored, or sibling-module-prepended
+>   for the `pub use inner::*` form), and `ReExportIndex` marks every public item
+>   of a glob target as a re-export target — the same exemption named `pub use`s
+>   already receive. Guarded by
+>   `unused-pub/true_negatives/{used_via_function_local_use,used_via_glob_reexport}`
+>   plus resolver unit tests in `module_tree.rs` / `re_export.rs`.
+
 > **History (Phase 3, increment 6):** `memchr` was added to stress deep,
 > cfg-gated, arch-specific module trees. It surfaced one real FP — the `log`
 > dep, referenced only as `log::debug!`/`log::trace!` inside `macro_rules!`
@@ -111,11 +161,20 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 
 ## Takeaway for follow-ups
 
-- **Corpus is FP-free.** Every audited crate is clean except anyhow's `syn`,
-  which is a confirmed *true positive*, not an FP.
-- **Structural coverage** now includes deep cfg-gated arch-specific module trees
-  (`memchr`) on top of multi-member workspaces (`thiserror`) and module-file
-  resolution (`bitflags`).
-- **anyhow `syn`** — a confirmed true positive; leave it flagged (no action). It
-  validates that `unused-deps` catches real unused deps, and rules out blanket
-  dev-dependency conservatism (which would hide it).
+- **Corpus is FP-clean except one documented known-FP.** Every audited crate is
+  clean except confirmed *true positives* — anyhow's `syn` and regex's
+  `quickcheck` (unused dev-deps), regex's two `BY_NAME` consts (unreferenced
+  generated consts) — plus regex's `aho-corasick`, a documented feature-plumbing
+  known-FP (`unused-deps` doesn't read `[features]` `dep:` / `?/` entries).
+- **Structural coverage** now includes a large 7-member workspace with genuine
+  cross-crate references (`regex`, 2119 items) exercising `unused-pub` at scale,
+  on top of deep cfg-gated arch-specific module trees (`memchr`), multi-member
+  workspaces (`thiserror`), and module-file resolution (`bitflags`).
+- **True positives** (anyhow `syn`, regex `quickcheck`, regex's `BY_NAME` consts)
+  — leave flagged (no action). They validate that the lints catch real unused
+  deps / over-exposed items, and rule out blanket conservatism (which would hide
+  them).
+- **Remaining known-FP class:** feature-plumbing-only dependencies. `unused-deps`
+  matches code references, not feature-table `dep:` / `optional?/feature`
+  entries, so an optional dep declared solely to forward a feature reads as
+  unused. Tracked for a follow-up that consults the `[features]` table.

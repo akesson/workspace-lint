@@ -1,0 +1,5 @@
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"

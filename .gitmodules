@@ -16,3 +16,6 @@
 [submodule "corpus/memchr"]
 	path = corpus/memchr
 	url = https://github.com/BurntSushi/memchr.git
+[submodule "corpus/regex"]
+	path = corpus/regex
+	url = https://github.com/rust-lang/regex.git
