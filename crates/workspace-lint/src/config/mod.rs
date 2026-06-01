@@ -114,7 +114,7 @@ const STANDALONE_FILE: &str = ".workspace-lint.toml";
 /// Load and parse the project config, returning the typed [`Config`] plus any
 /// `config` / `unknown-lint` validation diagnostics (anchored at the config
 /// file). Fails fast (process exit) only on genuinely-unusable states: both
-/// sources present, no source at all, an unreadable file, unparseable TOML,
+/// sources present, no source at all, an unreadable file, unparsable TOML,
 /// or a value that can't be interpreted (a bad level string, an uncompilable
 /// glob). Everything else is a soft diagnostic the caller merges into the
 /// stream — so the linter lints its own config.
