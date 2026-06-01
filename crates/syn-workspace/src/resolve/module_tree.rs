@@ -362,12 +362,19 @@ fn collect_module_contents(
             _ => {}
         }
 
+        // The item's own declaring ident is a same-module sibling of itself, so
+        // the bare-sibling keep-filter would otherwise record it as a reference
+        // to itself (e.g. `pub fn foo` → a spurious `crate::foo` self-ref).
+        // Skip that one token by its span; real refs (recursion, a sibling's
+        // bare reference) sit at other spans and are kept.
+        let own_decl = decl_ident(syn_item).map(|id| span_to_source_span(parent_file, id.span()));
         let tokens = quote::ToTokens::to_token_stream(syn_item);
         extract_code_paths(
             tokens,
             &use_bindings,
             &sibling_names,
             parent_file,
+            own_decl.as_ref(),
             &mut occurrences,
         );
     }
@@ -405,16 +412,24 @@ fn collect_module_contents(
 /// deferred to [`resolve_occurrence`] (whose sibling branch turns a kept bare
 /// sibling ident into `parent_canonical::Ident`).
 ///
-/// Keeping bare sibling names can record a spurious same-crate ref when a local
-/// var/param collides with a sibling *name* (most likely a sibling fn — types
-/// are PascalCase). That only ever *suppresses* a lint finding (never invents a
-/// reference into another crate, so it can't dent the cross-crate SCIP gate), so
-/// the precision-for-recall trade is worth it.
+/// `own_decl` is the span of the scanned item's own declaring ident, if any.
+/// Since an item's declaration name is a same-module sibling of itself, the
+/// keep-filter would record it as a reference to itself; we drop exactly that
+/// one token (matched by span) so a never-used item isn't seen as referencing
+/// itself. Genuine refs (recursion, a sibling's bare reference) sit at other
+/// spans and are kept.
+///
+/// Keeping bare sibling names can still record a spurious same-crate ref when a
+/// local var/param collides with a sibling *name* (most likely a sibling fn —
+/// types are PascalCase). That only ever *suppresses* a lint finding (never
+/// invents a reference into another crate, so it can't dent the cross-crate SCIP
+/// gate), so the precision-for-recall trade is worth it.
 fn extract_code_paths(
     tokens: proc_macro2::TokenStream,
     use_bindings: &[UseBinding],
     sibling_names: &HashSet<String>,
     file: &Path,
+    own_decl: Option<&SourceSpan>,
     out: &mut Vec<Occurrence>,
 ) {
     let stream: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
@@ -448,18 +463,32 @@ fn extract_code_paths(
                     && (use_bindings.iter().any(|b| b.local_name == segments[0])
                         || sibling_names.contains(&segments[0])));
             if keep {
-                out.push(Occurrence {
-                    segments,
-                    path: None,
-                    span: Some(span_to_source_span(file, first.span())),
-                    origin: Origin::Code,
-                });
+                let occ_span = span_to_source_span(file, first.span());
+                // Drop the item's own declaration name — a single-ident
+                // occurrence at the declaring ident's span is the definition,
+                // not a use of itself.
+                let is_own_decl = segments.len() == 1 && own_decl == Some(&occ_span);
+                if !is_own_decl {
+                    out.push(Occurrence {
+                        segments,
+                        path: None,
+                        span: Some(occ_span),
+                        origin: Origin::Code,
+                    });
+                }
             }
             i = j;
             continue;
         }
         if let proc_macro2::TokenTree::Group(group) = &stream[i] {
-            extract_code_paths(group.stream(), use_bindings, sibling_names, file, out);
+            extract_code_paths(
+                group.stream(),
+                use_bindings,
+                sibling_names,
+                file,
+                own_decl,
+                out,
+            );
         }
         i += 1;
     }
@@ -687,20 +716,22 @@ fn scan_cfg_tokens(tokens: proc_macro2::TokenStream, out: &mut std::collections:
     }
 }
 
-/// Names declared at a module's lexical scope — function/struct/enum/etc.
-/// idents plus child module names. Used to distinguish "crate-local sibling"
-/// from "external crate" at the leading segment of a `use` path.
-fn sibling_name(item: &syn::Item) -> Option<String> {
+/// The ident that *declares* an item, when the item introduces a single name —
+/// the `fn`/`struct`/`enum`/… name. Returns a borrow so callers can read its
+/// span (the declaration site) as well as its text. The single source of truth
+/// for both [`sibling_name`] (the module's lexical name set) and the
+/// declaration-site skip in [`extract_code_paths`].
+fn decl_ident(item: &syn::Item) -> Option<&syn::Ident> {
     match item {
-        syn::Item::Fn(i) => Some(i.sig.ident.to_string()),
-        syn::Item::Struct(i) => Some(i.ident.to_string()),
-        syn::Item::Enum(i) => Some(i.ident.to_string()),
-        syn::Item::Union(i) => Some(i.ident.to_string()),
-        syn::Item::Trait(i) => Some(i.ident.to_string()),
-        syn::Item::Type(i) => Some(i.ident.to_string()),
-        syn::Item::Const(i) => Some(i.ident.to_string()),
-        syn::Item::Static(i) => Some(i.ident.to_string()),
-        syn::Item::Mod(i) => Some(i.ident.to_string()),
+        syn::Item::Fn(i) => Some(&i.sig.ident),
+        syn::Item::Struct(i) => Some(&i.ident),
+        syn::Item::Enum(i) => Some(&i.ident),
+        syn::Item::Union(i) => Some(&i.ident),
+        syn::Item::Trait(i) => Some(&i.ident),
+        syn::Item::Type(i) => Some(&i.ident),
+        syn::Item::Const(i) => Some(&i.ident),
+        syn::Item::Static(i) => Some(&i.ident),
+        syn::Item::Mod(i) => Some(&i.ident),
         // A `macro_rules!` definition introduces a name in the *macro*
         // namespace only. A path-position reference like `log::debug` — or a
         // bare type/value ident — resolves in the type/value/module namespace,
@@ -712,6 +743,13 @@ fn sibling_name(item: &syn::Item) -> Option<String> {
         syn::Item::Macro(_) => None,
         _ => None,
     }
+}
+
+/// Names declared at a module's lexical scope — function/struct/enum/etc.
+/// idents plus child module names. Used to distinguish "crate-local sibling"
+/// from "external crate" at the leading segment of a `use` path.
+fn sibling_name(item: &syn::Item) -> Option<String> {
+    decl_ident(item).map(|ident| ident.to_string())
 }
 
 /// If `binding`'s canonical path starts with a name that's declared in the
@@ -1220,6 +1258,27 @@ mod tests {
         // matches a sibling name, so the keep-filter retains it and resolution
         // anchors it to the current module.
         assert!(refs.contains(&"demo::helper".to_string()), "got {refs:?}");
+    }
+
+    #[test]
+    fn code_path_skips_own_declaration_ident() {
+        // A never-used item's own declaring ident must NOT be recorded as a
+        // reference to itself — otherwise `unused-pub` sees a same-crate ref and
+        // misclassifies it `IntraCrate` ("pub(crate)") instead of `Unused`.
+        let refs = collect_refs("fn lonely() { let _ = 1; }", "demo");
+        assert!(
+            !refs.contains(&"demo::lonely".to_string()),
+            "declaration self-ref recorded; got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn code_path_keeps_recursive_self_call() {
+        // The skip is span-based, not name-based: a recursive *call* in the body
+        // sits at a different span than the declaration, so it stays a genuine
+        // reference (only the declaring ident itself is dropped).
+        let refs = collect_refs("fn recur() { recur(); }", "demo");
+        assert!(refs.contains(&"demo::recur".to_string()), "got {refs:?}");
     }
 
     #[test]

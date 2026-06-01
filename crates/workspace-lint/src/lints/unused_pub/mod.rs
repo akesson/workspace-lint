@@ -16,17 +16,6 @@
 //! out (treat every crate as external). When an internal crate accumulates
 //! `publish-hint-threshold` findings, a crate-level hint nudges `publish = true`.
 //!
-//! ## Known limitation (definition-site self-reference)
-//!
-//! The resolver records a bare ident that names a same-module sibling as a
-//! reference (so `Foo` used by bare name counts) — but it also scans an item's
-//! *own* declaration tokens, so a definition's name counts as a self-reference
-//! to itself. Consequence: in practice a never-used `pub fn foo` in a single
-//! crate is classified `IntraCrate` ("used only inside the crate") rather than
-//! `Unused`. The `pub(crate)` suggestion is still correct, but the "remove"
-//! message rarely fires for named items, and under `suppress-intra-crate` such
-//! items are silenced. Tracked as a separate resolver fix.
-//!
 //! Built on [`syn_workspace::Workspace`] — no SCIP, no `rust-analyzer`
 //! subprocess. Known limitations carried over from the resolver model
 //! (documented in tests/cases/visibility/known_false_positives/ for the
