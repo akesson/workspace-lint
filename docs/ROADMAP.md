@@ -378,6 +378,33 @@ shadowed, so it is precision-neutral — the SCIP differential is unmoved
 `unused-deps/true_negatives/dep_referenced_in_macro_not_shadowed_by_local_macro`
 fixture. The corpus stays FP-free (anyhow's `syn` remains the lone true positive).
 
+**Landed (Phase 3, increment 7 — corpus broadening: `regex` + function-local
+`use` and glob re-export fixes).** Added `regex` (a 7-member workspace: `regex` +
+`regex-automata` / `-syntax` / `-lite` / `-cli` / `-capi` / `-test`, 2119 items)
+— the first corpus crate big enough to exercise publish-aware `unused-pub` at
+scale, with genuine intra-workspace cross-crate references. It loaded in ~2 s and
+surfaced **3 true positives** (the root crate's unused `quickcheck` dev-dep, and
+two unreferenced generated `BY_NAME` consts in `regex-syntax`) plus **4 false
+positives** across three classes; two classes were fixed in `syn-workspace`:
+(1) **function-local `use` imports** — `collect_module_contents` now collects
+`use`s nested in item bodies (a `syn::visit` pass stopping at nested `mod`s) and
+feeds them to the binding pipeline, so a `pub` item referenced only via
+`use crate::…::age;` + `age::BY_NAME` (or a braced
+`use crate::util::{unicode_data::perl_word::PERL_WORD, utf8}` + bare `PERL_WORD`)
+inside a fn is seen; module-scoped and only *adds* crate-local refs the code
+already makes, so the SCIP differential is unmoved. (2) **glob re-export
+reachability** — `Module::glob_reexports` records public `pub use M::*` targets
+(canonicalized, incl. the bare `pub use inner::*` sibling form), and
+`ReExportIndex` marks every public item of a glob target as a re-export target,
+extending the named-`pub use` `is_target` exemption to globs (fixes a
+backwards-compat `pub type Locations` reachable only via the glob). Guarded by
+`unused-pub/true_negatives/{used_via_function_local_use,used_via_glob_reexport}`
+plus resolver unit tests. The third class — **feature-plumbing-only deps**
+(`regex`'s optional `aho-corasick`, declared only to forward the `perf-literal`
+feature, never named in code) — stays a documented `unused-deps` known-FP:
+`unused-deps` matches code references, not `[features]` `dep:` entries. Dogfood
+and the SCIP gate stay green.
+
 **Landed (lint policy — publish-aware `unused-pub`).** Distinct from the
 resolver-precision loop above: a fix to *what `unused-pub` is allowed to flag*.
 Previously every library-public item in every member lib was exempt as "external

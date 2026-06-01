@@ -52,6 +52,7 @@ struct ModuleContents {
     broken_mod_decls: Vec<BrokenModDecl>,
     cfg_features: Vec<String>,
     occurrences: Vec<Occurrence>,
+    glob_reexports: Vec<ResolvedPath>,
 }
 
 /// Convert a `proc_macro2::Span` to a [`SourceSpan`] anchored at `file` — the
@@ -116,6 +117,7 @@ fn empty_root(crate_name: &str) -> Module {
         broken_mod_decls: Vec::new(),
         cfg_features: Vec::new(),
         occurrences: Vec::new(),
+        glob_reexports: Vec::new(),
         file: None,
         doctest_crate_refs: HashSet::new(),
     }
@@ -155,6 +157,7 @@ pub(crate) fn build_module_from_file(
         broken_mod_decls: contents.broken_mod_decls,
         cfg_features: contents.cfg_features,
         occurrences: contents.occurrences,
+        glob_reexports: contents.glob_reexports,
         file: Some(file_path.to_path_buf()),
         // Scanned once per file (where `source` is in hand); inline submodules
         // share this file and carry an empty set.
@@ -186,6 +189,8 @@ fn collect_module_contents(
     // glob + extern-crate). Phase B (below) resolves each in place; this Vec is
     // the module's reference surface, stored directly on `Module.occurrences`.
     let mut occurrences: Vec<Occurrence> = Vec::new();
+    // Targets of `pub use M::*;` glob re-exports declared in this module.
+    let mut glob_reexports: Vec<ResolvedPath> = Vec::new();
 
     for syn_item in syn_items {
         for attr in item_attrs(syn_item) {
@@ -278,6 +283,7 @@ fn collect_module_contents(
                     broken_mod_decls: inline.broken_mod_decls,
                     cfg_features: inline.cfg_features,
                     occurrences: inline.occurrences,
+                    glob_reexports: inline.glob_reexports,
                     file: Some(parent_file.to_path_buf()),
                     // Inline modules share the file; its doc fences are scanned
                     // once on the file-backed module.
@@ -308,6 +314,19 @@ fn collect_module_contents(
         }
     }
 
+    // Function-local `use` statements (inside fn / impl-method bodies, nested
+    // blocks) introduce bindings too, but the top-level pass above only sees
+    // module-level `use` items. Fold in the nested ones so a crate-local path
+    // like `age::BY_NAME` (after a function-local `use crate::…::age;`) resolves
+    // instead of being treated as an external `age` crate.
+    use_bindings.extend(function_local_use_bindings(
+        syn_items,
+        &scope,
+        parent_file,
+        parent_canonical,
+        &sibling_names,
+    ));
+
     // Second pass: extract regular-code path references. Done after the main
     // loop so the use_bindings set is complete — references can resolve any
     // use statement in the module regardless of source order. Pushes into the
@@ -321,7 +340,19 @@ fn collect_module_contents(
             // see the crate.
             syn::Item::Use(item_use) => {
                 let span = Some(span_to_source_span(parent_file, item_use.use_token.span));
-                for target in use_tree::glob_targets_from_use(item_use, &scope) {
+                let targets = use_tree::glob_targets_from_use(item_use, &scope);
+                // A `pub use M::*` re-exports every public item of `M`; record the
+                // target so the re-export index can exempt those items from
+                // narrowing (same as a named `pub use`). Plain `use M::*` only
+                // imports — its prefix is recorded as a reference below, not a
+                // re-export.
+                glob_reexports.extend(pub_glob_reexport_targets(
+                    item_use,
+                    &targets,
+                    parent_canonical,
+                    &sibling_names,
+                ));
+                for target in targets {
                     occurrences.push(Occurrence {
                         segments: target.segments().to_vec(),
                         path: None,
@@ -395,6 +426,7 @@ fn collect_module_contents(
         broken_mod_decls,
         cfg_features: cfg_features.into_iter().collect(),
         occurrences,
+        glob_reexports,
     })
 }
 
@@ -750,6 +782,97 @@ fn decl_ident(item: &syn::Item) -> Option<&syn::Ident> {
 /// from "external crate" at the leading segment of a `use` path.
 fn sibling_name(item: &syn::Item) -> Option<String> {
     decl_ident(item).map(|ident| ident.to_string())
+}
+
+/// Canonicalized targets of a `pub use M::*;` glob re-export, or empty for a
+/// private (`use M::*;`) glob — private globs import, they don't re-export.
+fn pub_glob_reexport_targets(
+    item_use: &syn::ItemUse,
+    targets: &[ResolvedPath],
+    parent_canonical: &ResolvedPath,
+    sibling_names: &HashSet<String>,
+) -> Vec<ResolvedPath> {
+    if !matches!(Visibility::from_syn(&item_use.vis), Visibility::Public) {
+        return Vec::new();
+    }
+    targets
+        .iter()
+        .map(|t| canonicalize_glob_target(t, parent_canonical, sibling_names))
+        .collect()
+}
+
+/// Canonicalize a glob re-export target prefix to a full module path.
+/// `glob_targets_from_use` already peels `crate::`/`self::`/`super::` (those
+/// land with the crate name as the leading segment), but a bare leading segment
+/// that names a sibling module — `pub use inner::*` — still needs this module's
+/// canonical prepended. A leading segment equal to the crate name is already
+/// anchored; anything else (an external crate) is left as-is.
+fn canonicalize_glob_target(
+    target: &ResolvedPath,
+    parent_canonical: &ResolvedPath,
+    siblings: &HashSet<String>,
+) -> ResolvedPath {
+    let crate_name = parent_canonical.segments().first();
+    match target.segments().first() {
+        Some(first) if Some(first) != crate_name && siblings.contains(first) => {
+            let mut segs = parent_canonical.segments().to_vec();
+            segs.extend(target.segments().iter().cloned());
+            ResolvedPath::new(segs)
+        }
+        _ => target.clone(),
+    }
+}
+
+/// Collects `use` statements nested inside item bodies (fn / impl-method
+/// blocks, nested blocks) so their bindings can resolve later paths in the same
+/// module. Deliberately does **not** descend into nested `mod` items — those own
+/// their own scope and are resolved by the submodule recursion in
+/// [`collect_module_contents`].
+#[derive(Default)]
+struct NestedUseCollector<'ast> {
+    uses: Vec<&'ast syn::ItemUse>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for NestedUseCollector<'ast> {
+    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        self.uses.push(node);
+    }
+
+    fn visit_item_mod(&mut self, _node: &'ast syn::ItemMod) {
+        // Stop: a nested module's `use`s belong to *its* scope, and the file/
+        // inline-module recursion already processes them there.
+    }
+}
+
+/// Bindings from every `use` statement nested inside an item body (fn /
+/// impl-method blocks). Module-scoped — a slight over-approximation that only
+/// *adds* references the code already makes (it can't invent a cross-crate ref
+/// out of nothing), so the cross-crate SCIP precision gate is unaffected,
+/// mirroring the sibling-name broadening. Module-level `use` items are handled
+/// in the main pass; nested `mod`s carry their own scope and are skipped here.
+fn function_local_use_bindings(
+    syn_items: &[syn::Item],
+    scope: &use_tree::Scope,
+    parent_file: &Path,
+    parent_canonical: &ResolvedPath,
+    sibling_names: &HashSet<String>,
+) -> Vec<UseBinding> {
+    let mut out = Vec::new();
+    for syn_item in syn_items {
+        if matches!(syn_item, syn::Item::Use(_) | syn::Item::Mod(_)) {
+            continue;
+        }
+        let mut collector = NestedUseCollector::default();
+        syn::visit::Visit::visit_item(&mut collector, syn_item);
+        for item_use in collector.uses {
+            let mut bindings = use_tree::bindings_from_use(item_use, scope, parent_file);
+            for binding in &mut bindings {
+                rewrite_sibling_local(binding, parent_canonical, sibling_names);
+            }
+            out.extend(bindings);
+        }
+    }
+    out
 }
 
 /// If `binding`'s canonical path starts with a name that's declared in the
@@ -1279,6 +1402,39 @@ mod tests {
         // reference (only the declaring ident itself is dropped).
         let refs = collect_refs("fn recur() { recur(); }", "demo");
         assert!(refs.contains(&"demo::recur".to_string()), "got {refs:?}");
+    }
+
+    #[test]
+    fn code_path_resolves_function_local_module_use() {
+        // A `use crate::m::sub;` *inside a fn body*, then `sub::ITEM`: the
+        // crate-local const must be seen as referenced (regex-syntax's
+        // `age::BY_NAME` FP class — module imported in a fn, member accessed by
+        // `Mod::ITEM`). Module-level uses alone wouldn't catch this.
+        let refs = collect_refs(
+            "mod m { pub mod sub { pub const ITEM: u32 = 0; } } \
+             fn f() { use crate::m::sub; let _ = sub::ITEM; }",
+            "demo",
+        );
+        assert!(
+            refs.contains(&"demo::m::sub::ITEM".to_string()),
+            "function-local module-import use not honored; got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn code_path_resolves_function_local_braced_use() {
+        // A function-local braced `use crate::m::{sub::ITEM, other};`, then a
+        // bare `ITEM` (regex-automata's `PERL_WORD` FP class — braced group with
+        // a shared `crate::m` prefix imported inside a fn).
+        let refs = collect_refs(
+            "mod m { pub mod sub { pub const ITEM: u32 = 0; } pub fn other() {} } \
+             fn f() { use crate::m::{sub::ITEM, other}; let _ = ITEM; other(); }",
+            "demo",
+        );
+        assert!(
+            refs.contains(&"demo::m::sub::ITEM".to_string()),
+            "function-local braced use not honored; got {refs:?}"
+        );
     }
 
     #[test]
