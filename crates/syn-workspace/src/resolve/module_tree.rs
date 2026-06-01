@@ -22,13 +22,14 @@
 //! blocks become submodules backed by the same `file` as their parent, and
 //! own a deeper `foo/` directory for any file children declared inside them.
 //!
-//! Edge cases tracked as `known_false_*` until handled:
-//! - `#[cfg_attr(cond, path = "...")]` (we don't evaluate cfg-attr expansion)
-//! - `#[path = "..."]` on a module *inside an inline block* (we resolve it
-//!   relative to the declaring file's directory, not the nested module dir)
-//! - `include!("…")` (we don't follow include directives)
-//! - Multi-target crates (libraries + binaries + examples) — currently only
-//!   the primary library or binary root is loaded.
+//! Documented limitations:
+//! - `#[path = "..."]` on a module *inside an inline block* is resolved relative
+//!   to the declaring file's directory, not the nested-module dir — a tracked
+//!   false positive
+//!   (`tests/cases/module_tree/known_false_positives/path_attr_in_inline_mod_block`).
+//! - `#[cfg_attr(cond, path = "...")]` is not expanded, and `include!("…")` is
+//!   not followed — structural non-goals (no cfg-attr evaluation, no `include!`
+//!   expansion), the same class as proc-macro execution.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

@@ -17,15 +17,15 @@
 //! `publish-hint-threshold` findings, a crate-level hint nudges `publish = true`.
 //!
 //! Built on [`syn_workspace::Workspace`] — no SCIP, no `rust-analyzer`
-//! subprocess. Known limitations carried over from the resolver model
-//! (documented in tests/cases/visibility/known_false_positives/ for the
-//! sibling visibility lint):
+//! subprocess. Known limitations:
 //!
-//! - Trait methods dispatched through `dyn Trait` or generic method calls
-//!   are not tracked.
-//! - Pub items inside `impl` blocks are not yet enumerated as separate items.
-//! - `#[derive(Serialize, Deserialize, ...)]`-suppressed cases need explicit
-//!   `allowlist` globs or `#[derive(...)]`-aware suppression in a follow-up.
+//! - **Pub items inside `impl` blocks are not enumerated** as separate items, so
+//!   an unused `pub` method is missed — a tracked false negative
+//!   (`tests/cases/unused-pub/known_false_negatives/pub_method_in_impl_block`).
+//! - Trait methods dispatched through `dyn Trait` or generic method calls are
+//!   not tracked, and `#[derive(...)]`-driven uses aren't seen — structural
+//!   non-goals (no type inference / trait solving / proc-macro expansion).
+//!   Derive-aware handling is deferred to a Phase B plugin (see `docs/ROADMAP.md`).
 
 use globset::{GlobSet, GlobSetBuilder};
 use std::collections::{HashMap, HashSet};

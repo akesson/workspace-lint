@@ -1,0 +1,6 @@
+[unused-pub]
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"

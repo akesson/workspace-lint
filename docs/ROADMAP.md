@@ -405,6 +405,22 @@ feature, never named in code) — stays a documented `unused-deps` known-FP:
 `unused-deps` matches code references, not `[features]` `dep:` entries. Dogfood
 and the SCIP gate stay green.
 
+**Landed (Phase 3, increment 8 — feature-plumbing deps; corpus fully FP-clean).**
+Closed the last remaining corpus false positive: regex's `aho-corasick`, an
+optional dep declared solely to forward the `perf-literal` feature
+(`dep:aho-corasick`, `aho-corasick?/std`) and never named in the root crate's
+code. `Manifest::feature_dep_refs` (`syn-workspace/src/manifest.rs`) reads the
+`[features]` table and extracts the dependency each value activates (`dep:NAME`,
+`NAME?/feat`, `NAME/feat` — leading ident before `?`/`/`, hyphen-normalized);
+`unused-deps` unions those into its referenced-crate set
+(`referenced_crate_names`), so a feature-plumbing-only dep counts as used. This is
+pure manifest data read straight off the crate — no `Workspace` plumbing, no
+resolver model, no `unused-pub`/SCIP impact (provably: it only *adds* to the
+dependency lint's referenced set). Guarded by
+`unused-deps/true_negatives/dep_used_only_in_feature_plumbing`. With it, **every
+audited corpus crate is FP-clean** — the only flagged items are confirmed true
+positives (anyhow's `syn`, regex's `quickcheck`, regex's two `BY_NAME` consts).
+
 **Landed (lint policy — publish-aware `unused-pub`).** Distinct from the
 resolver-precision loop above: a fix to *what `unused-pub` is allowed to flag*.
 Previously every library-public item in every member lib was exempt as "external
@@ -419,9 +435,36 @@ an absent field). Config: `assume-all-public` (opt back into the old behavior;
 used by the corpus FP-audit) and `publish-hint-threshold` (a crate-level
 "set `publish = true`" nudge once an internal crate floods). The three published
 crates here set `publish = true`; dogfood stays clean. Two former unused-pub
-`known_false_negatives` were promoted to `true_positives`. Known limitation: a
-definition's own ident counts as a self-reference, so a never-used item reads as
-`IntraCrate` rather than `Unused` (a separate resolver fix).
+`known_false_negatives` were promoted to `true_positives`. (The one-time
+limitation that a definition's own ident counted as a self-reference — making a
+never-used item read `IntraCrate` rather than `Unused` — was fixed separately in
+#39: `extract_code_paths` now skips the occurrence at the item's own declaring
+span.)
+
+**Phase 3 — plateau reached (2026-06-01).** The exit criterion ("in-class recall
+plateaus and the remaining misses are documented non-goals") is met:
+- **In-class recall has plateaued.** The SCIP differential holds at **precision
+  100 %, in-class recall 12/18** cross-crate matches on `multi_crate`
+  (`scip_diff.rs`, ratcheting floor `MIN_CROSS_CRATE_MATCHES = 12`); the 6 misses
+  are all structural non-goals — rust-analyzer's per-path-*segment* occurrences
+  (bare crate/module prefixes) and field/variant/method references the resolver
+  can't produce without type inference.
+- **Corpus is FP-clean.** Every audited crate (anyhow, bitflags, heck, itertools,
+  memchr, regex, thiserror) is clean except confirmed true positives; the last
+  FP (regex's feature-plumbing `aho-corasick`) is fixed (increment 8).
+- **Every remaining miss is documented with a forcing function or as a
+  structural non-goal.** Forcing-function fixtures: architecture's
+  `transitive_violation_through_helper` (KFN), the new
+  `module_tree/known_false_positives/path_attr_in_inline_mod_block` (a `#[path]`
+  in a nested inline block), and
+  `unused-pub/known_false_negatives/pub_method_in_impl_block` (impl-block items
+  aren't enumerated). Documented structural non-goals (no fixture — unfixable by
+  design): `#[cfg_attr]`/`include!` path resolution, external-crate glob exports
+  (need rustdoc JSON), block doc comments, trait dispatch via `dyn`/generics,
+  and `#[derive(...)]`-driven uses.
+
+Corpus broadening continues as ongoing maintenance, not a Phase 3 gate — the loop
+reopens if a new corpus crate surfaces a concrete, in-class gap.
 
 ### Phase 4 — Framework semantics via Phase B plugins
 **Goal:** handle what token-scanning structurally can't, demand-driven.
