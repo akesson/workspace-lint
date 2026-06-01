@@ -457,7 +457,7 @@ pub struct Module {
     /// Canonical target prefixes of **public** glob re-exports
     /// (`pub use M::*;`) declared in this module — e.g. `pub use crate::foo::*`
     /// records `crate_code::foo`. A `pub use M::*` re-exports every public item
-    /// of `M` into this module's public surface, so [`ReExportIndex`] marks
+    /// of `M` into this module's public surface, so [`re_export::ReExportIndex`] marks
     /// those items as re-export targets (the named-`pub use` exemption,
     /// extended to globs). Private (`use M::*`) globs are not recorded — they
     /// import, they don't re-export.

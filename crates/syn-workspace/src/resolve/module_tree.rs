@@ -316,28 +316,16 @@ fn collect_module_contents(
 
     // Function-local `use` statements (inside fn / impl-method bodies, nested
     // blocks) introduce bindings too, but the top-level pass above only sees
-    // module-level `use` items. Collect the nested ones so a crate-local path
+    // module-level `use` items. Fold in the nested ones so a crate-local path
     // like `age::BY_NAME` (after a function-local `use crate::…::age;`) resolves
-    // instead of being treated as an external `age` crate, and a bare ident
-    // imported by a function-local `use …::{a::ITEM, b};` is seen as a
-    // reference. Bindings are module-scoped — a slight over-approximation that
-    // only *adds* references the code already makes (it can't invent a
-    // cross-crate ref out of nothing), so the cross-crate SCIP precision gate is
-    // unaffected, mirroring the sibling-name broadening.
-    for syn_item in syn_items {
-        if matches!(syn_item, syn::Item::Use(_) | syn::Item::Mod(_)) {
-            continue;
-        }
-        let mut collector = NestedUseCollector::default();
-        syn::visit::Visit::visit_item(&mut collector, syn_item);
-        for item_use in collector.uses {
-            let mut bindings = use_tree::bindings_from_use(item_use, &scope, parent_file);
-            for binding in &mut bindings {
-                rewrite_sibling_local(binding, parent_canonical, &sibling_names);
-            }
-            use_bindings.extend(bindings);
-        }
-    }
+    // instead of being treated as an external `age` crate.
+    use_bindings.extend(function_local_use_bindings(
+        syn_items,
+        &scope,
+        parent_file,
+        parent_canonical,
+        &sibling_names,
+    ));
 
     // Second pass: extract regular-code path references. Done after the main
     // loop so the use_bindings set is complete — references can resolve any
@@ -352,20 +340,19 @@ fn collect_module_contents(
             // see the crate.
             syn::Item::Use(item_use) => {
                 let span = Some(span_to_source_span(parent_file, item_use.use_token.span));
-                let is_pub = matches!(Visibility::from_syn(&item_use.vis), Visibility::Public);
-                for target in use_tree::glob_targets_from_use(item_use, &scope) {
-                    // A `pub use M::*` re-exports every public item of `M`; record
-                    // the target so the re-export index can exempt those items
-                    // from narrowing (same as a named `pub use`). Plain `use M::*`
-                    // only imports — record the prefix as a reference, not a
-                    // re-export.
-                    if is_pub {
-                        glob_reexports.push(canonicalize_glob_target(
-                            &target,
-                            parent_canonical,
-                            &sibling_names,
-                        ));
-                    }
+                let targets = use_tree::glob_targets_from_use(item_use, &scope);
+                // A `pub use M::*` re-exports every public item of `M`; record the
+                // target so the re-export index can exempt those items from
+                // narrowing (same as a named `pub use`). Plain `use M::*` only
+                // imports — its prefix is recorded as a reference below, not a
+                // re-export.
+                glob_reexports.extend(pub_glob_reexport_targets(
+                    item_use,
+                    &targets,
+                    parent_canonical,
+                    &sibling_names,
+                ));
+                for target in targets {
                     occurrences.push(Occurrence {
                         segments: target.segments().to_vec(),
                         path: None,
@@ -797,6 +784,23 @@ fn sibling_name(item: &syn::Item) -> Option<String> {
     decl_ident(item).map(|ident| ident.to_string())
 }
 
+/// Canonicalized targets of a `pub use M::*;` glob re-export, or empty for a
+/// private (`use M::*;`) glob — private globs import, they don't re-export.
+fn pub_glob_reexport_targets(
+    item_use: &syn::ItemUse,
+    targets: &[ResolvedPath],
+    parent_canonical: &ResolvedPath,
+    sibling_names: &HashSet<String>,
+) -> Vec<ResolvedPath> {
+    if !matches!(Visibility::from_syn(&item_use.vis), Visibility::Public) {
+        return Vec::new();
+    }
+    targets
+        .iter()
+        .map(|t| canonicalize_glob_target(t, parent_canonical, sibling_names))
+        .collect()
+}
+
 /// Canonicalize a glob re-export target prefix to a full module path.
 /// `glob_targets_from_use` already peels `crate::`/`self::`/`super::` (those
 /// land with the crate name as the leading segment), but a bare leading segment
@@ -838,6 +842,37 @@ impl<'ast> syn::visit::Visit<'ast> for NestedUseCollector<'ast> {
         // Stop: a nested module's `use`s belong to *its* scope, and the file/
         // inline-module recursion already processes them there.
     }
+}
+
+/// Bindings from every `use` statement nested inside an item body (fn /
+/// impl-method blocks). Module-scoped — a slight over-approximation that only
+/// *adds* references the code already makes (it can't invent a cross-crate ref
+/// out of nothing), so the cross-crate SCIP precision gate is unaffected,
+/// mirroring the sibling-name broadening. Module-level `use` items are handled
+/// in the main pass; nested `mod`s carry their own scope and are skipped here.
+fn function_local_use_bindings(
+    syn_items: &[syn::Item],
+    scope: &use_tree::Scope,
+    parent_file: &Path,
+    parent_canonical: &ResolvedPath,
+    sibling_names: &HashSet<String>,
+) -> Vec<UseBinding> {
+    let mut out = Vec::new();
+    for syn_item in syn_items {
+        if matches!(syn_item, syn::Item::Use(_) | syn::Item::Mod(_)) {
+            continue;
+        }
+        let mut collector = NestedUseCollector::default();
+        syn::visit::Visit::visit_item(&mut collector, syn_item);
+        for item_use in collector.uses {
+            let mut bindings = use_tree::bindings_from_use(item_use, scope, parent_file);
+            for binding in &mut bindings {
+                rewrite_sibling_local(binding, parent_canonical, sibling_names);
+            }
+            out.extend(bindings);
+        }
+    }
+    out
 }
 
 /// If `binding`'s canonical path starts with a name that's declared in the
