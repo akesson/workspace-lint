@@ -46,22 +46,17 @@ glob = "crates/*"
 # 7000 bump in #33 was a workaround for JSON inflation — now unnecessary.)
 max-code-lines = 6000
 
-[unused-deps]
-# Direct deps whose names don't appear in source. Kept as workspace-level
-# `ignore` (not per-dep `expect` comments in each Cargo.toml) because the
-# diagnostic is anchored at the whole crate with one `help:` per unused dep —
-# a crate-level `expect` would silence the diagnostic entirely, suppressing
-# any *new* unused deps that appear later. To migrate, unused-deps must first
-# emit one diagnostic per dep (refactor: src/lints/unused_deps/mod.rs,
-# messages.rs scenarios, tests/cases/unused-deps/ fixtures).
+# `unused-deps` `ignore` is scoped per-crate (a worked example of the
+# `[crates.<name>]` tier): these deps are unused only in the `workspace-lint`
+# binary, so scoping the ignore here keeps it from masking a genuinely-unused
+# `proc-macro2` (etc.) that might later appear in another member. A per-crate
+# section *wholesale-replaces* the (empty) global `[unused-deps]` for this crate.
+[crates.workspace-lint.unused-deps]
 ignore = [
     # Pulled in only for the `span-locations` feature unification with `syn`.
     "proc-macro2",
     # Build-script-only (installs git hooks); never appears in source.
     "cargo-husky",
-    # Macros are referenced by path `workspace_lint_marker::` in src/; the
-    # unused-deps name-stripping heuristic doesn't see it.
-    "workspace-lint-marker",
     # Pre-added for a planned follow-up routing non-insertion suggestions
     # through it (see src/fix.rs). Not imported yet — drop the dep if no movement.
     "rustfix",

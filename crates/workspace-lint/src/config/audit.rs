@@ -95,7 +95,8 @@ pub(super) fn audit(raw: &str, config_path: &str, config: &Config) -> Vec<Diagno
     if let Ok(toml::Value::Table(root)) = toml::from_str::<toml::Value>(raw) {
         for (key, val) in &root {
             match key.as_str() {
-                "lints" => audit_lints(val, config_path, &mut out),
+                "lints" => audit_lints(val, "[lints]", config_path, &mut out),
+                "crates" => audit_crates_tree(val, config_path, &mut out),
                 section if section_schema(section).is_some() => {
                     audit_section(section, val, config_path, &mut out);
                 }
@@ -108,8 +109,9 @@ pub(super) fn audit(raw: &str, config_path: &str, config: &Config) -> Vec<Diagno
     out
 }
 
-/// `[lints]` keys must be `default` or a known lint short name.
-fn audit_lints(val: &toml::Value, config_path: &str, out: &mut Vec<Diagnostic>) {
+/// `[lints]`-shaped keys must be `default` or a known lint short name. `ctx` is
+/// the rendered table label (`[lints]` or `[crates.<name>.lints]`).
+fn audit_lints(val: &toml::Value, ctx: &str, config_path: &str, out: &mut Vec<Diagnostic>) {
     let Some(table) = val.as_table() else { return };
     let known: Vec<&str> = LintId::ALL.iter().map(|l| l.short()).collect();
     for key in table.keys() {
@@ -118,13 +120,132 @@ fn audit_lints(val: &toml::Value, config_path: &str, out: &mut Vec<Diagnostic>) 
         }
         let mut d = at_file(
             LintId::UnknownLint.id(),
-            format!("unknown lint `{key}` in `[lints]`"),
+            format!("unknown lint `{key}` in `{ctx}`"),
             config_path,
         );
         if let Some(sugg) = closest(key, &known) {
             d = d.help(format!("did you mean `{sugg}`?"));
         }
         out.push(d.build());
+    }
+}
+
+/// Keys permitted directly inside a `[crates.<name>]` block: per-crate levels
+/// (`lints`) plus the two lints that accept per-crate *params*.
+const PER_CRATE_KEYS: &[&str] = &["lints", "unused-deps", "unused-pub"];
+
+/// Lints whose per-crate scoping is their glob, not a per-crate param section —
+/// so a `[crates.X.<lint>]` block is redirected to a glob rule.
+const GLOB_SCOPED_LINTS: &[&str] = &["file-size", "crate-size", "freshness"];
+
+/// Validate the `[crates.*]` tree's *structure* (not crate names — that needs
+/// the resolved workspace; see [`audit_crate_names`]). Each `[crates.<name>]`
+/// block may carry `lints` (validated like `[lints]`) and the `unused-deps` /
+/// `unused-pub` param sections; any other key is rejected, with glob-scoped
+/// lints redirected to a glob rule and everything else to a per-crate level.
+fn audit_crates_tree(val: &toml::Value, config_path: &str, out: &mut Vec<Diagnostic>) {
+    let Some(crates) = val.as_table() else { return };
+    for (crate_name, crate_val) in crates {
+        let Some(block) = crate_val.as_table() else {
+            continue;
+        };
+        for (key, sub) in block {
+            match key.as_str() {
+                "lints" => {
+                    audit_lints(
+                        sub,
+                        &format!("[crates.{crate_name}.lints]"),
+                        config_path,
+                        out,
+                    );
+                }
+                section @ ("unused-deps" | "unused-pub") => {
+                    let ctx = format!("[crates.{crate_name}.{section}]");
+                    if let Some(schema) = section_schema(section) {
+                        audit_table_fields(sub, schema.table, &ctx, config_path, out);
+                    }
+                }
+                other => out.push(per_crate_bad_key(crate_name, other, config_path)),
+            }
+        }
+    }
+}
+
+/// A `[crates.<name>.<key>]` whose `<key>` isn't a per-crate-eligible section.
+/// Glob-scoped lints get a redirect to a `glob` rule; any other known lint is
+/// told it only takes a per-crate *level*; an unrecognized key gets the usual
+/// "did you mean …?".
+fn per_crate_bad_key(crate_name: &str, key: &str, config_path: &str) -> Diagnostic {
+    let ctx = format!("[crates.{crate_name}]");
+    let mut d = at_file(
+        LintId::Config.id(),
+        format!("`{key}` is not configurable per-crate in `{ctx}`"),
+        config_path,
+    );
+    if GLOB_SCOPED_LINTS.contains(&key) {
+        d = d.help(format!(
+            "{key} scopes per-crate via its glob — add a `[[{key}.rules]]` with \
+             `glob = \"crates/{crate_name}/**\"` instead; for a per-crate severity use \
+             `[crates.{crate_name}.lints] {key} = \"…\"`"
+        ));
+    } else if LintId::from_short(key).is_some() {
+        d = d.help(format!(
+            "only `unused-deps` / `unused-pub` take per-crate params; for a per-crate severity \
+             use `[crates.{crate_name}.lints] {key} = \"…\"`"
+        ));
+    } else if let Some(sugg) = closest(key, PER_CRATE_KEYS) {
+        d = d.help(format!("did you mean `{sugg}`?"));
+    }
+    d.build()
+}
+
+/// Validate the per-crate tier's crate *names* against the resolved workspace
+/// `members`. A `[crates.<name>]` whose `<name>` isn't a member is a `config`
+/// error (typo or stale entry) with a "did you mean …?" against the members.
+/// Called from [`super::audit_crate_membership`] once the workspace is loaded.
+pub(super) fn audit_crate_names(
+    config: &Config,
+    members: &[String],
+    config_path: &str,
+) -> Vec<Diagnostic> {
+    let member_refs: Vec<&str> = members.iter().map(String::as_str).collect();
+    let mut out = Vec::new();
+    // Stable order so the diagnostic stream (and snapshots) don't depend on
+    // HashMap iteration order.
+    let mut names: Vec<&String> = config.crates.keys().collect();
+    names.sort();
+    for name in names {
+        if member_refs.contains(&name.as_str()) {
+            continue;
+        }
+        let mut d = at_file(
+            LintId::Config.id(),
+            format!("`[crates.{name}]` does not match any workspace member"),
+            config_path,
+        );
+        if let Some(sugg) = closest(name, &member_refs) {
+            d = d.help(format!("did you mean `{sugg}`?"));
+        }
+        out.push(d.build());
+    }
+    out
+}
+
+/// Check a flat table's keys against `allowed`, emitting an `unknown-field`
+/// `config` diagnostic (with "did you mean …?") for each stray key. Shared by
+/// [`audit_section`] and the per-crate param-section validation.
+fn audit_table_fields(
+    val: &toml::Value,
+    allowed: &[&str],
+    ctx: &str,
+    config_path: &str,
+    out: &mut Vec<Diagnostic>,
+) {
+    let Some(table) = val.as_table() else { return };
+    for key in table.keys() {
+        if !allowed.contains(&key.as_str()) {
+            out.push(unknown_field(key, ctx, allowed, config_path));
+        }
     }
 }
 
@@ -135,23 +256,13 @@ fn audit_section(section: &str, val: &toml::Value, config_path: &str, out: &mut 
         return;
     };
     let Some(table) = val.as_table() else { return };
-    for key in table.keys() {
-        if schema.table.contains(&key.as_str()) {
-            continue;
-        }
-        out.push(unknown_field(
-            key,
-            &format!("[{section}]"),
-            schema.table,
-            config_path,
-        ));
-    }
+    audit_table_fields(val, schema.table, &format!("[{section}]"), config_path, out);
     // Validate rule entries, if any.
     if let (Some(rule_fields), Some(toml::Value::Array(rules))) = (schema.rule, table.get("rules"))
     {
         let ctx = format!("[[{section}.rules]]");
         for rule in rules {
-            audit_entry(rule, rule_fields, &ctx, config_path, out);
+            audit_table_fields(rule, rule_fields, &ctx, config_path, out);
         }
     }
     // `[[macros.external]]` entries.
@@ -159,30 +270,13 @@ fn audit_section(section: &str, val: &toml::Value, config_path: &str, out: &mut 
         && let Some(toml::Value::Array(entries)) = table.get("external")
     {
         for entry in entries {
-            audit_entry(
+            audit_table_fields(
                 entry,
                 &["path", "expansion-uses"],
                 "[[macros.external]]",
                 config_path,
                 out,
             );
-        }
-    }
-}
-
-fn audit_entry(
-    entry: &toml::Value,
-    allowed: &[&str],
-    ctx: &str,
-    config_path: &str,
-    out: &mut Vec<Diagnostic>,
-) {
-    let Some(table) = entry.as_table() else {
-        return;
-    };
-    for key in table.keys() {
-        if !allowed.contains(&key.as_str()) {
-            out.push(unknown_field(key, ctx, allowed, config_path));
         }
     }
 }

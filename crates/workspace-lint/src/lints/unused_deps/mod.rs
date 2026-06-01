@@ -22,7 +22,7 @@
 //!   deps still produce false positives; the existing `ignore` knob
 //!   suppresses them.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use syn_workspace::Workspace;
 use syn_workspace::manifest::{DeclaredDep, Manifest};
 
@@ -38,16 +38,21 @@ mod tests;
 pub(crate) use config::UnusedDepsConfig;
 
 pub(crate) struct UnusedDeps {
-    config: UnusedDepsConfig,
+    /// Workspace-wide params, used for any crate without a per-crate section.
+    global: UnusedDepsConfig,
+    /// Per-crate params (keyed by Cargo package name), each *wholesale*
+    /// replacing the global config for that crate. Empty for CLI single-check
+    /// runs, which have no `[crates.*]` tier.
+    per_crate: HashMap<String, UnusedDepsConfig>,
 }
 
 impl UnusedDeps {
-    pub fn new(config: UnusedDepsConfig) -> Self {
-        Self { config }
+    pub fn new(global: UnusedDepsConfig, per_crate: HashMap<String, UnusedDepsConfig>) -> Self {
+        Self { global, per_crate }
     }
 
     pub fn from_cli(ignore: Vec<String>) -> Self {
-        Self::new(UnusedDepsConfig { ignore })
+        Self::new(UnusedDepsConfig { ignore }, HashMap::new())
     }
 }
 
@@ -66,15 +71,22 @@ impl Lint for UnusedDeps {
         let workspace = cx
             .workspace
             .expect("unused-deps lint requires Workspace (Requirements::needs_workspace)");
-        check(&self.config, workspace)
+        check(&self.global, &self.per_crate, workspace)
     }
 }
 
-pub(crate) fn check(config: &UnusedDepsConfig, workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(
+    global: &UnusedDepsConfig,
+    per_crate: &HashMap<String, UnusedDepsConfig>,
+    workspace: &Workspace,
+) -> Vec<Diagnostic> {
     let lint_id = LintId::UnusedDeps.id();
     let mut diagnostics = Vec::new();
 
     for krate in workspace.members() {
+        // A per-crate `[crates.<name>.unused-deps]` wholesale-replaces the
+        // global params for this crate; otherwise the global config applies.
+        let config = per_crate.get(&krate.name).unwrap_or(global);
         let manifest = krate.manifest();
         let deps = collect_deps(manifest, &config.ignore);
         if deps.is_empty() {

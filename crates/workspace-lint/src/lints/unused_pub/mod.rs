@@ -39,7 +39,7 @@
 //!   `allowlist` globs or `#[derive(...)]`-aware suppression in a follow-up.
 
 use globset::{GlobSet, GlobSetBuilder};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use syn_workspace::{Crate, Item, ItemKind, Module, Publish, ResolvedPath, Visibility, Workspace};
 
 use crate::config::GlobPattern;
@@ -59,12 +59,17 @@ mod tests;
 pub(crate) use config::{KindFilter, UnusedPubConfig};
 
 pub(crate) struct UnusedPub {
-    config: UnusedPubConfig,
+    /// Workspace-wide params, used for any crate without a per-crate section.
+    global: UnusedPubConfig,
+    /// Per-crate params (keyed by Cargo package name), each *wholesale*
+    /// replacing the global config for that crate. Empty for CLI single-check
+    /// runs, which have no `[crates.*]` tier.
+    per_crate: HashMap<String, UnusedPubConfig>,
 }
 
 impl UnusedPub {
-    pub fn new(config: UnusedPubConfig) -> Self {
-        Self { config }
+    pub fn new(global: UnusedPubConfig, per_crate: HashMap<String, UnusedPubConfig>) -> Self {
+        Self { global, per_crate }
     }
 
     pub fn from_cli(
@@ -74,25 +79,28 @@ impl UnusedPub {
         exclude_paths: Vec<String>,
         suppress_intra_crate: bool,
     ) -> Self {
-        Self::new(UnusedPubConfig {
-            exclude_crates,
-            allowlist: allowlist.iter().map(|p| GlobPattern::from_cli(p)).collect(),
-            kinds,
-            exclude_paths: exclude_paths
-                .iter()
-                .map(|p| GlobPattern::from_cli(p))
-                .collect(),
-            suppress_intra_crate,
-            // `--fix` deletion is opt-in via config only — there's no CLI
-            // override because deletion is irreversible-without-git and we
-            // want the choice to live in the project's config file (not a
-            // forgotten shell history line).
-            auto_delete: false,
-            // Publish-awareness is config-only (no CLI flags): both live in the
-            // project's config file. CLI single-lint runs keep the defaults.
-            assume_all_public: false,
-            publish_hint_threshold: None,
-        })
+        Self::new(
+            UnusedPubConfig {
+                exclude_crates,
+                allowlist: allowlist.iter().map(|p| GlobPattern::from_cli(p)).collect(),
+                kinds,
+                exclude_paths: exclude_paths
+                    .iter()
+                    .map(|p| GlobPattern::from_cli(p))
+                    .collect(),
+                suppress_intra_crate,
+                // `--fix` deletion is opt-in via config only — there's no CLI
+                // override because deletion is irreversible-without-git and we
+                // want the choice to live in the project's config file (not a
+                // forgotten shell history line).
+                auto_delete: false,
+                // Publish-awareness is config-only (no CLI flags): both live in the
+                // project's config file. CLI single-lint runs keep the defaults.
+                assume_all_public: false,
+                publish_hint_threshold: None,
+            },
+            HashMap::new(),
+        )
     }
 }
 
@@ -111,22 +119,31 @@ impl Lint for UnusedPub {
         let workspace = cx
             .workspace
             .expect("unused-pub lint requires Workspace (Requirements::needs_workspace)");
-        check(&self.config, workspace)
+        check(&self.global, &self.per_crate, workspace)
     }
 }
 
-pub(crate) fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
-    let kind_filter: Option<HashSet<ItemKind>> =
-        (!config.kinds.is_empty()).then(|| config.kinds.iter().map(|k| k.to_item_kind()).collect());
-    let allowlist = build_glob_set(&config.allowlist);
-    let exclude_paths = build_glob_set(&config.exclude_paths);
-
+pub(crate) fn check(
+    global: &UnusedPubConfig,
+    per_crate: &HashMap<String, UnusedPubConfig>,
+    workspace: &Workspace,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // `pub` items in tests / build scripts / benches aren't part of the
     // cross-crate API surface, so we only scan each member's primary unit
     // (lib / proc-macro / main bin).
     for (krate, target) in workspace.primary_units() {
+        // A per-crate `[crates.<name>.unused-pub]` wholesale-replaces the
+        // global params for this crate; the glob sets / kind filter are built
+        // from the resolved config, so they're computed per crate rather than
+        // once up front.
+        let config = per_crate.get(&krate.name).unwrap_or(global);
+        let kind_filter: Option<HashSet<ItemKind>> = (!config.kinds.is_empty())
+            .then(|| config.kinds.iter().map(|k| k.to_item_kind()).collect());
+        let allowlist = build_glob_set(&config.allowlist);
+        let exclude_paths = build_glob_set(&config.exclude_paths);
+
         let crate_code = krate.code_name();
         if config
             .exclude_crates
