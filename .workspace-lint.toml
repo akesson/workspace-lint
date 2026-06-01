@@ -68,9 +68,10 @@ ignore = [
 ]
 
 # `unused-pub` is resolver-backed (no SCIP, no rust-analyzer subprocess), so it
-# runs everywhere — local + CI dogfood — without extra installs. The lint
-# consults `Workspace::re_exports().is_target(...)` and
-# `Workspace::is_externally_reachable(...)` to skip items that form part of a
-# library crate's public API surface, so no `exclude-crates` is needed for the
-# publishable libraries.
+# runs everywhere — local + CI dogfood — without extra installs. It's
+# publish-aware: a crate's public API is treated as external (and exempt) only
+# when the crate declares `publish = true`. The published libraries here
+# (syn-workspace + the two marker crates) set `publish = true`, so their APIs
+# aren't flagged; the `workspace-lint` binary publishes no API, so its `pub`
+# items are checked as workspace-internal (as before).
 [unused-pub]

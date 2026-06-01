@@ -3,6 +3,10 @@ name = "syn-workspace"
 version = "0.4.0"
 edition = "2024"
 rust-version.workspace = true
+# Published to crates.io — and the signal workspace-lint's publish-aware
+# `unused-pub` uses to treat this crate's public API as external (so its items
+# aren't flagged just because no *workspace* crate references them).
+publish = true
 repository = "https://github.com/human-solutions/workspace-lint"
 description = "A resolved workspace model for Rust: per-file imports, cross-file module trees, pub-use chains, and macro-body parsing — built on syn, no rust-analyzer required."
 license = "MIT OR Apache-2.0"

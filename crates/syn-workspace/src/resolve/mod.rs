@@ -943,6 +943,27 @@ impl Workspace {
         &self.re_exports
     }
 
+    /// A member crate's effective `[package] publish` declaration, resolving
+    /// `publish.workspace = true` against the workspace root's
+    /// `[workspace.package] publish`. Never returns
+    /// [`Publish::Inherited`](crate::manifest::Publish::Inherited).
+    ///
+    /// Reports only what the manifests say; callers decide what an absent
+    /// field means. Useful for distinguishing a crate with a real external
+    /// API (`publish = true` / a registry list) from a workspace-internal one
+    /// (`publish = false`, or — by a caller's policy — an absent field).
+    pub fn resolved_publish(&self, krate: &Crate) -> crate::manifest::Publish {
+        use crate::manifest::Publish;
+        match krate.manifest.publish() {
+            Publish::Inherited => match self.root_manifest.workspace_package_publish() {
+                // A root that itself inherits is nonsensical; treat as absent.
+                Publish::Inherited => Publish::Absent,
+                resolved => resolved,
+            },
+            other => other,
+        }
+    }
+
     /// Returns `true` if `path` names an item in a crate that publishes a
     /// stable external API (a library or proc-macro), and every `mod` hop
     /// from the crate root down to (but not including) the item's own name

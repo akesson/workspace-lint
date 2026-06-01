@@ -75,6 +75,8 @@ fn section_schema(section: &str) -> Option<Schema> {
                 "exclude-paths",
                 "suppress-intra-crate",
                 "auto-delete",
+                "assume-all-public",
+                "publish-hint-threshold",
             ],
             None,
         ),

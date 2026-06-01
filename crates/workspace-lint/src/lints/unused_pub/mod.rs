@@ -4,6 +4,29 @@
 //! intra-crate get a "tighten to `pub(crate)`" suggestion; items with no
 //! references at all get a "remove" suggestion.
 //!
+//! ## Publish-awareness
+//!
+//! The resolver can't see consumers outside the workspace, so a crate's
+//! library-public API is exempt as "external API surface" *only* when the crate
+//! declares it's published — `publish = true` or a registry list (see
+//! [`Workspace::resolved_publish`](syn_workspace::Workspace::resolved_publish)).
+//! A crate with `publish = false`, or — by default — no `publish` field, is
+//! treated as workspace-internal: its `pub` items go through the cross-crate
+//! check, so over-exposed internal APIs get flagged. `assume-all-public` opts
+//! out (treat every crate as external). When an internal crate accumulates
+//! `publish-hint-threshold` findings, a crate-level hint nudges `publish = true`.
+//!
+//! ## Known limitation (definition-site self-reference)
+//!
+//! The resolver records a bare ident that names a same-module sibling as a
+//! reference (so `Foo` used by bare name counts) — but it also scans an item's
+//! *own* declaration tokens, so a definition's name counts as a self-reference
+//! to itself. Consequence: in practice a never-used `pub fn foo` in a single
+//! crate is classified `IntraCrate` ("used only inside the crate") rather than
+//! `Unused`. The `pub(crate)` suggestion is still correct, but the "remove"
+//! message rarely fires for named items, and under `suppress-intra-crate` such
+//! items are silenced. Tracked as a separate resolver fix.
+//!
 //! Built on [`syn_workspace::Workspace`] — no SCIP, no `rust-analyzer`
 //! subprocess. Known limitations carried over from the resolver model
 //! (documented in tests/cases/visibility/known_false_positives/ for the
@@ -17,11 +40,16 @@
 
 use globset::{GlobSet, GlobSetBuilder};
 use std::collections::HashSet;
-use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace};
+use syn_workspace::{Crate, Item, ItemKind, Module, Publish, ResolvedPath, Visibility, Workspace};
 
 use crate::config::GlobPattern;
 use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_line;
+use crate::diagnostic::builder::{at_crate, at_line};
+
+/// Number of unused-pub findings an internal crate must accumulate before we
+/// emit the one-time `publish = true` hint. Used when the config leaves
+/// `publish-hint-threshold` unset.
+const DEFAULT_PUBLISH_HINT_THRESHOLD: usize = 3;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
@@ -60,6 +88,10 @@ impl UnusedPub {
             // want the choice to live in the project's config file (not a
             // forgotten shell history line).
             auto_delete: false,
+            // Publish-awareness is config-only (no CLI flags): both live in the
+            // project's config file. CLI single-lint runs keep the defaults.
+            assume_all_public: false,
+            publish_hint_threshold: None,
         })
     }
 }
@@ -104,6 +136,15 @@ pub(crate) fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diag
             continue;
         }
         let macro_refs = workspace.macro_implicit_refs_for(krate);
+        // A crate's library-public items are exempt as "external API surface"
+        // only when the crate actually has out-of-workspace consumers — i.e. it
+        // declares `publish = true` (or a registry list) — or the user opted
+        // every crate in via `assume-all-public`. Otherwise the crate is treated
+        // as workspace-internal: its `pub` items go through the normal
+        // cross-crate-usage check, so an item unused across the workspace is
+        // flagged. (`cargo metadata` can't see an explicit `publish = true`, so
+        // this reads the manifest via `resolved_publish`.)
+        let exempt_external_api = config.assume_all_public || crate_is_public(workspace, krate);
         let ctx = CheckCtx {
             workspace,
             crate_code: &crate_code,
@@ -113,15 +154,64 @@ pub(crate) fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diag
             exclude_paths: exclude_paths.as_ref(),
             suppress_intra_crate: config.suppress_intra_crate,
             auto_delete: config.auto_delete,
+            exempt_external_api,
         };
+        let mut crate_diags = Vec::new();
         for (module, item) in target.root.walk_items() {
             if let Some(d) = check_item(module, item, &ctx) {
-                diagnostics.push(d);
+                crate_diags.push(d);
             }
         }
+        // When a *workspace-internal* crate (treated as such only because it
+        // didn't declare `publish = true`) accumulates several findings, the
+        // likely cause is that it really is published — nudge the author toward
+        // the one-line fix. Self-resolving: adding `publish = true` exempts the
+        // items, so the findings and this hint both disappear.
+        let threshold = config
+            .publish_hint_threshold
+            .unwrap_or(DEFAULT_PUBLISH_HINT_THRESHOLD);
+        if !exempt_external_api && threshold > 0 && crate_diags.len() >= threshold {
+            diagnostics.push(publish_hint(krate, crate_diags.len()));
+        }
+        diagnostics.extend(crate_diags);
     }
 
     diagnostics
+}
+
+/// Whether `krate` declares a real external API (`publish = true` or a registry
+/// list), resolving `publish.workspace = true` against the workspace root. An
+/// absent or `false` `publish` field is treated as workspace-internal — the
+/// opinionated default that lets `unused-pub` flag over-exposed internal APIs.
+fn crate_is_public(workspace: &Workspace, krate: &Crate) -> bool {
+    matches!(
+        workspace.resolved_publish(krate),
+        Publish::ExplicitTrue | Publish::Registries(_)
+    )
+}
+
+/// One crate-level hint suggesting `publish = true` for an internal crate that
+/// produced `count` findings. Anchored at the crate so the silence directive
+/// (and the human "crate" grain) point at the right place.
+fn publish_hint(krate: &Crate, count: usize) -> Diagnostic {
+    at_crate(
+        LintId::UnusedPub.id(),
+        format!(
+            "crate `{}` has {count} public items unused within the workspace",
+            krate.code_name()
+        ),
+        krate.manifest_dir.clone(),
+    )
+    .help(format!(
+        "if `{}` is published outside this workspace, set `publish = true` in its Cargo.toml \
+         to treat its public API as external (these findings become exempt)",
+        krate.name
+    ))
+    .note(
+        "workspace-lint treats a crate as workspace-internal unless it declares `publish = true` \
+         (or a registry); see the unused-pub docs",
+    )
+    .build()
 }
 
 struct CheckCtx<'a> {
@@ -133,6 +223,11 @@ struct CheckCtx<'a> {
     exclude_paths: Option<&'a GlobSet>,
     suppress_intra_crate: bool,
     auto_delete: bool,
+    /// Whether library-public items in this crate are exempt as external API
+    /// surface (the crate is published, or `assume-all-public` is set). When
+    /// `false`, the crate is workspace-internal and its `pub` items go through
+    /// the cross-crate-usage check.
+    exempt_external_api: bool,
 }
 
 /// Cross-crate usage classification, computed once per candidate item.
@@ -198,14 +293,16 @@ fn item_skipped_by_filters(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> 
     if ctx.macro_refs.contains(&item.canonical) {
         return true;
     }
-    // Reachability through a `pub use` chain or via a `pub mod` chain in
-    // a published library both make the item part of the crate's external
-    // API surface — narrowing would break re-exports (E0364 / E0365) or
-    // silently break out-of-workspace consumers.
+    // A re-export target is part of the crate's API regardless of publish
+    // status — narrowing it would break the `pub use` (E0364 / E0365).
     if ctx.workspace.re_exports().is_target(&item.canonical) {
         return true;
     }
-    if ctx.workspace.is_externally_reachable(&item.canonical) {
+    // Library-public reachability only exempts the item when the crate is
+    // treated as having external (out-of-workspace) consumers — see
+    // `exempt_external_api`. An internal crate's reachable `pub` items fall
+    // through to the cross-crate-usage check below.
+    if ctx.exempt_external_api && ctx.workspace.is_externally_reachable(&item.canonical) {
         return true;
     }
     false

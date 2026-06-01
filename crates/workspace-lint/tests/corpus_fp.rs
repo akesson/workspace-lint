@@ -50,7 +50,16 @@ fn audit_config_for(entry: &CorpusEntry) -> String {
         // `Unused` class (an internal `pub` item the resolver thinks nothing
         // references), dropping the noisier "consider `pub(crate)`" style
         // suggestions that real crates trigger by using `pub` in private modules.
-        cfg.push_str("unused-pub = \"warn\"\n\n[unused-pub]\nsuppress-intra-crate = true\n");
+        //
+        // `assume-all-public` keeps the audit about *resolver misses*, not
+        // *publish policy*: the corpus crates are real published libraries that
+        // don't bother writing `publish = true`, so the publish-aware default
+        // would otherwise treat their whole public API as workspace-internal and
+        // flag it (plus emit the `publish = true` hint) — noise unrelated to the
+        // resolver behavior this audit gates.
+        cfg.push_str(
+            "unused-pub = \"warn\"\n\n[unused-pub]\nsuppress-intra-crate = true\nassume-all-public = true\n",
+        );
     }
     cfg
 }

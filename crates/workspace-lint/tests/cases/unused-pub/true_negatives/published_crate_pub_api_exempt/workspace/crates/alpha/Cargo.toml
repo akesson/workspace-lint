@@ -1,0 +1,6 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+# Explicitly published → real external consumers → public API is exempt.
+publish = true

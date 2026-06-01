@@ -166,6 +166,23 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
+        // unused-pub: crate-level hint nudging `publish = true` for an internal
+        // crate that accumulated several findings.
+        (
+            "unused_pub_publish_hint",
+            at_crate(
+                "workspace-lint::unused-pub",
+                "crate `mycrate` has 3 public items unused within the workspace",
+                PathBuf::from("crates/mycrate"),
+            )
+            .help(
+                "if `mycrate` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt)",
+            )
+            .note(
+                "workspace-lint treats a crate as workspace-internal unless it declares `publish = true` (or a registry); see the unused-pub docs",
+            )
+            .build(),
+        ),
         // stale-expect: an `expect!` directive that didn't fire.
         (
             "stale_expect",
@@ -484,6 +501,22 @@ mod tests {
         }
 
         #[test]
+        fn unused_pub_publish_hint() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_publish_hint")), @r"
+            warning: crate `mycrate` has 3 public items unused within the workspace
+             --> crates/mycrate/Cargo.toml:1:1
+              |
+              = help: if `mycrate` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt)
+              = note: workspace-lint treats a crate as workspace-internal unless it declares `publish = true` (or a registry); see the unused-pub docs
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(unused-pub)
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
         fn stale_expect() {
             insta::assert_snapshot!(render(&scenario("stale_expect")), @r"
             warning: expect directive for `file-size` did not match any diagnostic
@@ -768,6 +801,11 @@ mod tests {
         #[test]
         fn unused_pub_tighten_visibility() {
             insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @"::warning file=crates/mycrate/src/builder.rs,line=7,col=1,title=workspace-lint%3A%3Aunused-pub::pub struct `Builder` in crate `mycrate` is only used inside the crate");
+        }
+
+        #[test]
+        fn unused_pub_publish_hint() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_publish_hint")), @"::warning file=crates/mycrate/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Aunused-pub::crate `mycrate` has 3 public items unused within the workspace");
         }
 
         #[test]

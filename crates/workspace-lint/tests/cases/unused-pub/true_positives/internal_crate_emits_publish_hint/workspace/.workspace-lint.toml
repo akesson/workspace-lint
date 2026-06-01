@@ -1,0 +1,9 @@
+# `publish-hint-threshold = 1` makes the crate-level "set publish = true" hint
+# fire as soon as the internal crate has one finding (the default threshold is
+# 3). `alpha` declares no `publish`, so it's treated as workspace-internal.
+[unused-pub]
+publish-hint-threshold = 1
+
+[lints]
+default = "allow"
+unused-pub = "deny"

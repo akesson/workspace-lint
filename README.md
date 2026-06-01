@@ -124,11 +124,25 @@ ignore = ["prost", "tonic"]
 
 ### unused-pub
 
-Detects `pub` items that are never used outside the crate that declares them.
-Resolver-backed (built on `syn-workspace`): it needs **no** SCIP index and
-**no** `rust-analyzer` subprocess, so it runs the same locally and in CI. Items
-that form part of a library crate's public API — re-exported via `pub use` or
-otherwise externally reachable — are skipped automatically.
+Detects `pub` items that are never used across the workspace. Resolver-backed
+(built on `syn-workspace`): it needs **no** SCIP index and **no** `rust-analyzer`
+subprocess, so it runs the same locally and in CI. Items re-exported via `pub use`
+are always skipped (narrowing them would break the re-export).
+
+**Publish-aware.** The lint can't see consumers outside your workspace, so it
+treats a crate's public API as off-limits **only when the crate declares it has
+external consumers — `publish = true`** (or a registry list) in its `Cargo.toml`.
+Every other crate — `publish = false`, or, by default, *no* `publish` field — is
+treated as **workspace-internal**: its `pub` items are checked, and anything not
+used by another workspace crate is flagged for narrowing to `pub(crate)`. This is
+the whole point of the lint at the workspace level — over-exposed internal APIs
+get caught. So: **mark genuinely-published crates with `publish = true`** (you
+likely want this anyway), and leave internal crates as they are.
+
+If a crate accumulates several findings, the lint emits a one-line hint
+suggesting `publish = true` — in case the flood means the crate really is
+published. Set `assume-all-public = true` to opt out entirely and treat every
+crate as having an external API (the pre-publish-aware behavior).
 
 Two findings:
 - **used only inside the crate** → suggests narrowing to `pub(crate)`.
@@ -142,6 +156,8 @@ kinds = ["function", "struct"]
 exclude-paths = ["generated/**"]
 suppress-intra-crate = false
 auto-delete = false
+assume-all-public = false
+publish-hint-threshold = 3
 ```
 
 | Option | Description |
@@ -152,6 +168,8 @@ auto-delete = false
 | `exclude-paths` | Glob patterns for source file paths to skip. |
 | `suppress-intra-crate` | When `true`, report only items unused *anywhere* and drop the "used only inside the crate, consider `pub(crate)`" findings. Default `false`. |
 | `auto-delete` | When `true`, the fix for an item that's unused everywhere becomes deletion instead of `pub(crate)` narrowing — but only when the containing file is git-tracked and clean (git is the backup). Dirty or untracked files downgrade the suggestion so `--fix` skips it. Default `false`. |
+| `assume-all-public` | When `true`, treat *every* crate as having an external public API (skip library-public items regardless of `publish`). The conservative pre-publish-aware behavior. Default `false`. |
+| `publish-hint-threshold` | Emit the "set `publish = true`" hint once a workspace-internal crate reaches this many findings. `0` disables it. Default `3`. |
 
 ### architecture
 
