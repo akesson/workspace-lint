@@ -1,6 +1,6 @@
 //! Config validation surfaced as real diagnostics.
 //!
-//! The typed [`Config`](super::Config) deserialization is deliberately
+//! The typed [`Config`] deserialization is deliberately
 //! permissive (serde drops unknown keys), so a typo'd section, field, or lint
 //! name would otherwise vanish silently — a bad failure mode for a linter.
 //! This module re-parses the raw TOML into a [`toml::Value`] tree and diffs
