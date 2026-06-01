@@ -46,12 +46,19 @@ fn main() {
             // (so a `# workspace-lint: allow(config)` directive can silence
             // them) and before leveling (so `[lints] config = …` applies).
             diagnostics.extend(config_diags);
+            // The per-crate `[crates.<name>]` tier's crate names are validated
+            // against the resolved workspace membership (a typo'd or stale crate
+            // name is otherwise a silent no-op). Needs the loaded `Workspace`,
+            // so it runs here rather than in the pure-TOML config audit.
+            if let Some(ws) = workspace.as_ref() {
+                diagnostics.extend(config::audit_crate_membership(&config, ws));
+            }
             // Suppression filters by directives and appends `stale-expect` /
             // `unknown-lint` findings; leveling runs last so the appended ones
             // are leveled too and `allow`-ed lints are dropped from the final
             // set before the exit-code tally.
             apply_suppression(workspace.as_ref(), &mut diagnostics);
-            apply_lint_levels(&config, &mut diagnostics);
+            apply_lint_levels(&config, workspace.as_ref(), &mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
             }
@@ -73,7 +80,7 @@ fn main() {
             let (mut diagnostics, workspace) = run_single_check(rule);
             apply_suppression(workspace.as_ref(), &mut diagnostics);
             if let Some(cfg) = &config_for_levels {
-                apply_lint_levels(cfg, &mut diagnostics);
+                apply_lint_levels(cfg, workspace.as_ref(), &mut diagnostics);
             }
             if cli.fix {
                 fix::run(&diagnostics);
@@ -92,13 +99,22 @@ fn main() {
     }
 }
 
-/// Apply the `[lints]` table to the collected diagnostics: **drop** any whose
-/// effective level is `allow`, and rewrite the rest to their effective level
-/// (per-lint override → `[lints] default` → built-in `warn`). Diagnostics
-/// whose level the lint chose itself (`level_is_explicit`, e.g. an
-/// `architecture` rule's `severity`) are left untouched, so a blanket
-/// `[lints] <lint> = …` can't silently clobber a deliberate per-rule severity.
-fn apply_lint_levels(config: &config::Config, diagnostics: &mut Vec<Diagnostic>) {
+/// Apply the lint-level cascade to the collected diagnostics: **drop** any
+/// whose effective level is `allow`, and rewrite the rest to their effective
+/// level. The level resolves through the per-crate tier first — each
+/// diagnostic is mapped to its owning workspace member (by its silence
+/// anchor's path), then leveled via [`config::Config::effective_level`]
+/// (per-crate override → per-crate default → global override → global default
+/// → built-in `warn`). Diagnostics whose level the lint chose itself
+/// (`level_is_explicit`, e.g. an `architecture` rule's `severity`) are left
+/// untouched, so a blanket `[lints] <lint> = …` can't silently clobber a
+/// deliberate per-rule severity.
+fn apply_lint_levels(
+    config: &config::Config,
+    workspace: Option<&Workspace>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let crate_dirs = crate_dirs(workspace);
     diagnostics.retain_mut(|d| {
         if d.level_is_explicit {
             return true;
@@ -108,7 +124,8 @@ fn apply_lint_levels(config: &config::Config, diagnostics: &mut Vec<Diagnostic>)
             // all come from `LintId::*.id()`); keep it rather than drop.
             return true;
         };
-        match config.lints.effective(id).to_diagnostic_level() {
+        let krate = owning_crate(&crate_dirs, &d.silence_anchor);
+        match config.effective_level(id, krate).to_diagnostic_level() {
             None => false, // `allow` → drop before render & exit-code tally
             Some(level) => {
                 d.level = level;
@@ -116,6 +133,60 @@ fn apply_lint_levels(config: &config::Config, diagnostics: &mut Vec<Diagnostic>)
             }
         }
     });
+}
+
+/// A workspace member's manifest-dir match candidates. Each member carries
+/// **both** its workspace-relative and absolute manifest dir, because
+/// diagnostics anchor with mixed path bases: `unused-deps` / `file-size` /
+/// `crate-size` emit workspace-relative paths, while resolver-span lints
+/// (`unused-pub`) emit absolute ones. Matching either form maps any diagnostic
+/// to its crate. `depth` is the relative component count, used to match the
+/// most specific crate first for nested layouts.
+struct CrateDir {
+    forms: Vec<std::path::PathBuf>,
+    name: String,
+    depth: usize,
+}
+
+/// Build the per-crate match table. Empty when no workspace was loaded — then
+/// every diagnostic resolves to the global level.
+fn crate_dirs(workspace: Option<&Workspace>) -> Vec<CrateDir> {
+    let Some(ws) = workspace else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<CrateDir> = ws
+        .members()
+        .map(|c| {
+            let rel = ws.crate_relative_path(&c.manifest_dir);
+            let depth = rel.components().count();
+            CrateDir {
+                forms: vec![rel, c.manifest_dir.clone()],
+                name: c.name.clone(),
+                depth,
+            }
+        })
+        .collect();
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.depth));
+    dirs
+}
+
+/// The Cargo name of the workspace member that owns `anchor`, found by matching
+/// the anchor's path (in either base) against each member's manifest-dir forms.
+/// `None` for a workspace-level anchor or a path outside every member. An empty
+/// (root) relative form is skipped so it can't match every path.
+fn owning_crate<'a>(
+    crate_dirs: &'a [CrateDir],
+    anchor: &diagnostic::SilenceAnchor,
+) -> Option<&'a str> {
+    let file = anchor.file()?;
+    crate_dirs
+        .iter()
+        .find(|cd| {
+            cd.forms
+                .iter()
+                .any(|f| !f.as_os_str().is_empty() && file.starts_with(f))
+        })
+        .map(|cd| cd.name.as_str())
 }
 
 fn parse_format(arg: Option<&str>) -> Format {
@@ -164,7 +235,12 @@ fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<Workspace>) {
     }
 
     let registry = lints::registry(config);
-    let needs_ws = registry.iter().any(|l| l.requirements().needs_workspace);
+    // A loaded workspace is needed when some enabled lint asks for it, or when
+    // a per-crate `[crates.*]` tier is present — the latter so per-crate levels
+    // can map diagnostics to their owning crate and crate names can be
+    // validated against the membership, even if no lint itself needs the resolver.
+    let needs_ws =
+        registry.iter().any(|l| l.requirements().needs_workspace) || !config.crates.is_empty();
     let workspace = needs_ws.then(|| load_workspace(config.macros.as_ref()));
     let cx = LintContext {
         workspace: workspace.as_ref(),

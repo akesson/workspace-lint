@@ -76,11 +76,20 @@ impl LintLevels {
         if let Some(level) = self.overrides.get(&id) {
             return *level;
         }
-        let base = self.default.unwrap_or(LintLevel::Warn);
+        Self::floor_meta(id, self.default.unwrap_or(LintLevel::Warn))
+    }
+
+    /// Apply the config-validation meta-floor: a *baseline* `allow` (a global
+    /// or per-crate `default`, as opposed to an explicit per-lint entry) can't
+    /// silence the `config` / `unknown-lint` lints, so a blanket allow can't
+    /// quietly hide a broken config. Pass a baseline level through here; an
+    /// explicit per-lint override is honored verbatim and never floored.
+    pub fn floor_meta(id: LintId, base: LintLevel) -> LintLevel {
         if base == LintLevel::Allow && matches!(id, LintId::Config | LintId::UnknownLint) {
-            return LintLevel::Warn;
+            LintLevel::Warn
+        } else {
+            base
         }
-        base
     }
 
     /// Whether the user wrote an explicit per-lint entry for `id` (as opposed

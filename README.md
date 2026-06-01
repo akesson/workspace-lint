@@ -122,6 +122,10 @@ Scans workspace crates for dependencies declared in `Cargo.toml` that don't appe
 ignore = ["prost", "tonic"]
 ```
 
+The `ignore` list can be scoped to a single crate via
+[`[crates.<name>.unused-deps]`](#per-crate-configuration) when a dep is unused in
+only one member.
+
 ### unused-pub
 
 Detects `pub` items that are never used across the workspace. Resolver-backed
@@ -170,6 +174,10 @@ publish-hint-threshold = 3
 | `auto-delete` | When `true`, the fix for an item that's unused everywhere becomes deletion instead of `pub(crate)` narrowing — but only when the containing file is git-tracked and clean (git is the backup). Dirty or untracked files downgrade the suggestion so `--fix` skips it. Default `false`. |
 | `assume-all-public` | When `true`, treat *every* crate as having an external public API (skip library-public items regardless of `publish`). The conservative pre-publish-aware behavior. Default `false`. |
 | `publish-hint-threshold` | Emit the "set `publish = true`" hint once a workspace-internal crate reaches this many findings. `0` disables it. Default `3`. |
+
+Any of these options can be set per-crate via
+[`[crates.<name>.unused-pub]`](#per-crate-configuration), which wholesale-replaces
+the global `[unused-pub]` for that crate.
 
 ### architecture
 
@@ -289,11 +297,12 @@ glob = "**/*.rs"
 max-code-lines = 500
 ```
 
-The config has three kinds of sections: **lints** (the `[lints]` table plus a
-per-lint params table like `[file-size]`), the **`expand`** task (see
-[Expand markers](#expand-markers)), and **`macros`** resolver metadata (see
-[External macro annotations](#external-macro-annotations)). Unknown sections and
-keys are reported by the [`config`](#always-on-lints) lint.
+The config has these kinds of sections: **lints** (the `[lints]` table plus a
+per-lint params table like `[file-size]`), the per-crate **`[crates.<name>]`**
+tier (see [Per-crate configuration](#per-crate-configuration)), the **`expand`**
+task (see [Expand markers](#expand-markers)), and **`macros`** resolver metadata
+(see [External macro annotations](#external-macro-annotations)). Unknown sections
+and keys are reported by the [`config`](#always-on-lints) lint.
 
 ### Migrating from the older format
 
@@ -389,6 +398,51 @@ lints (`centralized-deps`, `module-tree`, `feature-drift`, `unused-deps`,
 
 **Exit code:** 1 iff at least one `deny`-level diagnostic survives suppression;
 `allow`-ed diagnostics are dropped entirely before the tally.
+
+### Per-crate configuration
+
+Lint config cascades through three tiers, narrowest winning: the global
+`[lints]` table → a per-crate `[crates.<name>]` block → in-code `expect!` /
+`allow!` directives. The per-crate tier lives in the **same** root config (keyed
+by Cargo package name), so the whole policy stays in one file.
+
+```toml
+[lints]                       # tier 1 — global
+default   = "warn"
+file-size = "deny"
+
+[crates.legacy.lints]         # tier 2 — per-crate levels (mirrors [lints])
+file-size = "allow"           # stop denying file-size in `legacy` only
+default   = "allow"           # …or opt the whole crate out wholesale
+
+[crates.api.lints]
+unused-pub = "deny"           # turn a globally-loosened lint back on, here
+
+[crates.api.unused-pub]       # tier 2 — per-crate params
+allowlist = ["*Builder"]
+
+[crates.worker.unused-deps]
+ignore = ["prost", "tonic"]
+```
+
+**Per-crate levels — every lint.** A per-crate `[crates.<name>.lints]` entry
+overrides the global level for that crate; a per-crate `default` sets the
+crate's baseline (and, set to `allow`, opts the whole crate out). Keys with no
+per-crate entry fall through to the global tier.
+
+**Per-crate params — `unused-deps` and `unused-pub` only.** These are the lints
+whose params are workspace-flat (an `ignore` list, an allowlist, …) with no glob
+escape hatch. `file-size`, `crate-size`, and `freshness` already scope per-crate
+through their globs, so a `[crates.<name>.file-size]` (or crate-size / freshness
+/ cli-crate-version / architecture) block is a [`config`](#always-on-lints)
+error that redirects you to a glob rule — one obvious way, not two. A present
+`[crates.<name>.unused-deps]` / `unused-pub` section **wholesale-replaces** the
+global section for that crate (predictable: the crate's config is exactly what's
+written).
+
+**Validation.** A `[crates.<name>]` whose `<name>` isn't a workspace member is a
+`config` error with a "did you mean …?" hint — centralized per-crate config
+can't silently rot against a renamed or removed crate.
 
 ## Silencing diagnostics
 

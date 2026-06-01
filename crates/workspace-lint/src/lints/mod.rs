@@ -71,12 +71,20 @@ pub(crate) struct LintContext<'a> {
     pub workspace: Option<&'a Workspace>,
 }
 
-/// `true` when `id`'s effective level (per-lint override → `[lints] default`
-/// → built-in `warn`) isn't `allow` — i.e. the user hasn't turned it off.
-/// This is half the enable rule; *policy* lints additionally require their
-/// config table to be present (checked inline below).
+/// `true` when `id` is enabled *anywhere* — its global effective level isn't
+/// `allow`, **or** some per-crate block turns it back on. A lint runs once for
+/// the whole workspace and `apply_lint_levels` later drops the diagnostics that
+/// land in crates where the effective level is `allow`, so "on for one crate"
+/// means the lint must run. This is half the enable rule; *policy* lints
+/// additionally require their config table to be present (checked inline below).
 fn level_on(config: &Config, id: LintId) -> bool {
-    config.lints.effective(id) != LintLevel::Allow
+    if config.lints.effective(id) != LintLevel::Allow {
+        return true;
+    }
+    config
+        .crates
+        .keys()
+        .any(|name| config.effective_level(id, Some(name)) != LintLevel::Allow)
 }
 
 /// Build the runtime registry of enabled lints from the user's configuration.
@@ -134,11 +142,13 @@ pub(crate) fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
     if level_on(config, LintId::UnusedDeps) {
         out.push(Box::new(unused_deps::UnusedDeps::new(
             config.unused_deps.clone().unwrap_or_default(),
+            config.unused_deps_overrides(),
         )));
     }
     if level_on(config, LintId::UnusedPub) {
         out.push(Box::new(unused_pub::UnusedPub::new(
             config.unused_pub.clone().unwrap_or_default(),
+            config.unused_pub_overrides(),
         )));
     }
 
