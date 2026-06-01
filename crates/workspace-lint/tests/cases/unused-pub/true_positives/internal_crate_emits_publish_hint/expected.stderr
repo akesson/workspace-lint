@@ -9,10 +9,10 @@ help: if intentional, silence with:
   |
   = note: `#[deny(workspace_lint::unused_pub)]` on by default
 
-error: pub fn `unused_one` in crate `alpha` is only used inside the crate
+error: pub fn `unused_one` in crate `alpha` appears unused — consider removing
  --> <TMP>/crates/alpha/src/lib.rs:3:1
   |
-  = help: consider `pub(crate)` to tighten visibility
+  = help: remove the item or its `pub` visibility
   = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |

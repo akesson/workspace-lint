@@ -1,7 +1,7 @@
-error: pub fn `unreferenced_function` in crate `alpha` is only used inside the crate
+error: pub fn `unreferenced_function` in crate `alpha` appears unused — consider removing
  --> <TMP>/crates/alpha/src/lib.rs:1:1
   |
-  = help: consider `pub(crate)` to tighten visibility
+  = help: remove the item or its `pub` visibility
   = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |
