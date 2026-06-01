@@ -11,8 +11,9 @@
 //!   are treated as external-or-workspace crate names at the leading segment.
 //! - `use foo::*;` (glob) is intentionally **not** expanded here — tier 1
 //!   produces no binding for globs. Tier 2 expands globs that target
-//!   workspace crates; external-crate globs land in `known_false_negatives`
-//!   because we can't enumerate external exports without rustdoc JSON.
+//!   workspace crates; external-crate globs are a documented non-goal (we can't
+//!   enumerate an external crate's exports without rustdoc JSON), so a name
+//!   imported solely via an external glob resolves as an unknown reference.
 //!
 //! Renames (`use foo::Bar as Baz`) record both the local binding (`Baz`) and
 //! the canonical path at the definition site (`foo::Bar`). Consumers query

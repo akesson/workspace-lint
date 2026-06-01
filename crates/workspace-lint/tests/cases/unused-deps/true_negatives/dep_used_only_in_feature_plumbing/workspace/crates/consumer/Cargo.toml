@@ -1,0 +1,16 @@
+[package]
+name = "consumer"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# `provider` is named nowhere in this crate's code — it's activated only by the
+# `perf` feature below (`dep:provider`). It's a genuine, feature-plumbing-only
+# dependency, so `unused-deps` must not flag it.
+provider = { path = "../provider", optional = true }
+
+[features]
+perf = ["dep:provider"]

@@ -15,12 +15,15 @@
 //!   doc-test code fences (a dep used only in a `/// ```rust …` example is
 //!   still genuinely used). Kept separate from the reference graph above so it
 //!   feeds only this lint, never `unused-pub` / the SCIP projection.
+//! - **`Manifest::feature_dep_refs`** — dep names a crate's `[features]` table
+//!   forwards (`dep:foo`, `foo?/bar`). A feature-plumbing-only optional dep,
+//!   declared just to forward a feature and never named in code, is still
+//!   genuinely depended on, so these count as references.
 //!
 //! Known limitations (documented in tests/cases/unused-deps/):
 //!
-//! - `build.rs`-generated code, `*-sys` link-only deps, and feature-plumbing
-//!   deps still produce false positives; the existing `ignore` knob
-//!   suppresses them.
+//! - `build.rs`-generated code and `*-sys` link-only deps still produce false
+//!   positives; the existing `ignore` knob suppresses them.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use syn_workspace::Workspace;
@@ -182,6 +185,11 @@ fn referenced_crate_names(workspace: &Workspace, krate: &syn_workspace::Crate) -
     if let Some(doc_refs) = workspace.doctest_dep_refs(krate) {
         names.extend(doc_refs.iter().cloned());
     }
+    // A feature-plumbing-only optional dep — declared solely to forward a Cargo
+    // feature (`dep:foo`, `foo?/bar`) and never named in code — is still
+    // genuinely depended on. Read those names straight from the manifest's
+    // `[features]` table (pure manifest data, no resolver model needed).
+    names.extend(krate.manifest().feature_dep_refs());
     names
 }
 

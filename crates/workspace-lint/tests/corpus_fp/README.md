@@ -100,9 +100,9 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
   `-lite` / `-cli` / `-capi` / `-test`) — the largest corpus crate (2119 items),
   with genuine intra-workspace cross-crate references (`regex` → `regex-automata`
   → `regex-syntax`): the `unused-pub`-at-scale stress test. It surfaced **3 true
-  positives** and **4 false positives** across three limitation classes; two of
-  the three classes were then fixed (see History below), leaving the snapshot at
-  three true positives plus one documented known-FP:
+  positives** and **4 false positives** across three limitation classes; all
+  three classes were then fixed (see History below), leaving the snapshot at
+  **three true positives and no false positives**:
   - **`quickcheck`** — **TRUE POSITIVE**. A `[dev-dependencies]` the *root*
     `regex` crate declares but uses nowhere (`regex-automata` declares its own).
     Same shape as anyhow's `syn`.
@@ -111,11 +111,22 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
     `DECIMAL_NUMBER` / `WHITE_SPACE`, never the `BY_NAME` variant, so these are
     genuinely-unreferenced over-exposed items. (Other tables' `BY_NAME` *are*
     read and are correctly seen as used.)
-  - **`aho-corasick`** — **known-FP (feature-plumbing)**. The root crate declares
-    it only to forward the `perf-literal` feature (`dep:aho-corasick`,
+  - **`aho-corasick`** — **fixed** (was the feature-plumbing FP). The root crate
+    declares it only to forward the `perf-literal` feature (`dep:aho-corasick`,
     `aho-corasick?/std`) to `regex-automata`; it is never named in the root
-    crate's own code. `unused-deps` matches code references, not feature-table
-    entries — a documented limitation, left flagged.
+    crate's own code. `unused-deps` now reads the `[features]` table, so a dep
+    forwarded via `dep:` / `?/` counts as used (see History below).
+
+> **History (Phase 3, increment 8 — feature-plumbing deps):** the last corpus FP,
+> regex's `aho-corasick`, was closed. `Manifest::feature_dep_refs`
+> (`syn-workspace/src/manifest.rs`) reads the `[features]` table and extracts the
+> dependency named by each value (`dep:NAME`, `NAME?/feat`, `NAME/feat` — leading
+> ident before `?`/`/`, hyphen-normalized); `unused-deps` unions those into its
+> referenced-crate set (`referenced_crate_names`), so an optional dep declared
+> solely to forward a feature counts as used. Pure manifest data — no resolver
+> model, no `unused-pub`/SCIP impact. Guarded by
+> `unused-deps/true_negatives/dep_used_only_in_feature_plumbing`. With this the
+> corpus is **fully FP-clean**: every flagged item is a confirmed true positive.
 
 > **History (Phase 3, increment 7):** `regex` was added to exercise `unused-pub`
 > at scale on a real multi-member workspace. Two of the three resolver/lint gaps
@@ -161,11 +172,10 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 
 ## Takeaway for follow-ups
 
-- **Corpus is FP-clean except one documented known-FP.** Every audited crate is
-  clean except confirmed *true positives* — anyhow's `syn` and regex's
-  `quickcheck` (unused dev-deps), regex's two `BY_NAME` consts (unreferenced
-  generated consts) — plus regex's `aho-corasick`, a documented feature-plumbing
-  known-FP (`unused-deps` doesn't read `[features]` `dep:` / `?/` entries).
+- **Corpus is fully FP-clean.** Every audited crate is clean except confirmed
+  *true positives* — anyhow's `syn` and regex's `quickcheck` (unused dev-deps),
+  and regex's two `BY_NAME` consts (unreferenced generated consts). No surviving
+  false positives remain.
 - **Structural coverage** now includes a large 7-member workspace with genuine
   cross-crate references (`regex`, 2119 items) exercising `unused-pub` at scale,
   on top of deep cfg-gated arch-specific module trees (`memchr`), multi-member
@@ -174,7 +184,8 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
   — leave flagged (no action). They validate that the lints catch real unused
   deps / over-exposed items, and rule out blanket conservatism (which would hide
   them).
-- **Remaining known-FP class:** feature-plumbing-only dependencies. `unused-deps`
-  matches code references, not feature-table `dep:` / `optional?/feature`
-  entries, so an optional dep declared solely to forward a feature reads as
-  unused. Tracked for a follow-up that consults the `[features]` table.
+- **No remaining known-FP classes.** The former feature-plumbing-only-dependency
+  FP (an optional dep declared solely to forward a feature) is fixed —
+  `unused-deps` now consults the `[features]` table (increment 8). The remaining
+  documented `unused-deps` limitations (`build.rs`-generated code, `*-sys`
+  link-only deps) are structural and suppressed via the `ignore` knob.

@@ -284,6 +284,53 @@ impl Manifest {
         })
     }
 
+    /// Dependency names referenced from this manifest's `[features]` table,
+    /// underscore-normalized.
+    ///
+    /// A feature value can activate a dependency via `dep:NAME`, `NAME?/feat`
+    /// (weak), or `NAME/feat`; a bare `NAME` references another feature (or, in
+    /// pre-`dep:` style, implicitly the optional dep of that name). We extract
+    /// the leading identifier of every value — stripping a `dep:` prefix and
+    /// taking the part before the first `?` or `/` — and `replace('-', "_")`.
+    ///
+    /// Over-extraction is deliberate and harmless: the unused-deps lint only
+    /// ever checks *declared dependency* names against this set, so stray
+    /// feature names (`default`, `std`, …) that aren't deps match nothing. This
+    /// spares feature-plumbing-only optional deps — declared solely to forward a
+    /// feature and never named in code — from false `unused-deps` reports.
+    pub fn feature_dep_refs(&self) -> std::collections::HashSet<String> {
+        let mut refs = std::collections::HashSet::new();
+        let Some(features) = self
+            .doc
+            .as_table()
+            .get("features")
+            .and_then(Item::as_table_like)
+        else {
+            return refs;
+        };
+        for (_feature, value) in features.iter() {
+            let Some(array) = value.as_array() else {
+                continue;
+            };
+            for entry in array.iter() {
+                let Some(raw) = entry.as_str() else {
+                    continue;
+                };
+                let name = raw
+                    .strip_prefix("dep:")
+                    .unwrap_or(raw)
+                    .split(['?', '/'])
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !name.is_empty() {
+                    refs.insert(name.replace('-', "_"));
+                }
+            }
+        }
+        refs
+    }
+
     /// Locate the line for a specific dep key inside the given section.
     /// Returns `None` for entries whose value wraps across multiple lines
     /// (multi-line inline table) — those are not safely rewritable by a
@@ -446,6 +493,38 @@ mod tests {
             raw: content.to_string(),
             doc: Document::parse(content.to_string()).unwrap(),
         }
+    }
+
+    #[test]
+    fn feature_dep_refs_extracts_dep_weak_and_path_forms() {
+        let m = parse(
+            "[features]\n\
+             perf = [\"dep:aho-corasick\", \"memchr?/avx2\", \"regex-automata/std\"]\n\
+             default = [\"perf\"]\n",
+        );
+        let refs = m.feature_dep_refs();
+        assert!(refs.contains("aho_corasick"), "dep: form: {refs:?}");
+        assert!(refs.contains("memchr"), "weak ?/ form: {refs:?}");
+        assert!(refs.contains("regex_automata"), "path / form: {refs:?}");
+        // A bare feature reference is harmlessly included — it matches no
+        // declared dep, so it can't suppress a real finding.
+        assert!(refs.contains("perf"), "bare feature ref: {refs:?}");
+    }
+
+    #[test]
+    fn feature_dep_refs_normalizes_hyphens() {
+        let refs = parse("[features]\nx = [\"dep:aho-corasick\"]\n").feature_dep_refs();
+        assert!(refs.contains("aho_corasick"));
+        assert!(!refs.contains("aho-corasick"));
+    }
+
+    #[test]
+    fn feature_dep_refs_empty_without_features_table() {
+        assert!(
+            parse("[package]\nname = \"x\"\n")
+                .feature_dep_refs()
+                .is_empty()
+        );
     }
 
     #[test]
