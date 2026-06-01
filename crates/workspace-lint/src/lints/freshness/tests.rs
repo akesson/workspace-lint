@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::{GlobPattern, Globs};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -28,7 +29,7 @@ fn find_files_matching_basic() {
     std::fs::write(tmp.path().join("CLAUDE.md"), "# doc").unwrap();
     std::fs::write(tmp.path().join("other.txt"), "hi").unwrap();
 
-    let files = find_files_matching(tmp.path(), "CLAUDE.md");
+    let files = find_files_matching(tmp.path(), &GlobPattern::from("CLAUDE.md"));
     assert_eq!(files.len(), 1);
     assert!(files[0].ends_with("CLAUDE.md"));
 }
@@ -41,7 +42,7 @@ fn find_files_matching_glob() {
     std::fs::write(sub.join("CLAUDE.md"), "").unwrap();
     std::fs::write(tmp.path().join("CLAUDE.md"), "").unwrap();
 
-    let files = find_files_matching(tmp.path(), "**/CLAUDE.md");
+    let files = find_files_matching(tmp.path(), &GlobPattern::from("**/CLAUDE.md"));
     assert_eq!(files.len(), 2);
 }
 
@@ -50,7 +51,7 @@ fn find_files_matching_no_match() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("readme.md"), "").unwrap();
 
-    let files = find_files_matching(tmp.path(), "CLAUDE.md");
+    let files = find_files_matching(tmp.path(), &GlobPattern::from("CLAUDE.md"));
     assert!(files.is_empty());
 }
 
@@ -63,7 +64,7 @@ fn find_deps_basic() {
     std::fs::write(tmp.path().join("main.rs"), "").unwrap();
     std::fs::write(tmp.path().join("readme.md"), "").unwrap();
 
-    let deps = find_deps_in_dir(tmp.path(), "*.rs");
+    let deps = find_deps_in_dir(tmp.path(), &Globs::from("*.rs"));
     assert_eq!(deps.len(), 2);
 }
 
@@ -74,7 +75,7 @@ fn find_deps_recursive() {
     std::fs::create_dir(&sub).unwrap();
     std::fs::write(sub.join("lib.rs"), "").unwrap();
 
-    let deps = find_deps_in_dir(tmp.path(), "**/*.rs");
+    let deps = find_deps_in_dir(tmp.path(), &Globs::from("**/*.rs"));
     assert_eq!(deps.len(), 1);
 }
 

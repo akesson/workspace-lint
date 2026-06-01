@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::config::LintLevel;
+
 #[derive(Deserialize, Default, Clone)]
 pub(crate) struct ArchitectureConfig {
     #[serde(default)]
@@ -21,20 +23,16 @@ pub(crate) struct ArchitectureRule {
     /// (per-rule escape hatch). Matched as globs against canonical paths.
     #[serde(default)]
     pub exceptions: Vec<String>,
+    /// Per-rule severity. `None` (the default) means the rule's diagnostics
+    /// take the lint's effective level from the `[lints]` table; an explicit
+    /// value wins over `[lints] architecture = …` so a deliberate per-rule
+    /// severity isn't clobbered by a blanket override. `allow` mutes the rule.
     #[serde(default)]
-    pub severity: ArchSeverity,
+    pub severity: Option<LintLevel>,
     /// Free-text explanation surfaced in the diagnostic's `note:` line.
     #[serde(default)]
     pub reason: Option<String>,
     /// Suggested alternative surfaced in the diagnostic's `help:` line.
     #[serde(default)]
     pub suggest: Option<String>,
-}
-
-#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum ArchSeverity {
-    #[default]
-    Warn,
-    Deny,
 }

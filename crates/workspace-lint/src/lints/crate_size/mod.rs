@@ -3,6 +3,7 @@ use std::path::Path;
 use syn_workspace::Workspace;
 use tokei::{Config as TokeiConfig, Languages};
 
+use crate::config::GlobPattern;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
@@ -25,12 +26,12 @@ impl CrateSize {
     pub fn from_cli(glob: String, max_code_lines: usize, include: Vec<String>) -> Self {
         Self::new(CrateSizeConfig {
             rules: vec![CrateSizeRule {
-                glob,
+                glob: GlobPattern::from_cli(&glob),
                 max_code_lines,
                 include: if include.is_empty() {
                     None
                 } else {
-                    Some(include)
+                    Some(include.iter().map(|p| GlobPattern::from_cli(p)).collect())
                 },
             }],
         })
@@ -61,11 +62,7 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
     let mut diagnostics = Vec::new();
 
     for rule in &config.rules {
-        let glob = Glob::new(&rule.glob).unwrap_or_else(|e| {
-            eprintln!("invalid crate-size glob '{}': {e}", rule.glob);
-            std::process::exit(1);
-        });
-        let matcher = glob.compile_matcher();
+        let matcher = rule.glob.compiled().compile_matcher();
 
         // A crate-size budget is about *code*, not committed data: JSON oracle
         // snapshots and TOML fixture manifests that live under a crate dir
@@ -73,16 +70,16 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
         // is counted by default. Override per rule with `include` to count
         // other file types or to narrow to specific Rust files. Patterns match
         // the file name (not the full path).
-        let include_patterns = rule
-            .include
-            .clone()
-            .unwrap_or_else(|| vec!["*.rs".to_string()]);
         let mut include_builder = GlobSetBuilder::new();
-        for p in &include_patterns {
-            include_builder.add(Glob::new(p).unwrap_or_else(|e| {
-                eprintln!("invalid include pattern '{p}': {e}");
-                std::process::exit(1);
-            }));
+        match &rule.include {
+            Some(patterns) => {
+                for p in patterns {
+                    include_builder.add(p.compiled().clone());
+                }
+            }
+            None => {
+                include_builder.add(Glob::new("*.rs").expect("`*.rs` is a valid glob"));
+            }
         }
         let include_set = include_builder.build().unwrap();
 
@@ -144,7 +141,7 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
                     .help("split the crate into smaller, more focused crates")
                     .note(format!(
                         "configured by [[crate-size.rules]] glob = \"{}\"",
-                        rule.glob
+                        rule.glob.as_str()
                     ))
                     .build(),
                 );

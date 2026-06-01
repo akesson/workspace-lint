@@ -262,17 +262,26 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
-        // visibility: a pub item referenced only intra-crate.
+        // config: an unknown key in the config file.
         (
-            "visibility_pub_used_only_intra_crate",
-            at_line(
-                "workspace-lint::visibility",
-                "pub `Helper` in crate `lib_a` is not referenced from any other workspace crate",
-                PathBuf::from("crates/lib-a/src/inner.rs"),
-                5,
+            "config_unknown_key",
+            at_file(
+                "workspace-lint::config",
+                "unknown configuration section `file-siz`",
+                PathBuf::from(".workspace-lint.toml"),
             )
-            .help("tighten to `pub(crate)` if this item is intentionally crate-internal")
-            .note("references via trait dispatch or proc-macro expansion are not tracked")
+            .help("did you mean `file-size`?")
+            .build(),
+        ),
+        // unknown-lint: a referenced lint name that doesn't exist.
+        (
+            "unknown_lint_in_lints_table",
+            at_file(
+                "workspace-lint::unknown-lint",
+                "unknown lint `unused-dep` in `[lints]`",
+                PathBuf::from(".workspace-lint.toml"),
+            )
+            .help("did you mean `unused-deps`?")
             .build(),
         ),
     ]
@@ -583,19 +592,13 @@ mod tests {
         }
 
         #[test]
-        fn visibility_pub_used_only_intra_crate() {
-            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @r"
-            warning: pub `Helper` in crate `lib_a` is not referenced from any other workspace crate
-             --> crates/lib-a/src/inner.rs:5:1
-              |
-              = help: tighten to `pub(crate)` if this item is intentionally crate-internal
-              = note: references via trait dispatch or proc-macro expansion are not tracked
-            help: if intentional, silence with:
-              |
-            5 + workspace_lint::expect!(visibility);
-              |
-              = note: `#[warn(workspace_lint::visibility)]` on by default
-            ");
+        fn config_unknown_key() {
+            insta::assert_snapshot!(render(&scenario("config_unknown_key")));
+        }
+
+        #[test]
+        fn unknown_lint_in_lints_table() {
+            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")));
         }
     }
 
@@ -694,8 +697,13 @@ mod tests {
         }
 
         #[test]
-        fn visibility_pub_used_only_intra_crate() {
-            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @r#"{"level":"warning","message":"pub `Helper` in crate `lib_a` is not referenced from any other workspace crate","code":{"code":"workspace-lint::visibility","explanation":null},"spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/lib-a/src/inner.rs","byte_start":0,"byte_end":0,"line_start":5,"line_end":5,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(visibility);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"tighten to `pub(crate)` if this item is intentionally crate-internal","spans":[]},{"level":"note","message":"references via trait dispatch or proc-macro expansion are not tracked","spans":[]}],"rendered":null}"#);
+        fn config_unknown_key() {
+            insta::assert_snapshot!(render(&scenario("config_unknown_key")));
+        }
+
+        #[test]
+        fn unknown_lint_in_lints_table() {
+            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")));
         }
     }
 
@@ -798,8 +806,13 @@ mod tests {
         }
 
         #[test]
-        fn visibility_pub_used_only_intra_crate() {
-            insta::assert_snapshot!(render(&scenario("visibility_pub_used_only_intra_crate")), @"::warning file=crates/lib-a/src/inner.rs,line=5,col=1,title=workspace-lint%3A%3Avisibility::pub `Helper` in crate `lib_a` is not referenced from any other workspace crate");
+        fn config_unknown_key() {
+            insta::assert_snapshot!(render(&scenario("config_unknown_key")));
+        }
+
+        #[test]
+        fn unknown_lint_in_lints_table() {
+            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")));
         }
 
         #[test]

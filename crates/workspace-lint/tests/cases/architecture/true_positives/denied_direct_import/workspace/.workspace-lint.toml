@@ -6,4 +6,5 @@ reason = "Apps must not depend on data internals; use data-models::api instead"
 suggest = "import via data-models::api::*"
 
 [lints]
+default = "allow"
 architecture = "deny"

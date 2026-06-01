@@ -1,0 +1,14 @@
+---
+source: crates/workspace-lint/src/messages.rs
+expression: "render(&scenario(\"unknown_lint_in_lints_table\"))"
+snapshot_kind: text
+---
+warning: unknown lint `unused-dep` in `[lints]`
+ --> .workspace-lint.toml:1:1
+  |
+  = help: did you mean `unused-deps`?
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unknown-lint)
+  |
+  = note: `#[warn(workspace_lint::unknown_lint)]` on by default

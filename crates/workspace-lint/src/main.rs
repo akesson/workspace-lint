@@ -21,6 +21,7 @@ mod lints;
 // snapshot tests inside `mod tests` are what actually exercise the
 // diagnostics — see the file's module docs.
 mod messages;
+mod suggest;
 mod suppress;
 
 use clap::Parser;
@@ -30,7 +31,7 @@ use cli::{CheckRule, Cli, Commands};
 use config::MacrosConfig;
 use diagnostic::Diagnostic;
 use diagnostic::render::{Format, render};
-use lints::LintContext;
+use lints::{LintContext, LintId};
 use syn_workspace::Workspace;
 
 fn main() {
@@ -39,17 +40,27 @@ fn main() {
 
     match cli.command {
         None => {
-            let config = config::load();
+            let (config, config_diags) = config::load();
             let (mut diagnostics, workspace) = run_all(&config);
-            apply_lint_levels(&config, &mut diagnostics);
+            // Config-validation findings join the stream before suppression
+            // (so a `# workspace-lint: allow(config)` directive can silence
+            // them) and before leveling (so `[lints] config = …` applies).
+            diagnostics.extend(config_diags);
+            // Suppression filters by directives and appends `stale-expect` /
+            // `unknown-lint` findings; leveling runs last so the appended ones
+            // are leveled too and `allow`-ed lints are dropped from the final
+            // set before the exit-code tally.
             apply_suppression(workspace.as_ref(), &mut diagnostics);
+            apply_lint_levels(&config, &mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
             }
             report_and_exit(diagnostics, format);
         }
         Some(Commands::Done) => {
-            let config = config::load();
+            // `done` only touches freshness targets; config diagnostics aren't
+            // rendered here, so drop them.
+            let (config, _) = config::load();
             if let Some(ref fc) = config.freshness {
                 lints::freshness::mark_done(fc);
             }
@@ -60,10 +71,10 @@ fn main() {
             // default run agree on severity.
             let config_for_levels = config::try_load();
             let (mut diagnostics, workspace) = run_single_check(rule);
+            apply_suppression(workspace.as_ref(), &mut diagnostics);
             if let Some(cfg) = &config_for_levels {
                 apply_lint_levels(cfg, &mut diagnostics);
             }
-            apply_suppression(workspace.as_ref(), &mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
             }
@@ -81,16 +92,30 @@ fn main() {
     }
 }
 
-/// Apply the `[lints]` table overrides: any diagnostic whose lint short
-/// name appears in `config.lints` has its `level` rewritten to the
-/// configured value. Diagnostics not in the table keep the per-check
-/// default (typically `Level::Warn`).
-fn apply_lint_levels(config: &config::Config, diagnostics: &mut [Diagnostic]) {
-    for d in diagnostics {
-        if let Some(level) = config.lints.level_for(d.lint.as_ref()) {
-            d.level = level;
+/// Apply the `[lints]` table to the collected diagnostics: **drop** any whose
+/// effective level is `allow`, and rewrite the rest to their effective level
+/// (per-lint override → `[lints] default` → built-in `warn`). Diagnostics
+/// whose level the lint chose itself (`level_is_explicit`, e.g. an
+/// `architecture` rule's `severity`) are left untouched, so a blanket
+/// `[lints] <lint> = …` can't silently clobber a deliberate per-rule severity.
+fn apply_lint_levels(config: &config::Config, diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.retain_mut(|d| {
+        if d.level_is_explicit {
+            return true;
         }
-    }
+        let Some(id) = LintId::from_short(d.lint_short()) else {
+            // A diagnostic carrying an unknown lint id shouldn't happen (they
+            // all come from `LintId::*.id()`); keep it rather than drop.
+            return true;
+        };
+        match config.lints.effective(id).to_diagnostic_level() {
+            None => false, // `allow` → drop before render & exit-code tally
+            Some(level) => {
+                d.level = level;
+                true
+            }
+        }
+    });
 }
 
 fn parse_format(arg: Option<&str>) -> Format {
@@ -121,11 +146,16 @@ fn apply_suppression(
         Some(ws) => directives::scan_with_workspace(ws),
         None => directives::scan(std::path::Path::new(".")),
     };
+    // Validate the lint names referenced by directives before consuming the
+    // list — a typo'd `expect!(file_siz)` is otherwise a silent no-op.
+    let mut unknown = suppress::unknown_lint_diagnostics(&directives_list);
     let mut map = suppress::SuppressionMap::from_directives(directives_list);
     suppress::apply(&mut map, diagnostics);
     let mut stale = map.stale_expects();
     suppress::apply(&mut map, &mut stale);
+    suppress::apply(&mut map, &mut unknown);
     diagnostics.extend(stale);
+    diagnostics.extend(unknown);
 }
 
 fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<Workspace>) {

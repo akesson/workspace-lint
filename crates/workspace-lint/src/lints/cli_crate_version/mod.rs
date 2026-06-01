@@ -24,7 +24,7 @@ impl CliCrateVersion {
     pub fn from_cli(command: String, pattern: String, crate_name: String) -> Self {
         Self::new(CliCrateVersionConfig {
             rules: vec![CliCrateVersionRule {
-                command: command.split_whitespace().map(String::from).collect(),
+                command: crate::cli::split_command(&command),
                 pattern,
                 crate_name,
             }],

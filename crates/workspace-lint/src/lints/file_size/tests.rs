@@ -1,7 +1,7 @@
 use super::*;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_file;
-use globset::{Glob, GlobSetBuilder};
+use globset::GlobSetBuilder;
 use std::collections::HashMap;
 
 fn find_violations(
@@ -10,7 +10,7 @@ fn find_violations(
 ) -> Vec<Diagnostic> {
     let mut builder = GlobSetBuilder::new();
     for rule in &config.rules {
-        builder.add(Glob::new(&rule.glob).unwrap());
+        builder.add(rule.glob.compiled().clone());
     }
     let globset = builder.build().unwrap();
 

@@ -1,4 +1,5 @@
 [unused-deps]
 
 [lints]
+default = "allow"
 unused-deps = "deny"

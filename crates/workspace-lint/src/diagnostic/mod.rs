@@ -164,6 +164,11 @@ pub(crate) struct Diagnostic {
     pub notes: Vec<String>,
     pub suggestions: Vec<Suggestion>,
     pub silence_anchor: SilenceAnchor,
+    /// `true` when the lint itself chose this diagnostic's level (e.g. an
+    /// `architecture` rule with an explicit `severity`). The `[lints]` table's
+    /// `apply_lint_levels` pass leaves these untouched, so a per-rule severity
+    /// isn't silently clobbered by a blanket `[lints] <lint> = …` override.
+    pub level_is_explicit: bool,
 }
 
 impl Diagnostic {
@@ -320,6 +325,7 @@ mod tests {
             notes: vec![],
             suggestions: vec![],
             silence_anchor: anchor,
+            level_is_explicit: false,
         }
     }
 

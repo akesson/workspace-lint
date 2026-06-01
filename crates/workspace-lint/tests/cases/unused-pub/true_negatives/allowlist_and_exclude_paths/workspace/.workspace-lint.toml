@@ -1,3 +1,7 @@
 [unused-pub]
 allowlist = ["*MyHelper"]
 exclude-paths = ["**/generated/**"]
+
+[lints]
+default = "allow"
+unused-pub = "warn"

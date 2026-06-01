@@ -6,7 +6,7 @@ fn rule(from: &[&str], deny: &[&str]) -> ArchitectureRule {
         from: from.iter().map(|s| s.to_string()).collect(),
         deny: deny.iter().map(|s| s.to_string()).collect(),
         exceptions: Vec::new(),
-        severity: ArchSeverity::Warn,
+        severity: None,
         reason: None,
         suggest: None,
     }

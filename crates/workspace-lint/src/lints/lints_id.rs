@@ -30,6 +30,7 @@ pub(crate) enum LintId {
     Architecture,
     CentralizedDeps,
     CliCrateVersion,
+    Config,
     CrateSize,
     FeatureDrift,
     FileSize,
@@ -37,9 +38,9 @@ pub(crate) enum LintId {
     ModuleTree,
     StaleExpect,
     StaleGitIndex,
+    UnknownLint,
     UnusedDeps,
     UnusedPub,
-    Visibility,
 }
 
 impl LintId {
@@ -49,6 +50,7 @@ impl LintId {
         LintId::Architecture,
         LintId::CentralizedDeps,
         LintId::CliCrateVersion,
+        LintId::Config,
         LintId::CrateSize,
         LintId::FeatureDrift,
         LintId::FileSize,
@@ -56,9 +58,9 @@ impl LintId {
         LintId::ModuleTree,
         LintId::StaleExpect,
         LintId::StaleGitIndex,
+        LintId::UnknownLint,
         LintId::UnusedDeps,
         LintId::UnusedPub,
-        LintId::Visibility,
     ];
 
     /// The full `workspace-lint::<short>` identifier emitted in diagnostics
@@ -68,6 +70,7 @@ impl LintId {
             Self::Architecture => "workspace-lint::architecture",
             Self::CentralizedDeps => "workspace-lint::centralized-deps",
             Self::CliCrateVersion => "workspace-lint::cli-crate-version",
+            Self::Config => "workspace-lint::config",
             Self::CrateSize => "workspace-lint::crate-size",
             Self::FeatureDrift => "workspace-lint::feature-drift",
             Self::FileSize => "workspace-lint::file-size",
@@ -75,9 +78,9 @@ impl LintId {
             Self::ModuleTree => "workspace-lint::module-tree",
             Self::StaleExpect => "workspace-lint::stale-expect",
             Self::StaleGitIndex => "workspace-lint::stale-git-index",
+            Self::UnknownLint => "workspace-lint::unknown-lint",
             Self::UnusedDeps => "workspace-lint::unused-deps",
             Self::UnusedPub => "workspace-lint::unused-pub",
-            Self::Visibility => "workspace-lint::visibility",
         }
     }
 
@@ -88,6 +91,7 @@ impl LintId {
             Self::Architecture => "architecture",
             Self::CentralizedDeps => "centralized-deps",
             Self::CliCrateVersion => "cli-crate-version",
+            Self::Config => "config",
             Self::CrateSize => "crate-size",
             Self::FeatureDrift => "feature-drift",
             Self::FileSize => "file-size",
@@ -95,9 +99,9 @@ impl LintId {
             Self::ModuleTree => "module-tree",
             Self::StaleExpect => "stale-expect",
             Self::StaleGitIndex => "stale-git-index",
+            Self::UnknownLint => "unknown-lint",
             Self::UnusedDeps => "unused-deps",
             Self::UnusedPub => "unused-pub",
-            Self::Visibility => "visibility",
         }
     }
 
@@ -105,6 +109,25 @@ impl LintId {
     /// Returns `None` for unknown names.
     pub fn from_short(s: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|v| v.short() == s)
+    }
+
+    /// `true` for the *policy* lints that have no meaning without parameters,
+    /// so the presence of their config table is the opt-in: `file-size`,
+    /// `crate-size`, `freshness`, `cli-crate-version`, `architecture`.
+    ///
+    /// The remaining (*structural*) lints catch universal mistakes with zero
+    /// required config, so they run whenever their effective level isn't
+    /// `allow`. This is the single source of truth for that distinction; see
+    /// [`crate::config`] for how it drives enablement.
+    pub const fn requires_config(self) -> bool {
+        matches!(
+            self,
+            Self::FileSize
+                | Self::CrateSize
+                | Self::Freshness
+                | Self::CliCrateVersion
+                | Self::Architecture
+        )
     }
 }
 
@@ -114,6 +137,7 @@ pub(crate) const ALL_LINTS: &[&str] = &[
     LintId::Architecture.id(),
     LintId::CentralizedDeps.id(),
     LintId::CliCrateVersion.id(),
+    LintId::Config.id(),
     LintId::CrateSize.id(),
     LintId::FeatureDrift.id(),
     LintId::FileSize.id(),
@@ -121,9 +145,9 @@ pub(crate) const ALL_LINTS: &[&str] = &[
     LintId::ModuleTree.id(),
     LintId::StaleExpect.id(),
     LintId::StaleGitIndex.id(),
+    LintId::UnknownLint.id(),
     LintId::UnusedDeps.id(),
     LintId::UnusedPub.id(),
-    LintId::Visibility.id(),
 ];
 
 /// Lints with a paired `tests/fixtures/fix__<short>/` directory exercised
@@ -146,9 +170,11 @@ pub(crate) const ALL_LINTS: &[&str] = &[
 ///   `--fix` mechanics.
 /// - `stale-git-index`: needs `git ls-files` to disagree with on-disk
 ///   state, which requires an in-tempdir git init/add/rm dance.
-/// - `architecture`, `feature-drift`, `module-tree`, `visibility`: the
-///   structural fixes for these are planned but not yet implemented; once
-///   `--fix` rewrites them through rustfix, add fixtures and move them up.
+/// - `config`, `unknown-lint`: config-validation diagnostics with no
+///   structural fix — the remedy is a hand edit of the config / directive.
+/// - `architecture`, `feature-drift`, `module-tree`: the structural fixes
+///   for these are planned but not yet implemented; once `--fix` rewrites
+///   them through rustfix, add fixtures and move them up.
 pub(crate) const FIXTURABLE_LINTS: &[&str] =
     &[LintId::CentralizedDeps.id(), LintId::UnusedDeps.id()];
 

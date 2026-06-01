@@ -5,10 +5,16 @@
 # expect(...)` directive so the silence is load-bearing — when the file shrinks
 # back under the limit, `stale-expect` nudges us to clean up.
 
-# Lint levels. Only `Deny`-level findings flip the exit code. The dogfood test
-# asserts a clean run, so anything we want to keep enforced must be listed here
-# as `deny`. Lints we want to see but not break on stay `warn` (the implicit
-# default).
+# Lint levels. `[lints]` is the single place a lint is enabled and leveled.
+# Structural lints (centralized-deps, module-tree, feature-drift, unused-deps,
+# unused-pub, stale-*) are on by default at `warn`; the entries below escalate
+# the ones this repo enforces to `deny`. Only a surviving `Deny`-level finding
+# flips the exit code, and the dogfood test asserts exit 0.
+#
+# `feature-drift` is intentionally left at its default `warn` (visible but not
+# CI-failing). The policy lints `freshness` / `cli-crate-version` are off
+# because this repo configures no rules for them; add a `[[freshness.rules]]` /
+# `[[cli-crate-version.rules]]` table to opt in.
 [lints]
 centralized-deps = "deny"
 crate-size = "deny"
@@ -18,16 +24,14 @@ file-size = "deny"
 # `mod common;`, or a renamed module leaving a stale file — fails dogfood
 # instead of silently shrinking the analyzed surface.
 module-tree = "deny"
-freshness = "deny"
-cli-crate-version = "deny"
 unused-deps = "deny"
 unused-pub = "deny"
 stale-expect = "deny"
 stale-git-index = "deny"
-
-[checks]
-centralized-deps = true
-module-tree = true
+# Validate this very config: a typo'd section or lint name fails the run
+# instead of silently doing nothing.
+config = "deny"
+unknown-lint = "deny"
 
 [[file-size.rules]]
 glob = "crates/workspace-lint/src/**/*.rs"

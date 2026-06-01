@@ -29,9 +29,15 @@ workspace_lint = { package = "workspace-lint-marker", version = "0.1" }
 Create `.workspace-lint.toml` in your workspace root:
 
 ```toml
-[checks]
-centralized-deps = true
+# Structural lints (centralized-deps, module-tree, feature-drift, unused-deps,
+# unused-pub) are on by default at `warn`. The `[lints]` table is where you
+# loosen (`allow`) or escalate (`deny`) — and where policy lints get enabled.
+[lints]
+centralized-deps = "deny"   # escalate to a CI-failing error
+unused-pub       = "allow"  # turn one off
 
+# Policy lints have no meaning without parameters, so their config table is the
+# opt-in:
 [[file-size.rules]]
 glob = "**/*.rs"
 max-code-lines = 500
@@ -47,17 +53,20 @@ Then run:
 workspace-lint
 ```
 
-Exit code `0` means all checks passed. Exit code `1` means issues were found.
+Exit code `0` means no `deny`-level finding survived. Exit code `1` means at
+least one did.
 
 ## Checks
 
 ### centralized-deps
 
-Verifies that all workspace crates use `workspace = true` for dependencies instead of specifying versions directly. Enable with:
+Verifies that all workspace crates use `workspace = true` for dependencies
+instead of specifying versions directly. A structural lint — on by default at
+`warn`. Escalate or silence it via the `[lints]` table:
 
 ```toml
-[checks]
-centralized-deps = true
+[lints]
+centralized-deps = "deny"   # or "allow" to turn off
 ```
 
 ### file-size
@@ -139,7 +148,7 @@ auto-delete = false
 |--------|-------------|
 | `exclude-crates` | Crate names to skip entirely. |
 | `allowlist` | Glob patterns matched against an item's canonical path (e.g. `*Error`, `main`). |
-| `kinds` | Item kinds to check: `function`, `method`, `struct`, `enum`, `const`, `trait`, `type`, `mod`, `static`, `macro`, `field`, `variant`. Omit (empty) to check all kinds. |
+| `kinds` | Item kinds to check: `function` (alias `fn`), `struct`, `enum`, `union`, `trait`, `type`, `const`, `static`, `module` (alias `mod`), `macro`. Omit (empty) to check all kinds. An unrecognized kind is a config error. |
 | `exclude-paths` | Glob patterns for source file paths to skip. |
 | `suppress-intra-crate` | When `true`, report only items unused *anywhere* and drop the "used only inside the crate, consider `pub(crate)`" findings. Default `false`. |
 | `auto-delete` | When `true`, the fix for an item that's unused everywhere becomes deletion instead of `pub(crate)` narrowing — but only when the containing file is git-tracked and clean (git is the backup). Dirty or untracked files downgrade the suggestion so `--fix` skips it. Default `false`. |
@@ -168,58 +177,47 @@ call site (`other_crate::infra::Thing::new()`) without a `use` won't fire.
 
 ### module-tree
 
-Structural integrity of the `mod` graph. Enable with:
-
-```toml
-[checks]
-module-tree = true
-```
-
-Flags a `mod foo;` whose target (`foo.rs`, `foo/mod.rs`, or a `#[path = "..."]`
-override) doesn't exist, and orphan `.rs` files under `src/` that no `mod`
-chain reaches.
+Structural integrity of the `mod` graph. A structural lint — on by default at
+`warn`. Flags a `mod foo;` whose target (`foo.rs`, `foo/mod.rs`, or a
+`#[path = "..."]` override) doesn't exist, and orphan `.rs` files under `src/`
+that no `mod` chain reaches. Escalate or silence via `[lints] module-tree`.
 
 ### feature-drift
 
 Detects drift between a crate's `[features]` table and its
-`#[cfg(feature = "...")]` usage. Enable with:
-
-```toml
-[checks]
-feature-drift = true
-```
-
+`#[cfg(feature = "...")]` usage. A structural lint — on by default at `warn`.
 Flags features declared in `[features]` but never gated in source, and
 `#[cfg(feature = "...")]` references to features that aren't declared.
-`default` is exempt (cargo handles it specially).
+`default` is exempt (cargo handles it specially). Escalate or silence via
+`[lints] feature-drift`.
 
-### visibility
-
-Flags `pub` items only ever used inside their own crate — they could be
-`pub(crate)`. Enable with:
-
-```toml
-[checks]
-visibility = true
-```
-
-Ships a machine-applicable `--fix` that rewrites `pub` to `pub(crate)`.
-`unused-pub` is the more configurable resolver-backed check covering the same
-ground plus unused-everywhere items; `visibility` is the lightweight,
-zero-config form.
+> **Note:** `pub`-visibility tightening (`pub` → `pub(crate)` for items used
+> only inside their own crate) is part of `unused-pub`, which is resolver-backed
+> and covers that ground plus unused-everywhere items. The former standalone
+> `visibility` lint was folded into it — migrate `[checks] visibility = true`
+> to `[lints] unused-pub = "warn"`.
 
 ### Always-on lints
 
-Two lints take no configuration and run on every invocation:
+These lints take no configuration and run on every invocation (silence with
+`[lints] <name> = "allow"`):
 
 - **stale-git-index** — flags paths still tracked by git (`git ls-files`) that
   no longer exist on disk.
 - **stale-expect** — fires when an `expect!` / `expect(...)` directive silences
   nothing because the underlying lint stopped firing (see
   [Silencing diagnostics](#silencing-diagnostics)).
+- **config** — a structural problem in the config file itself: an unknown
+  section or key (with a "did you mean …?" hint), or a policy lint enabled in
+  `[lints]` with no rules table (so it would never fire).
+- **unknown-lint** — a lint name that doesn't exist, referenced either in
+  `[lints]` or in an `expect!`/`allow!` directive — caught instead of silently
+  doing nothing.
 
-Both default to `warn`; escalate them through the `[lints]` table like any
-other lint.
+All default to `warn`; escalate or silence them through `[lints]` like any
+other lint. `config` and `unknown-lint` have one exception: a blanket
+`[lints] default = "allow"` will **not** silence them (only an explicit
+`[lints] config = "allow"` does), so a typo'd config can't hide itself.
 
 ## Commands
 
@@ -265,15 +263,31 @@ Configuration lives in **one** of two places (not both):
 
 ```toml
 # In Cargo.toml:
-[workspace.metadata.workspace-lint]
-
-[workspace.metadata.workspace-lint.checks]
-centralized-deps = true
+[workspace.metadata.workspace-lint.lints]
+centralized-deps = "deny"
 
 [[workspace.metadata.workspace-lint.file-size.rules]]
 glob = "**/*.rs"
 max-code-lines = 500
 ```
+
+The config has three kinds of sections: **lints** (the `[lints]` table plus a
+per-lint params table like `[file-size]`), the **`expand`** task (see
+[Expand markers](#expand-markers)), and **`macros`** resolver metadata (see
+[External macro annotations](#external-macro-annotations)). Unknown sections and
+keys are reported by the [`config`](#always-on-lints) lint.
+
+### Migrating from the older format
+
+The `[checks]` table and a standalone severity table are gone — everything lives
+in `[lints]` now:
+
+| Old | New |
+|-----|-----|
+| `[checks]`<br>`centralized-deps = true` | `[lints]`<br>`centralized-deps = "warn"` (or just rely on the on-by-default `warn`) |
+| `[lints]`<br>`file-size = "deny"` (severity only) | unchanged — `[lints]` now also enables |
+| `[checks]`<br>`visibility = true` | `[lints]`<br>`unused-pub = "warn"` (the `visibility` lint was folded in) |
+| `kinds = ["method"]` | removed — `method`/`field`/`variant` were never real kinds |
 
 ### External macro annotations
 
@@ -327,20 +341,36 @@ and IDE squiggles + "Apply suggestion" code actions work without further glue.
 
 ## Lint levels
 
-By default every diagnostic is a `Warn` and the process exits 0 even when
-the report is non-empty. Escalate per lint via the `[lints]` table in
-`.workspace-lint.toml`:
+`[lints]` is the one place a lint is enabled and leveled. Each value is
+`allow`, `warn`, or `deny`, and the reserved `default` key sets the baseline
+for every lint:
 
 ```toml
 [lints]
-file-size = "deny"
-unused-pub = "warn"
-centralized-deps = "deny"
+default          = "warn"   # baseline for every lint (optional; built-in = "warn")
+file-size        = "deny"   # per-lint override beats `default`
+unused-pub        = "allow"  # loosen one off
 ```
 
-Exit code 1 fires iff at least one `Deny`-level diagnostic survives
-suppression. Unknown lint names are ignored (silently — there is no typo
-check yet). Use the kebab-case short name (no `workspace-lint::` prefix).
+**Precedence:** a per-lint entry beats `default`, which beats the built-in
+baseline (`warn`). Use the kebab-case short name (no `workspace-lint::` prefix);
+an unknown name is reported as [`unknown-lint`](#always-on-lints), not silently
+ignored.
+
+**What runs:** a lint runs when its effective level isn't `allow`, with one
+extra condition for the *policy* lints (`file-size`, `crate-size`, `freshness`,
+`cli-crate-version`, `architecture`) — they're meaningless without parameters,
+so they additionally require their config table to be present. The *structural*
+lints (`centralized-deps`, `module-tree`, `feature-drift`, `unused-deps`,
+`unused-pub`) need no table and are therefore on by default. So:
+
+- `default = "allow"` makes the whole tool opt-in — nothing runs until you set
+  a lint to `warn`/`deny`.
+- `default = "deny"` makes every enabled lint CI-failing.
+- Leaving `default` unset keeps the batteries-included `warn` baseline.
+
+**Exit code:** 1 iff at least one `deny`-level diagnostic survives suppression;
+`allow`-ed diagnostics are dropped entirely before the tally.
 
 ## Silencing diagnostics
 
@@ -411,9 +441,8 @@ removed files in the post-fix tree propagate correctly.
       and `default-features` when present.
     - **unused-deps** deletes the dep line from `[dependencies]` /
       `[dev-dependencies]` / `[build-dependencies]`.
-    - **visibility** rewrites `pub fn`/`pub struct`/… to `pub(crate)` for
-      items not used outside their crate.
-    - **unused-pub** tightens to `pub(crate)` by default. With
+    - **unused-pub** tightens `pub fn`/`pub struct`/… to `pub(crate)` for
+      items used only inside their own crate, by default. With
       `[unused-pub] auto-delete = true`, items that *appear unused
       entirely* are deleted — but only if the file is tracked by git AND
       has no uncommitted changes (git serves as the backup). When the

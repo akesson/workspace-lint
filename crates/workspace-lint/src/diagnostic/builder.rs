@@ -17,6 +17,7 @@ pub(crate) struct DiagnosticBuilder {
     notes: Vec<String>,
     suggestions: Vec<super::Suggestion>,
     silence_anchor: SilenceAnchor,
+    level_is_explicit: bool,
 }
 
 impl DiagnosticBuilder {
@@ -30,11 +31,21 @@ impl DiagnosticBuilder {
             notes: Vec::new(),
             suggestions: Vec::new(),
             silence_anchor: anchor,
+            level_is_explicit: false,
         }
     }
 
     pub fn level(mut self, level: Level) -> Self {
         self.level = level;
+        self
+    }
+
+    /// Set the level *and* mark it as lint-chosen, so the `[lints]` severity
+    /// table won't override it. Used by lints with their own per-rule
+    /// severity (currently `architecture`).
+    pub fn level_explicit(mut self, level: Level) -> Self {
+        self.level = level;
+        self.level_is_explicit = true;
         self
     }
 
@@ -68,6 +79,7 @@ impl DiagnosticBuilder {
             notes: self.notes,
             suggestions: self.suggestions,
             silence_anchor: self.silence_anchor,
+            level_is_explicit: self.level_is_explicit,
         }
     }
 }

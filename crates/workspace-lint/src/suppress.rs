@@ -7,8 +7,45 @@
 
 use crate::diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
 use crate::directives::{Directive, DirectiveKind};
+use crate::lints::LintId;
 
-pub(crate) const STALE_EXPECT_LINT: &str = crate::lints::LintId::StaleExpect.id();
+pub(crate) const STALE_EXPECT_LINT: &str = LintId::StaleExpect.id();
+
+/// Emit a `workspace-lint::unknown-lint` diagnostic for every directive that
+/// names a lint which doesn't exist — a silent no-op otherwise (the directive
+/// would just never match, and an `expect` for it would masquerade as stale).
+/// Anchored at the directive's own line; deduped by origin so a Cargo.toml
+/// comment that fans out to multiple anchors yields a single diagnostic.
+pub(crate) fn unknown_lint_diagnostics(directives: &[Directive]) -> Vec<Diagnostic> {
+    use std::collections::HashSet;
+
+    let known: Vec<&str> = LintId::ALL.iter().map(|l| l.short()).collect();
+    let mut seen: HashSet<(std::path::PathBuf, u32, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for d in directives {
+        if LintId::from_short(&d.lint).is_some() {
+            continue;
+        }
+        if !seen.insert((d.origin.file.clone(), d.origin.line, d.lint.clone())) {
+            continue;
+        }
+        let kind = match d.kind {
+            DirectiveKind::Allow => "allow",
+            DirectiveKind::Expect => "expect",
+        };
+        let mut builder = at_line(
+            LintId::UnknownLint.id(),
+            format!("unknown lint `{}` in `{kind}` directive", d.lint),
+            d.origin.file.clone(),
+            d.origin.line,
+        );
+        if let Some(sugg) = crate::suggest::closest(&d.lint, &known) {
+            builder = builder.help(format!("did you mean `{sugg}`?"));
+        }
+        out.push(builder.build());
+    }
+    out
+}
 
 /// Lookback window (in lines) when matching a TOML/Markdown comment
 /// directive to a diagnostic on a nearby line. A directive on line 5 will

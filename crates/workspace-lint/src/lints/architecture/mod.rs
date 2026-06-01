@@ -23,8 +23,8 @@
 use globset::{Glob, GlobMatcher};
 use syn_workspace::{Module, ResolvedPath, Workspace};
 
+use crate::config::LintLevel;
 use crate::diagnostic::Diagnostic;
-use crate::diagnostic::Level;
 use crate::diagnostic::builder::{at_crate, at_line};
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
@@ -32,7 +32,7 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use config::{ArchSeverity, ArchitectureConfig, ArchitectureRule};
+pub(crate) use config::{ArchitectureConfig, ArchitectureRule};
 
 pub(crate) struct Architecture {
     config: ArchitectureConfig,
@@ -122,10 +122,6 @@ fn build_diagnostic(
     // (UseBinding::source landed in syn-workspace 0.4.0). For bindings
     // built outside the parser (test mocks, future synthesized sources)
     // fall back to a workspace-relative crate anchor.
-    let level = match rule.severity {
-        ArchSeverity::Warn => Level::Warn,
-        ArchSeverity::Deny => Level::Deny,
-    };
     let mut builder = match binding.source.as_ref() {
         Some(span) => at_line(
             LintId::Architecture.id(),
@@ -138,8 +134,14 @@ fn build_diagnostic(
             msg,
             workspace.crate_relative_path(&krate.manifest_dir),
         ),
+    };
+    // An explicit per-rule severity wins over a blanket `[lints] architecture`
+    // override (marked via `level_explicit`); `None` leaves the default `warn`,
+    // which the `[lints]` table may then escalate. `allow` rules never compile
+    // (see `CompiledRule::compile`), so only `warn`/`deny` reach here.
+    if let Some(level) = rule.severity.and_then(|s| s.to_diagnostic_level()) {
+        builder = builder.level_explicit(level);
     }
-    .level(level);
 
     if let Some(suggest) = &rule.suggest {
         builder = builder.help(suggest.clone());
@@ -186,7 +188,7 @@ struct CompiledRule {
     from: Vec<GlobMatcher>,
     deny: Vec<GlobMatcher>,
     exceptions: Vec<GlobMatcher>,
-    severity: ArchSeverity,
+    severity: Option<LintLevel>,
     reason: Option<String>,
     suggest: Option<String>,
 }
@@ -194,6 +196,10 @@ struct CompiledRule {
 impl CompiledRule {
     fn compile(rule: &ArchitectureRule) -> Option<Self> {
         if rule.from.is_empty() || rule.deny.is_empty() {
+            return None;
+        }
+        // `severity = "allow"` mutes the rule entirely — don't compile it.
+        if rule.severity == Some(LintLevel::Allow) {
             return None;
         }
         let from = compile_globs(&rule.from, |s| s.to_string());

@@ -4,3 +4,11 @@ extend-exclude = [
     "crates/workspace-lint/tests/fixtures/**",
     "crates/workspace-lint/tests/cases/**",
 ]
+
+# Deliberate misspellings that are load-bearing test fixtures for the config
+# audit (it detects typo'd config keys/sections and suggests corrections, e.g.
+# `[file-siz]` → "did you mean `file-size`?"). These strings must stay misspelled
+# to exercise that behavior, so accept them by mapping each to itself.
+[default.extend-words]
+siz = "siz"
+includ = "includ"
