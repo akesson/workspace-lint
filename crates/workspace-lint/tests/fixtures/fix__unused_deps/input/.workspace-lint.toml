@@ -1,2 +1,6 @@
+[lints]
+default = "allow"
+unused-deps = "warn"
+
 [unused-deps]
 ignore = []

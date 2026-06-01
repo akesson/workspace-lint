@@ -1,0 +1,6 @@
+---
+source: crates/workspace-lint/src/messages.rs
+expression: "render(&scenario(\"config_unknown_key\"))"
+snapshot_kind: text
+---
+{"level":"warning","message":"unknown configuration section `file-siz`","code":{"code":"workspace-lint::config","explanation":null},"spans":[{"file_name":".workspace-lint.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":".workspace-lint.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(config)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"did you mean `file-size`?","spans":[]}],"rendered":null}

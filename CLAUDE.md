@@ -79,19 +79,26 @@ Always review the diff before committing a blessed change.
 
 1. **`config::load`** — config lives in *exactly one* of: standalone
    `.workspace-lint.toml`, or `[workspace.metadata.workspace-lint]` in
-   `Cargo.toml`. Loading both is an error. See `config.rs`.
-2. **`run_all`** → `lints::registry(config)` builds `Vec<Box<dyn Lint>>` from
-   enabled config blocks. The runner inspects `Lint::requirements()` and only
-   pays the `Workspace::load` cost if some enabled lint sets
-   `needs_workspace = true`. Each lint's `check(&LintContext)` returns
-   `Vec<Diagnostic>`.
-3. **`apply_lint_levels`** — the `[lints]` table rewrites each diagnostic's
-   `Level` (default `Warn`). Only `Deny` flips the process exit code to 1.
-4. **`apply_suppression`** — scans the tree for `expect!` / `allow!` macros and
-   `# workspace-lint: expect(...)` comment directives (`directives.rs`), builds a
-   `SuppressionMap` (`suppress.rs`), filters the diagnostic stream, then appends
-   `stale-expect` diagnostics for any `expect` that matched nothing (and runs
-   *those* back through the map so an `allow(stale-expect)` can silence them).
+   `Cargo.toml`. Loading both is an error. Returns `(Config, Vec<Diagnostic>)`:
+   the second is config-validation findings (`config` / `unknown-lint`) from
+   `config::audit`, merged into the stream. The `config` module is a directory:
+   `config/mod.rs` (schema + loading), `config/types.rs` (`LintLevel`,
+   `LintLevels`, `GlobPattern`, `Globs`), `config/audit.rs` (the raw-TOML key
+   audit).
+2. **`run_all`** → `lints::registry(config)` builds `Vec<Box<dyn Lint>>`. A lint
+   is enabled iff its effective level (`[lints]` override → `default` → built-in
+   `warn`) isn't `allow`, and — for `LintId::requires_config` (policy) lints —
+   its config table is present. Structural lints are on by default. The runner
+   only pays `Workspace::load` if some enabled lint sets `needs_workspace`.
+3. **`apply_suppression`** — scans for `expect!` / `allow!` macros and
+   `# workspace-lint: expect(...)` comments (`directives.rs`), builds a
+   `SuppressionMap` (`suppress.rs`), filters the stream, then appends
+   `stale-expect` (unmatched `expect`s) and `unknown-lint` (directives naming a
+   nonexistent lint), running both back through the map.
+4. **`apply_lint_levels`** — rewrites each diagnostic to its effective level and
+   **drops** `allow`-ed ones. Runs *after* suppression so appended findings are
+   leveled too. `level_is_explicit` diagnostics (an `architecture` rule's own
+   `severity`) are left untouched. Only a surviving `Deny` flips exit to 1.
 5. **`fix::run`** (if `--fix`) — applies only `MachineApplicable` suggestions via
    rustfix. `--fix` never inserts silence directives and never deletes files
    (except `unused-pub auto-delete`, gated on a clean git state as backup).

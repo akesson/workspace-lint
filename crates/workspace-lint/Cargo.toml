@@ -18,6 +18,7 @@ regex = { workspace = true }
 rustfix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+shell-words = { workspace = true }
 strip-ansi-escapes = { workspace = true }
 syn = { workspace = true }
 syn-workspace = { path = "../syn-workspace" }

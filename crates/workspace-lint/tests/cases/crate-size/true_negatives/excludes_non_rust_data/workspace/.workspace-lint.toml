@@ -5,3 +5,7 @@
 [[crate-size.rules]]
 glob = "crates/*"
 max-code-lines = 20
+
+[lints]
+default = "allow"
+crate-size = "warn"

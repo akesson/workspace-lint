@@ -9,3 +9,7 @@ name = "apps-no-data-internals"
 from = ["apps-*"]
 deny = ["data-models::internal::**"]
 reason = "Apps must not depend on data internals; use data-models::api instead"
+
+[lints]
+default = "allow"
+architecture = "warn"

@@ -199,7 +199,7 @@ mod tests {
 
     fn structural_diag(path: &std::path::Path, span: Span, replacement: &str) -> Diagnostic {
         Diagnostic {
-            lint: Cow::Borrowed("workspace-lint::visibility"),
+            lint: Cow::Borrowed("workspace-lint::unused-pub"),
             level: Level::Warn,
             message: "test".into(),
             primary: Some(span.clone()),
@@ -214,6 +214,7 @@ mod tests {
             silence_anchor: SilenceAnchor::File {
                 file: path.to_path_buf(),
             },
+            level_is_explicit: false,
         }
     }
 
@@ -242,6 +243,7 @@ mod tests {
             notes: vec![],
             suggestions: vec![],
             silence_anchor: SilenceAnchor::File { file: p.clone() },
+            level_is_explicit: false,
         };
 
         let modified = run(&[d]);

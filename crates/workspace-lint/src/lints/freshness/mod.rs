@@ -1,7 +1,8 @@
-use globset::Glob;
+use globset::GlobSetBuilder;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::config::{GlobPattern, Globs};
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_file;
 use crate::lints::{Lint, LintContext, LintId};
@@ -23,7 +24,10 @@ impl Freshness {
 
     pub fn from_cli(glob: String, depends_on: String) -> Self {
         Self::new(FreshnessConfig {
-            rules: vec![FreshnessRule { glob, depends_on }],
+            rules: vec![FreshnessRule {
+                glob: GlobPattern::from_cli(&glob),
+                depends_on: Globs(vec![GlobPattern::from_cli(&depends_on)]),
+            }],
         })
     }
 }
@@ -84,6 +88,10 @@ fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
                     .help(format!(
                         "files matching `{}` in the subtree are newer",
                         rule.depends_on
+                            .iter()
+                            .map(|g| g.as_str())
+                            .collect::<Vec<_>>()
+                            .join("`, `")
                     ))
                     .help("run `workspace-lint done` once the tracked file is up to date")
                     .build(),
@@ -120,12 +128,8 @@ fn mark_done_with_root(config: &FreshnessConfig, root: &Path) {
     }
 }
 
-fn find_files_matching(root: &Path, pattern: &str) -> Vec<PathBuf> {
-    let glob = Glob::new(pattern).unwrap_or_else(|e| {
-        eprintln!("invalid glob pattern '{pattern}': {e}");
-        std::process::exit(1);
-    });
-    let matcher = glob.compile_matcher();
+fn find_files_matching(root: &Path, glob: &GlobPattern) -> Vec<PathBuf> {
+    let matcher = glob.compiled().compile_matcher();
 
     let mut results = Vec::new();
     for entry in ignore::WalkBuilder::new(root).build().flatten() {
@@ -140,12 +144,14 @@ fn find_files_matching(root: &Path, pattern: &str) -> Vec<PathBuf> {
     results
 }
 
-fn find_deps_in_dir(dir: &Path, pattern: &str) -> Vec<PathBuf> {
-    let glob = Glob::new(pattern).unwrap_or_else(|e| {
-        eprintln!("invalid depends-on pattern '{pattern}': {e}");
-        std::process::exit(1);
-    });
-    let matcher = glob.compile_matcher();
+fn find_deps_in_dir(dir: &Path, deps: &Globs) -> Vec<PathBuf> {
+    let mut builder = GlobSetBuilder::new();
+    for glob in deps.iter() {
+        builder.add(glob.compiled().clone());
+    }
+    let set = builder
+        .build()
+        .expect("depends-on globs pre-validated at parse time");
 
     let mut results = Vec::new();
     for entry in ignore::WalkBuilder::new(dir).build().flatten() {
@@ -156,7 +162,7 @@ fn find_deps_in_dir(dir: &Path, pattern: &str) -> Vec<PathBuf> {
             Ok(r) => r,
             Err(_) => continue,
         };
-        if matcher.is_match(rel) {
+        if set.is_match(rel) {
             results.push(entry.into_path());
         }
     }

@@ -29,11 +29,10 @@ pub mod module_tree;
 pub mod stale_git_index;
 pub mod unused_deps;
 pub mod unused_pub;
-pub mod visibility;
 
 pub(crate) use lints_id::LintId;
 
-use crate::config::Config;
+use crate::config::{Config, LintLevel};
 use crate::diagnostic::Diagnostic;
 use syn_workspace::Workspace;
 
@@ -72,50 +71,75 @@ pub(crate) struct LintContext<'a> {
     pub workspace: Option<&'a Workspace>,
 }
 
+/// `true` when `id`'s effective level (per-lint override → `[lints] default`
+/// → built-in `warn`) isn't `allow` — i.e. the user hasn't turned it off.
+/// This is half the enable rule; *policy* lints additionally require their
+/// config table to be present (checked inline below).
+fn level_on(config: &Config, id: LintId) -> bool {
+    config.lints.effective(id) != LintLevel::Allow
+}
+
 /// Build the runtime registry of enabled lints from the user's configuration.
 ///
-/// Adding a lint is one new line here plus one folder under `lints/`.
+/// Enablement is uniform: a lint runs iff its effective level isn't `allow`
+/// **and** — for [`LintId::requires_config`] (policy) lints — its config
+/// table is present. Structural lints need no table, so they're on by default.
+/// Adding a lint is one new block here plus one folder under `lints/`.
 pub(crate) fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
     let mut out: Vec<Box<dyn Lint>> = Vec::new();
 
-    if let Some(ref ac) = config.architecture
+    // --- policy lints: gated on `level != allow` AND a present config table ---
+    if level_on(config, LintId::Architecture)
+        && let Some(ref ac) = config.architecture
         && !ac.rules.is_empty()
     {
         out.push(Box::new(architecture::Architecture::new(ac.clone())));
     }
-    if config.checks.centralized_deps {
-        out.push(Box::new(centralized_deps::CentralizedDeps::new()));
-    }
-    if let Some(ref cv) = config.cli_crate_version {
+    if level_on(config, LintId::CliCrateVersion)
+        && let Some(ref cv) = config.cli_crate_version
+    {
         out.push(Box::new(cli_crate_version::CliCrateVersion::new(
             cv.clone(),
         )));
     }
-    if let Some(ref cs) = config.crate_size {
+    if level_on(config, LintId::CrateSize)
+        && let Some(ref cs) = config.crate_size
+    {
         out.push(Box::new(crate_size::CrateSize::new(cs.clone())));
     }
-    if config.checks.feature_drift {
-        out.push(Box::new(feature_drift::FeatureDrift::new()));
-    }
-    if let Some(ref fs) = config.file_size {
+    if level_on(config, LintId::FileSize)
+        && let Some(ref fs) = config.file_size
+    {
         out.push(Box::new(file_size::FileSize::new(fs.clone())));
     }
-    if let Some(ref fr) = config.freshness {
+    if level_on(config, LintId::Freshness)
+        && let Some(ref fr) = config.freshness
+    {
         out.push(Box::new(freshness::Freshness::new(fr.clone())));
     }
-    if config.checks.module_tree {
+
+    // --- structural lints: on by default (no required config) ---
+    if level_on(config, LintId::CentralizedDeps) {
+        out.push(Box::new(centralized_deps::CentralizedDeps::new()));
+    }
+    if level_on(config, LintId::FeatureDrift) {
+        out.push(Box::new(feature_drift::FeatureDrift::new()));
+    }
+    if level_on(config, LintId::ModuleTree) {
         out.push(Box::new(module_tree::ModuleTree::new()));
     }
-    // stale-git-index is always-on (no config gate).
-    out.push(Box::new(stale_git_index::StaleGitIndex::new()));
-    if let Some(ref ud) = config.unused_deps {
-        out.push(Box::new(unused_deps::UnusedDeps::new(ud.clone())));
+    if level_on(config, LintId::StaleGitIndex) {
+        out.push(Box::new(stale_git_index::StaleGitIndex::new()));
     }
-    if let Some(ref up) = config.unused_pub {
-        out.push(Box::new(unused_pub::UnusedPub::new(up.clone())));
+    if level_on(config, LintId::UnusedDeps) {
+        out.push(Box::new(unused_deps::UnusedDeps::new(
+            config.unused_deps.clone().unwrap_or_default(),
+        )));
     }
-    if config.checks.visibility {
-        out.push(Box::new(visibility::Visibility::new()));
+    if level_on(config, LintId::UnusedPub) {
+        out.push(Box::new(unused_pub::UnusedPub::new(
+            config.unused_pub.clone().unwrap_or_default(),
+        )));
     }
 
     out

@@ -15,10 +15,11 @@
 //! - `#[derive(Serialize, Deserialize, ...)]`-suppressed cases need explicit
 //!   `allowlist` globs or `#[derive(...)]`-aware suppression in a follow-up.
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobSet, GlobSetBuilder};
 use std::collections::HashSet;
 use syn_workspace::{Item, ItemKind, Module, ResolvedPath, Visibility, Workspace};
 
+use crate::config::GlobPattern;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_line;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
@@ -27,7 +28,7 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use config::UnusedPubConfig;
+pub(crate) use config::{KindFilter, UnusedPubConfig};
 
 pub(crate) struct UnusedPub {
     config: UnusedPubConfig,
@@ -41,15 +42,18 @@ impl UnusedPub {
     pub fn from_cli(
         exclude_crates: Vec<String>,
         allowlist: Vec<String>,
-        kinds: Vec<String>,
+        kinds: Vec<KindFilter>,
         exclude_paths: Vec<String>,
         suppress_intra_crate: bool,
     ) -> Self {
         Self::new(UnusedPubConfig {
             exclude_crates,
-            allowlist,
+            allowlist: allowlist.iter().map(|p| GlobPattern::from_cli(p)).collect(),
             kinds,
-            exclude_paths,
+            exclude_paths: exclude_paths
+                .iter()
+                .map(|p| GlobPattern::from_cli(p))
+                .collect(),
             suppress_intra_crate,
             // `--fix` deletion is opt-in via config only — there's no CLI
             // override because deletion is irreversible-without-git and we
@@ -80,9 +84,10 @@ impl Lint for UnusedPub {
 }
 
 pub(crate) fn check(config: &UnusedPubConfig, workspace: &Workspace) -> Vec<Diagnostic> {
-    let kind_filter = parse_kind_filter(&config.kinds);
-    let allowlist = build_glob_set(&config.allowlist, "allowlist");
-    let exclude_paths = build_glob_set(&config.exclude_paths, "exclude-paths");
+    let kind_filter: Option<HashSet<ItemKind>> =
+        (!config.kinds.is_empty()).then(|| config.kinds.iter().map(|k| k.to_item_kind()).collect());
+    let allowlist = build_glob_set(&config.allowlist);
+    let exclude_paths = build_glob_set(&config.exclude_paths);
 
     let mut diagnostics = Vec::new();
 
@@ -277,9 +282,34 @@ fn apply_structural_fix(
         let with_sugg = builder.suggestion(sugg);
         return note.into_iter().fold(with_sugg, |b, reason| b.note(reason));
     }
-    crate::lints::visibility::build_tighten_suggestion(item)
+    build_tighten_suggestion(item)
         .into_iter()
         .fold(builder, |b, s| b.suggestion(s))
+}
+
+/// Build a `MachineApplicable` suggestion that overwrites the item's `pub`
+/// keyword with `pub(crate)`. The byte range comes from
+/// [`Item::vis_byte_range`], which `syn-workspace` sets from the
+/// `Visibility::Public` token's `proc-macro2` span — no source scanning, so
+/// no risk of matching a `pub` token inside a doc comment or string literal.
+/// Returns `None` for items without a captured visibility span.
+fn build_tighten_suggestion(item: &Item) -> Option<crate::diagnostic::Suggestion> {
+    let span = item.source.as_ref()?;
+    let vis_range = item.vis_byte_range.clone()?;
+    Some(crate::diagnostic::Suggestion {
+        span: crate::diagnostic::Span {
+            file: span.file.clone(),
+            line_start: span.line,
+            line_end: span.line,
+            col_start: 1,
+            col_end: 1,
+            byte_start: vis_range.start,
+            byte_end: vis_range.end,
+        },
+        message: "tighten to `pub(crate)`".into(),
+        replacement: "pub(crate)".into(),
+        applicability: crate::diagnostic::Applicability::MachineApplicable,
+    })
 }
 
 /// Pick a deletion suggestion when the user asked for one (`auto_delete`)
@@ -386,64 +416,16 @@ fn is_file_clean_in_git(path: &std::path::Path) -> bool {
     out.stdout.is_empty()
 }
 
-fn parse_kind_filter(kinds: &[String]) -> Option<HashSet<ItemKind>> {
-    if kinds.is_empty() {
-        return None;
-    }
-    let mut set = HashSet::new();
-    for kind_str in kinds {
-        match kind_str.to_lowercase().as_str() {
-            "function" | "fn" => {
-                set.insert(ItemKind::Fn);
-            }
-            "struct" => {
-                set.insert(ItemKind::Struct);
-            }
-            "enum" => {
-                set.insert(ItemKind::Enum);
-            }
-            "union" => {
-                set.insert(ItemKind::Union);
-            }
-            "trait" => {
-                set.insert(ItemKind::Trait);
-            }
-            "type" | "type_alias" => {
-                set.insert(ItemKind::TypeAlias);
-            }
-            "const" | "constant" => {
-                set.insert(ItemKind::Const);
-            }
-            "static" => {
-                set.insert(ItemKind::Static);
-            }
-            "module" | "mod" => {
-                set.insert(ItemKind::Module);
-            }
-            "macro" => {
-                set.insert(ItemKind::Macro);
-            }
-            other => {
-                eprintln!("warning: unknown unused-pub kind filter `{other}`, ignoring");
-            }
-        }
-    }
-    Some(set)
-}
-
-fn build_glob_set(patterns: &[String], label: &str) -> Option<GlobSet> {
+fn build_glob_set(patterns: &[GlobPattern]) -> Option<GlobSet> {
     if patterns.is_empty() {
         return None;
     }
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        builder.add(Glob::new(pattern).unwrap_or_else(|e| {
-            eprintln!("warning: invalid {label} glob `{pattern}`: {e}");
-            std::process::exit(1);
-        }));
+        builder.add(pattern.compiled().clone());
     }
     Some(builder.build().unwrap_or_else(|e| {
-        eprintln!("failed to build {label} filter: {e}");
+        eprintln!("failed to build glob filter: {e}");
         std::process::exit(1);
     }))
 }

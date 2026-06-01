@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::config::GlobPattern;
+
 #[derive(Deserialize, Clone)]
 pub(crate) struct FileSizeConfig {
     pub rules: Vec<FileSizeRule>,
@@ -7,7 +9,7 @@ pub(crate) struct FileSizeConfig {
 
 #[derive(Deserialize, Clone)]
 pub(crate) struct FileSizeRule {
-    pub glob: String,
+    pub glob: GlobPattern,
     #[serde(rename = "max-code-lines")]
     pub max_code_lines: usize,
 }

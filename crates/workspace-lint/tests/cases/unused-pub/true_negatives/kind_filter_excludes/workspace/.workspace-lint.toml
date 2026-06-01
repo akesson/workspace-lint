@@ -1,2 +1,6 @@
 [unused-pub]
 kinds = ["struct"]
+
+[lints]
+default = "allow"
+unused-pub = "warn"

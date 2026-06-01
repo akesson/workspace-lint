@@ -1,2 +1,3 @@
-[checks]
-centralized-deps = true
+[lints]
+default = "allow"
+centralized-deps = "warn"

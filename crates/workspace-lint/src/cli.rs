@@ -3,8 +3,16 @@ use clap::{Parser, Subcommand};
 use crate::config::{ExpandConfig, ExpandRule};
 use crate::lints::Lint;
 use crate::lints::{
-    centralized_deps::CentralizedDeps, cli_crate_version::CliCrateVersion, crate_size::CrateSize,
-    file_size::FileSize, freshness::Freshness, unused_deps::UnusedDeps, unused_pub::UnusedPub,
+    centralized_deps::CentralizedDeps,
+    cli_crate_version::CliCrateVersion,
+    crate_size::CrateSize,
+    feature_drift::FeatureDrift,
+    file_size::FileSize,
+    freshness::Freshness,
+    module_tree::ModuleTree,
+    stale_git_index::StaleGitIndex,
+    unused_deps::UnusedDeps,
+    unused_pub::{KindFilter, UnusedPub},
 };
 
 #[derive(Parser)]
@@ -109,9 +117,9 @@ pub(crate) enum CheckRule {
         /// Glob patterns for allowed unused items (matched against canonical paths)
         #[arg(long)]
         allowlist: Vec<String>,
-        /// Kinds of items to check (e.g. fn, struct, trait)
-        #[arg(long)]
-        kinds: Vec<String>,
+        /// Kinds of items to check (e.g. function, struct, trait)
+        #[arg(long, value_enum)]
+        kinds: Vec<KindFilter>,
         /// Path patterns to exclude (matched against source file paths)
         #[arg(long)]
         exclude_paths: Vec<String>,
@@ -120,6 +128,12 @@ pub(crate) enum CheckRule {
         #[arg(long, default_value_t = false)]
         suppress_intra_crate: bool,
     },
+    /// Check module-tree structural integrity (broken `mod`s, orphan files)
+    ModuleTree,
+    /// Check for feature drift (declared-but-unused / undeclared features)
+    FeatureDrift,
+    /// Check for paths tracked by git that no longer exist on disk
+    StaleGitIndex,
 }
 
 impl CheckRule {
@@ -161,6 +175,9 @@ impl CheckRule {
                 exclude_paths,
                 suppress_intra_crate,
             )),
+            CheckRule::ModuleTree => Box::new(ModuleTree::new()),
+            CheckRule::FeatureDrift => Box::new(FeatureDrift::new()),
+            CheckRule::StaleGitIndex => Box::new(StaleGitIndex::new()),
         }
     }
 
@@ -174,13 +191,24 @@ impl CheckRule {
     ) -> ExpandConfig {
         ExpandConfig {
             rules: vec![ExpandRule {
-                command: command.split_whitespace().map(String::from).collect(),
+                command: split_command(&command),
                 glob,
                 marker,
                 auto_stage,
             }],
         }
     }
+}
+
+/// Split a CLI `--command` string into argv using shell-like quoting, so
+/// `--command "tool --flag 'a b'"` survives args with spaces (the old naive
+/// whitespace split mangled them). Exits with a clear message on unbalanced
+/// quotes.
+pub(crate) fn split_command(command: &str) -> Vec<String> {
+    shell_words::split(command).unwrap_or_else(|e| {
+        eprintln!("error: could not parse --command `{command}`: {e}");
+        std::process::exit(2);
+    })
 }
 
 #[cfg(test)]

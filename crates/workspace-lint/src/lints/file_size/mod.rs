@@ -1,7 +1,8 @@
-use globset::{Glob, GlobSetBuilder};
+use globset::GlobSetBuilder;
 use std::collections::HashMap;
 use tokei::{Config as TokeiConfig, Languages};
 
+use crate::config::GlobPattern;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_file;
 use crate::lints::{Lint, LintContext, LintId};
@@ -24,7 +25,7 @@ impl FileSize {
     pub fn from_cli(glob: String, max_code_lines: usize) -> Self {
         Self::new(FileSizeConfig {
             rules: vec![FileSizeRule {
-                glob,
+                glob: GlobPattern::from_cli(&glob),
                 max_code_lines,
             }],
         })
@@ -44,10 +45,7 @@ impl Lint for FileSize {
 pub(crate) fn check(config: &FileSizeConfig) -> Vec<Diagnostic> {
     let mut builder = GlobSetBuilder::new();
     for rule in &config.rules {
-        builder.add(Glob::new(&rule.glob).unwrap_or_else(|e| {
-            eprintln!("invalid glob pattern '{}': {e}", rule.glob);
-            std::process::exit(1);
-        }));
+        builder.add(rule.glob.compiled().clone());
     }
     let globset = builder.build().unwrap();
 
@@ -100,7 +98,7 @@ pub(crate) fn check(config: &FileSizeConfig) -> Vec<Diagnostic> {
                 .help("extract related structs, enums, or trait impls into their own modules")
                 .note(format!(
                     "configured by [[file-size.rules]] glob = \"{}\"",
-                    rule.glob
+                    rule.glob.as_str()
                 ))
                 .build(),
             );
