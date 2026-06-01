@@ -71,4 +71,19 @@ pub(crate) struct UnusedPubConfig {
     /// `git checkout`).
     #[serde(default, rename = "auto-delete")]
     pub auto_delete: bool,
+    /// When `true`, treat *every* crate as having an external public API:
+    /// library-public items are exempt regardless of the crate's `publish`
+    /// field (the conservative pre-publish-aware behavior). Default `false` —
+    /// only crates that declare `publish = true` (or a registry list) are
+    /// assumed to have out-of-workspace consumers; every other crate is treated
+    /// as workspace-internal, so its `pub` items unused across the workspace are
+    /// flagged. See the README's `unused-pub` section.
+    #[serde(default, rename = "assume-all-public")]
+    pub assume_all_public: bool,
+    /// When a workspace-internal crate accumulates at least this many findings,
+    /// emit one crate-level hint suggesting `publish = true` (in case the crate
+    /// really is published). `Some(0)` disables the hint; `None` uses the
+    /// built-in default ([`DEFAULT_PUBLISH_HINT_THRESHOLD`](super::DEFAULT_PUBLISH_HINT_THRESHOLD)).
+    #[serde(default, rename = "publish-hint-threshold")]
+    pub publish_hint_threshold: Option<usize>,
 }

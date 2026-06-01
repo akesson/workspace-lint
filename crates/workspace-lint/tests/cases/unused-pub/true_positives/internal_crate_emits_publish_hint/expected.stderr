@@ -1,0 +1,28 @@
+error: crate `alpha` has 1 public items unused within the workspace
+ --> <TMP>/crates/alpha/Cargo.toml:1:1
+  |
+  = help: if `alpha` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt)
+  = note: workspace-lint treats a crate as workspace-internal unless it declares `publish = true` (or a registry); see the unused-pub docs
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-pub)
+  |
+  = note: `#[deny(workspace_lint::unused_pub)]` on by default
+
+error: pub fn `unused_one` in crate `alpha` is only used inside the crate
+ --> <TMP>/crates/alpha/src/lib.rs:3:1
+  |
+  = help: consider `pub(crate)` to tighten visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+3 - <existing>
+3 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+3 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[deny(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 2 errors (run `workspace-lint --fix` to apply 1 suggestion)

@@ -378,6 +378,24 @@ shadowed, so it is precision-neutral — the SCIP differential is unmoved
 `unused-deps/true_negatives/dep_referenced_in_macro_not_shadowed_by_local_macro`
 fixture. The corpus stays FP-free (anyhow's `syn` remains the lone true positive).
 
+**Landed (lint policy — publish-aware `unused-pub`).** Distinct from the
+resolver-precision loop above: a fix to *what `unused-pub` is allowed to flag*.
+Previously every library-public item in every member lib was exempt as "external
+API surface", so the lint could only catch `pub` items trapped behind a private
+module hop — it couldn't flag over-exposed *internal-crate* APIs, which is its
+main job at the workspace level. Now the exemption applies **only** when a crate
+declares `publish = true` (or a registry list); a `publish = false` or
+publish-absent crate is treated as workspace-internal and its unused `pub` items
+are flagged. `syn-workspace` gained `Manifest::publish()` / `Workspace::resolved_publish`
+(reading the raw manifest, since `cargo metadata` collapses `publish = true` and
+an absent field). Config: `assume-all-public` (opt back into the old behavior;
+used by the corpus FP-audit) and `publish-hint-threshold` (a crate-level
+"set `publish = true`" nudge once an internal crate floods). The three published
+crates here set `publish = true`; dogfood stays clean. Two former unused-pub
+`known_false_negatives` were promoted to `true_positives`. Known limitation: a
+definition's own ident counts as a self-reference, so a never-used item reads as
+`IntraCrate` rather than `Unused` (a separate resolver fix).
+
 ### Phase 4 — Framework semantics via Phase B plugins
 **Goal:** handle what token-scanning structurally can't, demand-driven.
 When a framework causes systematic FPs no amount of scanning fixes, add a Phase B

@@ -99,6 +99,67 @@ pub struct Manifest {
     doc: Document<String>,
 }
 
+/// A crate's `[package] publish` declaration, read from the raw manifest.
+///
+/// `cargo metadata` collapses an *absent* `publish` field and an explicit
+/// `publish = true` both to "unrestricted" ([`None`]), erasing a distinction
+/// some callers need. Reading the parsed document directly preserves it. This
+/// type only *reports* what the manifest says — it carries no policy about
+/// what an absent field should mean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Publish {
+    /// Explicit `publish = true`.
+    ExplicitTrue,
+    /// `publish = false` or `publish = []` — never published.
+    Disabled,
+    /// `publish = ["registry", …]` — restricted to the named (non-empty) registries.
+    Registries(Vec<String>),
+    /// `publish.workspace = true` — inherits `[workspace.package] publish`.
+    /// Resolve with [`Workspace::resolved_publish`](crate::Workspace::resolved_publish).
+    Inherited,
+    /// No `publish` key (cargo default: publishable to crates.io).
+    Absent,
+}
+
+/// Classify a `publish` [`Item`] (or its absence) into a [`Publish`].
+fn classify_publish_item(item: Option<&Item>) -> Publish {
+    let Some(item) = item else {
+        return Publish::Absent;
+    };
+    // `publish.workspace = true` / `publish = { workspace = true }`.
+    if let Some(t) = item.as_table_like()
+        && t.get("workspace")
+            .and_then(|w| w.as_value())
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        return Publish::Inherited;
+    }
+    let Some(value) = item.as_value() else {
+        return Publish::Absent;
+    };
+    if let Some(b) = value.as_bool() {
+        return if b {
+            Publish::ExplicitTrue
+        } else {
+            Publish::Disabled
+        };
+    }
+    if let Some(arr) = value.as_array() {
+        let regs: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        return if regs.is_empty() {
+            Publish::Disabled // `publish = []` means "no registries" == forbidden.
+        } else {
+            Publish::Registries(regs)
+        };
+    }
+    Publish::Absent
+}
+
 impl Manifest {
     /// Read and parse `Cargo.toml` at `path`. Errors propagate as
     /// [`Error::Manifest`] with the path embedded.
@@ -177,6 +238,36 @@ impl Manifest {
         }
         let table = value.as_inline_table()?;
         table.get("version")?.as_str()
+    }
+
+    /// This crate's `[package] publish` declaration. See [`Publish`] for why
+    /// this reads the parsed document instead of relying on `cargo metadata`.
+    /// Returns [`Publish::Inherited`] for `publish.workspace = true`; resolve
+    /// it against the workspace root with
+    /// [`Workspace::resolved_publish`](crate::Workspace::resolved_publish).
+    pub fn publish(&self) -> Publish {
+        let item = self
+            .doc
+            .as_table()
+            .get("package")
+            .and_then(Item::as_table_like)
+            .and_then(|p| p.get("publish"));
+        classify_publish_item(item)
+    }
+
+    /// `[workspace.package] publish` from a workspace *root* manifest — the
+    /// inheritance source for members that declare `publish.workspace = true`.
+    /// [`Publish::Absent`] if there's no such key.
+    pub fn workspace_package_publish(&self) -> Publish {
+        let item = self
+            .doc
+            .as_table()
+            .get("workspace")
+            .and_then(Item::as_table_like)
+            .and_then(|w| w.get("package"))
+            .and_then(Item::as_table_like)
+            .and_then(|p| p.get("publish"));
+        classify_publish_item(item)
     }
 
     /// Enumerate declared deps across `[dependencies]`, `[dev-dependencies]`,
@@ -355,6 +446,66 @@ mod tests {
             raw: content.to_string(),
             doc: Document::parse(content.to_string()).unwrap(),
         }
+    }
+
+    #[test]
+    fn publish_explicit_true() {
+        assert_eq!(
+            parse("[package]\nname = \"x\"\npublish = true\n").publish(),
+            Publish::ExplicitTrue
+        );
+    }
+
+    #[test]
+    fn publish_false_and_empty_array_are_disabled() {
+        assert_eq!(
+            parse("[package]\npublish = false\n").publish(),
+            Publish::Disabled
+        );
+        assert_eq!(
+            parse("[package]\npublish = []\n").publish(),
+            Publish::Disabled
+        );
+    }
+
+    #[test]
+    fn publish_registry_list() {
+        assert_eq!(
+            parse("[package]\npublish = [\"my-registry\"]\n").publish(),
+            Publish::Registries(vec!["my-registry".to_string()])
+        );
+    }
+
+    #[test]
+    fn publish_absent_is_absent_not_true() {
+        // The key distinction `cargo metadata` erases: absent != explicit true.
+        assert_eq!(
+            parse("[package]\nname = \"x\"\n").publish(),
+            Publish::Absent
+        );
+    }
+
+    #[test]
+    fn publish_workspace_inheritance_is_reported_as_inherited() {
+        assert_eq!(
+            parse("[package]\npublish.workspace = true\n").publish(),
+            Publish::Inherited
+        );
+        assert_eq!(
+            parse("[package]\npublish = { workspace = true }\n").publish(),
+            Publish::Inherited
+        );
+    }
+
+    #[test]
+    fn workspace_package_publish_reads_root_inheritance_source() {
+        let root = parse("[workspace.package]\npublish = true\n");
+        assert_eq!(root.workspace_package_publish(), Publish::ExplicitTrue);
+        // Absent when the root declares no workspace-package publish.
+        assert_eq!(
+            parse("[workspace]\nmembers = []\n").workspace_package_publish(),
+            Publish::Absent
+        );
     }
 
     #[test]

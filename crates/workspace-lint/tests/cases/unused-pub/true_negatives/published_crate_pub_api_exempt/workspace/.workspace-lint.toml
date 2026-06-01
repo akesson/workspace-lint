@@ -1,0 +1,9 @@
+# Contrast with true_positives/internal_crate_root_pub_fn_flagged: the only
+# difference is `publish = true` on the crate. A published crate is assumed to
+# have out-of-workspace consumers, so its library-public API is exempt even
+# when nothing in the workspace references it.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"

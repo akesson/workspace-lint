@@ -3,6 +3,9 @@ name = "workspace-lint-marker"
 version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
+# Published to crates.io; also marks this crate's API external for
+# workspace-lint's publish-aware `unused-pub`.
+publish = true
 repository = "https://github.com/human-solutions/workspace-lint"
 description = "Zero-dep marker macros used by workspace-lint to silence diagnostics at the call site."
 license = "MIT OR Apache-2.0"
