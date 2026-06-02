@@ -4,3 +4,11 @@ version = "0.1.0"
 
 [dependencies]
 rand = "0.8"
+serde = { version = "1", features = [
+    "derive",
+] }
+keep = "1"
+
+[dependencies.unused_block]
+version = "2"
+features = ["x"]
