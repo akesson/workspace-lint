@@ -1819,54 +1819,6 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-warning: pub fn `Favorites` in crate `hotdog` appears unused — consider removing
- --> <TMP>/examples/01-app-demos/hotdog/src/frontend.rs:10:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-10 - <existing>
-10 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-10 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub fn `NavBar` in crate `hotdog` appears unused — consider removing
- --> <TMP>/examples/01-app-demos/hotdog/src/frontend.rs:32:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-32 - <existing>
-32 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-32 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub fn `DogView` in crate `hotdog` appears unused — consider removing
- --> <TMP>/examples/01-app-demos/hotdog/src/frontend.rs:44:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-44 - <existing>
-44 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-44 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
 warning: pub fn `getCurrentPositionJson` in crate `geolocation_native_plugin` appears unused — consider removing
  --> <TMP>/examples/01-app-demos/geolocation-native-plugin/src/plugin/mod.rs:296:1
   |
@@ -1915,4 +1867,4 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-workspace-lint: generated 85 warnings (run `workspace-lint --fix` to apply 186 suggestions)
+workspace-lint: generated 82 warnings (run `workspace-lint --fix` to apply 183 suggestions)

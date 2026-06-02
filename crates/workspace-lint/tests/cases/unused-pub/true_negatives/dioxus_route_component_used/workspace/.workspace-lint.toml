@@ -1,0 +1,11 @@
+[unused-pub]
+# Each component is used only *within* the crate (referenced by the route enum),
+# so once the Phase B Dioxus pass links the usage it reads as IntraCrate; this
+# drops the "consider pub(crate)" nag, leaving a clean pass. Without the Routable
+# capture the route components have zero referrers and read Unused → "appears
+# unused" (the false positive this fixture guards against).
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"

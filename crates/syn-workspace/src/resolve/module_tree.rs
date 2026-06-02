@@ -202,6 +202,21 @@ fn collect_module_contents(
             extract_cfg_feature_names(attr, &mut cfg_features);
         }
 
+        // A `#[derive(Routable)]` enum references its `pub fn` components only
+        // through code the derive macro generates (never a bare `rsx!` or a
+        // `use`), so they're invisible to the token/AST scans below. Capture
+        // those component names as bare `Origin::Component` occurrences; the
+        // Phase B `DioxusComponentPass` binds them to the same-crate `pub fn`,
+        // exactly like a bare `rsx!` component. Gated with the rest of the
+        // Dioxus semantics — with `dioxus` off, route enums are ordinary code.
+        #[cfg(feature = "dioxus")]
+        if let syn::Item::Enum(item_enum) = syn_item {
+            occurrences.extend(plugins::dioxus_rsx::route_component_occurrences(
+                item_enum,
+                parent_file,
+            ));
+        }
+
         if let syn::Item::Use(item_use) = syn_item {
             let mut bindings = use_tree::bindings_from_use(item_use, &scope, parent_file);
             for binding in &mut bindings {
