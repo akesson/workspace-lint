@@ -400,6 +400,13 @@ pub enum Origin {
     /// structured lowerer but left unresolved by the central resolver — a Phase B
     /// resolve plugin binds it against the workspace.
     Component,
+    /// A bare single-ident macro *invocation* (`foo!(…)` / `foo![…]` / `foo!{…}`)
+    /// in regular code. Captured here but left unresolved by the central resolver
+    /// (a bare macro name carries no path scope); the core Phase B `MacroCallPass`
+    /// binds it to a same-crate `macro_rules!` definition of that name.
+    /// Multi-segment macro paths (`m::foo!`) are ordinary [`Origin::Code`] runs,
+    /// not this.
+    MacroCall,
 }
 
 /// A single reference occurrence in a module — the resolver's primary

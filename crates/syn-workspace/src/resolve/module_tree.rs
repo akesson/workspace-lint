@@ -559,6 +559,29 @@ fn extract_code_paths(
                 segments.push(next.to_string());
                 j += 3;
             }
+            // A bare single-ident macro *invocation* — `foo!(…)` / `foo![…]` /
+            // `foo!{…}`, i.e. `Ident` then `!` then a delimited group — resolves
+            // in the macro namespace, where an exported `macro_rules!` is
+            // crate-global. The central path resolver doesn't model that, so emit
+            // it as `Origin::MacroCall` for the core `MacroCallPass` to bind to a
+            // same-crate definition (the macro's args, in the group, are still
+            // scanned via the group recursion below). Multi-segment macro paths
+            // (`m::foo!`) stay ordinary `Origin::Code` runs handled by the
+            // keep-filter, so this never disturbs the macro-vs-crate distinction
+            // the sibling exclusion guards (e.g. `log` in `log::debug!`).
+            let is_macro_call = segments.len() == 1
+                && matches!(stream.get(j), Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '!')
+                && matches!(stream.get(j + 1), Some(proc_macro2::TokenTree::Group(_)));
+            if is_macro_call {
+                out.push(Occurrence {
+                    segments,
+                    path: None,
+                    span: Some(span_to_source_span(file, first.span())),
+                    origin: Origin::MacroCall,
+                });
+                i = j;
+                continue;
+            }
             // Candidate selection only — resolution happens centrally in
             // `resolve_occurrence`. Keep multi-segment runs, plus single idents
             // that match a use-binding's local name (the binding set is needed
@@ -751,6 +774,10 @@ fn resolve_occurrence(
         // Deferred to a Phase B `ResolvePass`: a bare framework-component name
         // carries no scope the central resolver can use without wrongly binding it.
         Origin::Component => None,
+        // Deferred to the core Phase B `MacroCallPass`: a bare macro invocation
+        // `foo!(…)` resolves in the *macro* namespace (crate-global for an
+        // exported `macro_rules!`), which path resolution doesn't model.
+        Origin::MacroCall => None,
         Origin::GlobUse | Origin::ExternCrate => Some(ResolvedPath::new(occ.segments.clone())),
     }
 }
@@ -1405,6 +1432,63 @@ mod tests {
             .map(|p| p.display())
             .collect();
         out.into_iter().collect()
+    }
+
+    /// Bare-name segments of `Origin::MacroCall` occurrences — the macro
+    /// invocations the core `MacroCallPass` later binds to same-crate
+    /// `macro_rules!` definitions.
+    fn macro_call_names(src: &str) -> Vec<String> {
+        let parent_canonical = ResolvedPath::new(["demo".to_string()]);
+        let items = parse_items(src);
+        let markers = default_markers();
+        let contents = collect_module_contents(
+            &items,
+            std::path::Path::new("<test>"),
+            std::path::Path::new("<test>"),
+            &parent_canonical,
+            &markers,
+        )
+        .expect("collect");
+        contents
+            .occurrences
+            .iter()
+            .filter(|o| o.origin == Origin::MacroCall)
+            .map(|o| o.segments.join("::"))
+            .collect()
+    }
+
+    #[test]
+    fn bare_macro_invocation_is_captured_as_macrocall() {
+        // A bare single-ident macro invocation is captured for the MacroCallPass
+        // to bind to a same-crate `macro_rules!`; this is what stops an exported
+        // macro used only intra-crate from being flagged `unused-pub`.
+        let names = macro_call_names("fn f() { my_macro!(Thing); }");
+        assert!(names.contains(&"my_macro".to_string()), "got {names:?}");
+    }
+
+    #[test]
+    fn multi_segment_macro_invocation_is_not_macrocall() {
+        // `m::foo!()` is an ordinary multi-segment Origin::Code run, not a bare
+        // MacroCall, and the qualified path is still seen as a code reference.
+        let names = macro_call_names("fn f() { serde_json::json!({}); }");
+        assert!(names.is_empty(), "got {names:?}");
+        let refs = collect_refs("fn f() { serde_json::json!({}); }", "demo");
+        assert!(
+            refs.contains(&"serde_json::json".to_string()),
+            "got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn path_segment_before_bang_is_not_a_macrocall() {
+        // `log::debug!(...)`: `log` is a crate/module segment (followed by `::`),
+        // not a bare macro name — it must stay a code path to the external crate,
+        // never mistaken for a local macro invocation (the increment-6 invariant
+        // that a `macro_rules! log` must not shadow the `log` crate).
+        let names = macro_call_names("fn f() { log::debug!(\"x\"); }");
+        assert!(!names.iter().any(|n| n == "log"), "got {names:?}");
+        let refs = collect_refs("fn f() { log::debug!(\"x\"); }", "demo");
+        assert!(refs.contains(&"log::debug".to_string()), "got {refs:?}");
     }
 
     #[test]

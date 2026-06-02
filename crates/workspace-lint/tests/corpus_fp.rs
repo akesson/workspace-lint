@@ -117,6 +117,18 @@ const CORPUS: &[CorpusEntry] = &[
         dir: "regex",
         multi_member: true,
     },
+    // The Dioxus framework monorepo (pinned to `v0.7.9`; its own `dioxus-rsx` is
+    // `0.7.9`, the exact version this resolver parses against). The first corpus
+    // crate with real `rsx!` — its 112-member workspace with genuine cross-crate
+    // references is the `unused-pub`-at-scale stress test, and the audit doubles as
+    // the proof that the `dioxus_rsx` Phase A lowerer engaged: if the `rsx!` bodies
+    // had failed to parse and silently fallen back to token-scanning, bare component
+    // usages would surface as `unused-pub` findings here.
+    CorpusEntry {
+        name: "dioxus",
+        dir: "dioxus",
+        multi_member: true,
+    },
 ];
 
 #[test]

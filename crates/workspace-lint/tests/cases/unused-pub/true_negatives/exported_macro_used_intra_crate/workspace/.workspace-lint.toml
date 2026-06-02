@@ -1,0 +1,11 @@
+[unused-pub]
+# The macro is invoked only *within* the crate, so once the core MacroCallPass
+# links the bare `helper!(...)` invocation the macro reads as IntraCrate; this
+# drops the intra-crate "tighten visibility" finding, leaving a clean pass.
+# Without the pass the invocation is invisible and the exported macro reads
+# Unused → "appears unused" (the false positive this fixture guards against).
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"
