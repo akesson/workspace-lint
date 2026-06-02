@@ -84,13 +84,15 @@ fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
                 && newest > file_mtime
             {
                 let rel = file.strip_prefix(root).unwrap_or(file).to_path_buf();
+                // Force forward slashes in the rendered message so the
+                // diagnostic text is identical on Windows (the renderer already
+                // normalizes the anchor path, but not text embedded in the
+                // message). Matches centralized-deps / unused-deps.
+                let rel_str = rel.display().to_string().replace('\\', "/");
                 diagnostics.push(
                     at_file(
                         lint_id,
-                        format!(
-                            "`{}` is older than source files it depends on",
-                            rel.display()
-                        ),
+                        format!("`{rel_str}` is older than source files it depends on"),
                         rel,
                     )
                     .help(format!(

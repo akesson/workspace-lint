@@ -43,7 +43,7 @@ impl Lint for CliCrateVersion {
 }
 
 pub(crate) fn check(config: &CliCrateVersionConfig) -> Vec<Diagnostic> {
-    // A missing / unparseable Cargo.lock is a single setup error — surface it
+    // A missing / unparsable Cargo.lock is a single setup error — surface it
     // as one diagnostic and stop, rather than aborting the whole lint run.
     let lock_packages = match read_lock_packages() {
         Ok(p) => p,
