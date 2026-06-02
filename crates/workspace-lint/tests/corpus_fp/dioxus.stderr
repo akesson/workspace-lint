@@ -1068,6 +1068,10 @@ warning: 2 possibly unused dependencies in packages/playwright-tests/fullstack/C
   = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
   = note: verify by removing the dep and running `cargo build --all-targets`
   = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `futures`
+  |
+11 - …
+  |
 help: remove unused dependency `serde`
   |
 12 - …
@@ -1867,4 +1871,4 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-workspace-lint: generated 82 warnings (run `workspace-lint --fix` to apply 183 suggestions)
+workspace-lint: generated 82 warnings (run `workspace-lint --fix` to apply 184 suggestions)

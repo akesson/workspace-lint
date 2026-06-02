@@ -140,12 +140,16 @@ pub(crate) fn check(
     diagnostics
 }
 
-/// Build a `MachineApplicable` suggestion that deletes the entire dep line
-/// (including the trailing newline) from the Cargo.toml. Returns `None` if
-/// the dep entry spans multiple lines — those are deferred to manual deletion
-/// to avoid swallowing the table body.
+/// Build a `MachineApplicable` suggestion that deletes the entire dep entry
+/// (including the trailing newline) from the Cargo.toml. Handles single-line
+/// entries via the line locator (which also drops a trailing same-line comment)
+/// and the multi-line forms — a wrapped inline table or a `[<section>.dep]`
+/// block — via the span locator. Returns `None` only if the entry can't be
+/// located at all.
 fn build_delete_suggestion(manifest: &Manifest, entry: &DeclaredDep) -> Option<Suggestion> {
-    let location = manifest.locate_dep(entry.section, &entry.original_name)?;
+    let location = manifest
+        .locate_dep(entry.section, &entry.original_name)
+        .or_else(|| manifest.locate_dep_entry(entry.section, &entry.original_name))?;
     let mut end = location.byte_end as usize;
     let bytes = manifest.raw().as_bytes();
     if end < bytes.len() && bytes[end] == b'\r' {
@@ -154,11 +158,16 @@ fn build_delete_suggestion(manifest: &Manifest, entry: &DeclaredDep) -> Option<S
     if end < bytes.len() && bytes[end] == b'\n' {
         end += 1;
     }
+    // The deletion may cover several lines (multi-line entry); the fix applies by
+    // byte offset, so `line_end` only affects the rendered span. Single-line
+    // entries have no interior newline, so this stays `== line_start`.
+    let deleted = &manifest.raw()[location.byte_start as usize..location.byte_end as usize];
+    let line_end = location.line + deleted.bytes().filter(|&b| b == b'\n').count() as u32;
     Some(Suggestion {
         span: Span {
             file: manifest.path().to_path_buf(),
             line_start: location.line,
-            line_end: location.line,
+            line_end,
             col_start: 1,
             col_end: 1,
             byte_start: location.byte_start,

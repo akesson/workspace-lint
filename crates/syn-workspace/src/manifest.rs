@@ -18,11 +18,13 @@
 //! rather than `toml_edit`'s value-level span info. The line-based form
 //! returns the *whole `key = value` line* including indent — which is
 //! usually what callers want — without needing to walk decor/whitespace
-//! around the value span. Multi-line inline tables (entry wraps across
-//! `\n`) are outside TOML 1.0 spec and `toml_edit::Document::parse`
-//! rejects them at load time; we don't try to handle them. Real-world
-//! Cargo.toml files use `[dependencies.<name>]` table blocks instead —
-//! those parse fine.
+//! around the value span. It deliberately bails on entries that aren't a
+//! single line: an inline table whose value wraps (e.g. a `features = [ … ]`
+//! array spanning lines — valid TOML, since the newlines sit inside a value)
+//! and the `[dependencies.<name>]` table-block form. For *deletion*,
+//! [`Manifest::locate_dep_entry`] covers those via the parsed document's
+//! retained spans; only the workspace-form *rewrite*
+//! ([`Manifest::format_workspace_dep`]) stays single-line-only.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -333,10 +335,64 @@ impl Manifest {
 
     /// Locate the line for a specific dep key inside the given section.
     /// Returns `None` for entries whose value wraps across multiple lines
-    /// (multi-line inline table) — those are not safely rewritable by a
-    /// single byte-range replacement.
+    /// (multi-line inline table) or is declared as a `[<section>.dep]` table
+    /// block — neither is a single-line replacement. For a full-entry span that
+    /// *does* cover those forms (used by `--fix` deletion), see
+    /// [`Manifest::locate_dep_entry`].
     pub fn locate_dep(&self, section: DepSection, dep_name: &str) -> Option<DepLocation> {
         locate_dep_line(&self.raw, section, dep_name)
+    }
+
+    /// Locate the full byte span of a dep entry, including the multi-line forms
+    /// [`Manifest::locate_dep`] rejects: a multi-line inline table
+    /// (`foo = { …\n… }`), a dotted key (`foo.workspace = true`), and a
+    /// `[<section>.foo]` table block. Unlike the line scanner this reads the
+    /// parsed document's retained spans, so it covers the whole entry — the
+    /// inline table through its closing `}`, or the block from its
+    /// `[section.foo]` header through its last body line — without brace- or
+    /// section-body guessing. The span starts at the entry's line beginning
+    /// (eating leading indent) and ends at the value's last byte (EOL excluded),
+    /// matching [`Manifest::locate_dep`]'s contract so the same byte-range
+    /// deletion applies.
+    ///
+    /// This is for *deletion* (the whole entry goes away); it is deliberately
+    /// not used by the workspace-form rewrite ([`Manifest::format_workspace_dep`]),
+    /// which only reshapes single-line values.
+    pub fn locate_dep_entry(&self, section: DepSection, dep_name: &str) -> Option<DepLocation> {
+        let item = self.section_table(section)?.get(dep_name)?;
+        let span = item.span()?;
+        // The end of the entry. For a value (incl. an inline table) `span`
+        // already covers it through the closing `}`. For a `[section.foo]` block,
+        // toml_edit's table span is unreliable — it sometimes covers only the
+        // header line — so extend the end across the block's body by taking the
+        // max of its members' value spans. (For an inline table the body values
+        // end before the `}`, so the `}`-inclusive `span.end` still wins.)
+        let mut end = span.end;
+        if let Some(table) = item.as_table_like() {
+            for (_key, value) in table.iter() {
+                if let Some(member) = value.span() {
+                    end = end.max(member.end);
+                }
+            }
+        }
+        // Rewind to the start of the entry's first line so leading indent is
+        // removed too. `span.start` sits on that line for every real dep form:
+        // the `{` shares the key's line for an inline table, and a block's span
+        // starts at its `[section.foo]` header.
+        let byte_start = self.raw[..span.start]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let line = self.raw[..byte_start]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count() as u32
+            + 1;
+        Some(DepLocation {
+            line,
+            byte_start: byte_start as u32,
+            byte_end: end as u32,
+        })
     }
 
     /// Build the canonical workspace-form replacement *line* for `dep_name`:
@@ -686,6 +742,67 @@ my-crate = "1"
         assert_eq!(
             &content[loc.byte_end as usize..loc.byte_end as usize + 2],
             "\r\n"
+        );
+    }
+
+    #[test]
+    fn locate_dep_entry_spans_multiline_inline_table() {
+        let content = "[dependencies]\nserde = { version = \"1\", features = [\n    \"derive\",\n] }\n\n[dev-dependencies]\ntokio = \"1\"\n";
+        let m = parse(content);
+        // The line locator bails on the wrapped inline table.
+        assert!(m.locate_dep(DepSection::Dependencies, "serde").is_none());
+        // The span locator captures the whole entry through the closing `}`.
+        let loc = m
+            .locate_dep_entry(DepSection::Dependencies, "serde")
+            .unwrap();
+        assert_eq!(loc.line, 2);
+        assert_eq!(
+            &content[loc.byte_start as usize..loc.byte_end as usize],
+            "serde = { version = \"1\", features = [\n    \"derive\",\n] }"
+        );
+    }
+
+    #[test]
+    fn locate_dep_entry_spans_table_block_including_header() {
+        let content = "[dependencies]\nserde = \"1\"\n\n[dependencies.foo]\nversion = \"2\"\nfeatures = [\"x\"]\n\n[dev-dependencies]\ntokio = \"1\"\n";
+        let m = parse(content);
+        assert!(m.locate_dep(DepSection::Dependencies, "foo").is_none());
+        let loc = m.locate_dep_entry(DepSection::Dependencies, "foo").unwrap();
+        // Must START at the `[dependencies.foo]` header (else deletion orphans
+        // it) and END at the last body line — header through body.
+        assert_eq!(
+            &content[loc.byte_start as usize..loc.byte_end as usize],
+            "[dependencies.foo]\nversion = \"2\"\nfeatures = [\"x\"]"
+        );
+    }
+
+    #[test]
+    fn locate_dep_entry_spans_dotted_key() {
+        // `foo.workspace = true` — the common modern form. The key is
+        // `futures.workspace`, so the single-line locator never matches `futures`.
+        let content = "[dependencies]\nfutures.workspace = true\nserde = \"1\"\n";
+        let m = parse(content);
+        assert!(m.locate_dep(DepSection::Dependencies, "futures").is_none());
+        let loc = m
+            .locate_dep_entry(DepSection::Dependencies, "futures")
+            .unwrap();
+        assert_eq!(
+            &content[loc.byte_start as usize..loc.byte_end as usize],
+            "futures.workspace = true"
+        );
+    }
+
+    #[test]
+    fn locate_dep_entry_handles_single_line_too() {
+        let content = "[dependencies]\nserde = \"1.0\"\n";
+        let m = parse(content);
+        let loc = m
+            .locate_dep_entry(DepSection::Dependencies, "serde")
+            .unwrap();
+        assert_eq!(loc.line, 2);
+        assert_eq!(
+            &content[loc.byte_start as usize..loc.byte_end as usize],
+            "serde = \"1.0\""
         );
     }
 
