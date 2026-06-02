@@ -15,7 +15,9 @@
 //!   subdirectory, so its children live under `bar/` (`bar/foo.rs` /
 //!   `bar/foo/mod.rs`).
 //! - A `#[path = "..."]` override is instead relative to the directory of the
-//!   file that contains the `mod` statement.
+//!   file that contains the `mod` statement — or, when the module sits inside an
+//!   inline `mod { … }` block, that directory *plus the inline-module names as
+//!   directories* (Rust's two-case rule; see `resolve_mod_file`).
 //!
 //! Produces a tree of [`Module`] values rooted at the crate root, each
 //! populated with the items declared at that scope. Inline `mod foo { ... }`
@@ -23,10 +25,6 @@
 //! own a deeper `foo/` directory for any file children declared inside them.
 //!
 //! Documented limitations:
-//! - `#[path = "..."]` on a module *inside an inline block* is resolved relative
-//!   to the declaring file's directory, not the nested-module dir — a tracked
-//!   false positive
-//!   (`tests/cases/module_tree/known_false_positives/path_attr_in_inline_mod_block`).
 //! - `#[cfg_attr(cond, path = "...")]` is not expanded, and `include!("…")` is
 //!   not followed — structural non-goals (no cfg-attr evaluation, no `include!`
 //!   expansion), the same class as proc-macro execution.
@@ -145,8 +143,16 @@ pub(crate) fn build_module_from_file(
         source: e,
     })?;
 
-    let contents =
-        collect_module_contents(&parsed.items, file_path, mod_dir, &canonical, marker_crates)?;
+    // A file's own items are at its top level — not inside any inline block of
+    // *this* file, even when the file itself was reached via a `mod foo;`.
+    let contents = collect_module_contents(
+        &parsed.items,
+        file_path,
+        mod_dir,
+        &canonical,
+        marker_crates,
+        false,
+    )?;
 
     Ok(Module {
         name: mod_name,
@@ -172,6 +178,12 @@ fn collect_module_contents(
     mod_dir: &Path,
     parent_canonical: &ResolvedPath,
     marker_crates: &[String],
+    // Whether these items sit inside one or more inline `mod { … }` blocks of the
+    // current file. Governs the `#[path]` base in `resolve_mod_file`: a nested
+    // `#[path]` anchors at `mod_dir` (which already carries the inline names),
+    // while a top-level one anchors at the declaring file's directory. Resets to
+    // `false` when a `mod foo;` crosses into a new file (`build_module_from_file`).
+    in_inline: bool,
 ) -> Result<ModuleContents> {
     let scope = scope_from(parent_canonical);
     // Names declared at this module level. A `use foo::Bar;` whose first
@@ -308,6 +320,9 @@ fn collect_module_contents(
                     &mod_dir.join(&child_name),
                     &child_canonical,
                     marker_crates,
+                    // Items here are inside this inline block — a nested
+                    // `#[path]` anchors at the (now deeper) `mod_dir`.
+                    true,
                 )?;
                 // Inline `mod foo { ... }` shares the parent's `file`.
                 // Callers that need the AST re-parse the file via
@@ -328,7 +343,9 @@ fn collect_module_contents(
                     // once on the file-backed module.
                     doctest_crate_refs: HashSet::new(),
                 });
-            } else if let Some(child_file) = resolve_mod_file(parent_file, mod_dir, item_mod)? {
+            } else if let Some(child_file) =
+                resolve_mod_file(parent_file, mod_dir, item_mod, in_inline)?
+            {
                 // A file reached via `mod foo;` owns `dir_owning_children` of
                 // itself: `foo.rs` owns `foo/`, `foo/mod.rs` owns `foo/`.
                 let child_mod_dir = dir_owning_children(&child_file);
@@ -1043,19 +1060,31 @@ fn dir_owning_children(file: &Path) -> PathBuf {
 ///
 /// A plain `mod foo;` resolves in `mod_dir` (the declaring module's owning
 /// directory — see `dir_owning_children`): `<mod_dir>/foo.rs` then
-/// `<mod_dir>/foo/mod.rs`. A `#[path = "..."]` override, by Rust's rule for a
-/// non-inline module, is instead relative to the directory of the file that
-/// contains the `mod` statement (`parent_file`'s directory) — which equals
-/// `mod_dir` at a crate root / `mod.rs`, so existing behavior is preserved.
+/// `<mod_dir>/foo/mod.rs`. A `#[path = "..."]` override follows Rust's two-case
+/// rule, keyed on `in_inline`:
+/// - **not inside an inline block** (top level of the file): relative to the
+///   directory of the file that contains the `mod` statement
+///   (`parent_file`'s directory).
+/// - **inside an inline `mod { … }` block**: relative to the file's owning
+///   directory *including the inline-module names as directories* — which is
+///   exactly what `mod_dir` already accumulates (it is joined with each inline
+///   name on the way down). This holds for both mod-rs files (`src/` + inline)
+///   and non-mod-rs files (`dir/stem/` + inline), since `mod_dir` starts from
+///   [`dir_owning_children`].
 fn resolve_mod_file(
     parent_file: &Path,
     mod_dir: &Path,
     item_mod: &syn::ItemMod,
+    in_inline: bool,
 ) -> Result<Option<PathBuf>> {
     let mod_name = item_mod.ident.to_string();
 
     if let Some(override_path) = path_attribute(&item_mod.attrs) {
-        let base = parent_file.parent().unwrap_or(Path::new("."));
+        let base = if in_inline {
+            mod_dir
+        } else {
+            parent_file.parent().unwrap_or(Path::new("."))
+        };
         let candidate = base.join(&override_path);
         return Ok(candidate.exists().then_some(candidate));
     }
@@ -1437,6 +1466,7 @@ mod tests {
             std::path::Path::new("<test>"),
             &parent_canonical,
             &markers,
+            false,
         )
         .expect("collect");
         let out: std::collections::BTreeSet<String> = contents
@@ -1462,6 +1492,7 @@ mod tests {
             std::path::Path::new("<test>"),
             &parent_canonical,
             &markers,
+            false,
         )
         .expect("collect");
         contents

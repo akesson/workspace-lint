@@ -571,6 +571,43 @@ unit tests. With this, every resolver FP class the corpus has surfaced is closed
 the remaining `dioxus` findings are true positives or structural non-goals
 (trait/type solving, macro expansion) the syn-only resolver deliberately omits.
 
+**Landed (hardening pass — audit the standing-limitation buckets).** With the
+demand-driven framework backlog empty, a sweep of the three forcing-function
+limitation cases (`known_false_positives` / `known_false_negatives`) plus the SCIP
+oracle's documented divergences. One was a real bug; the other two are confirmed
+correctly parked *by design* — recording that here so a future maintainer doesn't
+"helpfully" close them against the project's own rules.
+
+- **FIXED — `#[path]` inside an inline `mod` block.** A `#[path = "..."]` on a
+  module nested in an inline `mod outer { … }` of a mod-rs file (e.g. `lib.rs`)
+  must resolve relative to the file's owning dir *plus the inline-module names as
+  directories* (`src/outer/`), but the resolver anchored every `#[path]` at the
+  declaring file's dir (`src/`) — emitting a spurious "unresolved `mod`" + "orphan
+  file" pair on *valid* Rust (a false positive that raised hard errors under
+  `module-tree = "deny"`). `resolve_mod_file` now keys on an `in_inline` flag
+  threaded through `collect_module_contents`: top-level `#[path]` stays anchored at
+  `parent_file.parent()`; a nested one anchors at `mod_dir` (which already
+  accumulates the inline names, so it's correct for both mod-rs and non-mod-rs
+  files). Promoted `module_tree/known_false_positives/path_attr_in_inline_mod_block`
+  → `true_negatives`.
+- **PARKED (feature, not a gap) — transitive architecture violations.** The
+  `architecture` lint inspects literal `use` edges; it can't see that `apps-foo →
+  helper → data-models::internal` transitively violates a rule
+  (`known_false_negatives/transitive_violation_through_helper`). Closing it needs a
+  call-graph / type-signature analysis tier — a *feature*, not a precision fix.
+- **PARKED (deliberate, per the non-goal below) — `pub` methods in `impl` blocks.**
+  The resolver doesn't enumerate impl-block methods as defs, so a genuinely-unused
+  `pub fn` method isn't flagged
+  (`unused-pub/known_false_negatives/pub_method_in_impl_block`); the SCIP oracle
+  tracks the same gap as `known_impl_methods`. This stays parked on purpose:
+  method *calls* are receiver syntax (`x.method()`) that needs type inference (a
+  hard non-goal) to resolve, so **no lint can consume** an enumerated impl-method
+  def — `unused-pub` would only FP-storm. Enumerating them purely to close the
+  oracle divergence would be "adding resolver complexity to chase SCIP recall no
+  lint consumes," exactly what the non-goals below forbid. Both forcing-function
+  guards (the fixture and the oracle's `known_impl_methods` assertion) are left in
+  place to flag the day that calculus changes.
+
 ---
 
 ## Non-goals / honest limits
