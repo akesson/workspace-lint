@@ -651,14 +651,19 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_deps)]` on by default
 
-warning: 8 possibly unused dependencies in packages/desktop/Cargo.toml
+warning: 13 possibly unused dependencies in packages/desktop/Cargo.toml
  --> packages/desktop/Cargo.toml:1:1
   |
   = help: [dependencies] async-trait
+  = help: [dependencies] core-foundation
   = help: [dev-dependencies] dioxus-ssr
   = help: [dependencies] dunce
   = help: [dev-dependencies] http-range
   = help: [dependencies] infer
+  = help: [dependencies] jni
+  = help: [dependencies] ndk
+  = help: [dependencies] ndk-context
+  = help: [dependencies] ndk-sys
   = help: [dependencies] percent-encoding
   = help: [dev-dependencies] reqwest
   = help: [dev-dependencies] separator
@@ -1160,6 +1165,19 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_deps)]` on by default
 
+warning: 1 possibly unused dependency in examples/01-app-demos/ecommerce-site/Cargo.toml
+ --> examples/01-app-demos/ecommerce-site/Cargo.toml:1:1
+  |
+  = help: [dependencies] chrono
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
 warning: 2 possibly unused dependencies in examples/01-app-demos/bluetooth-scanner/Cargo.toml
  --> examples/01-app-demos/bluetooth-scanner/Cargo.toml:1:1
   |
@@ -1343,12 +1361,13 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_deps)]` on by default
 
-warning: 5 possibly unused dependencies in Cargo.toml
+warning: 6 possibly unused dependencies in Cargo.toml
  --> /Cargo.toml:1:1
   |
   = help: [dev-dependencies] anyhow
   = help: [dev-dependencies] dioxus-stores
   = help: [dev-dependencies] form_urlencoded
+  = help: [dev-dependencies] getrandom
   = help: [dependencies] wasm-splitter
   = help: [dependencies] wasm-streams
   = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
@@ -1871,4 +1890,4 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-workspace-lint: generated 82 warnings (run `workspace-lint --fix` to apply 184 suggestions)
+workspace-lint: generated 83 warnings (run `workspace-lint --fix` to apply 184 suggestions)

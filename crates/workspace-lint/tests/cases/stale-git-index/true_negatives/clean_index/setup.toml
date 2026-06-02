@@ -1,0 +1,4 @@
+# A committed tree with nothing deleted — the index matches disk, so
+# stale-git-index must stay silent.
+[git]
+init = true

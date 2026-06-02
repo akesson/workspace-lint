@@ -162,6 +162,15 @@ pub(crate) fn load_members(
 
         let mut declared_features: Vec<String> = pkg.features.keys().cloned().collect();
         declared_features.sort();
+        // Full activation lists (cargo synthesizes `foo = ["dep:foo"]` for an
+        // implicit optional-dependency feature) so consumers can tell a
+        // code-gating "leaf" feature (empty list) from a dependency/feature
+        // "plumbing" one.
+        let feature_values: std::collections::BTreeMap<String, Vec<String>> = pkg
+            .features
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         let manifest = Manifest::load(&manifest_path)?;
 
@@ -173,6 +182,7 @@ pub(crate) fn load_members(
             targets,
             orphan_files,
             declared_features,
+            feature_values,
             manifest,
         });
     }

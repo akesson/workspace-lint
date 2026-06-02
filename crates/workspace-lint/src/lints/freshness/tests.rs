@@ -122,19 +122,35 @@ fn no_deps_no_issue() {
 }
 
 #[test]
-fn ci_env_skips_check() {
-    // The public check() function returns empty when CI is set.
-    // check_with_root doesn't check CI, so we exercise the staleness logic
-    // directly and let check() be exercised in integration tests.
+fn ci_gate_skips_even_when_stale() {
+    // A genuinely-stale tree: with the CI gate ON the lint must stay silent
+    // (mtimes are meaningless after a checkout); with it OFF it must fire.
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("CLAUDE.md"), "# doc").unwrap();
-    let old = SystemTime::now() - Duration::from_secs(100);
-    set_mtime(&tmp.path().join("CLAUDE.md"), old);
+    set_mtime(
+        &tmp.path().join("CLAUDE.md"),
+        SystemTime::now() - Duration::from_secs(100),
+    );
     std::fs::write(tmp.path().join("lib.rs"), "fn foo() {}").unwrap();
 
     let config = make_config(vec![("CLAUDE.md", "*.rs")]);
-    let issues = check_with_root(&config, tmp.path());
-    assert_eq!(issues.len(), 1);
+    assert!(check_gated(&config, tmp.path(), true).is_empty());
+    assert_eq!(check_gated(&config, tmp.path(), false).len(), 1);
+}
+
+#[test]
+fn equal_mtime_is_fresh() {
+    // Staleness is a strict `>` comparison: a dep with the *same* mtime as the
+    // tracked file must not be reported.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("CLAUDE.md"), "# doc").unwrap();
+    std::fs::write(tmp.path().join("lib.rs"), "fn foo() {}").unwrap();
+    let t = SystemTime::now() - Duration::from_secs(10);
+    set_mtime(&tmp.path().join("CLAUDE.md"), t);
+    set_mtime(&tmp.path().join("lib.rs"), t);
+
+    let config = make_config(vec![("CLAUDE.md", "*.rs")]);
+    assert!(check_with_root(&config, tmp.path()).is_empty());
 }
 
 // --- mark_done_with_root ---

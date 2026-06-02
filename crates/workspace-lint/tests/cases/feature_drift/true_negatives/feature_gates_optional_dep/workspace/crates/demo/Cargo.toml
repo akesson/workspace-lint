@@ -1,0 +1,16 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+optdep = { path = "../optdep", optional = true }
+
+[features]
+# `tls` exists only to activate the optional `optdep` dependency. It is
+# plumbing — never written as `#[cfg(feature = "tls")]` — so feature-drift
+# must NOT flag it as declared-never-gated.
+tls = ["dep:optdep"]

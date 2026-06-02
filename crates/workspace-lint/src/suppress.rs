@@ -244,6 +244,64 @@ mod tests {
         }
     }
 
+    // --- unknown_lint_diagnostics ---
+
+    #[test]
+    fn unknown_lint_diagnostics_flags_unknown_and_suggests() {
+        let dirs = vec![
+            // Unknown near-miss → one diagnostic with a "did you mean".
+            expect(
+                "unused-dep",
+                SilenceAnchor::File {
+                    file: PathBuf::from("a.rs"),
+                },
+                "a.rs",
+                3,
+            ),
+            // A real lint produces nothing.
+            allow(
+                "file-size",
+                SilenceAnchor::File {
+                    file: PathBuf::from("b.rs"),
+                },
+            ),
+        ];
+        let out = unknown_lint_diagnostics(&dirs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].lint, LintId::UnknownLint.id());
+        assert!(out[0].message.contains("unused-dep"), "{}", out[0].message);
+        assert!(
+            out[0].helps.iter().any(|h| h.contains("unused-deps")),
+            "expected a suggestion, got {:?}",
+            out[0].helps
+        );
+    }
+
+    #[test]
+    fn unknown_lint_diagnostics_dedup_by_origin() {
+        // The Cargo.toml fan-out emits two directives for one comment (a Line
+        // and a Crate anchor) sharing an origin; they collapse to one finding.
+        let dirs = vec![
+            expect(
+                "nope",
+                SilenceAnchor::File {
+                    file: PathBuf::from("Cargo.toml"),
+                },
+                "Cargo.toml",
+                2,
+            ),
+            expect(
+                "nope",
+                SilenceAnchor::Crate {
+                    manifest_dir: PathBuf::from("."),
+                },
+                "Cargo.toml",
+                2,
+            ),
+        ];
+        assert_eq!(unknown_lint_diagnostics(&dirs).len(), 1);
+    }
+
     // --- exact-scope match ---
 
     #[test]

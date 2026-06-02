@@ -1,0 +1,6 @@
+# The directive naming a nonexistent lint (`unusd-deps`, a typo of
+# `unused-deps`) is injected here rather than committed, so this repo's own
+# dogfood scan doesn't pick it up from tests/cases/. unknown-lint must flag it.
+[[append]]
+path = "crates/demo/Cargo.toml"
+text = "\n# workspace-lint: expect(unusd-deps)\n"

@@ -205,12 +205,44 @@ impl Manifest {
     /// iterator if the section is absent.
     ///
     /// For [`DepSection::WorkspaceDependencies`] this drills into
-    /// `[workspace.dependencies]`. For everything else it reads the top-level
-    /// table directly.
+    /// `[workspace.dependencies]`. For the three member sections it reads the
+    /// top-level table **and** every `[target.<cfg>.<section>]` table, so a
+    /// platform-gated dependency is enumerated just like an unconditional one
+    /// (a target-gated dep that's unused / un-centralized is otherwise a silent
+    /// false negative for both deps lints). A dep may appear more than once if
+    /// declared under several `cfg`s — callers that need a set should dedup.
     pub fn deps(&self, section: DepSection) -> impl Iterator<Item = (&str, &Item)> + '_ {
-        self.section_table(section)
+        self.section_tables(section)
             .into_iter()
             .flat_map(|t| t.iter())
+    }
+
+    /// All tables contributing to `section`: the top-level table plus, for the
+    /// three member sections, every `[target.<cfg>.<section>]` table. Workspace
+    /// deps have no target form.
+    fn section_tables(&self, section: DepSection) -> Vec<&dyn TableLike> {
+        let mut tables: Vec<&dyn TableLike> = Vec::new();
+        if let Some(t) = self.section_table(section) {
+            tables.push(t);
+        }
+        if section != DepSection::WorkspaceDependencies
+            && let Some(target) = self
+                .doc
+                .as_table()
+                .get("target")
+                .and_then(Item::as_table_like)
+        {
+            for (_cfg, cfg_item) in target.iter() {
+                if let Some(dep_table) = cfg_item
+                    .as_table_like()
+                    .and_then(|t| t.get(section.as_str()))
+                    .and_then(Item::as_table_like)
+                {
+                    tables.push(dep_table);
+                }
+            }
+        }
+        tables
     }
 
     /// All dep names in `[workspace.dependencies]`. Convenience for
@@ -581,6 +613,43 @@ mod tests {
                 .feature_dep_refs()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn deps_includes_target_specific_tables() {
+        let m = parse(
+            "[dependencies]\na = \"1\"\n\
+             [target.'cfg(windows)'.dependencies]\nb = \"2\"\n\
+             [target.'cfg(unix)'.dependencies]\nc = \"3\"\n",
+        );
+        let mut names: Vec<&str> = m.deps(DepSection::Dependencies).map(|(n, _)| n).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["a", "b", "c"], "target deps must be enumerated");
+    }
+
+    #[test]
+    fn deps_target_tables_respect_section() {
+        let m = parse(
+            "[dependencies]\na = \"1\"\n\
+             [target.'cfg(unix)'.dev-dependencies]\nd = \"1\"\n\
+             [target.'cfg(unix)'.build-dependencies]\nbd = \"1\"\n",
+        );
+        let deps: Vec<&str> = m.deps(DepSection::Dependencies).map(|(n, _)| n).collect();
+        assert_eq!(
+            deps,
+            vec!["a"],
+            "a target dev-dep must not leak into [dependencies]"
+        );
+        let dev: Vec<&str> = m
+            .deps(DepSection::DevDependencies)
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(dev, vec!["d"]);
+        let build: Vec<&str> = m
+            .deps(DepSection::BuildDependencies)
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(build, vec!["bd"]);
     }
 
     #[test]

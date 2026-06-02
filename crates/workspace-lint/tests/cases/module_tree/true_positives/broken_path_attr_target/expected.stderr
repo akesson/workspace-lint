@@ -1,0 +1,12 @@
+error: `mod foo` declared but no `foo.rs` or `foo/mod.rs` found
+ --> crates/demo/src/lib.rs:4:1
+  |
+  = help: create `foo.rs` adjacent to this file, or `foo/mod.rs`, or add a `#[path = "…"]` attribute
+  = note: `mod foo;` with no inline body must resolve to a source file
+help: if intentional, silence with:
+  |
+4 + workspace_lint::expect!(module_tree);
+  |
+  = note: `#[deny(workspace_lint::module_tree)]` on by default
+
+workspace-lint: generated 1 error

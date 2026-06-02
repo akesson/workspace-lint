@@ -1,0 +1,15 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `full` is an umbrella feature: it only forwards to other features and is
+# never written as `#[cfg(feature = "full")]`. feature-drift must NOT flag it.
+# `greet` and `shout` are leaf features that ARE gated in source.
+greet = []
+shout = []
+full = ["greet", "shout"]

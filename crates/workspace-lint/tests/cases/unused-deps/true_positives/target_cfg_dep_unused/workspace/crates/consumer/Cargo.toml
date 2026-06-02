@@ -1,0 +1,12 @@
+[package]
+name = "consumer"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+# A platform-gated dependency that is never referenced anywhere is unused —
+# enumerating target tables makes this catchable instead of a silent miss.
+[target.'cfg(windows)'.dependencies]
+provider = { path = "../provider" }

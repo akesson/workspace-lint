@@ -1,0 +1,12 @@
+error: crate exceeds 5 code lines (8)
+ --> crates/demo/Cargo.toml:1:1
+  |
+  = help: split the crate into smaller, more focused crates
+  = note: configured by [[crate-size.rules]] glob = "crates/*"
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(crate-size)
+  |
+  = note: `#[deny(workspace_lint::crate_size)]` on by default
+
+workspace-lint: generated 1 error

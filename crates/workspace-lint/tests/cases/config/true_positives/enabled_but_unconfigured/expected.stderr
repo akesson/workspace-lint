@@ -1,0 +1,11 @@
+error: lint `file-size` is enabled in `[lints]` but has no `[file-size]` configuration, so it will never run
+ --> .workspace-lint.toml:1:1
+  |
+  = help: add a `[file-size]` section (or `[[file-size.rules]]`), or remove `file-size` from `[lints]`
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(config)
+  |
+  = note: `#[deny(workspace_lint::config)]` on by default
+
+workspace-lint: generated 1 error

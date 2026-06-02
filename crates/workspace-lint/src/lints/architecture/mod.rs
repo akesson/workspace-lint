@@ -5,23 +5,27 @@
 //! targets), with an optional `exceptions` list of specific canonical paths
 //! that bypass the rule.
 //!
-//! For every `use` binding in every workspace module, the check resolves the
-//! binding's canonical path through Tier 2.5's re-export index, then for
-//! each rule whose `from` matches the importing crate, fires a diagnostic
-//! when the resolved canonical is in `deny` and not in `exceptions`.
+//! For every `use` binding (and every glob import `use mod::*`) in every
+//! workspace module, the check resolves the imported canonical path through
+//! Tier 2.5's re-export index, then for each rule whose `from` matches the
+//! importing crate, fires a diagnostic when the resolved canonical is in
+//! `deny` and not in `exceptions`. A glob import is tested as a representative
+//! child of its target module, so a `deny = ["mod::**"]` pattern catches
+//! `use mod::*` just as it catches `use mod::Item`.
 //!
 //! Pattern grammar: `::` separates path segments; converted to `/` for
 //! globset matching. `*` matches one segment, `**` matches zero or more.
 //!
 //! ## Known scope limits
 //!
-//! - **Only `use` bindings are inspected.** Fully-qualified call sites like
-//!   `other_crate::forbidden::Type::call()` without a `use` will *not* fire.
+//! - **Only `use` bindings and glob imports are inspected.** Fully-qualified
+//!   call sites like `other_crate::forbidden::Type::call()` without a `use`
+//!   will *not* fire.
 //! - **`pub(crate) use` re-export hops are invisible** — Tier 2.5 follows
 //!   only `pub use` edges.
 
 use globset::{Glob, GlobMatcher};
-use syn_workspace::{Module, ResolvedPath, Workspace};
+use syn_workspace::{Module, Origin, ResolvedPath, SourceSpan, Workspace};
 
 use crate::config::LintLevel;
 use crate::diagnostic::Diagnostic;
@@ -80,21 +84,66 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
     // shouldn't enforce production constraints.
     for (krate, target) in workspace.primary_units() {
         let from_name = krate.name.as_str();
-        for (module, binding) in target.root.walk_use_bindings() {
-            let canonical = workspace.resolve_canonical(&binding.canonical);
-            for rule in &compiled {
-                if !rule.matches_from(from_name) {
-                    continue;
+        for module in target.root.walk() {
+            // Explicit `use` bindings — the canonical path is the imported item,
+            // which is both what we match against `deny` and what we display.
+            for binding in &module.use_bindings {
+                let canonical = workspace.resolve_canonical(&binding.canonical);
+                for rule in &compiled {
+                    if !rule.matches_from(from_name) || !rule.denies(&canonical) {
+                        continue;
+                    }
+                    if rule.is_exception(&canonical) {
+                        continue;
+                    }
+                    diagnostics.push(build_diagnostic(
+                        rule,
+                        workspace,
+                        krate,
+                        module,
+                        binding.source.as_ref(),
+                        Some(binding.local_name.as_str()),
+                        &canonical,
+                    ));
                 }
-                if !rule.denies(&canonical) {
+            }
+            // Glob imports `use mod::*` — matched as a representative child of
+            // the target module so a `deny = ["mod::**"]` pattern (which targets
+            // children, not the bare module) catches the wildcard import. The
+            // module prefix is what we display.
+            for occ in module
+                .occurrences
+                .iter()
+                .filter(|o| o.origin == Origin::GlobUse)
+            {
+                let Some(prefix) = occ.path.as_ref() else {
                     continue;
+                };
+                let canonical = workspace.resolve_canonical(prefix);
+                let child = ResolvedPath::new(
+                    canonical
+                        .segments()
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once("*".to_string())),
+                );
+                for rule in &compiled {
+                    if !rule.matches_from(from_name) || !rule.denies(&child) {
+                        continue;
+                    }
+                    if rule.is_exception(&child) {
+                        continue;
+                    }
+                    diagnostics.push(build_diagnostic(
+                        rule,
+                        workspace,
+                        krate,
+                        module,
+                        occ.span.as_ref(),
+                        None,
+                        &canonical,
+                    ));
                 }
-                if rule.is_exception(&canonical) {
-                    continue;
-                }
-                diagnostics.push(build_diagnostic(
-                    rule, workspace, krate, module, binding, &canonical,
-                ));
             }
         }
     }
@@ -102,27 +151,35 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
     diagnostics
 }
 
+/// Build a violation diagnostic. `local_name` is `Some(alias)` for an explicit
+/// `use` binding and `None` for a glob import (`use mod::*`); the latter is
+/// rendered with a trailing `::*`. `span` anchors the diagnostic at the
+/// offending `use` line when available.
 fn build_diagnostic(
     rule: &CompiledRule,
     workspace: &Workspace,
     krate: &syn_workspace::Crate,
     module: &Module,
-    binding: &syn_workspace::resolve::use_tree::UseBinding,
+    span: Option<&SourceSpan>,
+    local_name: Option<&str>,
     resolved: &ResolvedPath,
 ) -> Diagnostic {
     let rule_name = rule.name.as_deref().unwrap_or("unnamed");
+    let imported = match local_name {
+        // Glob import: display the target module with the wildcard.
+        None => format!("{}::*", resolved.display()),
+        Some(_) => resolved.display().to_string(),
+    };
     let msg = format!(
-        "import of `{}` from `{}` violates architecture rule `{}`",
-        resolved.display(),
+        "import of `{imported}` from `{}` violates architecture rule `{rule_name}`",
         krate.name,
-        rule_name,
     );
 
-    // Prefer line-accurate anchoring at the offending `use` ident itself
-    // (UseBinding::source landed in syn-workspace 0.4.0). For bindings
-    // built outside the parser (test mocks, future synthesized sources)
-    // fall back to a workspace-relative crate anchor.
-    let mut builder = match binding.source.as_ref() {
+    // Prefer line-accurate anchoring at the offending `use` line (the
+    // span landed in syn-workspace 0.4.0). For references built outside the
+    // parser (test mocks, future synthesized sources) fall back to a
+    // workspace-relative crate anchor.
+    let mut builder = match span {
         Some(span) => at_line(
             LintId::Architecture.id(),
             msg,
@@ -147,8 +204,7 @@ fn build_diagnostic(
         builder = builder.help(suggest.clone());
     } else {
         builder = builder.help(format!(
-            "`{}` matches deny pattern of rule `{rule_name}`",
-            resolved.display(),
+            "`{imported}` matches deny pattern of rule `{rule_name}`",
         ));
     }
 
@@ -160,14 +216,20 @@ fn build_diagnostic(
     // most of its value once the diagnostic carries a file:line anchor —
     // the source line is one click away. Keep it only for the rename
     // case (where the local alias is non-obvious) and only as a
-    // fallback when the binding has no recorded source.
-    let local_differs =
-        binding.local_name != resolved.segments().last().cloned().unwrap_or_default();
-    if binding.source.is_none() {
+    // fallback when the reference has no recorded source. Glob imports
+    // (`local_name == None`) have no alias, so the rename note never applies.
+    let local_differs = local_name.is_some_and(|ln| {
+        ln != resolved
+            .segments()
+            .last()
+            .map(String::as_str)
+            .unwrap_or_default()
+    });
+    if span.is_none() {
         if local_differs {
             builder = builder.note(format!(
                 "imported locally as `{}` in module `{}`",
-                binding.local_name,
+                local_name.unwrap_or_default(),
                 module.canonical.display(),
             ));
         } else {
@@ -177,7 +239,10 @@ fn build_diagnostic(
             ));
         }
     } else if local_differs {
-        builder = builder.note(format!("imported locally as `{}`", binding.local_name));
+        builder = builder.note(format!(
+            "imported locally as `{}`",
+            local_name.unwrap_or_default()
+        ));
     }
 
     builder.build()

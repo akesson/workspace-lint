@@ -1,0 +1,14 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# An optional dependency with no `dep:`-style reference anywhere makes cargo
+# synthesize an implicit feature `optdep = ["dep:optdep"]`. That implicit
+# feature is never written as `#[cfg(feature = "optdep")]`, so feature-drift
+# must NOT flag it. There is deliberately no `[features]` table here.
+optdep = { path = "../optdep", optional = true }

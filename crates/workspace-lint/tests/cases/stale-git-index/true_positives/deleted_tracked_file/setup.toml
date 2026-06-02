@@ -1,0 +1,5 @@
+# Commit the whole tree, then delete legacy.rs from disk so git's index
+# disagrees with the working tree — exactly the stale-git-index condition.
+[git]
+init = true
+delete_after = ["crates/demo/src/legacy.rs"]

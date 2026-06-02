@@ -5,11 +5,15 @@
 //! zero-argument `StaleGitIndex::new()` because there's nothing user-tunable
 //! about it.
 
+use std::path::Path;
 use std::process::Command;
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_workspace;
 use crate::lints::{Lint, LintContext, LintId};
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) struct StaleGitIndex;
 
@@ -36,19 +40,45 @@ impl Lint for StaleGitIndex {
 }
 
 pub(crate) fn check() -> Vec<Diagnostic> {
-    let output = Command::new("git")
-        .args(["ls-files"])
-        .output()
-        .unwrap_or_else(|e| {
-            eprintln!("failed to run git ls-files: {e}");
-            std::process::exit(1);
-        });
+    check_in(Path::new("."))
+}
 
+/// Run `git ls-files -z` in `base` and report tracked-but-missing paths.
+///
+/// Best-effort and always-on: a spawn failure (git not installed) or a
+/// non-git directory yields *no* findings rather than aborting the run — the
+/// old `std::process::exit(1)` would take every other lint's output down with
+/// it. `-z` gives NUL-separated paths with no quoting, so non-ASCII / spaced
+/// names are handled verbatim (git otherwise C-quotes them by default).
+fn check_in(base: &Path) -> Vec<Diagnostic> {
+    let Ok(output) = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(base)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let listing = String::from_utf8_lossy(&output.stdout);
+    build_diagnostics(&missing_paths(&listing, base))
+}
+
+/// Keep only the tracked paths from a NUL-separated `git ls-files -z` listing
+/// that no longer exist on disk (resolved relative to `base`).
+fn missing_paths<'a>(ls_files_z: &'a str, base: &Path) -> Vec<&'a str> {
+    ls_files_z
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .filter(|p| !base.join(p).exists())
+        .collect()
+}
+
+fn build_diagnostics(paths: &[&str]) -> Vec<Diagnostic> {
     let lint_id = LintId::StaleGitIndex.id();
-    let files = String::from_utf8_lossy(&output.stdout);
-    files
-        .lines()
-        .filter(|path| !std::path::Path::new(path).exists())
+    paths
+        .iter()
         .map(|path| {
             at_workspace(
                 lint_id,

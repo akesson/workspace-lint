@@ -54,8 +54,15 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         let mut crate_errors: Vec<String> = Vec::new();
         let mut suggestions: Vec<Suggestion> = Vec::new();
 
+        // A dep can be declared under several `[target.<cfg>.…]` tables in the
+        // same section; check each (section, name) once so it isn't reported
+        // multiple times.
+        let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
         for section in DepSection::member_sections() {
             for (name, item) in manifest.deps(section) {
+                if !seen.insert((section.as_str(), name)) {
+                    continue;
+                }
                 if let Some(msg) = check_dep(name, item, section, &workspace_dep_names) {
                     crate_errors.push(msg);
                     if let Some(s) = build_rewrite_suggestion(manifest, section, name) {

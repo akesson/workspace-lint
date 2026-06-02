@@ -43,10 +43,18 @@ impl Lint for Freshness {
 }
 
 pub(crate) fn check(config: &FreshnessConfig) -> Vec<Diagnostic> {
-    if std::env::var("CI").is_ok() {
+    check_gated(config, Path::new("."), std::env::var_os("CI").is_some())
+}
+
+/// `check` with the CI gate and scan root made explicit so both can be
+/// exercised deterministically in tests (env vars and the process cwd can't).
+/// On CI the lint is a no-op: source/doc mtimes are reset on checkout, so the
+/// comparison is meaningless there.
+fn check_gated(config: &FreshnessConfig, root: &Path, is_ci: bool) -> Vec<Diagnostic> {
+    if is_ci {
         return Vec::new();
     }
-    check_with_root(config, Path::new("."))
+    check_with_root(config, root)
 }
 
 fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {

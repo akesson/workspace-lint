@@ -1,0 +1,13 @@
+[package]
+name = "consumer"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+# A platform-gated dependency that IS referenced (under a matching `#[cfg]`)
+# must not be flagged: the resolver parses all cfg branches, so the reference
+# is visible regardless of the host platform the lint runs on.
+[target.'cfg(windows)'.dependencies]
+provider = { path = "../provider" }

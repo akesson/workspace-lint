@@ -1,0 +1,7 @@
+# The `expect(unused-deps)` directive is injected here (not committed in the
+# fixture) so this repo's own dogfood scan doesn't pick it up from tests/cases/
+# and report it as stale. This crate has no deps, so unused-deps never fires —
+# the expect is unfulfilled and stale-expect must flag it.
+[[append]]
+path = "crates/demo/Cargo.toml"
+text = "\n# workspace-lint: expect(unused-deps)\n"

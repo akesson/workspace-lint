@@ -247,6 +247,7 @@ mod tests {
             targets: vec![target],
             orphan_files: Vec::new(),
             declared_features: Vec::new(),
+            feature_values: std::collections::BTreeMap::new(),
             manifest: crate::manifest::Manifest::empty(),
         }
     }
