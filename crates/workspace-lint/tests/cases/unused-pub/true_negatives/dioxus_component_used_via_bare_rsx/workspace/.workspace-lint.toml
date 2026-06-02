@@ -1,0 +1,11 @@
+[unused-pub]
+# The component is used only *within* the crate (one bare `rsx!` site), so once
+# the Phase B Dioxus pass links the usage it reads as IntraCrate; this drops the
+# "consider pub(crate)" nag, leaving a clean pass. Without the pass the usage is
+# invisible and `Card` reads Unused → "appears unused" (the false positive this
+# fixture guards against).
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"

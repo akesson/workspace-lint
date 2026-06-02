@@ -1,0 +1,9 @@
+# No `publish` field → treated as workspace-internal, so unused `pub` items are
+# flagged (not exempted as external API surface). This is what makes the bare
+# component a candidate for the false positive. No real Dioxus dependency is
+# needed: the resolver recognizes `rsx!` by macro name and `#[component]` by
+# attribute name; nothing compiles.
+[package]
+name = "ui"
+version = "0.1.0"
+edition = "2024"

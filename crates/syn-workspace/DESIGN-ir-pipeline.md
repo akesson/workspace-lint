@@ -173,6 +173,30 @@ fn resolve(&self, tree: &mut ResolvedWorkspace) {}  // default no-op
 Framework semantics (Dioxus `#[component]` ↔ rsx cross-linking) land here later,
 demand-driven by a failing SCIP/case test.
 
+**Landed (Phase 4, increment 1).** The hook shipped as `ResolvePass`
+(`plugins/mod.rs`), with one deliberate divergence from the `&mut
+ResolvedWorkspace` sketch above: a pass is `fn contribute(&self, crates: &[Crate])
+-> Vec<ContributedRef>` — it *reads* the resolved members and *returns* reference
+edges rather than mutating the tree, which makes "independent pure contributors
+merged deterministically" hold by construction (the single writer unions the
+edges into `references_by_crate` before `canonical_refs_by_path` is built; set
+union is order-free). The first pass, `DioxusComponentPass`, links bare `Foo {}`
+rsx invocations to the same-crate `pub fn Foo`, reading them straight from the
+occurrence IR.
+
+Making the IR carry those bare usages required one Phase A change: the
+macro-lowering dispatch previously fired only on *item-position* `syn::Item::Macro`,
+but `rsx!` lives in fn bodies. The walk now also visits each item's nested bodies
+(`NestedMacroLowering` in `module_tree.rs`) and dispatches claimed macros, taking
+only the **structured** (`ScanPlus`/`Exact`) output — the baseline token scan
+already covers fn-body macro *tokens*, so `TokenScan` lowerers are skipped to
+avoid double-counting. Bare component names become `Origin::Component` occurrences
+(unresolved by the central resolver, excluded from the SCIP projection like
+`Origin::Macro`) that the pass binds. Gated on the `dioxus` feature (the only
+structured lowerer today), so a feature-off build skips the nested walk entirely.
+This is what keeps the plugin pure — it reads the model, never re-parses source —
+and gives any future structured lowerer fn-body capture for free.
+
 ## 5. What it buys (against the north star — see ROADMAP)
 
 - **Deletes concepts:** 8 mechanisms → core + 1 trait; three reference channels + the "combine use-bindings" step → one occurrence list; the quote no-op-gate hack and the `ResolveContext` placeholder both vanish.
@@ -209,8 +233,9 @@ demand-driven by a failing SCIP/case test.
    `to_scip_index()` wrapper that emits the real foreign type is deferred until a
    consumer needs to produce a `.scip` (none in Phase 1). The empty Phase B
    `resolve()` hook remains a Phase 4 item.
-6. *(later, test-gated — ROADMAP Phase 4)* per-site external macros; framework
-   Phase B semantics.
+6. *(framework Phase B semantics — landed, ROADMAP Phase 4 increment 1)* the
+   `ResolvePass` hook + `DioxusComponentPass` (see §4). Per-site external macros
+   remain a later test-gated follow-up.
 
 ## 8. Spike-validated normalization + encoding spec (2026-05-30)
 

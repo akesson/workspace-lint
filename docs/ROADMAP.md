@@ -476,6 +476,47 @@ corpus/SCIP case; the hook stays empty until then.
 **Done when:** the first framework plugin lands with a regression test, proving
 the Phase B extension point carries real weight.
 
+**Landed (Phase 4, increment 1 — Dioxus component cross-linking).** The Phase B
+hook now exists and carries real weight. A `#[component] pub fn Foo` used only as
+a *bare* `Foo {}` inside an `rsx!` body was false-positived by `unused-pub`
+("appears unused"): both the structured rsx walker and the baseline token scan
+drop single-ident names, so `Foo` had zero referrers. Two pieces fix it:
+
+- **The Phase B hook** — a `ResolvePass` (`plugins/mod.rs`), a deliberate
+  symmetric counterpart to the Phase A `MacroLowerer`: an independent, pure
+  contributor of reference edges, collected by `builtin_resolve_passes()` and
+  folded into `references_by_crate` *before* `canonical_refs_by_path` is built (so
+  plugin edges flow through re-export canonicalization and `referring_crates` like
+  any code reference; order-independent because the merge target is a set). The
+  first pass, `DioxusComponentPass`, binds each bare component usage to the
+  same-crate `pub fn` of that name. **Scope: same-crate only** — cross-crate
+  component libraries are a documented non-goal (a named `use other::Foo;` already
+  counts as a reference).
+- **fn-body macro dispatch** (`resolve/module_tree.rs`) — the enabling Phase A
+  fix. The macro-lowering dispatch previously only fired on *item-position*
+  macros, but real `rsx!` lives in fn bodies (`fn App() -> Element { rsx! { … } }`)
+  and so never reached the lowerer. The walk now also visits each item's nested
+  bodies and dispatches claimed macros, taking only the **structured**
+  (`ScanPlus`/`Exact`) output — the baseline token scan already covers fn-body
+  macro *tokens*, so `TokenScan` lowerers are skipped (no double-count). Bare
+  component names land in the IR as `Origin::Component` occurrences (left
+  unresolved by the central resolver) for the pass to bind. This means the pass
+  reads only the resolved model — **no source re-parse, no filesystem, no
+  framework-specific dependency gate** — and any future structured lowerer
+  (e.g. Leptos `view!`) gets fn-body capture for free.
+
+The change is **additive-only** (it only adds reference edges; `Origin::Component`
+is excluded from the SCIP projection like `Origin::Macro`), so the SCIP
+differential, dogfood, corpus FP snapshots, and message surface are all unmoved.
+The fn-body dispatch is gated on the `dioxus` feature (the only structured lowerer
+today), so a feature-off build pays nothing. Guarded by
+`unused-pub/true_negatives/dioxus_component_used_via_bare_rsx` (a `ui` crate whose
+`#[component] pub fn Card` is used only via a glob-imported bare `Card {}` — the
+FP fires without the pass, verified counterfactually, and the pass makes it
+IntraCrate → clean) plus lowerer + dispatch unit tests. Documented structural
+non-goals: components defined in `impl` blocks, interpolated `"{Component}"` text
+segments, and macros inside fn-body-nested `mod`s (attributed to the outer module).
+
 ---
 
 ## Non-goals / honest limits

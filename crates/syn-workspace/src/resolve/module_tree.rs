@@ -193,6 +193,10 @@ fn collect_module_contents(
     // Targets of `pub use M::*;` glob re-exports declared in this module.
     let mut glob_reexports: Vec<ResolvedPath> = Vec::new();
 
+    // Built once and reused for both item-position dispatch and the fn-body
+    // dispatch below.
+    let lowerers = plugins::builtin_lowerers();
+
     for syn_item in syn_items {
         for attr in item_attrs(syn_item) {
             extract_cfg_feature_names(attr, &mut cfg_features);
@@ -216,7 +220,6 @@ fn collect_module_contents(
                 tokens: &item_macro.mac.tokens,
                 marker_crates,
             };
-            let lowerers = plugins::builtin_lowerers();
             if let Some(lowerer) = lowerers.iter().find(|l| l.claims(&site)) {
                 // Span for structured occurrences: the macro-invocation site
                 // (the plugin AST doesn't expose per-ref spans).
@@ -247,6 +250,26 @@ fn collect_module_contents(
                         occurrences.extend(occs);
                     }
                 }
+            }
+        } else if !matches!(syn_item, syn::Item::Use(_) | syn::Item::Mod(_)) {
+            // Dispatch `rsx!`-style macros nested *inside* this item (fn bodies,
+            // expression position) to structured lowerers. Item-position macros
+            // are handled by the branch above; `Use`/`Mod` carry no relevant
+            // bodies. Only structured (`ScanPlus`/`Exact`) lowerers contribute —
+            // the baseline scan (`extract_code_paths`, below) already covers
+            // fn-body macro *tokens*, so a `TokenScan` lowerer would double-count.
+            // The only structured lowerer today is the Dioxus `rsx!` one, so this
+            // is gated on its feature: with `dioxus` off, no lowerer can
+            // contribute and the per-item AST walk is pure waste.
+            #[cfg(feature = "dioxus")]
+            {
+                let mut v = NestedMacroLowering {
+                    lowerers: &lowerers,
+                    marker_crates,
+                    file: parent_file,
+                    out: &mut occurrences,
+                };
+                syn::visit::Visit::visit_item(&mut v, syn_item);
             }
         }
 
@@ -429,6 +452,55 @@ fn collect_module_contents(
         occurrences,
         glob_reexports,
     })
+}
+
+/// Visits an item's nested bodies (fn bodies, expression position, …) and
+/// dispatches every claimed macro invocation to a structured lowerer, collecting
+/// the structured occurrences it emits. This is how fn-body `rsx!` (the realistic
+/// position) reaches the lowerer — the item-position branch in the main walk only
+/// sees `syn::Item::Macro`. Only [`plugins::Lowered::ScanPlus`] /
+/// [`plugins::Lowered::Exact`] contribute; the baseline token scan
+/// ([`extract_code_paths`]) already covers fn-body macro *tokens*, so a
+/// `TokenScan` lowerer would double-count and is skipped here.
+///
+/// A macro inside a fn-body-nested `mod`/`fn` is attributed to the enclosing
+/// module rather than the nested one — harmless for the same-crate lints this
+/// feeds, and a documented non-goal.
+#[cfg(feature = "dioxus")]
+struct NestedMacroLowering<'a> {
+    lowerers: &'a [Box<dyn plugins::MacroLowerer>],
+    marker_crates: &'a [String],
+    file: &'a Path,
+    out: &'a mut Vec<Occurrence>,
+}
+
+#[cfg(feature = "dioxus")]
+impl<'ast, 'a> syn::visit::Visit<'ast> for NestedMacroLowering<'a> {
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let site = plugins::MacroSite {
+            is_macro_rules: false,
+            path: &mac.path,
+            tokens: &mac.tokens,
+            marker_crates: self.marker_crates,
+        };
+        if let Some(lowerer) = self.lowerers.iter().find(|l| l.claims(&site)) {
+            let mac_span = mac
+                .path
+                .segments
+                .first()
+                .map(|s| span_to_source_span(self.file, s.ident.span()));
+            let cx = plugins::LowerCtx {
+                macro_span: mac_span,
+            };
+            match lowerer.lower(&site, &cx) {
+                plugins::Lowered::ScanPlus(occs) | plugins::Lowered::Exact(occs) => {
+                    self.out.extend(occs);
+                }
+                plugins::Lowered::TokenScan => {}
+            }
+        }
+        syn::visit::visit_macro(self, mac);
+    }
 }
 
 /// Candidate-select path references from a regular (non-macro) item body: scan
@@ -676,6 +748,9 @@ fn resolve_occurrence(
         Origin::Macro => {
             resolve_macro_path(occ.segments.clone(), scope, siblings, parent_canonical)
         }
+        // Deferred to a Phase B `ResolvePass`: a bare framework-component name
+        // carries no scope the central resolver can use without wrongly binding it.
+        Origin::Component => None,
         Origin::GlobUse | Origin::ExternCrate => Some(ResolvedPath::new(occ.segments.clone())),
     }
 }

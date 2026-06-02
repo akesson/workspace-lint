@@ -22,11 +22,13 @@
 //! Malformed `rsx!` bodies return an empty reference list; the rustc /
 //! dx toolchain is responsible for reporting parse failures, not us.
 
+use std::collections::HashMap;
+
 use syn::parse2;
 use syn::visit::Visit;
 
-use crate::plugins::{LowerCtx, Lowered, MacroLowerer, MacroSite};
-use crate::resolve::{Occurrence, Origin, ResolvedPath};
+use crate::plugins::{ContributedRef, LowerCtx, Lowered, MacroLowerer, MacroSite, ResolvePass};
+use crate::resolve::{Crate, ItemKind, Occurrence, Origin, ResolvedPath};
 
 /// Built-in lowerer for `rsx!` and `dioxus::rsx!` invocations. Token-scans the
 /// body (like any macro) AND adds the structured Component paths the scanner
@@ -46,16 +48,20 @@ impl MacroLowerer for DioxusRsxLowerer {
     }
 
     fn lower(&self, site: &MacroSite, cx: &LowerCtx) -> Lowered {
-        let mut raw: Vec<ResolvedPath> = Vec::new();
+        let mut collected = Collected::default();
         // Malformed rsx! bodies aren't our problem — the rustc / dx toolchain
         // surfaces those; we just contribute no structured refs from a partial
         // parse (the baseline token scan still runs).
         if let Ok(call_body) = parse2::<dioxus_rsx::CallBody>(site.tokens.clone()) {
-            visit_template_body(&call_body.body, &mut raw);
+            visit_template_body(&call_body.body, &mut collected);
         }
         // Structured refs carry the macro-invocation span (the rsx AST doesn't
-        // expose per-ref spans).
-        let occurrences = raw
+        // expose per-ref spans). Qualified paths resolve through the central
+        // resolver (`Macro`); a *bare* component name can't be resolved without
+        // the whole-workspace component set, so it's `Component` — left for the
+        // Phase B `DioxusComponentPass`.
+        let mut occurrences: Vec<Occurrence> = collected
+            .macro_paths
             .into_iter()
             .map(|p| Occurrence {
                 segments: p.segments().to_vec(),
@@ -64,22 +70,49 @@ impl MacroLowerer for DioxusRsxLowerer {
                 origin: Origin::Macro,
             })
             .collect();
+        occurrences.extend(
+            collected
+                .component_names
+                .into_iter()
+                .map(|name| Occurrence {
+                    segments: vec![name],
+                    path: None,
+                    span: cx.macro_span.clone(),
+                    origin: Origin::Component,
+                }),
+        );
         Lowered::ScanPlus(occurrences)
     }
 }
 
-fn visit_template_body(body: &dioxus_rsx::TemplateBody, out: &mut Vec<ResolvedPath>) {
+/// Structured references gathered from an `rsx!` body, split by how the resolver
+/// handles them: multi-segment paths the central resolver canonicalizes vs. bare
+/// single-ident component invocations a Phase B pass binds.
+#[derive(Default)]
+struct Collected {
+    macro_paths: Vec<ResolvedPath>,
+    component_names: Vec<String>,
+}
+
+fn push_component_name(path: &syn::Path, out: &mut Collected) {
+    if path.segments.len() >= 2 {
+        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        out.macro_paths.push(ResolvedPath::new(segments));
+    } else if let Some(seg) = path.segments.last() {
+        out.component_names.push(seg.ident.to_string());
+    }
+}
+
+fn visit_template_body(body: &dioxus_rsx::TemplateBody, out: &mut Collected) {
     for node in &body.roots {
         visit_node(node, out);
     }
 }
 
-fn visit_node(node: &dioxus_rsx::BodyNode, out: &mut Vec<ResolvedPath>) {
+fn visit_node(node: &dioxus_rsx::BodyNode, out: &mut Collected) {
     match node {
         dioxus_rsx::BodyNode::Component(component) => {
-            if let Some(path) = path_to_resolved(&component.name) {
-                out.push(path);
-            }
+            push_component_name(&component.name, out);
             visit_template_body(&component.children, out);
         }
         dioxus_rsx::BodyNode::Element(element) => {
@@ -116,7 +149,7 @@ fn visit_node(node: &dioxus_rsx::BodyNode, out: &mut Vec<ResolvedPath>) {
     }
 }
 
-fn visit_if_chain(chain: &dioxus_rsx::IfChain, out: &mut Vec<ResolvedPath>) {
+fn visit_if_chain(chain: &dioxus_rsx::IfChain, out: &mut Collected) {
     let mut v = ExprPathVisitor { out };
     v.visit_expr(&chain.cond);
     visit_template_body(&chain.then_branch, out);
@@ -129,13 +162,15 @@ fn visit_if_chain(chain: &dioxus_rsx::IfChain, out: &mut Vec<ResolvedPath>) {
 }
 
 struct ExprPathVisitor<'a> {
-    out: &'a mut Vec<ResolvedPath>,
+    out: &'a mut Collected,
 }
 
 impl<'ast, 'a> Visit<'ast> for ExprPathVisitor<'a> {
     fn visit_path(&mut self, node: &'ast syn::Path) {
+        // Interpolated expressions contribute qualified paths only; bare idents
+        // are local vars, deliberately dropped.
         if let Some(path) = path_to_resolved(node) {
-            self.out.push(path);
+            self.out.macro_paths.push(path);
         }
         syn::visit::visit_path(self, node);
     }
@@ -153,6 +188,66 @@ fn path_to_resolved(path: &syn::Path) -> Option<ResolvedPath> {
     }
     let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     Some(ResolvedPath::new(segments))
+}
+
+/// Phase B pass: binds a bare `Foo {}` component invocation inside `rsx!` to the
+/// matching `pub fn Foo` defined in the *same* crate. The bare usages arrive as
+/// [`Origin::Component`] occurrences in the IR (the lowerer above emits them, and
+/// the module walk now dispatches fn-body `rsx!` too), so this pass only reads
+/// the resolved model — no source re-parse.
+///
+/// ## Scope: same-crate only
+///
+/// A bare name matches `pub fn`s in its own crate by name (components are
+/// capitalized `pub fn`s; matching by name needs no attribute model and is
+/// precise enough — over-linking a same-named non-component only *suppresses* an
+/// unused-finding, the FP-safe direction). Cross-crate component libraries are a
+/// documented non-goal; a named `use other::Foo;` already counts as a reference.
+pub(crate) struct DioxusComponentPass;
+
+impl ResolvePass for DioxusComponentPass {
+    fn contribute(&self, crates: &[Crate]) -> Vec<ContributedRef> {
+        let mut out = Vec::new();
+        for krate in crates {
+            if !krate.is_workspace_member {
+                continue;
+            }
+            // Candidate component definitions: every public fn, keyed by bare
+            // name (a name may be defined in more than one module).
+            let mut defs: HashMap<&str, Vec<&ResolvedPath>> = HashMap::new();
+            for item in krate.pub_items() {
+                if item.kind == ItemKind::Fn {
+                    defs.entry(item.name.as_str())
+                        .or_default()
+                        .push(&item.canonical);
+                }
+            }
+            if defs.is_empty() {
+                continue;
+            }
+            let from = krate.code_name();
+            // Bare component usages captured as Origin::Component occurrences.
+            for module in krate.all_modules() {
+                for occ in &module.occurrences {
+                    if occ.origin != Origin::Component {
+                        continue;
+                    }
+                    let Some(name) = occ.segments.last() else {
+                        continue;
+                    };
+                    if let Some(canonicals) = defs.get(name.as_str()) {
+                        for canonical in canonicals {
+                            out.push(ContributedRef {
+                                from: from.clone(),
+                                to: (*canonical).clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -228,5 +323,46 @@ mod tests {
     fn malformed_body_yields_no_components() {
         let paths = component_paths(quote! { this is { not valid rsx } at all });
         assert!(paths.is_empty(), "got {paths:?}");
+    }
+
+    // --- bare component capture (Origin::Component) ---
+
+    fn lowered(body: TokenStream) -> Vec<Occurrence> {
+        let p = syn::parse_str("rsx").expect("valid path");
+        let site = MacroSite {
+            is_macro_rules: false,
+            path: &p,
+            tokens: &body,
+            marker_crates: &[],
+        };
+        match DioxusRsxLowerer.lower(&site, &LowerCtx { macro_span: None }) {
+            Lowered::ScanPlus(occs) => occs,
+            _ => panic!("rsx lowerer should ScanPlus"),
+        }
+    }
+
+    #[test]
+    fn bare_component_is_component_origin() {
+        let occs = lowered(quote! { Card {} });
+        let bare: Vec<_> = occs
+            .iter()
+            .filter(|o| o.origin == Origin::Component)
+            .collect();
+        assert_eq!(bare.len(), 1, "got {occs:?}");
+        assert_eq!(bare[0].segments, vec!["Card".to_string()]);
+        assert!(bare[0].path.is_none());
+    }
+
+    #[test]
+    fn qualified_component_is_macro_origin_not_component() {
+        let occs = lowered(quote! { crate::ui::Button {} });
+        assert!(
+            occs.iter().all(|o| o.origin != Origin::Component),
+            "{occs:?}"
+        );
+        assert!(
+            occs.iter()
+                .any(|o| o.origin == Origin::Macro && o.segments == ["crate", "ui", "Button"])
+        );
     }
 }
