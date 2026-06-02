@@ -549,6 +549,28 @@ outcomes:
   components — the natural next framework Phase B pass, symmetric to the rsx one.
   See `workspace-lint/tests/corpus_fp/README.md` for the full per-class triage.
 
+**Landed (Phase 4, increment 3 — Dioxus router cross-linking).** The router
+cross-linking FP flagged as "the natural next" above is closed — and it turned out
+to need **no new pass**. Tracing the code showed `DioxusComponentPass` already
+binds any bare `Origin::Component` ident to a same-crate `pub fn`; the only gap was
+that route component names live in enum *attributes* (`#[route(...)]` /
+`#[layout(...)]`), which occurrence capture (token/AST scans over fn & macro
+bodies) never visits. So this is a **capture-only** increment: a new
+`route_component_occurrences` (`plugins/dioxus_rsx/routable.rs`, called from the
+module walk under the `dioxus` feature) emits each route component as
+`Origin::Component` — a `#[route]` variant binds its ident (or an explicit
+`#[route(path, Comp)]` 2nd arg); each `#[layout(Comp)]` binds `Comp`; `#[nest]` /
+`#[redirect]` / `#[child]` / `#[end_*]` name no component. Reusing
+`Origin::Component` means zero change to the Phase B pass, the pass registry, and
+SCIP emission (Component is already SCIP-skipped → precision-neutral). The
+same-crate, by-name binding carries the identical precision tradeoff the rsx
+component pass already makes. The re-bless removed exactly HotDog's `DogView` /
+`NavBar` / `Favorites` and nothing else. Guarded by
+`unused-pub/true_negatives/dioxus_route_component_used` plus `routable.rs` capture
+unit tests. With this, every resolver FP class the corpus has surfaced is closed;
+the remaining `dioxus` findings are true positives or structural non-goals
+(trait/type solving, macro expansion) the syn-only resolver deliberately omits.
+
 ---
 
 ## Non-goals / honest limits

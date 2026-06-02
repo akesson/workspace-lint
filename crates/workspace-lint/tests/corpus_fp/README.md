@@ -137,11 +137,13 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
     doesn't expand macros. Same class as a dep used only inside a
     `#[derive]`/`#[server]` expansion (`expansion_uses!` is the opt-in fix; a
     third-party crate doesn't annotate).
-  - **Router cross-linking (known-FP — a future Phase B pass).** HotDog's
-    `DogView` / `NavBar` / `Favorites` are `pub fn` components referenced only
-    through a `#[derive(Routable)]` enum (`#[route]` / `#[layout(...)]`), not a
-    bare `rsx!` invocation — the exact analogue of the Dioxus *component* pass, for
-    the router. Out of scope for the rsx plugin.
+  - **Router cross-linking — FIXED.** HotDog's `DogView` / `NavBar` /
+    `Favorites` are `pub fn` components referenced only through a
+    `#[derive(Routable)]` enum (`#[route]` / `#[layout(...)]`), not a bare `rsx!`
+    invocation, so they read "appears unused". Closed in Phase 4 increment 3 (see
+    History): the route component names are captured as `Origin::Component` and the
+    existing `DioxusComponentPass` binds them to the same-crate `pub fn` — they now
+    read IntraCrate, exactly like a bare `rsx!` component.
   - **Trait-method / derive-via-re-export deps (known-FP — needs trait solving /
     macro expansion).** e.g. `digest` via `Sha256::digest`, `anyhow` via
     `.context()`, `serde` where only `Serialize`/`Deserialize` *derives* appear
@@ -233,6 +235,27 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > only via *another macro's* expansion (`$crate::eq_impls!` inside `read_impls!`)
 > stays a documented macro-expansion known-FP.
 
+> **History (Phase 4, increment 3 — Dioxus router cross-linking):** the increment-2
+> audit's last tractable resolver FP — HotDog's `DogView` / `NavBar` / `Favorites`,
+> `pub fn` components referenced only through a `#[derive(Routable)]` enum — is
+> closed. The fix is **capture-only**: no new Phase B pass. The existing
+> `DioxusComponentPass` already binds any bare `Origin::Component` ident to a
+> same-crate `pub fn`; the gap was that route component names live in enum
+> *attributes* (`#[route(...)]` / `#[layout(...)]`), which the token/AST scans
+> never visit. A new capture
+> (`syn-workspace/src/plugins/dioxus_rsx/routable.rs`, called from the module
+> walk) emits each route component as `Origin::Component`: a `#[route]` variant
+> binds its ident (or an explicit `#[route(path, Comp)]` 2nd arg), each
+> `#[layout(Comp)]` binds `Comp`; `#[nest]` / `#[redirect]` / `#[child]` / `#[end_*]`
+> name no component. Because route components reuse `Origin::Component` (already
+> SCIP-skipped), the differential oracle is unmoved (precision-neutral) and the
+> pass registry is untouched. Same-crate, by-name binding carries the identical
+> precision tradeoff the rsx component pass already makes. The re-bless removed
+> exactly the three HotDog findings, nothing else. Guarded by
+> `unused-pub/true_negatives/dioxus_route_component_used` (a private
+> `#[derive(Routable)]` enum whose `pub fn` components have no `rsx!` site, so only
+> the route capture can link them) plus capture unit tests in `routable.rs`.
+
 ## Takeaway for follow-ups
 
 - **The leaf-library corpus is fully FP-clean.** Every audited *library* crate
@@ -242,9 +265,10 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 - **The `dioxus` framework crate is a deliberate exception** — at 112 members it
   is too large/complex to be FP-clean, and its audit instead *validates the lint
   at framework scale*: every finding is a true positive or a **documented
-  structural non-goal** (macro-expansion, router cross-linking, trait-method,
-  derive-via-re-export, re-export-path, JS-interop). Its one genuine resolver FP
-  class — intra-crate exported-macro invocations — was fixed (Phase 4 increment 2).
+  structural non-goal** (macro-expansion, trait-method, derive-via-re-export,
+  re-export-path, JS-interop). Its two genuine resolver FP classes were fixed:
+  intra-crate exported-macro invocations (increment 2) and `#[derive(Routable)]`
+  router cross-linking (increment 3).
 - **Structural coverage** now spans the Dioxus framework monorepo (`dioxus`, 112
   members, the first crate with real `rsx!`) on top of a 7-member workspace with
   genuine cross-crate references (`regex`, 2119 items) exercising `unused-pub` at
@@ -254,14 +278,15 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
   — leave flagged (no action). They validate that the lints catch real unused
   deps / over-exposed items, and rule out blanket conservatism (which would hide
   them).
-- **Known-FP classes are now framework-scale and structural.** The leaf-library
-  FP classes are all closed (the feature-plumbing-only-dependency FP via the
-  `[features]` table in increment 8; the intra-crate exported-macro FP via
-  `MacroCallPass` in Phase 4 increment 2). What `dioxus` documents above are
-  *structural non-goals* — macro expansion, router/derive cross-linking,
-  trait-method and re-export-path attribution, JS interop — each requiring
-  semantics (type/trait solving, macro expansion, a new framework Phase B pass)
-  the resolver deliberately doesn't implement. They are the honest ceiling of a
-  syn-only resolver, not bugs. The standing `unused-deps` limitations
+- **Known-FP classes are now framework-scale and structural.** Every resolver FP
+  class found to date is closed: the feature-plumbing-only-dependency FP via the
+  `[features]` table (increment 8); the intra-crate exported-macro FP via
+  `MacroCallPass` (Phase 4 increment 2); and the `#[derive(Routable)]` router
+  cross-linking FP via the route-component capture (Phase 4 increment 3). What
+  `dioxus` documents above are *structural non-goals* — macro expansion,
+  trait-method and re-export-path attribution, derive-via-re-export, JS interop —
+  each requiring semantics (type/trait solving, macro expansion) the resolver
+  deliberately doesn't implement. They are the honest ceiling of a syn-only
+  resolver, not bugs. The standing `unused-deps` limitations
   (`build.rs`-generated code, `*-sys` link-only deps) remain suppressed via the
   `ignore` knob.

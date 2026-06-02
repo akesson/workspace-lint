@@ -396,9 +396,12 @@ pub enum Origin {
     /// A path inside a macro body (`macro_rules!`, `expansion_uses!`, or a
     /// plugin-lowered macro such as `rsx!`).
     Macro,
-    /// A bare framework-component name (e.g. `Foo {}` in `rsx!`) captured by a
-    /// structured lowerer but left unresolved by the central resolver — a Phase B
-    /// resolve plugin binds it against the workspace.
+    /// A bare framework-component name captured but left unresolved by the
+    /// central resolver — a Phase B resolve plugin binds it against the
+    /// workspace. Two capture sources today, both Dioxus: the `rsx!` lowerer
+    /// (a `Foo {}` invocation) and the `#[derive(Routable)]` enum walk (a route
+    /// variant ident or `#[layout(Foo)]` component). `DioxusComponentPass` binds
+    /// either to a same-crate `pub fn` of that name.
     Component,
     /// A bare single-ident macro *invocation* (`foo!(…)` / `foo![…]` / `foo!{…}`)
     /// in regular code. Captured here but left unresolved by the central resolver

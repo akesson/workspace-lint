@@ -30,6 +30,9 @@ use syn::visit::Visit;
 use crate::plugins::{ContributedRef, LowerCtx, Lowered, MacroLowerer, MacroSite, ResolvePass};
 use crate::resolve::{Crate, ItemKind, Occurrence, Origin, ResolvedPath};
 
+mod routable;
+pub(crate) use routable::route_component_occurrences;
+
 /// Built-in lowerer for `rsx!` and `dioxus::rsx!` invocations. Token-scans the
 /// body (like any macro) AND adds the structured Component paths the scanner
 /// misses — i.e. [`Lowered::ScanPlus`].
