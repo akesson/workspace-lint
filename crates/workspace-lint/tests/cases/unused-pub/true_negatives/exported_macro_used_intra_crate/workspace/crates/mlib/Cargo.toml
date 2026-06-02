@@ -1,0 +1,8 @@
+# No `publish` field → treated as workspace-internal, so a `#[macro_export]`
+# macro (a public item) with no cross-crate referrer is a candidate for the
+# unused-pub finding. Nothing compiles: the resolver models `macro_rules!` by
+# syntax and counts a bare `name!(...)` invocation by name.
+[package]
+name = "mlib"
+version = "0.1.0"
+edition = "2024"

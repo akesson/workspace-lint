@@ -1,0 +1,1918 @@
+warning: 5 possibly unused dependencies in packages/dioxus/Cargo.toml
+ --> packages/dioxus/Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] env_logger
+  = help: [dev-dependencies] futures-util
+  = help: [dev-dependencies] thiserror
+  = help: [dev-dependencies] tokio
+  = help: [dev-dependencies] tracing
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `env_logger`
+  |
+126 - …
+  |
+help: remove unused dependency `futures-util`
+  |
+121 - …
+  |
+help: remove unused dependency `thiserror`
+  |
+125 - …
+  |
+help: remove unused dependency `tokio`
+  |
+127 - …
+  |
+help: remove unused dependency `tracing`
+  |
+122 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/core/Cargo.toml
+ --> packages/core/Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] dioxus-html
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus-html`
+  |
+32 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/subsecond/subsecond/Cargo.toml
+ --> packages/subsecond/subsecond/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde`
+  |
+13 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 13 possibly unused dependencies in packages/html/Cargo.toml
+ --> packages/html/Cargo.toml:1:1
+  |
+  = help: [dependencies] async-trait
+  = help: [dependencies] dioxus-core-macro
+  = help: [dependencies] dioxus-hooks
+  = help: [dev-dependencies] dioxus-web
+  = help: [dependencies] futures-channel
+  = help: [dependencies] generational-box
+  = help: [dependencies] js-sys
+  = help: [build-dependencies] lazy-js-bundle
+  = help: [dev-dependencies] manganis
+  = help: [dependencies] rustversion
+  = help: [dependencies] tokio
+  = help: [dev-dependencies] tokio
+  = help: [dependencies] tracing
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `async-trait`
+  |
+24 - …
+  |
+help: remove unused dependency `dioxus-core-macro`
+  |
+14 - …
+  |
+help: remove unused dependency `dioxus-hooks`
+  |
+18 - …
+  |
+help: remove unused dependency `dioxus-web`
+  |
+41 - …
+  |
+help: remove unused dependency `futures-channel`
+  |
+26 - …
+  |
+help: remove unused dependency `generational-box`
+  |
+19 - …
+  |
+help: remove unused dependency `js-sys`
+  |
+22 - …
+  |
+help: remove unused dependency `lazy-js-bundle`
+  |
+36 - …
+  |
+help: remove unused dependency `manganis`
+  |
+43 - …
+  |
+help: remove unused dependency `rustversion`
+  |
+30 - …
+  |
+help: remove unused dependency `tokio`
+  |
+25 - …
+  |
+help: remove unused dependency `tokio`
+  |
+42 - …
+  |
+help: remove unused dependency `tracing`
+  |
+29 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 2 possibly unused dependencies in packages/core-macro/Cargo.toml
+ --> packages/core-macro/Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] dioxus-html
+  = help: [dev-dependencies] rustversion
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus-html`
+  |
+24 - …
+  |
+help: remove unused dependency `rustversion`
+  |
+25 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/rsx/Cargo.toml
+ --> packages/rsx/Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] prettyplease
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `prettyplease`
+  |
+26 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 2 possibly unused dependencies in packages/hooks/Cargo.toml
+ --> packages/hooks/Cargo.toml:1:1
+  |
+  = help: [dependencies] slab
+  = help: [dev-dependencies] web-sys
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `slab`
+  |
+21 - …
+  |
+help: remove unused dependency `web-sys`
+  |
+30 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 3 possibly unused dependencies in packages/signals/Cargo.toml
+ --> packages/signals/Cargo.toml:1:1
+  |
+  = help: [dependencies] parking_lot
+  = help: [dev-dependencies] rand
+  = help: [dev-dependencies] reqwest
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `parking_lot`
+  |
+20 - …
+  |
+help: remove unused dependency `rand`
+  |
+31 - …
+  |
+help: remove unused dependency `reqwest`
+  |
+30 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 8 possibly unused dependencies in packages/web/Cargo.toml
+ --> packages/web/Cargo.toml:1:1
+  |
+  = help: [dependencies] ciborium
+  = help: [dev-dependencies] dioxus
+  = help: [dependencies] dioxus-signals
+  = help: [dev-dependencies] dioxus-ssr
+  = help: [dev-dependencies] gloo-dialogs
+  = help: [dev-dependencies] tracing-wasm
+  = help: [dev-dependencies] wasm-bindgen-test
+  = help: [dependencies] wasm-streams
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `ciborium`
+  |
+39 - …
+  |
+help: remove unused dependency `dioxus`
+  |
+119 - …
+  |
+help: remove unused dependency `dioxus-signals`
+  |
+20 - …
+  |
+help: remove unused dependency `dioxus-ssr`
+  |
+121 - …
+  |
+help: remove unused dependency `gloo-dialogs`
+  |
+122 - …
+  |
+help: remove unused dependency `tracing-wasm`
+  |
+124 - …
+  |
+help: remove unused dependency `wasm-bindgen-test`
+  |
+120 - …
+  |
+help: remove unused dependency `wasm-streams`
+  |
+42 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 4 possibly unused dependencies in packages/devtools/Cargo.toml
+ --> packages/devtools/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde
+  = help: [dependencies] thiserror
+  = help: [dev-dependencies] tokio
+  = help: [dependencies] tracing
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde`
+  |
+17 - …
+  |
+help: remove unused dependency `thiserror`
+  |
+20 - …
+  |
+help: remove unused dependency `tokio`
+  |
+32 - …
+  |
+help: remove unused dependency `tracing`
+  |
+26 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 3 possibly unused dependencies in packages/document/Cargo.toml
+ --> packages/document/Cargo.toml:1:1
+  |
+  = help: [dependencies] dioxus-core-types
+  = help: [dependencies] futures-channel
+  = help: [dependencies] futures-util
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus-core-types`
+  |
+14 - …
+  |
+help: remove unused dependency `futures-channel`
+  |
+20 - …
+  |
+help: remove unused dependency `futures-util`
+  |
+21 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 3 possibly unused dependencies in packages/fullstack-core/Cargo.toml
+ --> packages/fullstack-core/Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] dioxus-fullstack
+  = help: [dependencies] futures-channel
+  = help: [dependencies] inventory
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus-fullstack`
+  |
+40 - …
+  |
+help: remove unused dependency `futures-channel`
+  |
+17 - …
+  |
+help: remove unused dependency `inventory`
+  |
+28 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 7 possibly unused dependencies in packages/fullstack/Cargo.toml
+ --> packages/fullstack/Cargo.toml:1:1
+  |
+  = help: [dependencies] base64
+  = help: [dependencies] dioxus-cli-config
+  = help: [dev-dependencies] dioxus-server
+  = help: [dependencies] form_urlencoded
+  = help: [dependencies] http-body
+  = help: [dependencies] rustversion
+  = help: [dependencies] wasm-bindgen-futures
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `base64`
+  |
+18 - …
+  |
+help: remove unused dependency `dioxus-cli-config`
+  |
+28 - …
+  |
+help: remove unused dependency `dioxus-server`
+  |
+91 - …
+  |
+help: remove unused dependency `form_urlencoded`
+  |
+43 - …
+  |
+help: remove unused dependency `http-body`
+  |
+45 - …
+  |
+help: remove unused dependency `rustversion`
+  |
+51 - …
+  |
+help: remove unused dependency `wasm-bindgen-futures`
+  |
+79 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 6 possibly unused dependencies in packages/fullstack-macro/Cargo.toml
+ --> packages/fullstack-macro/Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] axum
+  = help: [dependencies] const_format
+  = help: [dependencies] convert_case
+  = help: [dev-dependencies] dioxus
+  = help: [dev-dependencies] tower-http
+  = help: [dependencies] xxhash-rust
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `axum`
+  |
+27 - …
+  |
+help: remove unused dependency `const_format`
+  |
+20 - …
+  |
+help: remove unused dependency `convert_case`
+  |
+21 - …
+  |
+help: remove unused dependency `dioxus`
+  |
+24 - …
+  |
+help: remove unused dependency `tower-http`
+  |
+26 - …
+  |
+help: remove unused dependency `xxhash-rust`
+  |
+19 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 19 possibly unused dependencies in packages/fullstack-server/Cargo.toml
+ --> packages/fullstack-server/Cargo.toml:1:1
+  |
+  = help: [dependencies] async-trait
+  = help: [dependencies] base64
+  = help: [dependencies] ciborium
+  = help: [dependencies] dashmap
+  = help: [dependencies] dioxus-hooks
+  = help: [dependencies] dioxus-signals
+  = help: [dependencies] enumset
+  = help: [dependencies] futures
+  = help: [dependencies] generational-box
+  = help: [dependencies] http-body-util
+  = help: [dependencies] multer
+  = help: [dependencies] pin-project
+  = help: [dependencies] serde
+  = help: [dependencies] serde_json
+  = help: [dependencies] serde_qs
+  = help: [dependencies] tokio-tungstenite
+  = help: [dependencies] tower-layer
+  = help: [dependencies] tracing-futures
+  = help: [dependencies] url
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `async-trait`
+  |
+47 - …
+  |
+help: remove unused dependency `base64`
+  |
+53 - …
+  |
+help: remove unused dependency `ciborium`
+  |
+52 - …
+  |
+help: remove unused dependency `dashmap`
+  |
+34 - …
+  |
+help: remove unused dependency `dioxus-hooks`
+  |
+21 - …
+  |
+help: remove unused dependency `dioxus-signals`
+  |
+20 - …
+  |
+help: remove unused dependency `enumset`
+  |
+75 - …
+  |
+help: remove unused dependency `futures`
+  |
+64 - …
+  |
+help: remove unused dependency `generational-box`
+  |
+29 - …
+  |
+help: remove unused dependency `http-body-util`
+  |
+76 - …
+  |
+help: remove unused dependency `multer`
+  |
+61 - …
+  |
+help: remove unused dependency `pin-project`
+  |
+65 - …
+  |
+help: remove unused dependency `serde`
+  |
+49 - …
+  |
+help: remove unused dependency `serde_json`
+  |
+58 - …
+  |
+help: remove unused dependency `serde_qs`
+  |
+60 - …
+  |
+help: remove unused dependency `tokio-tungstenite`
+  |
+73 - …
+  |
+help: remove unused dependency `tower-layer`
+  |
+70 - …
+  |
+help: remove unused dependency `tracing-futures`
+  |
+45 - …
+  |
+help: remove unused dependency `url`
+  |
+57 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/logger/Cargo.toml
+ --> packages/logger/Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] dioxus
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus`
+  |
+30 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 4 possibly unused dependencies in packages/router/Cargo.toml
+ --> packages/router/Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] axum
+  = help: [dev-dependencies] criterion
+  = help: [dependencies] dioxus-cli-config
+  = help: [dev-dependencies] tokio
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `axum`
+  |
+34 - …
+  |
+help: remove unused dependency `criterion`
+  |
+37 - …
+  |
+help: remove unused dependency `dioxus-cli-config`
+  |
+24 - …
+  |
+help: remove unused dependency `tokio`
+  |
+41 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/router-macro/Cargo.toml
+ --> packages/router-macro/Cargo.toml:1:1
+  |
+  = help: [dependencies] digest
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `digest`
+  |
+23 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/manganis/manganis/Cargo.toml
+ --> packages/manganis/manganis/Cargo.toml:1:1
+  |
+  = help: [dependencies] thiserror
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `thiserror`
+  |
+19 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 8 possibly unused dependencies in packages/desktop/Cargo.toml
+ --> packages/desktop/Cargo.toml:1:1
+  |
+  = help: [dependencies] async-trait
+  = help: [dev-dependencies] dioxus-ssr
+  = help: [dependencies] dunce
+  = help: [dev-dependencies] http-range
+  = help: [dependencies] infer
+  = help: [dependencies] percent-encoding
+  = help: [dev-dependencies] reqwest
+  = help: [dev-dependencies] separator
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `async-trait`
+  |
+48 - …
+  |
+help: remove unused dependency `dioxus-ssr`
+  |
+122 - …
+  |
+help: remove unused dependency `dunce`
+  |
+42 - …
+  |
+help: remove unused dependency `http-range`
+  |
+121 - …
+  |
+help: remove unused dependency `infer`
+  |
+41 - …
+  |
+help: remove unused dependency `percent-encoding`
+  |
+47 - …
+  |
+help: remove unused dependency `reqwest`
+  |
+120 - …
+  |
+help: remove unused dependency `separator`
+  |
+123 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 4 possibly unused dependencies in packages/liveview/Cargo.toml
+ --> packages/liveview/Cargo.toml:1:1
+  |
+  = help: [dependencies] futures-channel
+  = help: [dependencies] rustc-hash
+  = help: [dependencies] tokio-stream
+  = help: [dev-dependencies] tower
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `futures-channel`
+  |
+19 - …
+  |
+help: remove unused dependency `rustc-hash`
+  |
+28 - …
+  |
+help: remove unused dependency `tokio-stream`
+  |
+21 - …
+  |
+help: remove unused dependency `tower`
+  |
+41 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 3 possibly unused dependencies in packages/native/Cargo.toml
+ --> packages/native/Cargo.toml:1:1
+  |
+  = help: [dependencies] futures-util
+  = help: [dependencies] keyboard-types
+  = help: [dependencies] rustc-hash
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `futures-util`
+  |
+79 - …
+  |
+help: remove unused dependency `keyboard-types`
+  |
+70 - …
+  |
+help: remove unused dependency `rustc-hash`
+  |
+78 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/wasm-split/wasm-split-macro/Cargo.toml
+ --> packages/wasm-split/wasm-split-macro/Cargo.toml:1:1
+  |
+  = help: [dependencies] proc-macro2
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `proc-macro2`
+  |
+19 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 11 possibly unused dependencies in packages/cli/Cargo.toml
+ --> packages/cli/Cargo.toml:1:1
+  |
+  = help: [dependencies] axum-extra
+  = help: [dependencies] backtrace
+  = help: [dependencies] bytes
+  = help: [dependencies] dioxus-core-types
+  = help: [dev-dependencies] escargot
+  = help: [dependencies] home
+  = help: [dependencies] hyper-rustls
+  = help: [dependencies] include_dir
+  = help: [dependencies] log
+  = help: [dependencies] self-replace
+  = help: [dependencies] tokio-util
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `axum-extra`
+  |
+60 - …
+  |
+help: remove unused dependency `backtrace`
+  |
+154 - …
+  |
+help: remove unused dependency `bytes`
+  |
+29 - …
+  |
+help: remove unused dependency `dioxus-core-types`
+  |
+19 - …
+  |
+help: remove unused dependency `escargot`
+  |
+188 - …
+  |
+help: remove unused dependency `home`
+  |
+171 - …
+  |
+help: remove unused dependency `hyper-rustls`
+  |
+49 - …
+  |
+help: remove unused dependency `include_dir`
+  |
+149 - …
+  |
+help: remove unused dependency `log`
+  |
+122 - …
+  |
+help: remove unused dependency `self-replace`
+  |
+163 - …
+  |
+help: remove unused dependency `tokio-util`
+  |
+133 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 2 possibly unused dependencies in packages/cli-telemetry/Cargo.toml
+ --> packages/cli-telemetry/Cargo.toml:1:1
+  |
+  = help: [dependencies] rand
+  = help: [dependencies] uuid
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `rand`
+  |
+15 - …
+  |
+help: remove unused dependency `uuid`
+  |
+18 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/component-manifest/Cargo.toml
+ --> packages/component-manifest/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde_json
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde_json`
+  |
+15 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 2 possibly unused dependencies in packages/rsx-hotreload/Cargo.toml
+ --> packages/rsx-hotreload/Cargo.toml:1:1
+  |
+  = help: [dependencies] proc-macro2-diagnostics
+  = help: [dependencies] tracing
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `proc-macro2-diagnostics`
+  |
+16 - …
+  |
+help: remove unused dependency `tracing`
+  |
+19 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/rsx-rosetta/Cargo.toml
+ --> packages/rsx-rosetta/Cargo.toml:1:1
+  |
+  = help: [dependencies] quote
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `quote`
+  |
+21 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/wasm-split/wasm-split-cli/Cargo.toml
+ --> packages/wasm-split/wasm-split-cli/Cargo.toml:1:1
+  |
+  = help: [dependencies] wasm-used
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `wasm-used`
+  |
+23 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/cli-harnesses/harness-fullstack-with-optional-tokio/Cargo.toml
+ --> packages/cli-harnesses/harness-fullstack-with-optional-tokio/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde`
+  |
+10 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/cli-harnesses/harness-simple-dedicated-client/Cargo.toml
+ --> packages/cli-harnesses/harness-simple-dedicated-client/Cargo.toml:1:1
+  |
+  = help: [dependencies] dioxus
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus`
+  |
+9 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/cli-harnesses/harness-simple-desktop/Cargo.toml
+ --> packages/cli-harnesses/harness-simple-desktop/Cargo.toml:1:1
+  |
+  = help: [dependencies] dioxus
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus`
+  |
+9 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/cli-harnesses/harness-simple-mobile/Cargo.toml
+ --> packages/cli-harnesses/harness-simple-mobile/Cargo.toml:1:1
+  |
+  = help: [dependencies] dioxus
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus`
+  |
+9 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/cli-harnesses/harness-simple-web/Cargo.toml
+ --> packages/cli-harnesses/harness-simple-web/Cargo.toml:1:1
+  |
+  = help: [dependencies] dioxus
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus`
+  |
+9 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/cli-harnesses/harness-web-with-default-features/Cargo.toml
+ --> packages/cli-harnesses/harness-web-with-default-features/Cargo.toml:1:1
+  |
+  = help: [dependencies] dioxus
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus`
+  |
+9 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/cli-harnesses/harness-web-with-no-default-features/Cargo.toml
+ --> packages/cli-harnesses/harness-web-with-no-default-features/Cargo.toml:1:1
+  |
+  = help: [dependencies] dioxus
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus`
+  |
+9 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 2 possibly unused dependencies in packages/playwright-tests/fullstack/Cargo.toml
+ --> packages/playwright-tests/fullstack/Cargo.toml:1:1
+  |
+  = help: [dependencies] futures
+  = help: [dependencies] serde
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde`
+  |
+12 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/playwright-tests/fullstack-errors/Cargo.toml
+ --> packages/playwright-tests/fullstack-errors/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde`
+  |
+11 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/playwright-tests/fullstack-mounted/Cargo.toml
+ --> packages/playwright-tests/fullstack-mounted/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde`
+  |
+11 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in packages/playwright-tests/fullstack-hydration-order/Cargo.toml
+ --> packages/playwright-tests/fullstack-hydration-order/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde`
+  |
+11 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 3 possibly unused dependencies in packages/playwright-tests/wasm-split-harness/Cargo.toml
+ --> packages/playwright-tests/wasm-split-harness/Cargo.toml:1:1
+  |
+  = help: [dependencies] dioxus-router
+  = help: [dependencies] getrandom
+  = help: [dependencies] wasm-bindgen-futures
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `dioxus-router`
+  |
+10 - …
+  |
+help: remove unused dependency `getrandom`
+  |
+29 - …
+  |
+help: remove unused dependency `wasm-bindgen-futures`
+  |
+20 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 2 possibly unused dependencies in examples/01-app-demos/bluetooth-scanner/Cargo.toml
+ --> examples/01-app-demos/bluetooth-scanner/Cargo.toml:1:1
+  |
+  = help: [dependencies] futures
+  = help: [dependencies] futures-channel
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `futures`
+  |
+13 - …
+  |
+help: remove unused dependency `futures-channel`
+  |
+12 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in examples/01-app-demos/file-explorer/Cargo.toml
+ --> examples/01-app-demos/file-explorer/Cargo.toml:1:1
+  |
+  = help: [dependencies] open
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `open`
+  |
+11 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in examples/01-app-demos/hotdog/Cargo.toml
+ --> examples/01-app-demos/hotdog/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde_json
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde_json`
+  |
+12 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 5 possibly unused dependencies in examples/07-fullstack/hello-world/Cargo.toml
+ --> examples/07-fullstack/hello-world/Cargo.toml:1:1
+  |
+  = help: [dependencies] anyhow
+  = help: [dependencies] reqwest
+  = help: [dependencies] serde
+  = help: [dependencies] serde_json
+  = help: [dependencies] thiserror
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `anyhow`
+  |
+14 - …
+  |
+help: remove unused dependency `reqwest`
+  |
+12 - …
+  |
+help: remove unused dependency `serde`
+  |
+11 - …
+  |
+help: remove unused dependency `serde_json`
+  |
+13 - …
+  |
+help: remove unused dependency `thiserror`
+  |
+15 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in examples/07-fullstack/router/Cargo.toml
+ --> examples/07-fullstack/router/Cargo.toml:1:1
+  |
+  = help: [dependencies] tokio
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `tokio`
+  |
+12 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in examples/07-fullstack/desktop/Cargo.toml
+ --> examples/07-fullstack/desktop/Cargo.toml:1:1
+  |
+  = help: [dependencies] serde
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `serde`
+  |
+9 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in examples/07-fullstack/auth/Cargo.toml
+ --> examples/07-fullstack/auth/Cargo.toml:1:1
+  |
+  = help: [dependencies] execute
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `execute`
+  |
+29 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 1 possibly unused dependency in examples/10-integrations/tailwind/Cargo.toml
+ --> examples/10-integrations/tailwind/Cargo.toml:1:1
+  |
+  = help: [dependencies] manganis
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `manganis`
+  |
+14 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 2 possibly unused dependencies in examples/10-integrations/native-headless/Cargo.toml
+ --> examples/10-integrations/native-headless/Cargo.toml:1:1
+  |
+  = help: [dependencies] bytemuck
+  = help: [dependencies] rustc-hash
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `bytemuck`
+  |
+22 - …
+  |
+help: remove unused dependency `rustc-hash`
+  |
+16 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: 5 possibly unused dependencies in Cargo.toml
+ --> /Cargo.toml:1:1
+  |
+  = help: [dev-dependencies] anyhow
+  = help: [dev-dependencies] dioxus-stores
+  = help: [dev-dependencies] form_urlencoded
+  = help: [dependencies] wasm-splitter
+  = help: [dependencies] wasm-streams
+  = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+  = note: verify by removing the dep and running `cargo build --all-targets`
+  = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+help: remove unused dependency `anyhow`
+  |
+472 - …
+  |
+help: remove unused dependency `dioxus-stores`
+  |
+462 - …
+  |
+help: remove unused dependency `form_urlencoded`
+  |
+469 - …
+  |
+help: remove unused dependency `wasm-splitter`
+  |
+446 - …
+  |
+help: remove unused dependency `wasm-streams`
+  |
+457 - …
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+warning: pub enum `Component` in crate `dioxus_core` appears unused — consider removing
+ --> <TMP>/packages/core/src/suspense/component.rs:251:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+251 - <existing>
+251 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+251 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub macro `eq_impls` in crate `dioxus_signals` appears unused — consider removing
+ --> <TMP>/packages/signals/src/impls.rs:269:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: if intentional, silence with:
+  |
+269 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub type `WebSocketStream` in crate `dioxus_fullstack` appears unused — consider removing
+ --> <TMP>/packages/fullstack/src/payloads/websocket.rs:1286:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+1286 - <existing>
+1286 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+1286 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `Interpreter` in crate `dioxus_interpreter_js` appears unused — consider removing
+ --> <TMP>/packages/interpreter/src/unified_bindings.rs:45:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+45 - <existing>
+45 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+45 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `DesktopDataTransfer` in crate `dioxus_desktop` appears unused — consider removing
+ --> <TMP>/packages/desktop/src/file_upload.rs:479:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+479 - <existing>
+479 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+479 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `start_app` in crate `dioxus_desktop` appears unused — consider removing
+ --> <TMP>/packages/desktop/src/mobile.rs:13:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+13 - <existing>
+13 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+13 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `serialize` in crate `dioxus_liveview` appears unused — consider removing
+ --> <TMP>/packages/liveview/src/history.rs:356:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+356 - <existing>
+356 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+356 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `deserialize` in crate `dioxus_liveview` appears unused — consider removing
+ --> <TMP>/packages/liveview/src/history.rs:367:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+367 - <existing>
+367 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+367 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub type `ProgressRx` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/build/context.rs:23:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+23 - <existing>
+23 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+23 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `create_undefined_symbol_stub` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/build/patch.rs:852:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+852 - <existing>
+852 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+852 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `prepare_wasm_base_module` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/build/patch.rs:1316:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+1316 - <existing>
+1316 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+1316 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub enum `LinkerFlavor` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/cli/link.rs:43:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+43 - <existing>
+43 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+43 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `log_if_cli_could_update` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/cli/update.rs:220:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+220 - <existing>
+220 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+220 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `Verbosity` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/cli/verbosity.rs:5:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+5 - <existing>
+5 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+5 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `extract_inline_config_from_file` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/inline_config.rs:55:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+55 - <existing>
+55 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+55 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `merge_with_inline_config` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/inline_config.rs:185:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+185 - <existing>
+185 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+185 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `PermissionsConfig` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:32:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+32 - <existing>
+32 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+32 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `DeepLinkConfig` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:135:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+135 - <existing>
+135 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+135 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `BackgroundConfig` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:170:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+170 - <existing>
+170 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+170 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `IosConfig` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:286:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+286 - <existing>
+286 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+286 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `AndroidConfig` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:544:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+544 - <existing>
+544 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+544 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `MacosConfig` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:812:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+812 - <existing>
+812 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+812 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `WindowsConfig` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:1040:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+1040 - <existing>
+1040 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+1040 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub struct `LinuxConfig` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:1310:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+1310 - <existing>
+1310 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+1310 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `generate_manifest_schema` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/config/manifest.rs:1451:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+1451 - <existing>
+1451 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+1451 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `verbosity_or_default` in crate `dioxus_cli` appears unused — consider removing
+ --> <TMP>/packages/cli/src/logging.rs:72:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+72 - <existing>
+72 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+72 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub static `USER_API` in crate `fullstack_hackernews_example` appears unused — consider removing
+ --> <TMP>/examples/01-app-demos/hackernews/src/main.rs:187:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+187 - <existing>
+187 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+187 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `error_page` in crate `ecommerce_site` appears unused — consider removing
+ --> <TMP>/examples/01-app-demos/ecommerce-site/src/components/error.rs:4:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+4 - <existing>
+4 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+4 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `Favorites` in crate `hotdog` appears unused — consider removing
+ --> <TMP>/examples/01-app-demos/hotdog/src/frontend.rs:10:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+10 - <existing>
+10 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+10 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `NavBar` in crate `hotdog` appears unused — consider removing
+ --> <TMP>/examples/01-app-demos/hotdog/src/frontend.rs:32:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+32 - <existing>
+32 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+32 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `DogView` in crate `hotdog` appears unused — consider removing
+ --> <TMP>/examples/01-app-demos/hotdog/src/frontend.rs:44:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+44 - <existing>
+44 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+44 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `getCurrentPositionJson` in crate `geolocation_native_plugin` appears unused — consider removing
+ --> <TMP>/examples/01-app-demos/geolocation-native-plugin/src/plugin/mod.rs:296:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+296 - <existing>
+296 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+296 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `checkPermissionsJson` in crate `geolocation_native_plugin` appears unused — consider removing
+ --> <TMP>/examples/01-app-demos/geolocation-native-plugin/src/plugin/mod.rs:302:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+302 - <existing>
+302 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+302 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+warning: pub fn `requestPermissionsJson` in crate `geolocation_native_plugin` appears unused — consider removing
+ --> <TMP>/examples/01-app-demos/geolocation-native-plugin/src/plugin/mod.rs:308:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+308 - <existing>
+308 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+308 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 85 warnings (run `workspace-lint --fix` to apply 186 suggestions)

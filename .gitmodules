@@ -19,3 +19,6 @@
 [submodule "corpus/regex"]
 	path = corpus/regex
 	url = https://github.com/rust-lang/regex.git
+[submodule "corpus/dioxus"]
+	path = corpus/dioxus
+	url = https://github.com/DioxusLabs/dioxus.git

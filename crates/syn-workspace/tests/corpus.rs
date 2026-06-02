@@ -72,6 +72,18 @@ const CORPUS: &[CorpusEntry] = &[
         name: "regex",
         dir: "regex",
     },
+    // The Dioxus framework monorepo (pinned to the `v0.7.9` release tag, whose own
+    // `dioxus-rsx` is `0.7.9` — the exact version this resolver parses against). The
+    // first corpus crate carrying real `rsx!` (1100+ invocations across its
+    // `examples/` and package crates), so it's the load/parse stress test for the
+    // `dioxus_rsx` Phase A lowerer on production component trees — deeply nested
+    // components, `for`/`if` template bodies, interpolated expressions — that the
+    // hand-authored fixtures can't reach. A 112-member workspace, the largest in the
+    // corpus by member count.
+    CorpusEntry {
+        name: "dioxus",
+        dir: "dioxus",
+    },
 ];
 
 /// Termination guard, not a perf gate — shared CI runners are too noisy to assert

@@ -517,6 +517,38 @@ IntraCrate → clean) plus lowerer + dispatch unit tests. Documented structural
 non-goals: components defined in `impl` blocks, interpolated `"{Component}"` text
 segments, and macros inside fn-body-nested `mod`s (attributed to the outer module).
 
+**Landed (Phase 4, increment 2 — first real Dioxus corpus crate + intra-crate
+macro fix).** Increment 1 shipped backed only by a synthetic fixture, so the
+`rsx!` parser had near-zero blast radius. The Dioxus framework monorepo is now
+vendored as a corpus submodule (pinned to `v0.7.9`, whose own `dioxus-rsx` is the
+`0.7.9` this resolver parses against), wired into both the smoke gate
+(`syn-workspace/tests/corpus.rs`) and the lint FP-audit
+(`workspace-lint/tests/corpus_fp.rs`). At 24 MB / 112 members / 1100+ real `rsx!`
+invocations it is the first corpus crate with real component DSL — the genuine
+load/parse stress test for the Phase A lowerer (it loads in ~2.5s, no panic). Two
+outcomes:
+
+- **A core Phase B pass landed alongside the Dioxus one.** The framework-scale
+  `unused-pub` audit surfaced the one tractable resolver FP it contained: an
+  exported `macro_rules!` invoked only by bare intra-crate `name!(...)` read
+  "appears unused", because bare single-ident macro invocations were never
+  captured as references (a side effect of the increment-6 fix excluding macros
+  from `sibling_names`). The new core `MacroCallPass`
+  (`plugins/macro_calls.rs`) — the macro twin of `DioxusComponentPass`, but
+  always-on since `macro_rules!` is a language feature — captures bare invocations
+  (`Ident !` + delimited group, leaving multi-segment `m::foo!` and `log::debug!`
+  untouched) as `Origin::MacroCall` and binds them to the same-crate definition.
+  Additive-only and SCIP-excluded → precision-neutral; guarded by
+  `unused-pub/true_negatives/exported_macro_used_intra_crate`.
+- **The audit otherwise validated the lint at scale.** Every remaining finding is
+  a true positive or a documented structural non-goal (macro-expansion, e.g.
+  `$crate::eq_impls!` inside another macro; trait-method and derive-via-re-export
+  deps; re-export-path deps; JS-interop exports; `ignore`-doc deps). The standout
+  is **router cross-linking** — `#[derive(Routable)]` enums reference `pub fn`
+  components (`#[route]` / `#[layout(...)]`) the same way `rsx!` references bare
+  components — the natural next framework Phase B pass, symmetric to the rsx one.
+  See `workspace-lint/tests/corpus_fp/README.md` for the full per-class triage.
+
 ---
 
 ## Non-goals / honest limits

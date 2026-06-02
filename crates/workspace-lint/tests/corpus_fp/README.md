@@ -117,6 +117,47 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
     crate's own code. `unused-deps` now reads the `[features]` table, so a dep
     forwarded via `dep:` / `?/` counts as used (see History below).
 
+- **`dioxus`** (the framework monorepo, pinned to `v0.7.9`; a 112-member
+  workspace, the largest in the corpus) — added as the first corpus crate
+  carrying real `rsx!` (1100+ invocations), so the smoke gate
+  (`syn-workspace/tests/corpus.rs`) stress-tests the `dioxus-rsx 0.7.9` Phase A
+  parser on production component trees. Unlike the leaf-library crates above, the
+  framework-scale `unused-pub` + `unused-deps` audit surfaces a *large* finding
+  set; triage confirmed the lint is **behaving correctly at scale** — every
+  finding is a true positive or a documented structural non-goal, with one
+  fixable resolver FP class (now fixed). The classes:
+  - **One resolver FP — FIXED.** `dioxus_signals`' `default_impl!` / `read_impls!`
+    / `fmt_impls!` / `write_impls!` (`#[macro_export] macro_rules!` invoked only by
+    bare intra-crate `name!(...)`) read "appears unused" because bare macro
+    invocations weren't captured as references. Closed by the core `MacroCallPass`
+    (see History); they now read IntraCrate.
+  - **Macro-expansion (known-FP, structural non-goal).** `eq_impls!` is invoked
+    only as `$crate::eq_impls!{…}` *inside another macro's expansion body*
+    (`read_impls!`), never at a real call site — invisible to a resolver that
+    doesn't expand macros. Same class as a dep used only inside a
+    `#[derive]`/`#[server]` expansion (`expansion_uses!` is the opt-in fix; a
+    third-party crate doesn't annotate).
+  - **Router cross-linking (known-FP — a future Phase B pass).** HotDog's
+    `DogView` / `NavBar` / `Favorites` are `pub fn` components referenced only
+    through a `#[derive(Routable)]` enum (`#[route]` / `#[layout(...)]`), not a
+    bare `rsx!` invocation — the exact analogue of the Dioxus *component* pass, for
+    the router. Out of scope for the rsx plugin.
+  - **Trait-method / derive-via-re-export deps (known-FP — needs trait solving /
+    macro expansion).** e.g. `digest` via `Sha256::digest`, `anyhow` via
+    `.context()`, `serde` where only `Serialize`/`Deserialize` *derives* appear
+    with no `serde::` path (the trait is glob-imported from a prelude). Type
+    inference and trait solving are explicit non-goals.
+  - **Re-export-path deps (known-FP).** `const_format` / `xxhash-rust` /
+    `self-replace` are referenced only as `other_crate::dep::…` (a re-export of a
+    transitive dep), never via the direct dep's own root segment.
+  - **JS-interop exports (true-positive-ish).** `geolocation_native_plugin`'s
+    `*Json` fns and `dioxus_interpreter_js::Interpreter` are reached from
+    JavaScript — invisible to a Rust resolver.
+  - **`ignore`-doc / genuinely-unused (true positives).** `dioxus`'s `tokio`
+    dev-dep appears only in a `rust,ignore` doc fence (deliberately not scanned);
+    `dioxus_core::Component` (a `suspense` internal) and the `dioxus_cli` platform
+    config structs have no workspace referrer. Left flagged — real lint wins.
+
 > **History (Phase 3, increment 8 — feature-plumbing deps):** the last corpus FP,
 > regex's `aho-corasick`, was closed. `Manifest::feature_dep_refs`
 > (`syn-workspace/src/manifest.rs`) reads the `[features]` table and extracts the
@@ -170,22 +211,57 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > `unused-deps/true_negatives/dep_referenced_in_macro_not_shadowed_by_local_macro`
 > fixture.
 
+> **History (Phase 4, increment 2 — first real Dioxus corpus crate + intra-crate
+> macro fix):** the `dioxus` monorepo (`v0.7.9`, whose own `dioxus-rsx` is the
+> `0.7.9` this resolver parses against) was vendored to exercise the `dioxus_rsx`
+> Phase A parser on real `rsx!` at scale — the prior coverage was a single
+> synthetic fixture. Its framework-scale `unused-pub` audit surfaced one resolver
+> FP class: an exported `macro_rules!` invoked only by bare intra-crate
+> `name!(...)` was flagged unused, because bare single-ident macro invocations
+> were never captured as references — a side effect of the increment-6 fix that
+> drops macros from `sibling_names` (so `macro_rules! log` can't shadow the `log`
+> crate in `log::debug!`). The core `MacroCallPass`
+> (`syn-workspace/src/plugins/macro_calls.rs`) closes it: a bare invocation
+> (`Ident !` + a delimited group — so multi-segment `m::foo!` and the `log::debug!`
+> path case are untouched, preserving increment-6) is captured as
+> `Origin::MacroCall` and bound to a same-crate `macro_rules!` of that name — the
+> macro twin of the Dioxus `DioxusComponentPass`, but **core** (always on) since
+> `macro_rules!` is a language feature. `Origin::MacroCall` is excluded from the
+> SCIP projection (like `Macro`/`Component`), so the differential is unmoved
+> (precision-neutral). Guarded by
+> `unused-pub/true_negatives/exported_macro_used_intra_crate`. A macro invoked
+> only via *another macro's* expansion (`$crate::eq_impls!` inside `read_impls!`)
+> stays a documented macro-expansion known-FP.
+
 ## Takeaway for follow-ups
 
-- **Corpus is fully FP-clean.** Every audited crate is clean except confirmed
-  *true positives* — anyhow's `syn` and regex's `quickcheck` (unused dev-deps),
-  and regex's two `BY_NAME` consts (unreferenced generated consts). No surviving
-  false positives remain.
-- **Structural coverage** now includes a large 7-member workspace with genuine
-  cross-crate references (`regex`, 2119 items) exercising `unused-pub` at scale,
-  on top of deep cfg-gated arch-specific module trees (`memchr`), multi-member
+- **The leaf-library corpus is fully FP-clean.** Every audited *library* crate
+  (anyhow … regex) is clean except confirmed *true positives* — anyhow's `syn` and
+  regex's `quickcheck` (unused dev-deps), and regex's two `BY_NAME` consts
+  (unreferenced generated consts). No surviving false positives remain.
+- **The `dioxus` framework crate is a deliberate exception** — at 112 members it
+  is too large/complex to be FP-clean, and its audit instead *validates the lint
+  at framework scale*: every finding is a true positive or a **documented
+  structural non-goal** (macro-expansion, router cross-linking, trait-method,
+  derive-via-re-export, re-export-path, JS-interop). Its one genuine resolver FP
+  class — intra-crate exported-macro invocations — was fixed (Phase 4 increment 2).
+- **Structural coverage** now spans the Dioxus framework monorepo (`dioxus`, 112
+  members, the first crate with real `rsx!`) on top of a 7-member workspace with
+  genuine cross-crate references (`regex`, 2119 items) exercising `unused-pub` at
+  scale, deep cfg-gated arch-specific module trees (`memchr`), multi-member
   workspaces (`thiserror`), and module-file resolution (`bitflags`).
 - **True positives** (anyhow `syn`, regex `quickcheck`, regex's `BY_NAME` consts)
   — leave flagged (no action). They validate that the lints catch real unused
   deps / over-exposed items, and rule out blanket conservatism (which would hide
   them).
-- **No remaining known-FP classes.** The former feature-plumbing-only-dependency
-  FP (an optional dep declared solely to forward a feature) is fixed —
-  `unused-deps` now consults the `[features]` table (increment 8). The remaining
-  documented `unused-deps` limitations (`build.rs`-generated code, `*-sys`
-  link-only deps) are structural and suppressed via the `ignore` knob.
+- **Known-FP classes are now framework-scale and structural.** The leaf-library
+  FP classes are all closed (the feature-plumbing-only-dependency FP via the
+  `[features]` table in increment 8; the intra-crate exported-macro FP via
+  `MacroCallPass` in Phase 4 increment 2). What `dioxus` documents above are
+  *structural non-goals* — macro expansion, router/derive cross-linking,
+  trait-method and re-export-path attribution, JS interop — each requiring
+  semantics (type/trait solving, macro expansion, a new framework Phase B pass)
+  the resolver deliberately doesn't implement. They are the honest ceiling of a
+  syn-only resolver, not bugs. The standing `unused-deps` limitations
+  (`build.rs`-generated code, `*-sys` link-only deps) remain suppressed via the
+  `ignore` knob.

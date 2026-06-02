@@ -26,6 +26,7 @@ use proc_macro2::TokenStream;
 use crate::macros::annotation::is_expansion_uses;
 use crate::resolve::{Crate, Occurrence, ResolvedPath, SourceSpan};
 
+pub(crate) mod macro_calls;
 pub(crate) mod quote;
 
 #[cfg(feature = "dioxus")]
@@ -158,14 +159,16 @@ pub(crate) trait ResolvePass: Send + Sync {
     fn contribute(&self, crates: &[Crate]) -> Vec<ContributedRef>;
 }
 
-/// All built-in Phase-B resolve passes. Default-empty until a framework feature
-/// is enabled — the hook is a genuine no-op otherwise (ROADMAP Phase 4: "the
-/// hook stays empty until then").
+/// All built-in Phase-B resolve passes: the core [`macro_calls::MacroCallPass`]
+/// (always present — `macro_rules!` is a language feature) plus any framework
+/// passes gated on their feature (e.g. the Dioxus component pass, ROADMAP
+/// Phase 4). Each is an independent pure contributor; order doesn't matter.
 pub(crate) fn builtin_resolve_passes() -> Vec<Box<dyn ResolvePass>> {
+    // `mut` only needed when a feature-gated pass is enabled.
+    #[allow(unused_mut)]
+    let mut passes: Vec<Box<dyn ResolvePass>> = vec![Box::new(macro_calls::MacroCallPass)];
     #[cfg(feature = "dioxus")]
-    let passes: Vec<Box<dyn ResolvePass>> = vec![Box::new(dioxus_rsx::DioxusComponentPass)];
-    #[cfg(not(feature = "dioxus"))]
-    let passes: Vec<Box<dyn ResolvePass>> = Vec::new();
+    passes.push(Box::new(dioxus_rsx::DioxusComponentPass));
     passes
 }
 
