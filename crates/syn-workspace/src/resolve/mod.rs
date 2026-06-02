@@ -396,6 +396,10 @@ pub enum Origin {
     /// A path inside a macro body (`macro_rules!`, `expansion_uses!`, or a
     /// plugin-lowered macro such as `rsx!`).
     Macro,
+    /// A bare framework-component name (e.g. `Foo {}` in `rsx!`) captured by a
+    /// structured lowerer but left unresolved by the central resolver — a Phase B
+    /// resolve plugin binds it against the workspace.
+    Component,
 }
 
 /// A single reference occurrence in a module — the resolver's primary
@@ -775,6 +779,19 @@ impl Workspace {
                 collect_macro_implicit_refs(&target.root, macro_entry);
                 collect_module_references(&target.root, entry);
                 collect_doctest_refs(&target.root, doc_entry);
+            }
+        }
+        // Phase B resolve passes (framework semantics). Each pass is an
+        // independent pure contributor: it reads the resolved member crates and
+        // returns reference edges the mechanical resolver structurally can't
+        // produce (e.g. Dioxus `#[component]` ↔ bare `Foo {}` rsx usage). Folding
+        // them into `references_by_crate` *before* the reverse index is built
+        // means they flow through `re_exports.canonical()` and `referring_crates`
+        // exactly like code references. Order-independent: the merge target is a
+        // set, so the union is the same regardless of pass order.
+        for pass in crate::plugins::builtin_resolve_passes() {
+            for crate::plugins::ContributedRef { from, to } in pass.contribute(&crates) {
+                references_by_crate.entry(from).or_default().insert(to);
             }
         }
         let mut canonical_refs_by_path: std::collections::HashMap<

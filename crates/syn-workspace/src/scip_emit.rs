@@ -126,8 +126,10 @@ impl Workspace {
                         }
                     }
                     // References — every resolved, non-macro code occurrence.
+                    // `Component` (framework-macro refs resolved by a Phase B
+                    // pass) are out of the in-class set, like `Macro`.
                     for occ in &module.occurrences {
-                        if occ.origin == Origin::Macro {
+                        if matches!(occ.origin, Origin::Macro | Origin::Component) {
                             continue;
                         }
                         let (Some(path), Some(span)) = (&occ.path, &occ.span) else {

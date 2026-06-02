@@ -24,7 +24,7 @@
 use proc_macro2::TokenStream;
 
 use crate::macros::annotation::is_expansion_uses;
-use crate::resolve::{Occurrence, ResolvedPath, SourceSpan};
+use crate::resolve::{Crate, Occurrence, ResolvedPath, SourceSpan};
 
 pub(crate) mod quote;
 
@@ -132,6 +132,43 @@ pub(crate) fn claims_any(site: &MacroSite) -> bool {
     builtin_lowerers().iter().any(|l| l.claims(site))
 }
 
+/// One reference edge a [`ResolvePass`] discovered: crate `from` (code-form
+/// name) references the canonical item `to`. Folded into the workspace's
+/// per-crate reference set, so it flows through re-export canonicalization and
+/// the `referring_crates` index exactly like a code reference.
+pub(crate) struct ContributedRef {
+    pub from: String,
+    pub to: ResolvedPath,
+}
+
+/// A Phase-B resolution contributor — the resolver's *semantic* extension point,
+/// symmetric to [`MacroLowerer`] (Phase A). Where a `MacroLowerer` lowers one
+/// macro body in isolation, a `ResolvePass` sees the whole resolved member set
+/// and contributes references that pure path resolution structurally can't
+/// produce (framework semantics — e.g. a Dioxus `#[component]` bound to a bare
+/// `Foo {}` `rsx!` invocation, a reference path resolution alone can't see).
+///
+/// Passes are **independent pure contributors** (a ROADMAP non-goal makes this a
+/// hard rule): each reads the member crates and returns edges; it never mutates
+/// the model and is never aware of another pass. The single writer in
+/// `Workspace::load_with_options` unions every pass's edges into a set, so the
+/// merged result is order-independent by construction.
+pub(crate) trait ResolvePass: Send + Sync {
+    /// Inspect the resolved member crates; return extra reference edges.
+    fn contribute(&self, crates: &[Crate]) -> Vec<ContributedRef>;
+}
+
+/// All built-in Phase-B resolve passes. Default-empty until a framework feature
+/// is enabled — the hook is a genuine no-op otherwise (ROADMAP Phase 4: "the
+/// hook stays empty until then").
+pub(crate) fn builtin_resolve_passes() -> Vec<Box<dyn ResolvePass>> {
+    #[cfg(feature = "dioxus")]
+    let passes: Vec<Box<dyn ResolvePass>> = vec![Box::new(dioxus_rsx::DioxusComponentPass)];
+    #[cfg(not(feature = "dioxus"))]
+    let passes: Vec<Box<dyn ResolvePass>> = Vec::new();
+    passes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +239,13 @@ mod tests {
         assert!(claims_any(&site(false, &path, &tokens)));
         let qualified = syn_path("dioxus::rsx");
         assert!(claims_any(&site(false, &qualified, &tokens)));
+    }
+
+    #[cfg(feature = "dioxus")]
+    #[test]
+    fn resolve_passes_registered_with_dioxus() {
+        // The Phase B hook ships the Dioxus component pass when the feature is on;
+        // it is default-empty (a no-op) otherwise.
+        assert!(!builtin_resolve_passes().is_empty());
     }
 }
