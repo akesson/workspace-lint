@@ -1,0 +1,13 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+# No `[features]` table: `undeclared_feat` is referenced by a `#[cfg(feature =
+# ...)]` gate inside a fn body (see src/lib.rs). feature-drift SHOULD fire
+# `gated_undeclared`, but v1 scans only item-level attributes, so it misses the
+# body gate entirely. KNOWN FALSE NEGATIVE: when body-level cfg scanning lands,
+# this case starts firing and should move to true_positives.

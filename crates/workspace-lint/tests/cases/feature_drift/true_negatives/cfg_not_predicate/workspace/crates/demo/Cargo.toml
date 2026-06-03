@@ -1,0 +1,13 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `legacy` is referenced via `#[cfg(not(feature = "legacy"))]`. feature-drift
+# must recurse into `not(...)` (and `any`/`all`) when collecting gated feature
+# names, so `legacy` counts as used and is NOT flagged declared-never-gated.
+legacy = []

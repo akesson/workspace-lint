@@ -1,0 +1,18 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+optdep = { path = "../optdep", optional = true }
+
+[features]
+# Both features forward to a dependency's feature via slash syntax (`strong`)
+# and weak-dep syntax (`weak`). Their activation lists are non-empty, so they
+# are plumbing — never written as `#[cfg(feature = "...")]` — and feature-drift
+# must NOT flag them as declared-never-gated.
+strong = ["optdep/featx"]
+weak = ["optdep?/featx"]

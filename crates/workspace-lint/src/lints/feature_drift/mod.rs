@@ -68,25 +68,11 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         let used_refs: BTreeSet<&str> = used.iter().map(String::as_str).collect();
 
         for &feat in &declared {
-            if feat == "default" || feat.is_empty() {
-                continue;
-            }
-            // Only "leaf" features (empty activation list) gate code directly.
-            // A feature whose list is non-empty forwards to a dependency
-            // (`dep:foo`, `foo/bar`, `foo?/bar`) or to another feature
-            // (umbrella) — and cargo synthesizes such a list for every implicit
-            // optional-dependency feature. Those legitimately never appear in a
-            // `#[cfg(feature = "...")]` gate, so flagging them is a false
-            // positive. See feature_drift/true_negatives/{feature_gates_optional_dep,
-            // implicit_optional_dep_feature, umbrella_feature}.
-            if krate
-                .feature_values
-                .get(feat)
-                .is_some_and(|vals| !vals.is_empty())
-            {
-                continue;
-            }
-            if used_refs.contains(feat) {
+            if !should_flag_declared(
+                feat,
+                krate.feature_values.get(feat).map(Vec::as_slice),
+                &used_refs,
+            ) {
                 continue;
             }
             let msg =
@@ -127,3 +113,38 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     }
     diagnostics
 }
+
+/// Pure decision for the **declared_never_gated** branch: should `feat` be
+/// flagged as declared in `[features]` but never gated in source?
+///
+/// - `default` / the empty string are excluded (cargo handles `default`
+///   specially; the empty string is never a real feature name).
+/// - Only "leaf" features (empty activation list) gate code directly. A
+///   feature whose list is non-empty forwards to a dependency (`dep:foo`,
+///   `foo/bar`, `foo?/bar`) or to another feature (umbrella) — and cargo
+///   synthesizes such a list for every implicit optional-dependency feature.
+///   Those legitimately never appear in a `#[cfg(feature = "...")]` gate, so
+///   flagging them is a false positive. `activation` is the feature's value
+///   list from `Cargo.toml`'s `[features]` table (`None` if the feature isn't
+///   present in the map at all).
+/// - A leaf feature that *is* referenced by a `cfg(feature = ...)` gate is
+///   fine.
+///
+/// See `feature_drift/true_negatives/{feature_gates_optional_dep,
+/// implicit_optional_dep_feature, umbrella_feature, weak_dep_activation}`.
+fn should_flag_declared(
+    feat: &str,
+    activation: Option<&[String]>,
+    used_refs: &BTreeSet<&str>,
+) -> bool {
+    if feat == "default" || feat.is_empty() {
+        return false;
+    }
+    if activation.is_some_and(|vals| !vals.is_empty()) {
+        return false;
+    }
+    !used_refs.contains(feat)
+}
+
+#[cfg(test)]
+mod tests;
