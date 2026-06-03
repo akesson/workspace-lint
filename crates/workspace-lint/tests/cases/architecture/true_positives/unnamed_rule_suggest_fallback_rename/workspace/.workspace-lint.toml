@@ -1,0 +1,9 @@
+# No `name`, `suggest`, or `reason`: exercises the "unnamed" rule label and the
+# generated help fallback. The import uses `as`, exercising the rename note.
+[[architecture.rules]]
+from = ["apps-*"]
+deny = ["data-models::internal::**"]
+
+[lints]
+default = "allow"
+architecture = "deny"
