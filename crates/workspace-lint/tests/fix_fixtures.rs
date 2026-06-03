@@ -163,8 +163,8 @@ fn walk_files(root: &Path) -> Vec<PathBuf> {
 // --- One test per fixture below. New fixtures go in
 //     tests/fixtures/fix__<name>/{input,expected}/ then get a #[test]
 //     wrapper here. The `every_fixturable_lint_has_a_fix_fixture` guard in
-//     tests/lint_coverage.rs verifies the FIXTURABLE_LINTS list stays in
-//     sync with what exists on disk.
+//     src/lints/lints_id.rs (its `#[cfg(test)] mod tests`) verifies the
+//     FIXTURABLE_LINTS list stays in sync with what exists on disk.
 
 #[test]
 fn fix_centralized_deps() {
@@ -174,4 +174,9 @@ fn fix_centralized_deps() {
 #[test]
 fn fix_unused_deps() {
     run_fix_fixture("fix__unused_deps");
+}
+
+#[test]
+fn fix_unused_pub() {
+    run_fix_fixture("fix__unused_pub");
 }

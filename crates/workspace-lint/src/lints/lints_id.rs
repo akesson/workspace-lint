@@ -4,7 +4,8 @@
 //! - [`messages::scenarios`](crate::messages::scenarios) — every variant in
 //!   [`LintId::ALL`] must have at least one scenario for the human/json/github
 //!   snapshot tests.
-//! - `tests/lint_coverage.rs` — the missing-test-files guard.
+//! - The [`tests`] module below — `every_lint_has_a_message_scenario` and
+//!   `every_fixturable_lint_has_a_fix_fixture` are the missing-test-files guards.
 //! - `tests/fix_fixtures.rs` — the [`FIXTURABLE_LINTS`] subset must each have
 //!   a paired `tests/fixtures/fix__<short>/` directory.
 //! - The `[lints]` config table (see [`crate::config`]) — every key is a
@@ -163,8 +164,6 @@ pub(crate) const ALL_LINTS: &[&str] = &[
 /// - `freshness`: needs mtime manipulation that can't live inert in a
 ///   committed fixture (timestamps move on every clone / checkout).
 /// - `cli-crate-version`: needs a fake CLI binary the fixture can invoke.
-/// - `unused-pub`: needs a pre-generated SCIP index per fixture (running
-///   rust-analyzer in tests is slow and brittle).
 /// - `stale-expect`: depends on a prior `expect!` directive matching a
 ///   diagnostic — the test would be testing the suppression pipeline, not
 ///   `--fix` mechanics.
@@ -175,8 +174,11 @@ pub(crate) const ALL_LINTS: &[&str] = &[
 /// - `architecture`, `feature-drift`, `module-tree`: the structural fixes
 ///   for these are planned but not yet implemented; once `--fix` rewrites
 ///   them through rustfix, add fixtures and move them up.
-pub(crate) const FIXTURABLE_LINTS: &[&str] =
-    &[LintId::CentralizedDeps.id(), LintId::UnusedDeps.id()];
+pub(crate) const FIXTURABLE_LINTS: &[&str] = &[
+    LintId::CentralizedDeps.id(),
+    LintId::UnusedDeps.id(),
+    LintId::UnusedPub.id(),
+];
 
 /// Strip the `workspace-lint::` prefix so callers can derive the short
 /// kebab form (`file-size`) used in fixture directory names and comment

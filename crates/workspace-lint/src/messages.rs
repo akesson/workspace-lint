@@ -32,6 +32,11 @@ use crate::diagnostic::builder::{at_crate, at_file, at_line, at_workspace};
 /// Every distinct diagnostic the tool can emit, in a fixed order. The order
 /// here is what the snapshot tests assert against, so think of this as the
 /// canonical user-facing surface.
+///
+/// NOTE: these scenarios are hand-built `Diagnostic`s — they exercise the
+/// three *renderers* (human/json/github), not the lints' own logic. The real
+/// message strings a lint emits are pinned only where a `tests/cases/` fixture
+/// runs it end-to-end; keep the strings here in sync with the lint by hand.
 pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
     vec![
         // centralized-deps: one offending member crate.

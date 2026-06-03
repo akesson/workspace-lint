@@ -25,4 +25,4 @@ help: if intentional, silence with:
   |
   = note: `#[deny(workspace_lint::unused_pub)]` on by default
 
-workspace-lint: generated 2 errors (run `workspace-lint --fix` to apply 1 suggestion)
+workspace-lint: generated 2 errors
