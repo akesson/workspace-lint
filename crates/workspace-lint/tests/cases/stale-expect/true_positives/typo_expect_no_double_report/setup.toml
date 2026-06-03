@@ -1,0 +1,6 @@
+# A typo'd expect names a nonexistent lint. It must produce exactly one
+# unknown-lint diagnostic and NOT also a spurious stale-expect (the expect never
+# matched, but the unknown-lint is the right and only report).
+[[append]]
+path = "crates/demo/Cargo.toml"
+text = "\n# workspace-lint: expect(unusd-deps)\n"

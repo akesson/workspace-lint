@@ -1,0 +1,6 @@
+# Inject the matching expect after copy so the repo's own dogfood never sees it.
+# A real centralized-deps finding is suppressed by this expect, which therefore
+# does NOT go stale — the run must be clean.
+[[append]]
+path = "crates/alpha/Cargo.toml"
+text = "\n# workspace-lint: expect(centralized-deps)\n"

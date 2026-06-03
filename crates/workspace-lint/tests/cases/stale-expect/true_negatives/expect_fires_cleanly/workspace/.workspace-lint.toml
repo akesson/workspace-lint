@@ -1,0 +1,4 @@
+[lints]
+default = "allow"
+centralized-deps = "deny"
+stale-expect = "deny"

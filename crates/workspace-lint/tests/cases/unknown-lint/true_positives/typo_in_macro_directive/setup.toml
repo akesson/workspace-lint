@@ -1,0 +1,6 @@
+# A typo'd lint name in an `allow!` MACRO directive (vs the TOML-comment form
+# covered elsewhere) — injected after copy so dogfood doesn't see it. unknown-
+# lint must flag it and render the `allow` directive wording.
+[[append]]
+path = "crates/demo/src/lib.rs"
+text = "\nworkspace_lint::allow!(file_siz);\n"

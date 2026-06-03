@@ -1,0 +1,5 @@
+# A lint name with no close match — the "did you mean" suggestion must be
+# absent, exercising the no-suggestion rendering branch.
+[[append]]
+path = "crates/demo/Cargo.toml"
+text = "\n# workspace-lint: expect(zzzzzz)\n"
