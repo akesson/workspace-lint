@@ -115,5 +115,84 @@ fn check_rule_missing_binary_is_error() {
     assert!(err.message.contains("failed to run"), "{}", err.message);
 }
 
-// A genuine end-to-end happy/mismatch path (spawning a real `--version` binary
-// on a temp PATH) lives in tests/cli_crate_version.rs.
+// The branches below need a command that actually runs and exits successfully
+// before the regex / lockfile logic is reached, so they use `sh -c` and are
+// Unix-gated. A genuine end-to-end happy/mismatch path (spawning a real
+// `--version` binary) lives in tests/cli_crate_version.rs.
+
+#[cfg(unix)]
+fn echo_rule(stdout: &str, pattern: &str, crate_name: &str) -> CliCrateVersionRule {
+    rule(
+        &["sh", "-c", &format!("echo '{stdout}'")],
+        pattern,
+        crate_name,
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn check_rule_malformed_regex_is_error() {
+    // Command runs fine; the invalid pattern is what fails — and it must become
+    // a diagnostic, not a panic.
+    let r = echo_rule("1.2.3", "(", "x");
+    let err = check_rule(&r, &[]).unwrap_err();
+    assert!(
+        err.message.contains("invalid regex pattern"),
+        "{}",
+        err.message
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn check_rule_crate_absent_from_lockfile_is_error() {
+    // Pattern matches the output, but the crate isn't in the (empty) lockfile.
+    let r = echo_rule("1.2.3", r"(\d+\.\d+\.\d+)", "missing");
+    let err = check_rule(&r, &[]).unwrap_err();
+    assert!(
+        err.message.contains("not found in Cargo.lock"),
+        "{}",
+        err.message
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn check_rule_pattern_without_capture_group_is_error() {
+    // `\d+` has no group 1, so `extract_version` returns None and the rule
+    // reports a "did not match" error rather than silently passing.
+    let r = echo_rule("1.2.3", r"\d+", "x");
+    let err = check_rule(&r, &[("x".into(), "1.2.3".into())]).unwrap_err();
+    assert!(err.message.contains("did not match"), "{}", err.message);
+}
+
+#[cfg(unix)]
+#[test]
+fn check_rule_compares_versions_as_plain_strings() {
+    // Version comparison is plain string equality, so `1.0` (CLI) and `1.0.0`
+    // (lockfile) are a mismatch. Pin that so the (intentional) behavior is a
+    // documented decision, not a surprise.
+    let r = echo_rule("1.0", r"(\d+(?:\.\d+)+)", "x");
+    let d = check_rule(&r, &[("x".into(), "1.0.0".into())])
+        .unwrap()
+        .expect("non-semver-equal versions are a mismatch finding");
+    assert!(
+        d.message.contains("1.0") && d.message.contains("1.0.0"),
+        "{}",
+        d.message
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn check_rule_command_exits_nonzero_is_error() {
+    // A command that runs but exits non-zero must surface as a diagnostic, not
+    // a silent pass or an abort.
+    let r = rule(&["sh", "-c", "exit 1"], r"(\d+)", "x");
+    let err = check_rule(&r, &[]).unwrap_err();
+    assert!(
+        err.message.contains("exited unsuccessfully"),
+        "{}",
+        err.message
+    );
+}
