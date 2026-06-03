@@ -144,7 +144,9 @@ fn section_appears_in_message() {
 #[test]
 fn build_suggestion_produces_machine_applicable_replacement() {
     let m = parse_manifest("[package]\nname = \"a\"\n\n[dependencies]\nserde = \"1.0\"\n");
-    let s = build_rewrite_suggestion(&m, DepSection::Dependencies, "serde").unwrap();
+    // key_in_workspace = true: the dep is already centralized, so the rewrite
+    // is safe to auto-apply.
+    let s = build_rewrite_suggestion(&m, DepSection::Dependencies, "serde", true).unwrap();
     assert_eq!(s.applicability, Applicability::MachineApplicable);
     assert_eq!(s.replacement, "serde = { workspace = true }");
     assert_eq!(
@@ -154,10 +156,21 @@ fn build_suggestion_produces_machine_applicable_replacement() {
 }
 
 #[test]
+fn build_suggestion_not_in_workspace_is_maybe_incorrect() {
+    // key_in_workspace = false: `serde = { workspace = true }` would reference a
+    // nonexistent [workspace.dependencies] entry, so the suggestion is a preview
+    // only — MaybeIncorrect so `--fix` skips it and never breaks the manifest.
+    let m = parse_manifest("[package]\nname = \"a\"\n\n[dependencies]\nserde = \"1.0\"\n");
+    let s = build_rewrite_suggestion(&m, DepSection::Dependencies, "serde", false).unwrap();
+    assert_eq!(s.applicability, Applicability::MaybeIncorrect);
+    assert_eq!(s.replacement, "serde = { workspace = true }");
+}
+
+#[test]
 fn build_suggestion_preserves_features() {
     let m =
         parse_manifest("[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n");
-    let s = build_rewrite_suggestion(&m, DepSection::Dependencies, "serde").unwrap();
+    let s = build_rewrite_suggestion(&m, DepSection::Dependencies, "serde", true).unwrap();
     assert_eq!(
         s.replacement,
         "serde = { workspace = true, features = [\"derive\"] }"
@@ -167,6 +180,6 @@ fn build_suggestion_preserves_features() {
 #[test]
 fn build_suggestion_returns_none_for_already_workspace() {
     let m = parse_manifest("[dependencies]\nserde = { workspace = true }\n");
-    let s = build_rewrite_suggestion(&m, DepSection::Dependencies, "serde");
+    let s = build_rewrite_suggestion(&m, DepSection::Dependencies, "serde", true);
     assert!(s.is_none(), "expected no rewrite, got {s:?}");
 }

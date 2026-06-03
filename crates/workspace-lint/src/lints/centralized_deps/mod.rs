@@ -65,7 +65,14 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
                 }
                 if let Some(msg) = check_dep(name, item, section, &workspace_dep_names) {
                     crate_errors.push(msg);
-                    if let Some(s) = build_rewrite_suggestion(manifest, section, name) {
+                    // `<name> = { workspace = true }` is only a valid (auto-
+                    // applicable) rewrite when `<name>` is already a key in
+                    // [workspace.dependencies]; otherwise it's shown as a
+                    // preview but `--fix` skips it (see build_rewrite_suggestion).
+                    let key_in_workspace = workspace_dep_names.contains(name);
+                    if let Some(s) =
+                        build_rewrite_suggestion(manifest, section, name, key_in_workspace)
+                    {
                         suggestions.push(s);
                     }
                 }
@@ -105,14 +112,28 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
     diagnostics
 }
 
-/// Build a `MachineApplicable` byte-range replacement that turns
-/// `<name> = "..."` or `<name> = { ... }` into
-/// `<name> = { workspace = true[, preserved keys] }`. Returns `None` for
-/// entries this lint can't safely rewrite.
+/// Build a byte-range replacement that turns `<name> = "..."` or
+/// `<name> = { ... }` into `<name> = { workspace = true[, preserved keys] }`.
+/// Returns `None` for entries this lint can't locate / rewrite.
+///
+/// `key_in_workspace` controls applicability. `<name> = { workspace = true }`
+/// is only valid when `<name>` already exists as a key in
+/// `[workspace.dependencies]` — otherwise cargo rejects the manifest ("no
+/// dependency named `<name>` in workspace"). So:
+///
+///  - dep key IS centralized (the "has own version" case) → `MachineApplicable`;
+///    `--fix` applies it. Covered by `fix__centralized_deps`.
+///  - dep key is NOT centralized (the "add it there and use { workspace = true }"
+///    case) → `MaybeIncorrect`: the suggestion is shown as a preview of the end
+///    state, but `--fix` skips it because applying it alone (without the user
+///    also adding the dep to `[workspace.dependencies]`) would break
+///    `cargo metadata`. Renamed deps (`{ package = "..." }`) usually land here
+///    because their local key rarely matches a workspace key.
 fn build_rewrite_suggestion(
     manifest: &Manifest,
     section: DepSection,
     dep_name: &str,
+    key_in_workspace: bool,
 ) -> Option<Suggestion> {
     let location = manifest.locate_dep(section, dep_name)?;
     let replacement = manifest.format_workspace_dep(section, dep_name)?;
@@ -120,6 +141,11 @@ fn build_rewrite_suggestion(
     if replacement == original {
         return None;
     }
+    let applicability = if key_in_workspace {
+        Applicability::MachineApplicable
+    } else {
+        Applicability::MaybeIncorrect
+    };
     Some(Suggestion {
         span: Span {
             file: manifest.path().to_path_buf(),
@@ -132,7 +158,7 @@ fn build_rewrite_suggestion(
         },
         message: format!("use {{ workspace = true }} for `{dep_name}`"),
         replacement,
-        applicability: Applicability::MachineApplicable,
+        applicability,
     })
 }
 
