@@ -208,9 +208,18 @@ fn collect_deps(manifest: &Manifest, ignore: &[String]) -> BTreeMap<String, Vec<
         if ignore.iter().any(|i| i == &dep.original_name) {
             continue;
         }
-        deps.entry(dep.normalized_name.clone())
-            .or_default()
-            .push(dep);
+        let entries = deps.entry(dep.normalized_name.clone()).or_default();
+        // The same dep can be declared under several `[target.<cfg>.…]` tables
+        // in one section (e.g. chrono with different features per platform);
+        // collapse those so it's reported once. Distinct *sections*
+        // (`[dependencies]` vs `[dev-dependencies]`) stay separate entries.
+        if entries
+            .iter()
+            .any(|e| e.section == dep.section && e.original_name == dep.original_name)
+        {
+            continue;
+        }
+        entries.push(dep);
     }
     deps
 }

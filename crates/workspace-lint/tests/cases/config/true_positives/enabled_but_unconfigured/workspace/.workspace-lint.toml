@@ -1,0 +1,6 @@
+[lints]
+default = "allow"
+config = "deny"
+# `file-size` is a policy lint enabled here but given no `[file-size]` table,
+# so it can never run — the audit must flag that.
+file-size = "deny"

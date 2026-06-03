@@ -1,0 +1,13 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+# A platform-gated dependency with its own version must still be centralized
+# via `workspace = true`. Before target tables were enumerated this was a
+# silent false negative.
+[target.'cfg(windows)'.dependencies]
+serde = "1.0.200"

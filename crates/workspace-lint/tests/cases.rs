@@ -31,10 +31,126 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
 mod common;
 use common::{bless_enabled, copy_tree, normalize_stderr, workspace_lint};
+
+/// Apply an optional `setup.toml` (sibling of `workspace/`) to the copied
+/// tempdir before the binary runs. Lets cases that need state which can't be
+/// committed inert — a git index, or relative file mtimes — join the standard
+/// taxonomy. Schema:
+///
+/// ```toml
+/// [git]                       # for stale-git-index
+/// init = true                 # git init + add -A + commit
+/// delete_after = ["a/b.rs"]   # rm from disk AFTER commit (stays in the index)
+///
+/// [[mtime]]                   # for freshness; relative order is deterministic
+/// path = "crates/api/CLAUDE.md"
+/// order = 0                   # lower = older
+/// ```
+fn apply_setup(case_dir: &Path, tmp: &Path) -> Result<(), String> {
+    let setup_path = case_dir.join("setup.toml");
+    if !setup_path.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&setup_path).map_err(|e| format!("read setup.toml: {e}"))?;
+    let doc: toml::Value = toml::from_str(&text).map_err(|e| format!("parse setup.toml: {e}"))?;
+
+    if let Some(git) = doc.get("git") {
+        if git.get("init").and_then(toml::Value::as_bool) == Some(true) {
+            git_cmd(tmp, &["init", "-q"])?;
+            git_cmd(tmp, &["add", "-A"])?;
+            git_cmd(
+                tmp,
+                &[
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "setup",
+                ],
+            )?;
+        }
+        if let Some(deletes) = git.get("delete_after").and_then(toml::Value::as_array) {
+            for entry in deletes {
+                let rel = entry
+                    .as_str()
+                    .ok_or("delete_after entries must be strings")?;
+                std::fs::remove_file(tmp.join(rel))
+                    .map_err(|e| format!("delete_after {rel}: {e}"))?;
+            }
+        }
+    }
+
+    // Append text to a file *after* copy — used to inject a `# workspace-lint:`
+    // directive that must reach the case run but stay out of the committed
+    // fixture (otherwise this repo's own dogfood scan would pick the directive
+    // up from tests/cases/ and trip stale-expect / unknown-lint).
+    if let Some(entries) = doc.get("append").and_then(toml::Value::as_array) {
+        for entry in entries {
+            let rel = entry
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .ok_or("append entry needs a string `path`")?;
+            let text = entry
+                .get("text")
+                .and_then(toml::Value::as_str)
+                .ok_or("append entry needs a string `text`")?;
+            let p = tmp.join(rel);
+            let mut content =
+                std::fs::read_to_string(&p).map_err(|e| format!("append read {rel}: {e}"))?;
+            content.push_str(text);
+            std::fs::write(&p, content).map_err(|e| format!("append write {rel}: {e}"))?;
+        }
+    }
+
+    if let Some(entries) = doc.get("mtime").and_then(toml::Value::as_array) {
+        // Assign mtimes in `order`: a deterministic base plus 10s per step, so
+        // a lower order is strictly older regardless of filesystem resolution.
+        let base = SystemTime::now();
+        for entry in entries {
+            let rel = entry
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .ok_or("mtime entry needs a string `path`")?;
+            let order = entry
+                .get("order")
+                .and_then(toml::Value::as_integer)
+                .ok_or("mtime entry needs an integer `order`")?;
+            let when = base + Duration::from_secs(order.max(0) as u64 * 10);
+            let f = std::fs::File::options()
+                .write(true)
+                .open(tmp.join(rel))
+                .map_err(|e| format!("open {rel} for mtime: {e}"))?;
+            f.set_times(std::fs::FileTimes::new().set_modified(when))
+                .map_err(|e| format!("set mtime {rel}: {e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn git_cmd(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("git {args:?}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy)]
 enum Kind {
@@ -104,8 +220,21 @@ fn run_case(lint: &str, kind: Kind, case_dir: &Path, bless: bool) -> Result<(), 
         reason: format!("copy: {e}"),
     })?;
 
+    // Optional per-case setup: initialize a git repo and/or set relative file
+    // mtimes that can't live inert in a committed fixture (they're needed by
+    // stale-git-index and freshness). See `apply_setup`.
+    apply_setup(case_dir, tmp.path()).map_err(|e| Failure {
+        case_path: case_dir.to_path_buf(),
+        kind,
+        reason: format!("setup: {e}"),
+    })?;
+
     let output = workspace_lint()
         .current_dir(tmp.path())
+        // Run lints deterministically regardless of the CI env: `freshness`
+        // short-circuits when `CI` is set, which would otherwise make its
+        // true-positive cases silently pass under CI.
+        .env_remove("CI")
         .output()
         .map_err(|e| Failure {
             case_path: case_dir.to_path_buf(),

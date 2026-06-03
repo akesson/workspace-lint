@@ -1,0 +1,5 @@
+[lints]
+default = "allow"
+unknown-lint = "deny"
+# Typo of `unused-deps` — must be flagged with a "did you mean" suggestion.
+unused-dep = "warn"

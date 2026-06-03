@@ -1,0 +1,7 @@
+[lints]
+default = "allow"
+crate-size = "deny"
+
+[[crate-size.rules]]
+glob = "crates/*"
+max-code-lines = 5

@@ -597,6 +597,14 @@ pub struct Crate {
     /// `default` if defined. Activation lists are not retained — only the
     /// set of feature names.
     pub declared_features: Vec<String>,
+    /// Each declared feature mapped to its activation list, as reported by
+    /// `cargo metadata` — so the synthesized `foo = ["dep:foo"]` entry for an
+    /// implicit optional-dependency feature is included. A feature with an
+    /// empty list is a "leaf" (gates code directly); a non-empty list means
+    /// the feature forwards to a dependency or another feature ("plumbing" /
+    /// "umbrella"), which legitimately never appears in a `#[cfg(feature)]`
+    /// gate. Keyed identically to [`Self::declared_features`].
+    pub feature_values: std::collections::BTreeMap<String, Vec<String>>,
     /// Parsed `Cargo.toml`. Prefer this over re-parsing the file from disk
     /// when you need section enumeration or byte-located dep lines for
     /// structural rewrites.
@@ -1300,6 +1308,7 @@ mod tests {
             targets: vec![lib_target],
             orphan_files: Vec::new(),
             declared_features: Vec::new(),
+            feature_values: std::collections::BTreeMap::new(),
             manifest: crate::manifest::Manifest::empty(),
         };
         let pub_names: Vec<_> = krate.pub_items().map(|i| i.name.clone()).collect();

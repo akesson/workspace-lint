@@ -1,0 +1,9 @@
+# The tracked doc (order 1) is newer than the source it depends on (order 0),
+# so freshness must stay silent.
+[[mtime]]
+path = "crates/demo/src/lib.rs"
+order = 0
+
+[[mtime]]
+path = "crates/demo/CLAUDE.md"
+order = 1

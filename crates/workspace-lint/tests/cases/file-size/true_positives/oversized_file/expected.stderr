@@ -1,0 +1,13 @@
+error: file exceeds 5 code lines (8)
+ --> crates/demo/src/lib.rs:1:1
+  |
+  = help: split #[cfg(test)] modules into separate test files
+  = help: extract related structs, enums, or trait impls into their own modules
+  = note: configured by [[file-size.rules]] glob = "**/*.rs"
+help: if intentional, silence with:
+  |
+1 + workspace_lint::expect!(file_size);
+  |
+  = note: `#[deny(workspace_lint::file_size)]` on by default
+
+workspace-lint: generated 1 error

@@ -1,0 +1,17 @@
+error: pub fn `exported_for_ffi` in crate `alpha` appears unused — consider removing
+ --> <TMP>/crates/alpha/src/lib.rs:7:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+help: tighten to `pub(crate)`
+  |
+7 - <existing>
+7 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+7 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[deny(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 1 error (run `workspace-lint --fix` to apply 1 suggestion)

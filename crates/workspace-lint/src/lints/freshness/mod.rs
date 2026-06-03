@@ -43,10 +43,18 @@ impl Lint for Freshness {
 }
 
 pub(crate) fn check(config: &FreshnessConfig) -> Vec<Diagnostic> {
-    if std::env::var("CI").is_ok() {
+    check_gated(config, Path::new("."), std::env::var_os("CI").is_some())
+}
+
+/// `check` with the CI gate and scan root made explicit so both can be
+/// exercised deterministically in tests (env vars and the process cwd can't).
+/// On CI the lint is a no-op: source/doc mtimes are reset on checkout, so the
+/// comparison is meaningless there.
+fn check_gated(config: &FreshnessConfig, root: &Path, is_ci: bool) -> Vec<Diagnostic> {
+    if is_ci {
         return Vec::new();
     }
-    check_with_root(config, Path::new("."))
+    check_with_root(config, root)
 }
 
 fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
@@ -76,13 +84,15 @@ fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
                 && newest > file_mtime
             {
                 let rel = file.strip_prefix(root).unwrap_or(file).to_path_buf();
+                // Force forward slashes in the rendered message so the
+                // diagnostic text is identical on Windows (the renderer already
+                // normalizes the anchor path, but not text embedded in the
+                // message). Matches centralized-deps / unused-deps.
+                let rel_str = rel.display().to_string().replace('\\', "/");
                 diagnostics.push(
                     at_file(
                         lint_id,
-                        format!(
-                            "`{}` is older than source files it depends on",
-                            rel.display()
-                        ),
+                        format!("`{rel_str}` is older than source files it depends on"),
                         rel,
                     )
                     .help(format!(

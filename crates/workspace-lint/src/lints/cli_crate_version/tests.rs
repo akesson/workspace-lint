@@ -1,30 +1,6 @@
 use super::*;
-use crate::diagnostic::Diagnostic;
 
-fn compare_version(
-    cli_version: &str,
-    crate_name: &str,
-    lock_packages: &[(String, String)],
-) -> Option<Diagnostic> {
-    let lock_version = lock_packages
-        .iter()
-        .find(|(name, _)| name == crate_name)
-        .map(|(_, version)| version.as_str())?;
-
-    if cli_version != lock_version {
-        Some(
-            at_workspace(
-                LintId::CliCrateVersion.id(),
-                format!(
-                    "`{crate_name}` CLI version {cli_version} does not match Cargo.lock {lock_version}"
-                ),
-            )
-            .build(),
-        )
-    } else {
-        None
-    }
-}
+// --- parse_lock_packages (now returns Result) ---
 
 #[test]
 fn parse_lock_basic() {
@@ -37,7 +13,7 @@ version = "1.0.200"
 name = "tokio"
 version = "1.37.0"
 "#;
-    let pkgs = parse_lock_packages(content);
+    let pkgs = parse_lock_packages(content).unwrap();
     assert_eq!(pkgs.len(), 2);
     assert_eq!(pkgs[0], ("serde".into(), "1.0.200".into()));
     assert_eq!(pkgs[1], ("tokio".into(), "1.37.0".into()));
@@ -45,18 +21,13 @@ version = "1.37.0"
 
 #[test]
 fn parse_lock_empty() {
-    let pkgs = parse_lock_packages("");
-    assert!(pkgs.is_empty());
+    assert!(parse_lock_packages("").unwrap().is_empty());
 }
 
 #[test]
 fn parse_lock_no_package_key() {
-    let content = r#"
-[metadata]
-foo = "bar"
-"#;
-    let pkgs = parse_lock_packages(content);
-    assert!(pkgs.is_empty());
+    let content = "[metadata]\nfoo = \"bar\"\n";
+    assert!(parse_lock_packages(content).unwrap().is_empty());
 }
 
 #[test]
@@ -69,45 +40,80 @@ name = "incomplete"
 name = "ok"
 version = "1.0"
 "#;
-    let pkgs = parse_lock_packages(content);
+    let pkgs = parse_lock_packages(content).unwrap();
     assert_eq!(pkgs.len(), 1);
     assert_eq!(pkgs[0].0, "ok");
 }
 
 #[test]
-fn compare_version_match() {
-    let pkgs = vec![("wasm-bindgen".into(), "0.2.90".into())];
-    assert!(compare_version("0.2.90", "wasm-bindgen", &pkgs).is_none());
+fn parse_lock_invalid_toml_is_err() {
+    let err = parse_lock_packages("this is = = not toml").unwrap_err();
+    assert!(err.contains("Cargo.lock"), "{err}");
+}
+
+// --- extract_version (the production regex+ANSI path) ---
+
+#[test]
+fn extract_version_captures_group_one() {
+    let re = Regex::new(r"version (\d+\.\d+\.\d+)").unwrap();
+    let out = b"mytool version 0.2.90\n";
+    assert_eq!(extract_version(out, &re).as_deref(), Some("0.2.90"));
 }
 
 #[test]
-fn compare_version_mismatch() {
-    let pkgs = vec![("wasm-bindgen".into(), "0.2.90".into())];
-    let d = compare_version("0.2.89", "wasm-bindgen", &pkgs).unwrap();
-    assert_eq!(d.lint, LintId::CliCrateVersion.id());
-    assert!(d.message.contains("wasm-bindgen"));
-    assert!(d.message.contains("0.2.89"));
-    assert!(d.message.contains("0.2.90"));
+fn extract_version_strips_ansi_and_trims() {
+    let re = Regex::new(r"(\d+\.\d+\.\d+)").unwrap();
+    // ANSI-colored output with a trailing newline — must still extract clean.
+    let out = b"\x1b[32m1.2.3\x1b[0m\n";
+    assert_eq!(extract_version(out, &re).as_deref(), Some("1.2.3"));
 }
 
 #[test]
-fn compare_version_crate_not_in_lock() {
-    let pkgs = vec![("serde".into(), "1.0".into())];
-    assert!(compare_version("1.0", "missing-crate", &pkgs).is_none());
+fn extract_version_no_match_is_none() {
+    let re = Regex::new(r"v(\d+)").unwrap();
+    assert!(extract_version(b"no version here", &re).is_none());
 }
 
-#[test]
-fn compare_version_empty_packages() {
-    assert!(compare_version("1.0", "any", &[]).is_none());
-}
+// --- find_lock_version ---
 
 #[test]
-fn compare_version_multiple_packages() {
+fn find_lock_version_present_and_absent() {
     let pkgs = vec![
         ("alpha".into(), "1.0".into()),
         ("beta".into(), "2.0".into()),
-        ("gamma".into(), "3.0".into()),
     ];
-    assert!(compare_version("2.0", "beta", &pkgs).is_none());
-    assert!(compare_version("999", "beta", &pkgs).is_some());
+    assert_eq!(find_lock_version(&pkgs, "beta"), Some("2.0"));
+    assert_eq!(find_lock_version(&pkgs, "missing"), None);
+    assert_eq!(find_lock_version(&[], "any"), None);
 }
+
+// --- check_rule: failures are diagnostics, never process exits ---
+
+fn rule(command: &[&str], pattern: &str, crate_name: &str) -> CliCrateVersionRule {
+    CliCrateVersionRule {
+        command: command.iter().map(|s| s.to_string()).collect(),
+        pattern: pattern.to_string(),
+        crate_name: crate_name.to_string(),
+    }
+}
+
+#[test]
+fn check_rule_empty_command_is_error_not_panic() {
+    let err = check_rule(&rule(&[], "(.*)", "x"), &[]).unwrap_err();
+    assert!(err.message.contains("empty `command`"), "{}", err.message);
+}
+
+#[test]
+fn check_rule_missing_binary_is_error() {
+    // A binary that cannot exist on PATH must yield an Err, not abort the run.
+    let r = rule(
+        &["definitely-not-a-real-binary-xyz", "--version"],
+        r"(\d+)",
+        "x",
+    );
+    let err = check_rule(&r, &[]).unwrap_err();
+    assert!(err.message.contains("failed to run"), "{}", err.message);
+}
+
+// A genuine end-to-end happy/mismatch path (spawning a real `--version` binary
+// on a temp PATH) lives in tests/cli_crate_version.rs.

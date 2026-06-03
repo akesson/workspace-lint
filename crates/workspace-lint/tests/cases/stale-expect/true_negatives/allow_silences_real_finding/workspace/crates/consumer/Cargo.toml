@@ -1,0 +1,14 @@
+# `provider` is genuinely unused, so unused-deps would fire — but `allow`
+# silences it permanently and (unlike `expect`) never goes stale. The run
+# must be clean: no unused-deps finding AND no stale-expect.
+# workspace-lint: allow(unused-deps)
+[package]
+name = "consumer"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+provider = { path = "../provider" }

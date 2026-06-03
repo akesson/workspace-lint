@@ -256,6 +256,24 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > `#[derive(Routable)]` enum whose `pub fn` components have no `rsx!` site, so only
 > the route capture can link them) plus capture unit tests in `routable.rs`.
 
+> **History (target-specific dependency tables):** `unused-deps` (and
+> `centralized-deps`) now enumerate `[target.<cfg>.dependencies]` /
+> `dev-dependencies` / `build-dependencies`, closing a silent false *negative* —
+> a platform-gated dep that's unused or un-centralized was previously never
+> checked (`Manifest::deps` only read the three top-level tables). `dioxus`
+> surfaced the resulting true positives: `packages/desktop`'s Android
+> (`jni`/`ndk`/`ndk-sys`/`ndk-context`) and macOS (`core-foundation`) deps, which
+> have **zero references in that crate's `src/`**; `ecommerce-site`'s `chrono`
+> (declared under both `cfg(wasm)` and `cfg(not wasm)`, unused either way); and
+> the root crate's wasm-target `getrandom` dev-dep. All confirmed genuinely
+> unreferenced — the same true-positive / structural class dioxus already
+> documents. A dep declared under several `cfg`s in one section is reported once
+> (both lints dedup by `(section, name)`). Guarded by
+> `unused-deps/{true_positives/target_cfg_dep_unused,true_negatives/target_cfg_dep_used}`,
+> `centralized-deps/true_positives/target_cfg_dep_needs_workspace`, and
+> `manifest.rs` unit tests `deps_includes_target_specific_tables` /
+> `deps_target_tables_respect_section`.
+
 ## Takeaway for follow-ups
 
 - **The leaf-library corpus is fully FP-clean.** Every audited *library* crate

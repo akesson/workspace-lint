@@ -1,0 +1,11 @@
+error: unknown lint `unusd-deps` in `expect` directive
+ --> crates/demo/Cargo.toml:9:1
+  |
+  = help: did you mean `unused-deps`?
+help: if intentional, silence with:
+  |
+9 + # workspace-lint: expect(unknown-lint)
+  |
+  = note: `#[deny(workspace_lint::unknown_lint)]` on by default
+
+workspace-lint: generated 1 error

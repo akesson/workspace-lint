@@ -1,0 +1,13 @@
+# KNOWN FALSE NEGATIVE: `include` patterns match the file NAME only, not the
+# path. A path-shaped glob like `src/*.rs` therefore matches nothing, so the
+# crate's code total is 0 and the (genuinely oversized) crate silently passes.
+# If `include` ever gains path semantics, this case starts firing and should be
+# reclassified / the foot-gun documented as fixed.
+[lints]
+default = "allow"
+crate-size = "deny"
+
+[[crate-size.rules]]
+glob = "crates/*"
+max-code-lines = 5
+include = ["src/*.rs"]

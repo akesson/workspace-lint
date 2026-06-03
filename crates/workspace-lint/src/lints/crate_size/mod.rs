@@ -58,7 +58,6 @@ impl Lint for CrateSize {
 }
 
 pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diagnostic> {
-    let lint_id = LintId::CrateSize.id();
     let mut diagnostics = Vec::new();
 
     for rule in &config.rules {
@@ -109,45 +108,63 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
             .collect();
         matches.sort_by(|a, b| a.0.cmp(&b.0));
 
-        for (rel, abs) in matches {
-            let mut languages = Languages::new();
-            // tokei walks the on-disk crate dir for line counting. Pass
-            // the absolute path so the walker doesn't depend on the
-            // process's working directory.
-            let abs_str = abs.display().to_string();
-            languages.get_statistics(&[abs_str.as_str()], &[], &TokeiConfig::default());
+        let crate_totals: Vec<(String, usize)> = matches
+            .into_iter()
+            .map(|(rel, abs)| (rel, count_crate_code(&abs, &include_set)))
+            .collect();
 
-            let mut total_code: usize = 0;
-            for language in languages.values() {
-                for report in &language.reports {
-                    let name = report.name.file_name().unwrap_or_default();
-                    if !include_set.is_match(Path::new(name)) {
-                        continue;
-                    }
-                    total_code += report.stats.code;
-                }
-            }
-
-            if total_code > rule.max_code_lines {
-                diagnostics.push(
-                    at_crate(
-                        lint_id,
-                        format!(
-                            "crate exceeds {} code lines ({total_code})",
-                            rule.max_code_lines
-                        ),
-                        rel.clone(),
-                    )
-                    .help("split the crate into smaller, more focused crates")
-                    .note(format!(
-                        "configured by [[crate-size.rules]] glob = \"{}\"",
-                        rule.glob.as_str()
-                    ))
-                    .build(),
-                );
-            }
-        }
+        diagnostics.extend(find_crate_violations(rule, &crate_totals));
     }
 
     diagnostics
+}
+
+/// Sum the `*.rs` (or `include`-filtered) code lines under a member's on-disk
+/// directory. The absolute path is passed so tokei's walk doesn't depend on the
+/// process cwd. `include` patterns match the file *name* only (not the path).
+fn count_crate_code(abs: &Path, include_set: &globset::GlobSet) -> usize {
+    let mut languages = Languages::new();
+    languages.get_statistics(
+        &[abs.display().to_string().as_str()],
+        &[],
+        &TokeiConfig::default(),
+    );
+
+    let mut total_code = 0;
+    for language in languages.values() {
+        for report in &language.reports {
+            let name = report.name.file_name().unwrap_or_default();
+            if include_set.is_match(Path::new(name)) {
+                total_code += report.stats.code;
+            }
+        }
+    }
+    total_code
+}
+
+/// Pure projection: emit a diagnostic for each `(crate_relative_dir, total)`
+/// over the rule's `max_code_lines` (strict `>`). Separated from the discovery
+/// + tokei walk so the threshold + message logic is unit-testable directly.
+fn find_crate_violations(
+    rule: &CrateSizeRule,
+    crate_totals: &[(String, usize)],
+) -> Vec<Diagnostic> {
+    let lint_id = LintId::CrateSize.id();
+    crate_totals
+        .iter()
+        .filter(|(_, total)| *total > rule.max_code_lines)
+        .map(|(rel, total)| {
+            at_crate(
+                lint_id,
+                format!("crate exceeds {} code lines ({total})", rule.max_code_lines),
+                rel.clone(),
+            )
+            .help("split the crate into smaller, more focused crates")
+            .note(format!(
+                "configured by [[crate-size.rules]] glob = \"{}\"",
+                rule.glob.as_str()
+            ))
+            .build()
+        })
+        .collect()
 }

@@ -107,6 +107,18 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note("ran `wasm-bindgen --version`")
             .build(),
         ),
+        // cli-crate-version: a misconfigured / un-runnable rule reported as a
+        // diagnostic instead of aborting the whole run.
+        (
+            "cli_crate_version_rule_error",
+            at_workspace(
+                "workspace-lint::cli-crate-version",
+                "pattern `v(\\d+)` did not match the output of `wasm-bindgen --version`",
+            )
+            .help("the regex must capture the version in group 1")
+            .note("ran `wasm-bindgen --version`")
+            .build(),
+        ),
         // unused-deps: single unused dep.
         (
             "unused_deps_one",
@@ -422,6 +434,20 @@ mod tests {
             insta::assert_snapshot!(render(&scenario("cli_crate_version_mismatch")), @r"
             warning: `wasm-bindgen` CLI version 0.2.89 does not match Cargo.lock 0.2.90
               = help: update or reinstall `wasm-bindgen` to match the workspace version
+              = note: ran `wasm-bindgen --version`
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(cli-crate-version)
+              |
+              = note: `#[warn(workspace_lint::cli_crate_version)]` on by default
+            ");
+        }
+
+        #[test]
+        fn cli_crate_version_rule_error() {
+            insta::assert_snapshot!(render(&scenario("cli_crate_version_rule_error")), @r"
+            warning: pattern `v(\d+)` did not match the output of `wasm-bindgen --version`
+              = help: the regex must capture the version in group 1
               = note: ran `wasm-bindgen --version`
             help: if intentional, silence with:
               |
@@ -786,6 +812,11 @@ mod tests {
         #[test]
         fn cli_crate_version_mismatch() {
             insta::assert_snapshot!(render(&scenario("cli_crate_version_mismatch")), @"::warning file=Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Acli-crate-version::`wasm-bindgen` CLI version 0.2.89 does not match Cargo.lock 0.2.90");
+        }
+
+        #[test]
+        fn cli_crate_version_rule_error() {
+            insta::assert_snapshot!(render(&scenario("cli_crate_version_rule_error")), @r"::warning file=Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Acli-crate-version::pattern `v(\d+)` did not match the output of `wasm-bindgen --version`");
         }
 
         #[test]

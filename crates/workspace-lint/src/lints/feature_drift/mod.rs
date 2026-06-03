@@ -71,6 +71,21 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             if feat == "default" || feat.is_empty() {
                 continue;
             }
+            // Only "leaf" features (empty activation list) gate code directly.
+            // A feature whose list is non-empty forwards to a dependency
+            // (`dep:foo`, `foo/bar`, `foo?/bar`) or to another feature
+            // (umbrella) — and cargo synthesizes such a list for every implicit
+            // optional-dependency feature. Those legitimately never appear in a
+            // `#[cfg(feature = "...")]` gate, so flagging them is a false
+            // positive. See feature_drift/true_negatives/{feature_gates_optional_dep,
+            // implicit_optional_dep_feature, umbrella_feature}.
+            if krate
+                .feature_values
+                .get(feat)
+                .is_some_and(|vals| !vals.is_empty())
+            {
+                continue;
+            }
             if used_refs.contains(feat) {
                 continue;
             }

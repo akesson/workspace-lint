@@ -1,0 +1,7 @@
+[lints]
+default = "allow"
+config = "deny"
+
+# Typo of `file-size` — the config audit must flag the unknown section and
+# suggest the intended name.
+[file-sizee]

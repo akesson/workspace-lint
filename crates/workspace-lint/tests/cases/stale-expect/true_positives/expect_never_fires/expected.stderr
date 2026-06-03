@@ -1,0 +1,12 @@
+error: expect directive for `unused-deps` did not match any diagnostic
+ --> crates/demo/Cargo.toml:9:1
+  |
+  = help: remove this expect — the lint it tracks is no longer firing
+  = note: a stale expect usually means the underlying issue has been fixed
+help: if intentional, silence with:
+  |
+9 + # workspace-lint: expect(stale-expect)
+  |
+  = note: `#[deny(workspace_lint::stale_expect)]` on by default
+
+workspace-lint: generated 1 error

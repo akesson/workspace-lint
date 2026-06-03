@@ -1,0 +1,12 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Carries its own version while `serde` is centralized in
+# `[workspace.dependencies]` — must be flagged (and is auto-fixable).
+serde = "1.0.200"
