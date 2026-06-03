@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 mod common;
-use common::{bless_enabled, copy_tree, normalize_stderr, workspace_lint};
+use common::{SnapshotResult, bless_enabled, copy_tree, snapshot_stderr, workspace_lint};
 
 /// Audit config copied into a corpus crate as `.workspace-lint.toml`. Sets a
 /// blanket `default = "allow"` so the now-on-by-default structural lints
@@ -184,27 +184,16 @@ fn audit_one(entry: &CorpusEntry, src: &Path, bless: bool) -> Result<(), String>
         .current_dir(tmp.path())
         .output()
         .map_err(|e| format!("spawn: {e}"))?;
-    let stderr = normalize_stderr(&String::from_utf8_lossy(&output.stderr), tmp.path());
-
     let expected_path = expected_dir().join(format!("{}.stderr", entry.name));
-    if bless {
-        if let Some(parent) = expected_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
-        }
-        std::fs::write(&expected_path, &stderr).map_err(|e| format!("bless write: {e}"))?;
-        return Ok(());
-    }
-
-    let expected = std::fs::read_to_string(&expected_path)
-        .unwrap_or_default()
-        .replace("\r\n", "\n");
-    if expected.trim() != stderr.trim() {
-        return Err(format!(
+    let (stderr, snap) = snapshot_stderr(&output.stderr, tmp.path(), &expected_path, bless)
+        .map_err(|e| format!("snapshot io: {e}"))?;
+    match snap {
+        SnapshotResult::Mismatch { expected } => Err(format!(
             "diagnostics changed (run WORKSPACE_LINT_BLESS=1 to update after triage).\n\
              expected:\n{expected}\n---\nactual:\n{stderr}"
-        ));
+        )),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn corpus_root() -> PathBuf {

@@ -29,12 +29,11 @@
 
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use syn_workspace::{ScipOccurrence, ScipRole, Workspace};
 
-/// rust-analyzer emits UTF-8 code-unit (byte) column offsets; our byte-range →
-/// byte-column conversion assumes it. Drift fails loudly before any comparison.
-const EXPECTED_POSITION_ENCODING: &str = "UTF8CodeUnitOffsetFromLineStart";
+mod common;
+use common::{EXPECTED_POSITION_ENCODING, fixture_dir, fixture_workspace_present, load_json};
 
 /// Packages excluded from the cross-crate set: the dependency lints reason about
 /// declared workspace/registry deps, not the implicit sysroot.
@@ -51,7 +50,7 @@ fn multi_crate_scip_diff() {
     let base = fixture_dir("multi_crate");
     // Published-crate guard (mirrors oracle.rs): the fixture `workspace/` subtree
     // is excluded from the packaged crate, so skip cleanly if it's absent.
-    if !base.join("workspace").exists() {
+    if !fixture_workspace_present(&base) {
         eprintln!("oracle fixture absent (packaged crate?) — skipping");
         return;
     }
@@ -231,15 +230,4 @@ fn norm_path(p: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
-}
-
-fn fixture_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/oracle")
-        .join(name)
-}
-
-fn load_json(p: &Path) -> Value {
-    let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-    serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", p.display()))
 }

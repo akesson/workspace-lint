@@ -36,7 +36,7 @@ use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
 mod common;
-use common::{bless_enabled, copy_tree, normalize_stderr, workspace_lint};
+use common::{SnapshotResult, bless_enabled, copy_tree, snapshot_stderr, workspace_lint};
 
 /// Apply an optional `setup.toml` (sibling of `workspace/`) to the copied
 /// tempdir before the binary runs. Lets cases that need state which can't be
@@ -197,7 +197,7 @@ struct Failure {
     reason: String,
 }
 
-fn run_case(lint: &str, kind: Kind, case_dir: &Path, bless: bool) -> Result<(), Failure> {
+fn run_case(kind: Kind, case_dir: &Path, bless: bool) -> Result<(), Failure> {
     let workspace_src = case_dir.join("workspace");
     if !workspace_src.exists() {
         return Err(Failure {
@@ -242,25 +242,23 @@ fn run_case(lint: &str, kind: Kind, case_dir: &Path, bless: bool) -> Result<(), 
             reason: format!("spawn: {e}"),
         })?;
 
-    let stderr_raw = String::from_utf8_lossy(&output.stderr).into_owned();
-    let stderr = normalize_stderr(&stderr_raw, tmp.path());
-
-    if bless {
-        std::fs::write(&expected_path, &stderr).map_err(|e| Failure {
+    let (stderr, snap) = snapshot_stderr(&output.stderr, tmp.path(), &expected_path, bless)
+        .map_err(|e| Failure {
             case_path: case_dir.to_path_buf(),
             kind,
-            reason: format!("bless write: {e}"),
+            reason: format!("snapshot io: {e}"),
         })?;
-        let _ = lint;
+
+    if bless {
         return Ok(());
     }
 
-    let expected = std::fs::read_to_string(&expected_path)
-        .unwrap_or_default()
-        .replace("\r\n", "\n");
+    // Exit-code policy is cases.rs-specific (corpus_fp doesn't check it), so it
+    // stays out of `snapshot_stderr`. Its message embeds the normalized stderr
+    // even when the stderr itself matched — hence `snapshot_stderr` hands `stderr`
+    // back to us.
     let exit_failure_expected = kind.expects_failure_exit();
     let exit_failure_actual = !output.status.success();
-
     if exit_failure_expected != exit_failure_actual {
         return Err(Failure {
             case_path: case_dir.to_path_buf(),
@@ -283,8 +281,8 @@ fn run_case(lint: &str, kind: Kind, case_dir: &Path, bless: bool) -> Result<(), 
         });
     }
 
-    if expected.trim() != stderr.trim() {
-        return Err(Failure {
+    match snap {
+        SnapshotResult::Mismatch { expected } => Err(Failure {
             case_path: case_dir.to_path_buf(),
             kind,
             reason: format!(
@@ -294,10 +292,9 @@ fn run_case(lint: &str, kind: Kind, case_dir: &Path, bless: bool) -> Result<(), 
                 expected,
                 stderr,
             ),
-        });
+        }),
+        _ => Ok(()),
     }
-
-    Ok(())
 }
 
 fn walk_cases(mut visit: impl FnMut(&str, Kind, &Path)) {
@@ -334,9 +331,9 @@ fn cases_pass_or_track_known_limitations() {
     let bless = bless_enabled();
     let mut failures: Vec<Failure> = Vec::new();
     let mut count = 0;
-    walk_cases(|lint, kind, case_dir| {
+    walk_cases(|_lint, kind, case_dir| {
         count += 1;
-        if let Err(err) = run_case(lint, kind, case_dir, bless) {
+        if let Err(err) = run_case(kind, case_dir, bless) {
             failures.push(err);
         }
     });

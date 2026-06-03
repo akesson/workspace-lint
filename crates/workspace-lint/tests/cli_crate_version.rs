@@ -5,12 +5,10 @@
 //! so the `Command` invocation, stdout capture, and — most importantly — the
 //! "a broken rule must not abort the whole run" contract are exercised for real.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use std::path::Path;
 
-fn workspace_lint() -> assert_cmd::Command {
-    cargo_bin_cmd!("workspace-lint")
-}
+mod common;
+use common::{TestWorkspace, workspace_lint};
 
 /// Write a minimal workspace whose lockfile pins `mytool` to `lock_version`,
 /// plus a `.workspace-lint.toml` carrying one cli-crate-version `rule`.
@@ -21,31 +19,19 @@ fn write_workspace(dir: &Path, lock_version: &str, rule: &str) {
 /// Like [`write_workspace`] but emits one `[[cli-crate-version.rules]]` block
 /// per entry in `rules`, so a test can exercise multiple rules in one run.
 fn write_workspace_rules(dir: &Path, lock_version: &str, rules: &[&str]) {
-    std::fs::write(
-        dir.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"crates/mytool\"]\n",
-    )
-    .unwrap();
-    let crate_dir = dir.join("crates/mytool/src");
-    std::fs::create_dir_all(&crate_dir).unwrap();
-    std::fs::write(
-        dir.join("crates/mytool/Cargo.toml"),
-        format!("[package]\nname = \"mytool\"\nversion = \"{lock_version}\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n"),
-    )
-    .unwrap();
-    std::fs::write(crate_dir.join("lib.rs"), "pub fn f() {}\n").unwrap();
-    std::fs::write(
-        dir.join("Cargo.lock"),
-        format!("version = 3\n\n[[package]]\nname = \"mytool\"\nversion = \"{lock_version}\"\n"),
-    )
-    .unwrap();
     let mut cfg = String::from("[lints]\ndefault = \"allow\"\ncli-crate-version = \"deny\"\n");
     for rule in rules {
         cfg.push_str("\n[[cli-crate-version.rules]]\n");
         cfg.push_str(rule);
         cfg.push('\n');
     }
-    std::fs::write(dir.join(".workspace-lint.toml"), cfg).unwrap();
+    TestWorkspace::new()
+        .lib_member("crates/mytool", "mytool", lock_version, "pub fn f() {}\n")
+        .lock(format!(
+            "version = 3\n\n[[package]]\nname = \"mytool\"\nversion = \"{lock_version}\"\n"
+        ))
+        .config(cfg)
+        .write(dir);
 }
 
 /// A missing binary must surface as a rendered diagnostic and let the run

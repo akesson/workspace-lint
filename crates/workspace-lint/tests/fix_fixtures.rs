@@ -12,21 +12,14 @@
 //! `expected/` with the post-fix tree. The test still passes so a casual
 //! `BLESS=1 cargo test` run does the right thing.
 
-use assert_cmd::cargo::cargo_bin_cmd;
-use fs_err as fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+mod common;
+use common::{bless_enabled, copy_tree, walk_files, workspace_lint};
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn workspace_lint() -> assert_cmd::Command {
-    cargo_bin_cmd!("workspace-lint")
-}
-
-fn bless_enabled() -> bool {
-    std::env::var("WORKSPACE_LINT_BLESS").is_ok()
 }
 
 fn run_fix_fixture(name: &str) {
@@ -66,53 +59,41 @@ fn run_fix_fixture(name: &str) {
     }
 }
 
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    for entry in walk_files(src) {
-        let rel = entry.strip_prefix(src).expect("strip prefix");
-        let target = dst.join(rel);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
+/// Wholesale replace `dst` with `src`'s comparison-relevant files — the same set
+/// [`assert_trees_equal`] checks, excluding the `Cargo.lock` that
+/// `cargo metadata` generates as a side-effect (no fixture commits one, so it
+/// must not leak into a blessed `expected/`). Deletes any pre-existing `dst`
+/// first so removals propagate through bless.
+fn sync_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if dst.is_dir() {
+        std::fs::remove_dir_all(dst)?;
+    }
+    for rel in walk_files(src, &["Cargo.lock"]) {
+        let to = dst.join(&rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        fs::copy(&entry, &target)?;
+        std::fs::copy(src.join(&rel), &to)?;
     }
     Ok(())
 }
 
-/// Wholesale replace `dst` with the contents of `src`. Deletes any
-/// pre-existing files under `dst` so removals propagate through bless.
-fn sync_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if dst.is_dir() {
-        fs::remove_dir_all(dst)?;
-    }
-    fs::create_dir_all(dst)?;
-    copy_tree(src, dst)
-}
-
 fn assert_trees_equal(actual: &Path, expected: &Path) {
-    let actual_files: Vec<PathBuf> = walk_files(actual)
-        .into_iter()
-        .map(|p| p.strip_prefix(actual).unwrap().to_path_buf())
-        .collect();
-    let expected_files: Vec<PathBuf> = walk_files(expected)
-        .into_iter()
-        .map(|p| p.strip_prefix(expected).unwrap().to_path_buf())
-        .collect();
-
-    let mut actual_sorted = actual_files.clone();
-    let mut expected_sorted = expected_files.clone();
-    actual_sorted.sort();
-    expected_sorted.sort();
+    // `walk_files` returns relative, sorted paths (and excludes the generated
+    // `Cargo.lock`), so the two lists compare directly.
+    let actual_files = walk_files(actual, &["Cargo.lock"]);
+    let expected_files = walk_files(expected, &["Cargo.lock"]);
 
     assert_eq!(
-        actual_sorted, expected_sorted,
-        "tree contents differ.\n  actual:   {actual_sorted:#?}\n  expected: {expected_sorted:#?}\n\
+        actual_files, expected_files,
+        "tree contents differ.\n  actual:   {actual_files:#?}\n  expected: {expected_files:#?}\n\
          (run `WORKSPACE_LINT_BLESS=1 cargo test` to regenerate expected/)"
     );
 
-    for rel in actual_sorted {
-        let a = fs::read_to_string(actual.join(&rel))
+    for rel in actual_files {
+        let a = std::fs::read_to_string(actual.join(&rel))
             .unwrap_or_else(|e| panic!("read actual {}: {e}", rel.display()));
-        let e = fs::read_to_string(expected.join(&rel))
+        let e = std::fs::read_to_string(expected.join(&rel))
             .unwrap_or_else(|err| panic!("read expected {}: {err}", rel.display()));
         assert_eq!(
             a,
@@ -122,42 +103,6 @@ fn assert_trees_equal(actual: &Path, expected: &Path) {
             rel.display()
         );
     }
-}
-
-/// Recursively walk a directory and return every regular file path.
-///
-/// Filters out `Cargo.lock` and `target/` since some lints (resolver-backed
-/// ones) shell out to `cargo metadata`, which can create those as a side
-/// effect. They're not part of the user-visible workspace state we're
-/// asserting on.
-fn walk_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if !root.is_dir() {
-        return out;
-    }
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if path.is_dir() {
-                if name == "target" {
-                    continue;
-                }
-                stack.push(path);
-            } else if path.is_file() {
-                if name == "Cargo.lock" {
-                    continue;
-                }
-                out.push(path);
-            }
-        }
-    }
-    out
 }
 
 // --- One test per fixture below. New fixtures go in
