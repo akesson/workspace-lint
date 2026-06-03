@@ -1,0 +1,11 @@
+error: `[crates.typo]` does not match any workspace member
+ --> .workspace-lint.toml:1:1
+  |
+  = help: did you mean `demo`?
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(config)
+  |
+  = note: `#[deny(workspace_lint::config)]` on by default
+
+workspace-lint: generated 1 error

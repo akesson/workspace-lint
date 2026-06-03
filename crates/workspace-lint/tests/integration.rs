@@ -101,3 +101,48 @@ fn no_config_errors() {
         .failure()
         .stderr(predicate::str::contains("no configuration found"));
 }
+
+// --- config fail-fast paths (parse errors abort the run with exit 1) ---
+
+/// Write a minimal workspace whose standalone config is `config_body`, run the
+/// binary there, and return the assert handle.
+fn run_with_config(config_body: &str) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    std::fs::write(tmp.path().join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+    std::fs::write(tmp.path().join(".workspace-lint.toml"), config_body).unwrap();
+    tmp
+}
+
+#[test]
+fn malformed_toml_config_aborts() {
+    let tmp = run_with_config("this is = = not toml\n");
+    workspace_lint()
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to parse config"));
+}
+
+#[test]
+fn invalid_lint_level_aborts_with_variants() {
+    let tmp = run_with_config("[lints]\ncentralized-deps = \"lou\"\n");
+    workspace_lint()
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("failed to parse config").and(predicate::str::contains(
+                "expected one of `allow`, `warn`, `deny`",
+            )),
+        );
+}
+
+#[test]
+fn invalid_glob_in_config_aborts() {
+    let tmp = run_with_config("[[file-size.rules]]\nglob = \"[unclosed\"\nmax-code-lines = 10\n");
+    workspace_lint()
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid glob"));
+}
