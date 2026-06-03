@@ -17,11 +17,14 @@
 //! `git submodule update --init`, or the packaged crate), so the suite stays
 //! green without the corpus present.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use syn_workspace::Workspace;
 use tempfile::TempDir;
+
+mod common;
+use common::{copy_tree, corpus_root};
 
 struct CorpusEntry {
     /// Display name (for failure messages).
@@ -149,38 +152,4 @@ fn smoke_one(src: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn corpus_root() -> PathBuf {
-    // crates/syn-workspace/ -> repo root -> corpus/
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("syn-workspace crate has a repo root two levels up")
-        .join("corpus")
-}
-
-/// Recursively copy `src` into `dst`, pruning `.git` (submodule gitlink/metadata)
-/// and `target` (build output) so the copy is cheap and the submodule checkout is
-/// never mutated.
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let mut stack = vec![src.to_path_buf()];
-    while let Some(path) = stack.pop() {
-        let rel = path.strip_prefix(src).unwrap();
-        let target = dst.join(rel);
-        if path.is_dir() {
-            std::fs::create_dir_all(&target)?;
-            for entry in std::fs::read_dir(&path)?.flatten() {
-                let name = entry.file_name();
-                if name == "_git" || name == ".git" || name == "target" {
-                    continue;
-                }
-                stack.push(entry.path());
-            }
-        } else {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(&path, &target)?;
-        }
-    }
-    Ok(())
-}
+// `corpus_root` and `copy_tree` are shared via `tests/common/mod.rs`.

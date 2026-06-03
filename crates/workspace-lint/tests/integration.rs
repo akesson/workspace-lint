@@ -1,6 +1,8 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::path::Path;
+
+mod common;
+use common::{TestWorkspace, workspace_lint};
 
 fn fixture(name: &str) -> &Path {
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -9,10 +11,6 @@ fn fixture(name: &str) -> &Path {
         .join(name);
     // Leak to get a &'static Path — fine for tests
     Box::leak(p.into_boxed_path())
-}
-
-fn workspace_lint() -> assert_cmd::Command {
-    cargo_bin_cmd!("workspace-lint")
 }
 
 // --- centralized-deps ---
@@ -108,8 +106,7 @@ fn no_config_errors() {
 /// binary there, and return the assert handle.
 fn run_with_config(config_body: &str) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().expect("create tempdir");
-    std::fs::write(tmp.path().join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
-    std::fs::write(tmp.path().join(".workspace-lint.toml"), config_body).unwrap();
+    TestWorkspace::new().config(config_body).write(tmp.path());
     tmp
 }
 
@@ -153,13 +150,9 @@ fn invalid_glob_in_config_aborts() {
 #[test]
 fn check_file_size_cli_override_flags_oversized() {
     let tmp = tempfile::tempdir().expect("create tempdir");
-    std::fs::write(tmp.path().join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
-    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
-    std::fs::write(
-        tmp.path().join("src/big.rs"),
-        "fn a() {}\nfn b() {}\nfn c() {}\n",
-    )
-    .unwrap();
+    TestWorkspace::new()
+        .loose_file("src/big.rs", "fn a() {}\nfn b() {}\nfn c() {}\n")
+        .write(tmp.path());
     workspace_lint()
         .current_dir(tmp.path())
         .args([
@@ -180,23 +173,15 @@ fn check_file_size_cli_override_flags_oversized() {
 #[test]
 fn check_crate_size_cli_override_flags_oversized() {
     let tmp = tempfile::tempdir().expect("create tempdir");
-    std::fs::write(
-        tmp.path().join("Cargo.toml"),
-        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/demo\"]\n",
-    )
-    .unwrap();
-    let crate_src = tmp.path().join("crates/demo/src");
-    std::fs::create_dir_all(&crate_src).unwrap();
-    std::fs::write(
-        tmp.path().join("crates/demo/Cargo.toml"),
-        "[package]\nname = \"demo\"\nversion = \"0.0.1\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        crate_src.join("lib.rs"),
-        "pub fn a() {}\npub fn b() {}\npub fn c() {}\n",
-    )
-    .unwrap();
+    TestWorkspace::new()
+        .resolver("2")
+        .lib_member(
+            "crates/demo",
+            "demo",
+            "0.0.1",
+            "pub fn a() {}\npub fn b() {}\npub fn c() {}\n",
+        )
+        .write(tmp.path());
     workspace_lint()
         .current_dir(tmp.path())
         .args([

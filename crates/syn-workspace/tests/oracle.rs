@@ -32,9 +32,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use syn_workspace::{Crate, DepSection, ItemKind, ResolvedPath, Visibility, Workspace};
 
-/// rust-analyzer emits UTF-8 code-unit (byte) column offsets; the byte-span
-/// alignment this net relies on assumes it. Drift here fails loudly.
-const EXPECTED_POSITION_ENCODING: &str = "UTF8CodeUnitOffsetFromLineStart";
+mod common;
+use common::{
+    EXPECTED_POSITION_ENCODING, corpus_root, fixture_dir, fixture_workspace_present, load_json,
+};
 
 /// rustdoc JSON schema version the committed oracles were distilled against —
 /// the fast-path twin of `oracle-bless`'s `EXPECTED_RUSTDOC_FORMAT`. Because the
@@ -50,7 +51,7 @@ fn multi_crate() {
     // Published-crate guard: the fixture `workspace/` subtree is excluded from
     // the packaged crate (it has its own [workspace] table), so skip cleanly if
     // run from a package rather than the source tree.
-    if !base.join("workspace").exists() {
+    if !fixture_workspace_present(&base) {
         eprintln!("oracle fixture absent (packaged crate?) — skipping");
         return;
     }
@@ -298,14 +299,6 @@ fn corpus_dependency_differential() {
     }
 }
 
-fn corpus_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("syn-workspace crate has a repo root two levels up")
-        .join("corpus")
-}
-
 fn corpus_oracle_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus_oracle")
 }
@@ -420,19 +413,6 @@ fn syn_def_segments(krate: &Crate) -> BTreeSet<Vec<String>> {
         .filter(|i| is_def_kind(i.kind))
         .map(|i| i.canonical.segments().to_vec())
         .collect()
-}
-
-fn fixture_dir(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/oracle")
-        .join(name)
-}
-
-fn load_json(p: &Path) -> Value {
-    let bytes = std::fs::read(p).unwrap_or_else(|e| {
-        panic!("read oracle artifact {} ({e}); regenerate with `cargo run --manifest-path tools/oracle-bless/Cargo.toml`", p.display())
-    });
-    serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", p.display()))
 }
 
 fn member<'a>(ws: &'a Workspace, name: &str) -> &'a Crate {
