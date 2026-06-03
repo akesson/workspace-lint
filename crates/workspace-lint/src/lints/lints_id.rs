@@ -4,8 +4,9 @@
 //! - [`messages::scenarios`](crate::messages::scenarios) — every variant in
 //!   [`LintId::ALL`] must have at least one scenario for the human/json/github
 //!   snapshot tests.
-//! - The [`tests`] module below — `every_lint_has_a_message_scenario` and
-//!   `every_fixturable_lint_has_a_fix_fixture` are the missing-test-files guards.
+//! - The `#[cfg(test)] mod tests` below — `every_lint_has_a_message_scenario`
+//!   and `every_fixturable_lint_has_a_fix_fixture` are the missing-test-files
+//!   guards.
 //! - `tests/fix_fixtures.rs` — the [`FIXTURABLE_LINTS`] subset must each have
 //!   a paired `tests/fixtures/fix__<short>/` directory.
 //! - The `[lints]` config table (see [`crate::config`]) — every key is a
