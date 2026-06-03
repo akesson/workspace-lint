@@ -1,0 +1,11 @@
+[lints]
+default = "allow"
+crate-size = "deny"
+
+# include opts JSON in alongside Rust. The crate's Rust is tiny, but data.json
+# pushes the counted total over the budget — proving a custom `include` actually
+# counts the extra file type (the positive counterpart to the path-shaped KFN).
+[[crate-size.rules]]
+glob = "crates/*"
+max-code-lines = 10
+include = ["*.rs", "*.json"]

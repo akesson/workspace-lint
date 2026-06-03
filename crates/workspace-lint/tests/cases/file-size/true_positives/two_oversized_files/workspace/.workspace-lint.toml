@@ -1,0 +1,7 @@
+[lints]
+default = "allow"
+file-size = "deny"
+
+[[file-size.rules]]
+glob = "**/*.rs"
+max-code-lines = 2
