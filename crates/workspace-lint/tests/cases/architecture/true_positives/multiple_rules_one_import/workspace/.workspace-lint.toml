@@ -1,0 +1,14 @@
+# Two rules both match the same import; the lint emits one diagnostic per rule.
+[[architecture.rules]]
+name = "no-internals"
+from = ["apps-*"]
+deny = ["data-models::internal::**"]
+
+[[architecture.rules]]
+name = "no-data-models-at-all"
+from = ["apps-*"]
+deny = ["data-models::**"]
+
+[lints]
+default = "allow"
+architecture = "deny"

@@ -1,0 +1,12 @@
+[package]
+name = "alpha"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# serde is not in [workspace.dependencies], so centralized-deps fires — but the
+# injected expect (see setup.toml) suppresses it AND must not go stale.
+serde = "1.0.200"

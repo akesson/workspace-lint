@@ -77,6 +77,7 @@ pub(crate) fn check(config: &CliCrateVersionConfig) -> Vec<Diagnostic> {
 
 /// A rule that couldn't be evaluated (bad config or an un-runnable command),
 /// carrying the user-facing message and a remediation hint.
+#[derive(Debug)]
 struct RuleError {
     message: String,
     help: &'static str,

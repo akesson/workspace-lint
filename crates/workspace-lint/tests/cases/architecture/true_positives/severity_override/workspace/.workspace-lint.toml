@@ -1,0 +1,12 @@
+[[architecture.rules]]
+name = "apps-no-data-internals"
+from = ["apps-*"]
+deny = ["data-models::internal::**"]
+severity = "deny"
+
+# Blanket level is only `warn`; the rule's own `severity = "deny"` must win and
+# flip the exit to 1. If the per-rule severity were ignored, this would be a
+# warning (exit 0) and the TP would fail.
+[lints]
+default = "allow"
+architecture = "warn"

@@ -179,6 +179,12 @@ fn apply_structural_fix_intra_crate_adds_tighten_suggestion() {
         "tighten suggestion should be attached"
     );
     assert_eq!(built.suggestions[0].replacement, "pub(crate)");
+    // IntraCrate = a referrer was found inside the crate, so tightening is
+    // safe to auto-apply.
+    assert_eq!(
+        built.suggestions[0].applicability,
+        crate::diagnostic::Applicability::MachineApplicable,
+    );
 }
 
 #[test]
@@ -198,6 +204,13 @@ fn apply_structural_fix_unused_without_auto_delete_falls_back_to_tighten() {
     let built = apply_structural_fix(builder, &item, false, &span, &Usage::Unused).build();
     assert_eq!(built.suggestions.len(), 1);
     assert_eq!(built.suggestions[0].replacement, "pub(crate)");
+    // Unused = the resolver found *zero* referrers — a blind spot (FFI exports,
+    // macro-only usage, missed re-exports). The tighten is shown but emitted as
+    // `MaybeIncorrect` so `--fix` will not auto-apply it.
+    assert_eq!(
+        built.suggestions[0].applicability,
+        crate::diagnostic::Applicability::MaybeIncorrect,
+    );
 }
 
 #[test]

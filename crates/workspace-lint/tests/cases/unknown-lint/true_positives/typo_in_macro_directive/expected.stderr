@@ -1,0 +1,11 @@
+error: unknown lint `file-siz` in `allow` directive
+ --> crates/demo/src/lib.rs:3:1
+  |
+  = help: did you mean `file-size`?
+help: if intentional, silence with:
+  |
+3 + workspace_lint::expect!(unknown_lint);
+  |
+  = note: `#[deny(workspace_lint::unknown_lint)]` on by default
+
+workspace-lint: generated 1 error

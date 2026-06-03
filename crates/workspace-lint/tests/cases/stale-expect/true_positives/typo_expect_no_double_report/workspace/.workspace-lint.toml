@@ -1,0 +1,4 @@
+[lints]
+default = "allow"
+unknown-lint = "deny"
+stale-expect = "deny"

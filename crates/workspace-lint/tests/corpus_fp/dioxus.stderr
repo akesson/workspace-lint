@@ -1890,4 +1890,4 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-workspace-lint: generated 83 warnings (run `workspace-lint --fix` to apply 184 suggestions)
+workspace-lint: generated 83 warnings (run `workspace-lint --fix` to apply 154 suggestions)

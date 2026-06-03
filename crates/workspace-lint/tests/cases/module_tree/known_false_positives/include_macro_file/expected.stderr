@@ -1,0 +1,12 @@
+error: orphan source file `src/generated.rs` is not reachable from any `mod` declaration
+ --> crates/demo/src/generated.rs:1:1
+  |
+  = help: add `mod generated;` (or a `#[path = "src/generated.rs"] mod ...;`) in the appropriate parent module, or delete the file
+  = note: crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`
+help: if intentional, silence with:
+  |
+1 + workspace_lint::expect!(module_tree);
+  |
+  = note: `#[deny(workspace_lint::module_tree)]` on by default
+
+workspace-lint: generated 1 error

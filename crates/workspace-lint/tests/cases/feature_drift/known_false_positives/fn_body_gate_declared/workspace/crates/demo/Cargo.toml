@@ -1,0 +1,15 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `extra` IS gated — but only inside a fn body (see src/lib.rs). feature-drift
+# v1 scans only item-level outer attributes, so it can't see the body gate and
+# wrongly reports `extra` as declared-never-gated. KNOWN FALSE POSITIVE: when
+# body-level cfg scanning lands, this case stops firing and should move to
+# true_negatives.
+extra = []

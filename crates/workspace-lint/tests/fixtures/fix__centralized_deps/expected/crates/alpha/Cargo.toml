@@ -3,4 +3,9 @@ name = "alpha"
 version = "0.1.0"
 
 [dependencies]
+# `serde` IS centralized in [workspace.dependencies], so --fix rewrites it.
 serde = { workspace = true }
+# `rand` is NOT in [workspace.dependencies]: `rand = { workspace = true }` would
+# break the manifest, so the suggestion is MaybeIncorrect and --fix must leave
+# this line untouched.
+rand = "0.8"

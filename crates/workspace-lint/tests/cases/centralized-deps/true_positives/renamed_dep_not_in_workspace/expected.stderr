@@ -1,0 +1,16 @@
+error: 1 dependency in crates/alpha/Cargo.toml should use `workspace = true`
+ --> crates/alpha/Cargo.toml:1:1
+  |
+  = help: [dependencies] my_serde: version "1.0.200" not in [workspace.dependencies] — add it there and use { workspace = true }
+help: use { workspace = true } for `my_serde`
+  |
+15 - <existing>
+15 + my_serde = { workspace = true }
+  |
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(centralized-deps)
+  |
+  = note: `#[deny(workspace_lint::centralized_deps)]` on by default
+
+workspace-lint: generated 1 error

@@ -366,11 +366,18 @@ fn build_diagnostic(
 }
 
 /// Structural fix policy:
-///  - `IntraCrate` → always `pub` → `pub(crate)`.
+///  - `IntraCrate` → `pub` → `pub(crate)`, `MachineApplicable` (a referrer
+///    *was* found inside the crate, so tightening is provably safe).
 ///  - `Unused` + `auto_delete = true` + git-tracked-clean → delete.
 ///  - `Unused` + `auto_delete = true` + dirty/untracked → emit deletion
 ///    as `MaybeIncorrect` (so `--fix` skips it) plus an explanatory note.
-///  - `Unused` + `auto_delete = false` → narrow to `pub(crate)`.
+///  - `Unused` + `auto_delete = false` → narrow to `pub(crate)`, but
+///    `MaybeIncorrect` (so `--fix` skips it): "unused" means the resolver
+///    found *zero* referrers, which is exactly where its blind spots live
+///    (`#[no_mangle]`/FFI exports, macro-only usage, trait-method dispatch,
+///    missed re-exports). Auto-rewriting those would silently churn — or
+///    break — intentional API surface, so the suggestion is shown but not
+///    applied. See the `ffi_no_mangle_export` known-FP case.
 ///
 /// `auto_delete` is passed as a `bool` rather than reaching into [`CheckCtx`]
 /// so this is independently unit-testable.
@@ -385,20 +392,29 @@ fn apply_structural_fix(
         let with_sugg = builder.suggestion(sugg);
         return note.into_iter().fold(with_sugg, |b, reason| b.note(reason));
     }
-    build_tighten_suggestion(item)
+    build_tighten_suggestion(item, usage)
         .into_iter()
         .fold(builder, |b, s| b.suggestion(s))
 }
 
-/// Build a `MachineApplicable` suggestion that overwrites the item's `pub`
-/// keyword with `pub(crate)`. The byte range comes from
-/// [`Item::vis_byte_range`], which `syn-workspace` sets from the
-/// `Visibility::Public` token's `proc-macro2` span — no source scanning, so
-/// no risk of matching a `pub` token inside a doc comment or string literal.
-/// Returns `None` for items without a captured visibility span.
-fn build_tighten_suggestion(item: &Item) -> Option<crate::diagnostic::Suggestion> {
+/// Build a suggestion that overwrites the item's `pub` keyword with
+/// `pub(crate)`. The byte range comes from [`Item::vis_byte_range`], which
+/// `syn-workspace` sets from the `Visibility::Public` token's `proc-macro2`
+/// span — no source scanning, so no risk of matching a `pub` token inside a
+/// doc comment or string literal. Returns `None` for items without a captured
+/// visibility span.
+///
+/// Applicability follows the usage class: [`Usage::IntraCrate`] is
+/// `MachineApplicable` (a referrer was found, so `--fix` may apply it), while
+/// [`Usage::Unused`] is `MaybeIncorrect` (no referrer found = resolver blind
+/// spot, so `--fix` skips it). [`Usage::CrossCrate`] never reaches here.
+fn build_tighten_suggestion(item: &Item, usage: &Usage) -> Option<crate::diagnostic::Suggestion> {
     let span = item.source.as_ref()?;
     let vis_range = item.vis_byte_range.clone()?;
+    let applicability = match usage {
+        Usage::IntraCrate => crate::diagnostic::Applicability::MachineApplicable,
+        Usage::Unused | Usage::CrossCrate => crate::diagnostic::Applicability::MaybeIncorrect,
+    };
     Some(crate::diagnostic::Suggestion {
         span: crate::diagnostic::Span {
             file: span.file.clone(),
@@ -411,7 +427,7 @@ fn build_tighten_suggestion(item: &Item) -> Option<crate::diagnostic::Suggestion
         },
         message: "tighten to `pub(crate)`".into(),
         replacement: "pub(crate)".into(),
-        applicability: crate::diagnostic::Applicability::MachineApplicable,
+        applicability,
     })
 }
 

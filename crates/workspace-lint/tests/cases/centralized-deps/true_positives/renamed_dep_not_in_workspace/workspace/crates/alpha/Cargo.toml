@@ -1,0 +1,15 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Renamed dep: local key `my_serde`, real package `serde`. The local key is not
+# in [workspace.dependencies] (only `serde` is), so `my_serde = { workspace =
+# true }` would break the manifest. centralized-deps still flags it, but the
+# rewrite is a MaybeIncorrect preview only — `--fix` must NOT apply it (no
+# "run --fix to apply" footer).
+my_serde = { package = "serde", version = "1.0.200" }

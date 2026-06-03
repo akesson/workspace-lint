@@ -1,0 +1,16 @@
+# freshness roots its dependency search at the doc's own directory, so it only
+# ever compares crates/demo/CLAUDE.md against files under crates/demo/. The doc
+# is NEWER than demo's own source (order 1 > 0), so it looks fresh — even though
+# the sibling source it actually documents (crates/other, order 2) is newer.
+# KNOWN FALSE NEGATIVE: cross-directory staleness can't be detected.
+[[mtime]]
+path = "crates/demo/src/lib.rs"
+order = 0
+
+[[mtime]]
+path = "crates/demo/CLAUDE.md"
+order = 1
+
+[[mtime]]
+path = "crates/other/src/lib.rs"
+order = 2

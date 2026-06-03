@@ -15,6 +15,12 @@ fn workspace_lint() -> assert_cmd::Command {
 /// Write a minimal workspace whose lockfile pins `mytool` to `lock_version`,
 /// plus a `.workspace-lint.toml` carrying one cli-crate-version `rule`.
 fn write_workspace(dir: &Path, lock_version: &str, rule: &str) {
+    write_workspace_rules(dir, lock_version, &[rule]);
+}
+
+/// Like [`write_workspace`] but emits one `[[cli-crate-version.rules]]` block
+/// per entry in `rules`, so a test can exercise multiple rules in one run.
+fn write_workspace_rules(dir: &Path, lock_version: &str, rules: &[&str]) {
     std::fs::write(
         dir.join("Cargo.toml"),
         "[workspace]\nmembers = [\"crates/mytool\"]\n",
@@ -33,11 +39,13 @@ fn write_workspace(dir: &Path, lock_version: &str, rule: &str) {
         format!("version = 3\n\n[[package]]\nname = \"mytool\"\nversion = \"{lock_version}\"\n"),
     )
     .unwrap();
-    std::fs::write(
-        dir.join(".workspace-lint.toml"),
-        format!("[lints]\ndefault = \"allow\"\ncli-crate-version = \"deny\"\n\n[[cli-crate-version.rules]]\n{rule}\n"),
-    )
-    .unwrap();
+    let mut cfg = String::from("[lints]\ndefault = \"allow\"\ncli-crate-version = \"deny\"\n");
+    for rule in rules {
+        cfg.push_str("\n[[cli-crate-version.rules]]\n");
+        cfg.push_str(rule);
+        cfg.push('\n');
+    }
+    std::fs::write(dir.join(".workspace-lint.toml"), cfg).unwrap();
 }
 
 /// A missing binary must surface as a rendered diagnostic and let the run
@@ -113,5 +121,34 @@ fn mismatched_version_fails_with_finding() {
     assert!(
         stderr.contains("CLI version 9.9.9 does not match Cargo.lock 1.2.3"),
         "stderr: {stderr}"
+    );
+}
+
+/// The core contract behind the per-rule error handling: one broken rule must
+/// NOT suppress the others. A rule with a missing binary (a setup error) and a
+/// rule with a real mismatch run together — both diagnostics must appear.
+#[cfg(unix)]
+#[test]
+fn one_broken_rule_does_not_suppress_other_rules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tool = write_fake_tool(tmp.path(), "9.9.9");
+    let broken = "command = [\"workspace-lint-no-such-binary-zzz\", \"--version\"]\npattern = \"(\\\\d+\\\\.\\\\d+\\\\.\\\\d+)\"\ncrate = \"mytool\"";
+    let mismatch = format!(
+        "command = [{:?}, \"--version\"]\npattern = \"mytool (\\\\d+\\\\.\\\\d+\\\\.\\\\d+)\"\ncrate = \"mytool\"",
+        tool.to_string_lossy()
+    );
+    write_workspace_rules(tmp.path(), "1.2.3", &[broken, &mismatch]);
+
+    let output = workspace_lint().current_dir(tmp.path()).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The broken rule's setup error AND the second rule's mismatch finding both
+    // surface — proving the first rule's failure didn't abort evaluation.
+    assert!(
+        stderr.contains("failed to run"),
+        "broken rule's error missing; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("CLI version 9.9.9 does not match Cargo.lock 1.2.3"),
+        "second rule did not run after the broken one; stderr: {stderr}"
     );
 }

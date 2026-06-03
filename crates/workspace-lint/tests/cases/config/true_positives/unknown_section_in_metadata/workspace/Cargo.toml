@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/demo"]
+
+[workspace.metadata.workspace-lint.lints]
+default = "allow"
+config = "deny"
+
+# Typo of `file-size`, but configured via [workspace.metadata.workspace-lint]
+# rather than a standalone file. The audit finding must anchor at Cargo.toml
+# (metadata spans don't map back, so the audit re-serializes and anchors there).
+[workspace.metadata.workspace-lint.file-sizee]
+max-code-lines = 10

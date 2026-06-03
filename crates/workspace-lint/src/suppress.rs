@@ -122,6 +122,13 @@ impl SuppressionMap {
             if entry.directive.kind != DirectiveKind::Expect {
                 continue;
             }
+            // A directive naming an unknown lint can never match (the lint
+            // doesn't exist), so it would always look "stale" — but it's
+            // already reported by `unknown-lint`. Skip it here to avoid a
+            // double report (stale-expect + unknown-lint) for one typo.
+            if LintId::from_short(&entry.directive.lint).is_none() {
+                continue;
+            }
             let key = (
                 entry.directive.origin.file.clone(),
                 entry.directive.origin.line,
@@ -466,6 +473,24 @@ mod tests {
         assert_eq!(stales[0].lint, STALE_EXPECT_LINT);
         assert!(stales[0].message.contains("file-size"));
         assert_eq!(stales[0].primary.as_ref().unwrap().line_start, 1);
+    }
+
+    #[test]
+    fn unknown_lint_expect_is_not_also_stale() {
+        // A typo'd lint name can never match, but it's already reported by
+        // `unknown-lint` — it must NOT additionally surface as stale-expect.
+        let map = SuppressionMap::from_directives(vec![expect(
+            "unusd-deps",
+            SilenceAnchor::File {
+                file: PathBuf::from("src/lib.rs"),
+            },
+            "src/lib.rs",
+            1,
+        )]);
+        assert!(
+            map.stale_expects().is_empty(),
+            "unknown-lint-named expect should not double-report as stale-expect"
+        );
     }
 
     #[test]

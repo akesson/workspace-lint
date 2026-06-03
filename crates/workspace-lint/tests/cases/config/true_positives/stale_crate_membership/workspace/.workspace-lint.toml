@@ -1,0 +1,8 @@
+[lints]
+default = "allow"
+config = "deny"
+
+# `typo` is not a workspace member (the only member is `demo`). The config
+# audit must flag the stale per-crate block.
+[crates.typo.lints]
+file-size = "warn"
