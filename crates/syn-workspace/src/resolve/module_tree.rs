@@ -38,6 +38,7 @@ use super::{
     BrokenModDecl, Error, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
     SourceSpan, Visibility,
 };
+use crate::macros::annotation::comment_expansion_uses_occurrences;
 use crate::macros::autodetect::extract_macro_paths;
 use crate::plugins;
 
@@ -143,6 +144,13 @@ pub(crate) fn build_module_from_file(
         source: e,
     })?;
 
+    // The dependency-free `// workspace-syn: expansion-uses(...)` comment form of
+    // an `expansion_uses!` annotation isn't in the `syn` AST, so recover it from
+    // the file text here (where `source` is in hand) and seed it into this file's
+    // top-level module — raw, so the Phase-B pass in `collect_module_contents`
+    // resolves it alongside every other occurrence.
+    let comment_occurrences = comment_expansion_uses_occurrences(&source, file_path);
+
     // A file's own items are at its top level — not inside any inline block of
     // *this* file, even when the file itself was reached via a `mod foo;`.
     let contents = collect_module_contents(
@@ -152,6 +160,7 @@ pub(crate) fn build_module_from_file(
         &canonical,
         marker_crates,
         false,
+        comment_occurrences,
     )?;
 
     Ok(Module {
@@ -184,6 +193,12 @@ fn collect_module_contents(
     // while a top-level one anchors at the declaring file's directory. Resets to
     // `false` when a `mod foo;` crosses into a new file (`build_module_from_file`).
     in_inline: bool,
+    // Pre-built occurrences to seed this module's reference surface before the
+    // syntactic scan — the comment-directive `expansion_uses` form recovered from
+    // raw file text by `build_module_from_file`. Only a file's top-level module
+    // receives any; inline-`mod` recursion and unit tests pass an empty Vec. They
+    // flow through the Phase-B resolution loop below like any other occurrence.
+    seed_occurrences: Vec<Occurrence>,
 ) -> Result<ModuleContents> {
     let scope = scope_from(parent_canonical);
     // Names declared at this module level. A `use foo::Bar;` whose first
@@ -198,10 +213,11 @@ fn collect_module_contents(
     let mut use_bindings = Vec::new();
     let mut broken_mod_decls = Vec::new();
     let mut cfg_features: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    // All reference occurrences for this module (macro-body + regular-code +
-    // glob + extern-crate). Phase B (below) resolves each in place; this Vec is
-    // the module's reference surface, stored directly on `Module.occurrences`.
-    let mut occurrences: Vec<Occurrence> = Vec::new();
+    // All reference occurrences for this module (seeded comment-directive refs +
+    // macro-body + regular-code + glob + extern-crate). Phase B (below) resolves
+    // each in place; this Vec is the module's reference surface, stored directly
+    // on `Module.occurrences`.
+    let mut occurrences: Vec<Occurrence> = seed_occurrences;
     // Targets of `pub use M::*;` glob re-exports declared in this module.
     let mut glob_reexports: Vec<ResolvedPath> = Vec::new();
 
@@ -323,6 +339,10 @@ fn collect_module_contents(
                     // Items here are inside this inline block — a nested
                     // `#[path]` anchors at the (now deeper) `mod_dir`.
                     true,
+                    // Comment directives are seeded once, onto the file's
+                    // top-level module (`build_module_from_file`), not per inline
+                    // block.
+                    Vec::new(),
                 )?;
                 // Inline `mod foo { ... }` shares the parent's `file`.
                 // Callers that need the AST re-parse the file via
@@ -1467,6 +1487,7 @@ mod tests {
             &parent_canonical,
             &markers,
             false,
+            Vec::new(),
         )
         .expect("collect");
         let out: std::collections::BTreeSet<String> = contents
@@ -1493,6 +1514,7 @@ mod tests {
             &parent_canonical,
             &markers,
             false,
+            Vec::new(),
         )
         .expect("collect");
         contents

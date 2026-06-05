@@ -18,7 +18,7 @@ clap = { version = "4", features = ["derive"] }
 # public API is unstable. Upgrading: check the changelog, run
 # `cargo test -p syn-workspace` against the dioxus_rsx tests, and
 # update the pinned version here in lockstep with any AST walker
-# adjustments in plugins/dioxus_rsx.rs.
+# adjustments in the plugins/dioxus_rsx walker.
 dioxus-rsx = "=0.7.9"
 fs-err = "3"
 globset = "0.4"

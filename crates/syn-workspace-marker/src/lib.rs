@@ -29,8 +29,8 @@
 //! macro_rules! my_macro { /* ... */ }
 //! ```
 //!
-//! Both forms are parsed by `syn-workspace` at workspace-walk time. The macro
-//! and the comment must immediately precede the item they annotate.
+//! Both forms are parsed by `syn-workspace` at workspace-walk time, and should
+//! immediately precede the item they annotate.
 
 /// Declare paths referenced by a macro's expansion.
 ///

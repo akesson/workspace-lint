@@ -4,9 +4,10 @@
 //!
 //! - [`autodetect`] (Layer 1): scans `macro_rules!` bodies and proc-macro
 //!   source for token-level identifiers.
-//! - [`annotation`] (Layer 2): parses `expansion_uses!(...)` invocations
-//!   that appear immediately before a macro definition. A future comment-
-//!   directive form is a possible extension.
+//! - [`annotation`] (Layer 2): the paths a macro's expansion references,
+//!   declared immediately before the definition — either an
+//!   `expansion_uses!(...)` marker macro or the dependency-free
+//!   `// workspace-syn: expansion-uses(...)` comment-directive form.
 //! - [`external`] (Layer 3): declarative entries for macros defined in
 //!   external crates — supplied by the caller (e.g. parsed from a config
 //!   file) via [`crate::Workspace::register_external_macro_uses`].

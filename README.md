@@ -330,9 +330,10 @@ expansion-uses = ["tokio::runtime::Builder"]
 ```
 
 For macros defined *inside* the workspace, annotate the definition at the source
-instead, with the zero-dep `syn-workspace-marker` crate
-(`workspace_syn::expansion_uses!(...)`) or the equivalent
-`// workspace-syn: expansion-uses(...)` comment directive.
+instead — either with the zero-dep `syn-workspace-marker` crate
+(`workspace_syn::expansion_uses!(...)`) or the equivalent dependency-free
+`// workspace-syn: expansion-uses(...)` comment directive, placed immediately
+before the `macro_rules!` definition.
 
 ## Output formats
 
