@@ -1,7 +1,11 @@
 # Design: occurrence IR + unified macro-lowering for `syn-workspace`
 
-Status: **proposed** · Scope: `crates/syn-workspace` internals + its public model
-· Companion: [`/docs/ROADMAP.md`](../../docs/ROADMAP.md) (why this exists / where it leads)
+Status: **living design doc** — the IR refactor (§7) has landed and the framework
+Phase B hook (§4) is in active use. Scope: `crates/syn-workspace` internals + its
+public model. The project thesis, SCIP-oracle rationale, testing strategy, and
+project-level non-goals (formerly the standalone `docs/ROADMAP.md`, retired once
+the phased build-out completed — its development log lives in git history) now
+live in §9–§12 below.
 
 > **No backwards-compatibility constraint.** This crate is unpublished and has
 > no external consumers. The public API (`Workspace`/`Crate`/`Module`/`Item`/…)
@@ -197,7 +201,7 @@ structured lowerer today), so a feature-off build skips the nested walk entirely
 This is what keeps the plugin pure — it reads the model, never re-parses source —
 and gives any future structured lowerer fn-body capture for free.
 
-## 5. What it buys (against the north star — see ROADMAP)
+## 5. What it buys (against the north star — see §9)
 
 - **Deletes concepts:** 8 mechanisms → core + 1 trait; three reference channels + the "combine use-bindings" step → one occurrence list; the quote no-op-gate hack and the `ResolveContext` placeholder both vanish.
 - **Two SCIP diff points:** raw occurrences (Phase A) localize *extraction* bugs; resolved symbols (Phase B) localize *resolution* bugs. This is what makes the iteration loop converge instead of flail.
@@ -209,7 +213,7 @@ and gives any future structured lowerer fn-body capture for free.
 - **Occurrence volume / memory.** Raw occurrences carry spans and aren't deduped → larger than today's `BTreeSet<ResolvedPath>`. Bound it by keeping candidate-selection in Phase A (don't emit every bare ident); dedup is a view concern. These trees are small; measure, don't pre-optimize.
 - **Behavior drift.** Steps 1–4 must be semantics-preserving. Guardrail: the existing `cases.rs` snapshots + fixture assertions + inline unit tests (and later the SCIP diff). Anything that changes output is a separate, test-gated step.
 - **Layer 3 nuance.** Folding external macros into `MacroLowerer` *can* make attribution per-site instead of workspace-wide — strictly more precise, but a semantics change. Deferred to a follow-up so it doesn't ride in on the mechanical refactor.
-- **Scope — this changes extraction/resolution faithfulness, not analysis depth.** The IR does *not* close gaps that need type info or cross-item reasoning, and those stay tracked misses: trait-method dispatch via `dyn`/generics, `pub(crate) use` re-export hops (re-export-index design limit, not extraction), transitive architecture violations (a lint-side graph analysis), and **`pub` items inside `impl` blocks** (an item-*enumeration* gap — `item_from_syn` only walks module-level items; fixable in Phase A but explicitly out of the mechanical refactor — see ROADMAP Phase 3).
+- **Scope — this changes extraction/resolution faithfulness, not analysis depth.** The IR does *not* close gaps that need type info or cross-item reasoning, and those stay tracked misses: trait-method dispatch via `dyn`/generics, `pub(crate) use` re-export hops (re-export-index design limit, not extraction), transitive architecture violations (a lint-side graph analysis), and **`pub` items inside `impl` blocks** (an item-*enumeration* gap — `item_from_syn` only walks module-level items; fixable in Phase A but explicitly out of the mechanical refactor — tracked in §12).
 
 ## 7. Migration sequence (each step green on the existing suite)
 
@@ -225,7 +229,7 @@ and gives any future structured lowerer fn-body capture for free.
    accessors; **rewrite `workspace-lint` to consume them**; delete the old
    fields and the step-1 adapter. Snapshots unchanged (behavior identical,
    call sites updated).
-5. *(landed — ROADMAP Phase 1)* SCIP emitter over resolved occurrences. Shipped
+5. *(landed)* SCIP emitter over resolved occurrences. Shipped
    as `Workspace::scip_occurrences() -> Vec<ScipOccurrence>` (`src/scip_emit.rs`):
    a normalized, SCIP-aligned projection rather than a foreign `scip::types::Index`,
    so the published crate gains **no `scip`/`protobuf` dependency** and the diff
@@ -233,7 +237,7 @@ and gives any future structured lowerer fn-body capture for free.
    `to_scip_index()` wrapper that emits the real foreign type is deferred until a
    consumer needs to produce a `.scip` (none in Phase 1). The empty Phase B
    `resolve()` hook remains a Phase 4 item.
-6. *(framework Phase B semantics — landed, ROADMAP Phase 4 increment 1)* the
+6. *(framework Phase B semantics — landed; see §4)* the
    `ResolvePass` hook + `DioxusComponentPass` (see §4). Per-site external macros
    remain a later test-gated follow-up.
 
@@ -297,3 +301,129 @@ probe tripped the tier check with `syn PubSuper vs rustdoc "crate"`.)
 the release whose `FORMAT_VERSION == 57`); SCIP via `scip` 0.7.1
 (`Index::parse_from_bytes`, `parse_symbol`, `Document.position_encoding`) with
 `protobuf = "=3.7.2"`.
+
+**Pinned oracle toolchain (last bless, 2026-05-30 spike):** rust-analyzer 1.95
+(`scip`), nightly 1.97 (rustdoc JSON `format_version` 57, the
+`EXPECTED_RUSTDOC_FORMAT` constant in `tools/oracle-bless`). The bless tool
+asserts the rustdoc format and bails on drift; re-validate the RA symbol scheme
+when bumping it.
+
+---
+
+> **§9–§12 were the standalone `docs/ROADMAP.md`.** They are the evergreen *why*
+> (thesis, oracle rationale, testing strategy, project non-goals) that outlived the
+> phased build-out. The phase-by-phase development journal that used to sit here is
+> in git history; it is not reproduced.
+
+## 9. Project thesis — a deliberately shallow resolver
+
+`syn-workspace` is a **deliberately shallow approximation of a name resolver**: it
+loads a cargo workspace, builds module trees, resolves `use` chains and `pub use`
+re-exports, and token-scans code for path references — with **no type inference, no
+trait solving, no proc-macro execution**. Its only job is to feed `workspace-lint`
+enough resolution to produce **low-false-positive** lints, fast. Sub-second
+whole-workspace analysis is the point; anything needing the full rust-analyzer
+frontend is out of scope at runtime (it may appear in *tests* as an oracle — §8,
+§10).
+
+Four consequences drive everything:
+
+1. **The approximation's failure mode on valid code is a *missed reference*, not a
+   crash.** A missed reference surfaces in the lints as a **false positive**:
+   `unused-pub` flags an item that *is* used, `unused-deps` flags a crate that *is*
+   imported, `architecture` misses a real edge.
+2. **So testing this tool is primarily a false-positive hunt on valid code** —
+   "does clean code stay clean, and do real references get recorded?"
+3. **Two metrics, in priority order — false positives first, true positives
+   second.** A lint that fires on good code trains users to ignore it, so a low FP
+   rate is the top priority; a lint that never fires is also useless, so a high TP
+   rate is the close second. SCIP precision / in-class recall (§10) are *proxies*;
+   when a proxy and lint correctness disagree, lint correctness wins.
+4. **Misses on either axis are acceptable only when documented.** A surviving FP or
+   a missed TP is tolerable *if* it is a tracked `known_false_positive` /
+   `known_false_negative` with a one-line rationale (§11). Undocumented misses are
+   bugs; documented ones are known limits with a forcing function.
+
+## 10. SCIP as a differential oracle
+
+[SCIP](https://github.com/sourcegraph/scip) is the index rust-analyzer emits
+(`rust-analyzer scip`): per file, occurrences `(range, symbol, roles)` where
+`symbol` is a fully-resolved canonical path — **exactly the ground truth our
+token-scan approximates**, produced by the real resolver with full type inference.
+We use it as a **one-directional, class-restricted** oracle, never as drop-in
+expected output:
+
+- **Precision** (of the occurrences we emit, how many match RA) = our
+  **false-positive rate**. Target ~100%.
+- **In-class recall** (of RA's occurrences *in the classes we intend to produce* —
+  path-form references and item defs; excluding method calls, field access,
+  inferred paths, macro-expansion, locals) — how many we catch.
+
+Global recall against SCIP is **permanently capped well below 100% by design**
+(method calls and inferred types dominate idiomatic Rust and we have no types);
+chasing it is a category error. We measure *in-class* recall + precision instead.
+**Best fit: the dependency lints** — SCIP symbols carry the package name, so "is
+crate X referenced anywhere" is complete ground truth even through `x.foo()`; for
+`unused-pub` it is a false-positive detector, not a completeness checker.
+
+The harness commits the oracle index per fixture like a snapshot (RA is slow),
+parses it on the fast path (`serde_json` only — no rust-analyzer or nightly in CI),
+and re-blesses behind a flag when the pinned toolchain bumps (`tools/oracle-bless`).
+Current gate (`tests/scip_diff.rs`, `multi_crate`): **precision 100%, in-class
+recall floor 12/18** — the misses are RA per-path-*segment* occurrences and
+field/method references the resolver structurally can't produce. Encoding and
+normalization specifics are §8. Complementary oracles: rustdoc JSON for the public
+item/visibility graph (committed net in `tests/oracle.rs`) and cargo-udeps as a
+compiler-backed `unused-deps` oracle (noted, not core).
+
+## 11. Testing strategy
+
+Four altitudes, cheapest/most-precise at the base:
+
+1. **Table-driven unit tests** on resolver functions (`bindings_from_use`,
+   `resolve_occurrence`, each `MacroLowerer`) — microsecond, pinpoint failures;
+   where the variant matrix below is exercised.
+2. **Curated fixture crates** with hand-authored expectations — `workspace-lint`'s
+   `tests/cases/` four-kind taxonomy.
+3. **Public-crate corpus** (`corpus/` submodules) with the SCIP differential —
+   scale and realism on code we did not author.
+4. **No-panic / property net** — load the corpus; assert termination and no panic.
+
+**The four-kind taxonomy** (`tests/cases/<lint>/`): every lint's fixtures sort into
+`true_positives` / `true_negatives` / `known_false_positives` /
+`known_false_negatives`. This is the forcing function for documented misses (thesis
+point 4): `true_negatives` must stay clean and `true_positives` must keep firing,
+while surviving FPs / missed TPs live in the `known_*` buckets with a one-line
+rationale. **A KFP that stops firing, or a KFN that starts firing, fails the
+test** — signalling "the resolver improved, promote it." Nothing is hidden.
+
+**The variant matrix** — the dimensions of valid Rust this tool must not choke on,
+ranked by where a token-scanner is most likely to silently miss:
+
+- **`use` forms:** nested groups, `as` rename, glob, `self`/`crate`/`super`/`super::super`, leading `::`, `use {a, b}`, `pub`/`pub(crate)`/`pub(in path)`, raw idents.
+- **Reference positions (the scanner's weak spot):** turbofish, `<T as Trait>::m`, trait bounds, generic/const-generic args, associated types, macro-call paths, attribute & derive paths, paths in patterns / struct literals, `impl Trait`, paths in closures/async/const blocks.
+- **Module structure:** inline vs file `mod`, `mod.rs` vs `m.rs`, `#[path]`, nested dirs, `#[cfg]`-gated mods, mods inside fn bodies, re-export chains (single + glob).
+- **Macro bodies:** `quote!`/`quote_spanned!`, `rsx!`/`dioxus::rsx!`, `macro_rules!`, format-string args, nested & opaque user macros.
+- **Manifest / workspace shape:** renamed deps (`package=`), `foo.workspace=true`, optional deps + feature gating, dev/build/`target.'cfg()'` deps, multi-target crates (lib+bin+examples+tests+benches+build.rs+proc-macro), workspace globs/exclude/default-members, editions 2015/2018/2021/2024.
+
+## 12. Project non-goals / honest limits
+
+Distinct from §0 (which scopes the *refactor*); these are the **project-level**
+limits, by design:
+
+- **We will never match SCIP globally.** Method calls, field access, type
+  inference, and proc-macro expansion are out of scope. Success is *in-class*
+  precision + recall as a proxy for the real targets (low FP first, high TP
+  second), not global SCIP equality.
+- **SCIP is the means, lint correctness is the end.** Do not add resolver
+  complexity to chase RA behavior no lint consumes.
+- **Phase B plugins are independent pure contributors** merged deterministically —
+  never order-dependent or mutually-aware (§4). Core resolution (use-bindings,
+  re-export, cross-crate attribution) stays core, not pluggable.
+- **Standing tracked misses** — each a forcing-function fixture or a documented
+  structural non-goal: transitive architecture violations (need a call-graph /
+  type-signature tier), `pub` methods in `impl` blocks (an item-enumeration gap; no
+  lint can consume the def anyway, since method *calls* are `x.method()` receiver
+  syntax that needs type inference), `#[cfg_attr]` / `include!` path resolution,
+  external-crate glob exports (need rustdoc JSON), block doc comments (`/** … */`),
+  trait dispatch via `dyn`/generics, and `#[derive(...)]`-driven uses.

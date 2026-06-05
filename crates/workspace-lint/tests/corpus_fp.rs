@@ -1,10 +1,10 @@
-//! Lint false-positive audit for the public-crate corpus (ROADMAP Phase 2).
+//! Lint false-positive audit for the public-crate corpus.
 //!
 //! Runs the resolver-backed lints against real third-party crates (vendored as
 //! git submodules under `corpus/`) and snapshots the diagnostics. A clean crate
 //! produces an empty snapshot; any diagnostic is either a **real resolver false
 //! positive** to fix, or — if it reflects a documented limitation — baked into
-//! the committed snapshot with a `# known-FP:` note (the ROADMAP forcing function
+//! the committed snapshot with a `# known-FP:` note (the forcing function
 //! as snapshot content). New, unexplained diagnostics fail the build.
 //!
 //! Scope: **`unused-deps` everywhere; `unused-pub` only on multi-member crates.**

@@ -1,4 +1,4 @@
-//! Occurrence-level SCIP differential harness (ROADMAP Phase 1).
+//! Occurrence-level SCIP differential harness (see `DESIGN-ir-pipeline.md` §10).
 //!
 //! Sharpens the set-level dependency oracle in `oracle.rs` (which compares
 //! crate-name *sets*) to **occurrence granularity**: it diffs the resolver's

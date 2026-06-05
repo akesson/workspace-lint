@@ -149,7 +149,8 @@ pub(crate) struct ContributedRef {
 /// produce (framework semantics — e.g. a Dioxus `#[component]` bound to a bare
 /// `Foo {}` `rsx!` invocation, a reference path resolution alone can't see).
 ///
-/// Passes are **independent pure contributors** (a ROADMAP non-goal makes this a
+/// Passes are **independent pure contributors** (a project non-goal — see
+/// `DESIGN-ir-pipeline.md` §12 — makes this a
 /// hard rule): each reads the member crates and returns edges; it never mutates
 /// the model and is never aware of another pass. The single writer in
 /// `Workspace::load_with_options` unions every pass's edges into a set, so the
@@ -161,8 +162,8 @@ pub(crate) trait ResolvePass: Send + Sync {
 
 /// All built-in Phase-B resolve passes: the core [`macro_calls::MacroCallPass`]
 /// (always present — `macro_rules!` is a language feature) plus any framework
-/// passes gated on their feature (e.g. the Dioxus component pass, ROADMAP
-/// Phase 4). Each is an independent pure contributor; order doesn't matter.
+/// passes gated on their feature (e.g. the Dioxus component pass; see
+/// `DESIGN-ir-pipeline.md` §4). Each is an independent pure contributor; order doesn't matter.
 pub(crate) fn builtin_resolve_passes() -> Vec<Box<dyn ResolvePass>> {
     // `mut` only needed when a feature-gated pass is enabled.
     #[allow(unused_mut)]

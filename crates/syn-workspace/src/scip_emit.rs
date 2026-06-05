@@ -9,7 +9,7 @@
 //! differential harness (`tests/scip_diff.rs`) diffs this against a committed,
 //! normalized projection of a pinned rust-analyzer's `.scip`, yielding
 //! precision (our false-positive rate) and in-class recall. See
-//! `docs/ROADMAP.md` §B and `DESIGN-ir-pipeline.md` §5/§8.
+//! `DESIGN-ir-pipeline.md` §10, §5, and §8.
 //!
 //! ## What it emits, and why it is "in-class" by construction
 //!

@@ -6,7 +6,7 @@
 //!   source for token-level identifiers.
 //! - [`annotation`] (Layer 2): parses `expansion_uses!(...)` invocations
 //!   that appear immediately before a macro definition. A future comment-
-//!   directive form is on the roadmap.
+//!   directive form is a possible extension.
 //! - [`external`] (Layer 3): declarative entries for macros defined in
 //!   external crates — supplied by the caller (e.g. parsed from a config
 //!   file) via [`crate::Workspace::register_external_macro_uses`].
