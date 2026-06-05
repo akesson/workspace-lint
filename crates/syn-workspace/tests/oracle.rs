@@ -1,10 +1,10 @@
-//! Committed differential-oracle regression net (ROADMAP Phase 1, pre-Phase-0).
+//! Committed differential-oracle regression net (see `DESIGN-ir-pipeline.md` §8/§10).
 //!
 //! For each fixture under `tests/oracle/<name>/`, this parses the committed,
 //! normalized oracle JSON in `expected/` — distilled from rustdoc JSON and
 //! `rust-analyzer scip` by `tools/oracle-bless` — and diffs it against the LIVE
-//! `syn-workspace` resolver. It is the "buildable before Phase 0" net from the
-//! roadmap: it runs on the fast path (`serde_json` only, no rust-analyzer or
+//! `syn-workspace` resolver. It is the committed regression net described in
+//! `DESIGN-ir-pipeline.md` §10: it runs on the fast path (`serde_json` only, no rust-analyzer or
 //! nightly), so a resolver regression in any of five dimensions fails CI:
 //!
 //!   1. def/visibility (rustdoc) — for this fixture, every item-`pub` def the
@@ -236,7 +236,7 @@ const CORPUS: &[CorpusCrate] = &[CorpusCrate { name: "itertools" }];
 
 /// Phase-2 corpus set-level dependency differential — the re-export-immune gate
 /// generalized across real crates (the occurrence-level diff isn't gateable on
-/// references into registry deps; crate granularity is, per ROADMAP §B).
+/// references into registry deps; crate granularity is, per `DESIGN-ir-pipeline.md` §10).
 ///
 /// For each corpus crate with a committed oracle: every `[dependencies]` dep that
 /// rust-analyzer proves referenced must be visible to the resolver, or

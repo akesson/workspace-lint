@@ -26,7 +26,8 @@ use std::process::Command;
 
 /// rustdoc JSON schema version this distiller is written against. Bumping the
 /// nightly toolchain may change this; the tool bails so a human re-validates the
-/// field lookups in `rustdoc_oracle` before re-blessing. Recorded in ROADMAP §B.
+/// field lookups in `rustdoc_oracle` before re-blessing. See
+/// `crates/syn-workspace/DESIGN-ir-pipeline.md` §8.
 const EXPECTED_RUSTDOC_FORMAT: u64 = 57;
 
 /// Fixtures to (re)bless. Add new fixtures here.

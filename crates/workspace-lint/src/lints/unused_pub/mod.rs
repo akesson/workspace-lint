@@ -25,7 +25,8 @@
 //! - Trait methods dispatched through `dyn Trait` or generic method calls are
 //!   not tracked, and `#[derive(...)]`-driven uses aren't seen — structural
 //!   non-goals (no type inference / trait solving / proc-macro expansion).
-//!   Derive-aware handling is deferred to a Phase B plugin (see `docs/ROADMAP.md`).
+//!   Derive-aware handling is deferred to a Phase B plugin (see syn-workspace
+//!   `DESIGN-ir-pipeline.md` §4).
 
 use globset::{GlobSet, GlobSetBuilder};
 use std::collections::{HashMap, HashSet};

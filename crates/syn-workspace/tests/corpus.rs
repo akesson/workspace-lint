@@ -1,4 +1,4 @@
-//! Smoke gate for the public-crate corpus (ROADMAP Phase 2).
+//! Smoke gate for the public-crate corpus.
 //!
 //! Loads each real third-party crate vendored as a git submodule under `corpus/`
 //! and asserts the resolver **survives code it didn't author**: `Workspace::load`

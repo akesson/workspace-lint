@@ -1,7 +1,7 @@
 # Differential-oracle regression net
 
-This directory is the **pre-Phase-0** committed regression net from
-[`docs/ROADMAP.md`](../../../../docs/ROADMAP.md) §B: it validates the
+This directory is the committed regression net described in
+[`DESIGN-ir-pipeline.md`](../../DESIGN-ir-pipeline.md) §10: it validates the
 `syn-workspace` resolver against compiler ground truth without putting
 rust-analyzer or a nightly toolchain on the common test path.
 
@@ -52,8 +52,10 @@ cargo run --manifest-path tools/oracle-bless/Cargo.toml
 
 Review the `git diff` of `expected/*.json` before committing — an unexpected diff
 is either a real resolver change or toolchain drift (e.g. rustdoc
-`format_version`, rust-analyzer symbol scheme). The toolchain the artifacts were
-last blessed with is recorded in `docs/ROADMAP.md` §B.
+`format_version`, rust-analyzer symbol scheme). The pinned rustdoc
+`format_version` is the `EXPECTED_RUSTDOC_FORMAT` constant in `tools/oracle-bless`;
+the full oracle toolchain the artifacts were last blessed with is recorded in
+[`DESIGN-ir-pipeline.md`](../../DESIGN-ir-pipeline.md) §8.
 
 ## Adding a fixture
 
