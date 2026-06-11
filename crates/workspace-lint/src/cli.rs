@@ -32,6 +32,14 @@ pub(crate) struct Cli {
     /// changes to tracked files. Off by default so fixes stay reviewable.
     #[arg(long, global = true, default_value_t = false, requires = "fix")]
     pub allow_dirty: bool,
+    /// Skip `--fix`'s deep (rust-analyzer SCIP) verification, restoring the
+    /// plain "apply machine-applicable fixes" behavior with no second opinion.
+    #[arg(long, global = true, default_value_t = false, requires = "fix")]
+    pub no_deep: bool,
+    /// Use an existing `rust-analyzer scip` index for deep verification instead
+    /// of invoking rust-analyzer (for CI caching and hermetic tests).
+    #[arg(long, global = true, value_name = "PATH", requires = "fix")]
+    pub scip_index: Option<std::path::PathBuf>,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

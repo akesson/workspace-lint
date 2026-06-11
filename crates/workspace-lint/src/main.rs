@@ -1,9 +1,5 @@
 mod cli;
 mod config;
-// Deep `--fix` verification (rust-analyzer SCIP). The ingest + normalization
-// land first (this commit); `report_and_exit`-side wiring follows in the next
-// step, so allow the as-yet-unreferenced loader until then.
-#[allow(dead_code)]
 mod deep;
 #[allow(dead_code)]
 // Diagnostic types include a few helpers (some Applicability variants,
@@ -71,7 +67,12 @@ fn main() {
             apply_suppression(workspace.as_ref(), &mut diagnostics);
             apply_lint_levels(&config, workspace.as_ref(), &mut diagnostics);
             if cli.fix {
-                fix::run(&diagnostics);
+                apply_fix(
+                    cli.no_deep,
+                    cli.scip_index.as_deref(),
+                    &mut diagnostics,
+                    workspace.as_ref(),
+                );
             }
             report_and_exit(diagnostics, format);
         }
@@ -97,7 +98,12 @@ fn main() {
                 apply_lint_levels(cfg, workspace.as_ref(), &mut diagnostics);
             }
             if cli.fix {
-                fix::run(&diagnostics);
+                apply_fix(
+                    cli.no_deep,
+                    cli.scip_index.as_deref(),
+                    &mut diagnostics,
+                    workspace.as_ref(),
+                );
             }
             report_and_exit(diagnostics, format);
         }
@@ -111,6 +117,27 @@ fn main() {
             expand::run(&ec);
         }
     }
+}
+
+/// The `--fix` action shared by the default and `check` runs. Unless
+/// `--no-deep` is set, deep verification (rust-analyzer SCIP) runs first: it
+/// downgrades any disproved structural suggestion (so `fix::run` skips it) and
+/// returns the `expect` directive insertions to write for those false
+/// positives. `fix::run` then applies the surviving structural fixes plus those
+/// insertions in one pass. The clean-tree gate already ran at the call site, so
+/// every change here lands in a reviewable working tree.
+fn apply_fix(
+    no_deep: bool,
+    scip_index: Option<&std::path::Path>,
+    diagnostics: &mut [Diagnostic],
+    workspace: Option<&Workspace>,
+) {
+    let inserts = if no_deep {
+        Vec::new()
+    } else {
+        deep::verify_findings(diagnostics, workspace, scip_index)
+    };
+    fix::run(diagnostics, &inserts);
 }
 
 /// Apply the lint-level cascade to the collected diagnostics: **drop** any

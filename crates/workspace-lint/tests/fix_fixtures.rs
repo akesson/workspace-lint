@@ -45,10 +45,14 @@ fn run_fix_fixture(name: &str) {
 
     // --fix runs the renderer after fixing, which exits 1 if any Deny-level
     // diagnostic survived. Fixture tests focus on the resulting tree, not
-    // exit status, so the assertion is dropped here.
+    // exit status, so the assertion is dropped here. `--no-deep` skips the
+    // rust-analyzer SCIP pass — these fixtures declare unfetchable deps and
+    // assert the plain structural-fix behavior; the deep path has its own
+    // `fix__deep_*` fixtures driven via `--scip-index`.
     let _ = workspace_lint()
         .current_dir(tmp.path())
         .arg("--fix")
+        .arg("--no-deep")
         .assert();
 
     if bless_enabled() {

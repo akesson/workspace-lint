@@ -30,9 +30,17 @@ use fs_err as fs;
 
 use crate::diagnostic::{Applicability, Diagnostic, Suggestion};
 
-/// Apply machine-applicable structural suggestions to disk. Returns the
-/// count of files modified.
-pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
+/// Apply machine-applicable structural suggestions to disk, plus any
+/// `inserts` — zero-width directive insertions produced by deep verification
+/// for findings rust-analyzer disproved. Returns the count of files modified.
+///
+/// `inserts` bypass the `byte_end > byte_start` filter that excludes the
+/// degenerate silence-hint suggestion from structural fixes: an insertion is
+/// *deliberately* zero-width (it adds a line without replacing anything). They
+/// merge into the same per-file apply, so the reverse-byte-order application
+/// interleaves an insertion above one finding with a structural fix to another
+/// (different findings never share a span; a genuine overlap still aborts).
+pub(crate) fn run(diagnostics: &[Diagnostic], inserts: &[Suggestion]) -> usize {
     let mut structural_count = 0usize;
     let mut candidates: Vec<Suggestion> = Vec::new();
     for d in diagnostics {
@@ -45,15 +53,22 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
             }
         }
     }
+    candidates.extend(inserts.iter().cloned());
 
-    if structural_count == 0 {
+    if candidates.is_empty() {
         eprintln!("workspace-lint --fix: no structural fixes available");
         return 0;
     }
 
+    let insert_count = inserts.len();
     eprintln!(
-        "workspace-lint --fix: applying {structural_count} structural fix{}",
-        if structural_count == 1 { "" } else { "es" }
+        "workspace-lint --fix: applying {structural_count} structural fix{}{}",
+        if structural_count == 1 { "" } else { "es" },
+        match insert_count {
+            0 => String::new(),
+            1 => " + 1 expect directive".to_string(),
+            n => format!(" + {n} expect directives"),
+        },
     );
 
     let mut by_file: BTreeMap<std::path::PathBuf, Vec<Suggestion>> = BTreeMap::new();
@@ -221,7 +236,7 @@ mod tests {
 
     #[test]
     fn fix_with_no_diagnostics_is_a_noop() {
-        let modified = run(&[]);
+        let modified = run(&[], &[]);
         assert_eq!(modified, 0);
     }
 
@@ -247,7 +262,7 @@ mod tests {
             level_is_explicit: false,
         };
 
-        let modified = run(&[d]);
+        let modified = run(&[d], &[]);
         assert_eq!(modified, 0);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
     }
@@ -301,7 +316,7 @@ mod tests {
             byte_end: 10,
         };
         let d = structural_diag(&p, span, "pub(crate)");
-        let modified = run(std::slice::from_ref(&d));
+        let modified = run(std::slice::from_ref(&d), &[]);
         assert_eq!(modified, 0, "no-op fix should not touch the file");
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
