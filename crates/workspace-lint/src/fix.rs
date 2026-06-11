@@ -4,9 +4,9 @@
 //! `--fix` applies real per-lint rewrites — byte-range replacements produced by
 //! lints that know how to resolve their own findings: centralized-deps
 //! (`serde = "1"` → `serde = { workspace = true }`), unused-deps (line
-//! deletion), visibility (`pub` → `pub(crate)`), unused-pub
-//! (delete-or-tighten). The lint's `check` function attaches these to
-//! `Diagnostic.suggestions` with `Applicability::MachineApplicable`.
+//! deletion), unused-pub (delete the item, or tighten `pub` → `pub(crate)`).
+//! The lint's `check` function attaches these to `Diagnostic.suggestions` with
+//! `Applicability::MachineApplicable`.
 //!
 //! It also writes **suppression directives — but only for findings deep
 //! verification (rust-analyzer SCIP) disproved** (see [`crate::deep`]): those

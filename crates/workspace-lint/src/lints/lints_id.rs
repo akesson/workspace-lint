@@ -174,7 +174,7 @@ pub(crate) const ALL_LINTS: &[&str] = &[
 ///   structural fix — the remedy is a hand edit of the config / directive.
 /// - `architecture`, `feature-drift`, `module-tree`: the structural fixes
 ///   for these are planned but not yet implemented; once `--fix` rewrites
-///   them through rustfix, add fixtures and move them up.
+///   them, add fixtures and move them up.
 pub(crate) const FIXTURABLE_LINTS: &[&str] = &[
     LintId::CentralizedDeps.id(),
     LintId::UnusedDeps.id(),

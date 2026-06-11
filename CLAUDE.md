@@ -99,9 +99,10 @@ Always review the diff before committing a blessed change.
    **drops** `allow`-ed ones. Runs *after* suppression so appended findings are
    leveled too. `level_is_explicit` diagnostics (an `architecture` rule's own
    `severity`) are left untouched. Only a surviving `Deny` flips exit to 1.
-5. **`fix::run`** (if `--fix`) — applies only `MachineApplicable` suggestions via
-   rustfix. `--fix` never inserts silence directives and never deletes files
-   (except `unused-pub auto-delete`, gated on a clean git state as backup).
+5. **`fix::run`** (if `--fix`) — applies only `MachineApplicable` suggestions as
+   byte-range replacements directly (no rustfix). `--fix` never inserts silence
+   directives and never deletes files (except `unused-pub auto-delete`, gated on
+   a clean git state as backup).
 6. **`report_and_exit`** — `human` → stderr, `json`/`github` → stdout. Exit 1 iff
    any surviving diagnostic is `Deny`.
 

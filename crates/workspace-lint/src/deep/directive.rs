@@ -136,7 +136,7 @@ mod tests {
     fn allows_when_different_lint_present() {
         let (_t, p) = write(
             "lib.rs",
-            "// workspace-lint: expect(visibility) -- x\npub fn helper() {}\n",
+            "// workspace-lint: expect(file-size) -- x\npub fn helper() {}\n",
         );
         assert!(
             build_expect_insert(&p, 2, "unused-pub", "new").is_some(),

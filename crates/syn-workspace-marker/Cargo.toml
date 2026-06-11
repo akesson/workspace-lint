@@ -6,6 +6,6 @@ rust-version.workspace = true
 # Published to crates.io; also marks this crate's API external for
 # workspace-lint's publish-aware `unused-pub`.
 publish = true
-repository = "https://github.com/human-solutions/workspace-lint"
+repository = "https://github.com/akesson/workspace-lint"
 description = "Zero-dep marker macros used by syn-workspace to annotate macro expansions with their referenced items."
 license = "MIT OR Apache-2.0"

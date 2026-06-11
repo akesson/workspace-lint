@@ -195,3 +195,120 @@ fn check_crate_size_cli_override_flags_oversized() {
         .assert()
         .stderr(predicate::str::contains("crate exceeds 2 code lines"));
 }
+
+// --- expand: a file mutator, so it only runs under `--fix` (on a clean tree)
+//     or via the explicit `expand` subcommand (also clean-tree-gated). A plain
+//     run must never rewrite files. ---
+
+const DOC_BEFORE: &str = "head\n<!-- V_START -->\nold\n<!-- V_END -->\ntail\n";
+
+/// A workspace whose config defines an `[[expand.rules]]` table. All lints are
+/// `allow`-ed so the plain run is a clean no-op and only expand's side effects
+/// (or their absence) are under test. The command is `cargo --version` — present
+/// cross-platform and never equal to the placeholder body, so a successful
+/// expansion is detectable without depending on its exact output.
+fn expand_workspace(tmp: &Path) {
+    TestWorkspace::new()
+        .config(
+            "[lints]\ndefault = \"allow\"\n\n\
+             [[expand.rules]]\n\
+             command = [\"cargo\", \"--version\"]\n\
+             glob = \"DOC.md\"\n\
+             marker = \"V\"\n",
+        )
+        .loose_file("DOC.md", DOC_BEFORE)
+        .write(tmp);
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("git available")
+        .status
+        .success();
+    assert!(ok, "git {args:?} failed");
+}
+
+#[test]
+fn plain_run_does_not_expand() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    expand_workspace(tmp.path());
+    workspace_lint().current_dir(tmp.path()).assert().success();
+    let after = std::fs::read_to_string(tmp.path().join("DOC.md")).unwrap();
+    assert_eq!(
+        after, DOC_BEFORE,
+        "a plain (non-`--fix`) run must not rewrite files"
+    );
+}
+
+#[test]
+fn fix_run_applies_expand() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    expand_workspace(tmp.path());
+    // Not a git repo → the clean-tree gate warns and proceeds; `--no-deep`
+    // keeps it hermetic (no rust-analyzer).
+    workspace_lint()
+        .current_dir(tmp.path())
+        .args(["--fix", "--no-deep"])
+        .assert()
+        .success();
+    let after = std::fs::read_to_string(tmp.path().join("DOC.md")).unwrap();
+    assert!(
+        after.contains("cargo ") && !after.contains("old"),
+        "`--fix` should apply the configured expand rule; got:\n{after}"
+    );
+}
+
+#[test]
+fn expand_subcommand_is_clean_tree_gated() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    expand_workspace(tmp.path());
+    git(tmp.path(), &["init", "-q"]);
+    git(tmp.path(), &["config", "user.email", "t@t.test"]);
+    git(tmp.path(), &["config", "user.name", "Test"]);
+    git(tmp.path(), &["add", "-A"]);
+    git(tmp.path(), &["commit", "-q", "-m", "init"]);
+    // Dirty a tracked file so the tree is unclean.
+    std::fs::write(
+        tmp.path().join("DOC.md"),
+        "head\n<!-- V_START -->\nedited\n<!-- V_END -->\ntail\n",
+    )
+    .unwrap();
+
+    let args = [
+        "expand",
+        "--command",
+        "cargo --version",
+        "--glob",
+        "DOC.md",
+        "--marker",
+        "V",
+    ];
+    // Without an override, the dirty tree blocks the mutating subcommand.
+    workspace_lint()
+        .current_dir(tmp.path())
+        .args(args)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("clean git working tree"));
+    let blocked = std::fs::read_to_string(tmp.path().join("DOC.md")).unwrap();
+    assert!(
+        blocked.contains("edited"),
+        "the gate must run before any write"
+    );
+
+    // `--allow-dirty` overrides the gate and the expansion proceeds.
+    workspace_lint()
+        .current_dir(tmp.path())
+        .args(args)
+        .arg("--allow-dirty")
+        .assert()
+        .success();
+    let expanded = std::fs::read_to_string(tmp.path().join("DOC.md")).unwrap();
+    assert!(
+        expanded.contains("cargo ") && !expanded.contains("edited"),
+        "with --allow-dirty the subcommand should expand; got:\n{expanded}"
+    );
+}

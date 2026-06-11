@@ -138,11 +138,11 @@ fn rust_comment_directive_comma_list() {
     write(
         tmp.path(),
         "src/lib.rs",
-        "    // workspace-lint: allow(unused-pub, visibility)\n    pub fn f() {}\n",
+        "    // workspace-lint: allow(unused-pub, file-size)\n    pub fn f() {}\n",
     );
     let mut lints: Vec<String> = scan(tmp.path()).into_iter().map(|d| d.lint).collect();
     lints.sort();
-    assert_eq!(lints, ["unused-pub", "visibility"]);
+    assert_eq!(lints, ["file-size", "unused-pub"]);
 }
 
 #[test]

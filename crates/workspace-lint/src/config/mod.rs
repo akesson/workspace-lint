@@ -182,7 +182,7 @@ pub(crate) struct MacrosConfig {
     /// External macros (defined outside the workspace) whose expansion
     /// references items the resolver can't see from source alone. Each entry
     /// contributes its `expansion-uses` paths to the workspace-wide
-    /// implicit-refs set consulted by visibility / architecture / etc.
+    /// implicit-refs set consulted by unused-pub / unused-deps / architecture.
     #[serde(default)]
     pub external: Vec<ExternalMacro>,
 }

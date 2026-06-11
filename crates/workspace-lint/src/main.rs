@@ -48,6 +48,16 @@ fn main() {
                 git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
             }
             let (config, config_diags) = config::load();
+            // `expand` mutates files in place (and may `git add` with
+            // `auto-stage`), so it runs only under `--fix` — gated by the
+            // clean-tree check above. This keeps the default/editor run (e.g.
+            // rust-analyzer's `check.overrideCommand`) side-effect-free. It runs
+            // before lints so the structural pass measures post-expansion files.
+            if cli.fix
+                && let Some(ref ec) = config.expand
+            {
+                expand::run(ec);
+            }
             let (mut diagnostics, workspace) = run_all(&config);
             // Config-validation findings join the stream before suppression
             // (so a `# workspace-lint: allow(config)` directive can silence
@@ -113,6 +123,10 @@ fn main() {
             marker,
             auto_stage,
         }) => {
+            // `expand` rewrites files (and may `git add`); gate it on a clean
+            // tree just like `--fix`, so its changes stay reviewable. Override
+            // with `--allow-dirty`.
+            git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
             let ec = CheckRule::into_expand_config(command, glob, marker, auto_stage);
             expand::run(&ec);
         }
@@ -246,10 +260,11 @@ fn parse_format(arg: Option<&str>) -> Format {
 /// `allow(stale-expect)` directive silences them (e.g. README example code
 /// that mentions an expect directive without intending to fire one).
 ///
-/// When a [`Workspace`] is available, the scanner reuses its cached
-/// `syn::File` ASTs and skips re-parsing every `.rs` file. Without one
-/// (e.g. for lint subcommands that don't load a workspace), we fall back
-/// to the on-demand parse path.
+/// When a [`Workspace`] is available, the scanner uses its known module list
+/// to parse each backing `.rs` file exactly once up front (the `Workspace`
+/// itself stores only file *paths*, not ASTs — it re-parses on demand to stay
+/// `Send + Sync`). Without one (e.g. for lint subcommands that don't load a
+/// workspace), we fall back to the per-file on-demand parse path.
 fn apply_suppression(
     workspace: Option<&syn_workspace::Workspace>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -271,10 +286,6 @@ fn apply_suppression(
 }
 
 fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<Workspace>) {
-    if let Some(ref ec) = config.expand {
-        expand::run(ec);
-    }
-
     let registry = lints::registry(config);
     // A loaded workspace is needed when some enabled lint asks for it, or when
     // a per-crate `[crates.*]` tier is present — the latter so per-crate levels

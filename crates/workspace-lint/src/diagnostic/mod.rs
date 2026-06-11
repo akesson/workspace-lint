@@ -53,7 +53,7 @@ impl Applicability {
 }
 
 /// Pointer at a region of source. Carries everything needed by the three
-/// renderers and by rustfix.
+/// renderers and by `--fix`'s byte-range applier.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Span {
     pub file: PathBuf,
