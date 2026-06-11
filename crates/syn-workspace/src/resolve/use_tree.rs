@@ -89,8 +89,10 @@ pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope, file: &Path) -> Vec
     let mut prefix: Vec<String> = Vec::new();
     let mut tree: &syn::UseTree = &item.tree;
 
-    if item.leading_colon.is_none() {
-        peel_leading_special(&mut tree, &mut prefix, scope);
+    if item.leading_colon.is_none() && !peel_leading_special(&mut tree, &mut prefix, scope) {
+        // A `super::` escaping the crate root — invalid Rust. Drop the use
+        // entirely rather than misattribute it to `crate::<rest>`.
+        return Vec::new();
     }
 
     let visibility = Visibility::from_syn(&item.vis);
@@ -103,7 +105,13 @@ pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope, file: &Path) -> Vec
 /// updating `prefix` to encode their effect. After this call, `tree` points
 /// to the first non-special path segment (or the original tree if the use
 /// didn't start with a special segment).
-fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scope: &Scope) {
+///
+/// Returns `false` if a `super::` would escape the crate root: rustc errors on
+/// those, so the caller drops the binding rather than misattribute it. This is
+/// the exact escape policy [`super::module_tree::peel_path_prefix`] applies to
+/// expression/macro paths, so a `use` and a code reference resolve the same
+/// (invalid) input the same way.
+fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scope: &Scope) -> bool {
     let mut started = false;
     while let syn::UseTree::Path(path) = tree {
         let ident = path.ident.to_string();
@@ -127,9 +135,10 @@ fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scop
                     prefix.extend(scope.module_path.iter().cloned());
                     started = true;
                 }
-                if prefix.len() > 1 {
-                    prefix.pop();
+                if prefix.len() <= 1 {
+                    return false;
                 }
+                prefix.pop();
                 true
             }
             _ => false,
@@ -140,6 +149,7 @@ fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scop
             break;
         }
     }
+    true
 }
 
 fn walk(
@@ -356,16 +366,15 @@ mod tests {
     }
 
     #[test]
-    fn super_at_crate_root_stops_at_crate_name() {
-        // `use super::Foo;` from a file at the crate root is invalid Rust,
-        // but the resolver shouldn't panic — it should saturate at the
-        // crate name. The compiler will catch the invalid file at build
-        // time, not us.
+    fn super_at_crate_root_drops_the_binding() {
+        // `use super::Foo;` from a file at the crate root is invalid Rust. The
+        // resolver shouldn't panic, and it drops the reference rather than
+        // misattribute it to `crate::Foo` — the same escape policy
+        // `peel_path_prefix` applies to expression/macro paths, so a `use` and
+        // a code reference treat this invalid input identically. The compiler
+        // catches the invalid file at build time, not us.
         let s = scope("demo", &[]);
-        assert_eq!(
-            bindings("use super::Foo;", &s),
-            vec![("Foo".into(), "demo::Foo".into())]
-        );
+        assert_eq!(bindings("use super::Foo;", &s), Vec::new());
     }
 
     #[test]
