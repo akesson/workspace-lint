@@ -476,12 +476,20 @@ can't silently rot against a renamed or removed crate.
 
 ## Silencing diagnostics
 
-Silence directives are always author-written — `--fix` never inserts them
-on your behalf. Every diagnostic prints the exact text to paste; two
-forms, picked by file kind. The suggested directive uses `expect!` (and
-its `expect(…)` comment form): silences a diagnostic but emits a
-`workspace-lint::stale-expect` warning if the underlying lint stops
-firing, so silences don't quietly rot.
+Silence directives are author-written — every diagnostic prints the exact text
+to paste, in one of two forms picked by file kind. The one exception is
+`--fix`'s deep verification (see the **Deep `--fix` verification** section under
+CLI flags), which writes an `expect` directive *only* for a finding
+rust-analyzer proved false — gated on a clean git tree so the write is
+reviewable. The suggested
+directive uses `expect!` (and its `expect(…)` comment form): it silences a
+diagnostic but emits a `workspace-lint::stale-expect` warning if the underlying
+lint stops firing, so silences don't quietly rot.
+
+Rust files accept both a macro form (`workspace_lint::expect!(unused_pub);`) and
+a **line-comment** form (`// workspace-lint: expect(unused-pub)` written above
+the item) — the latter needs no `workspace-lint-marker` dependency, and is the
+form `--fix` writes.
 
 **Rust files** — declarative macro from `workspace-lint-marker`:
 
@@ -535,9 +543,10 @@ removed files in the post-fix tree propagate correctly.
 - `workspace-lint check <rule> [opts]` — run a single check.
 - `workspace-lint --message-format <human|json|github>` — pick the renderer.
 - `workspace-lint --fix` — apply every diagnostic's `MachineApplicable`
-  structural rewrite in place. Lints that don't ship a structural fix are
-  reported but left untouched — `--fix` will never edit a file to suppress
-  a finding it didn't actually resolve. Available structural fixes:
+  structural rewrite in place. **Requires a clean git working tree**
+  (override with `--allow-dirty`) so the whole change — fixes *and* any
+  auto-written directives — is reviewable as one `git diff`. Available
+  structural fixes:
     - **centralized-deps** rewrites `serde = "1"` (or table forms) to
       `serde = { workspace = true }`, preserving `features`, `optional`,
       and `default-features` when present.
@@ -553,9 +562,39 @@ removed files in the post-fix tree propagate correctly.
       a `note:` explaining why.
 
   `--fix` is non-destructive: it rewrites files but never deletes them.
-  Idempotent: re-running on a clean tree is a no-op. To suppress a
-  diagnostic without resolving it, paste the directive shown in the
-  diagnostic's "if intentional, silence with:" hint manually — that's
-  always an author decision, never `--fix`'s.
+  Idempotent: re-running on a clean tree is a no-op. By default it runs
+  deep verification (below); `--no-deep` restores the plain behavior.
+- `workspace-lint --fix --no-deep` — skip the rust-analyzer pass.
+- `workspace-lint --fix --scip-index <path>` — verify against an existing
+  `rust-analyzer scip` index instead of invoking rust-analyzer (CI caching,
+  hermetic tests).
 - `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.
+
+### Deep `--fix` verification
+
+The reference-evidence lints (`unused-deps`, `unused-pub`) are backed by a
+deliberately shallow `syn`-based resolver, which can flag an item or dependency
+as unused when it's actually referenced through machinery the resolver doesn't
+model (a method call that resolves through an `impl`, a cross-crate use only
+visible after type inference). To keep `--fix` from acting on those false
+positives, it runs a **deep verification** pass: it invokes `rust-analyzer scip`
+and uses that index as a one-directional oracle (per
+`crates/syn-workspace/DESIGN-ir-pipeline.md` §10).
+
+- A finding rust-analyzer **agrees** is unreferenced → the structural fix is
+  applied as usual.
+- A finding rust-analyzer **disproves** (it sees a reference) → the structural
+  fix is *skipped* and an `expect` directive is written above the item / dep
+  with a provenance trailer (`-- rust-analyzer sees `x` referenced (file:line)`),
+  so later non-`--fix` runs stay clean. The finding is also re-labelled a
+  resolver false positive in the report.
+
+rust-analyzer must be on `PATH` (`rustup component add rust-analyzer`); if it
+isn't, `--fix` errors with a hint rather than silently skipping verification.
+Use `--no-deep` to opt out, or `--scip-index <path>` to supply an index. Deep
+verification only ever *suppresses* a fix — it never deletes code on
+rust-analyzer's say-so alone, and the clean-tree gate keeps everything
+reviewable. Trait visibility used only via method dispatch is a known blind spot
+the symbol-level match can't disprove (rust-analyzer attributes the call to the
+concrete `impl`, not the trait); the clean-tree review catches those.

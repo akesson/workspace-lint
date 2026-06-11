@@ -1,16 +1,21 @@
-//! Apply `MachineApplicable` structural suggestions to source files.
+//! Apply `MachineApplicable` structural suggestions (and deep-verification
+//! directive insertions) to source files.
 //!
-//! `--fix` only applies real per-lint rewrites — byte-range replacements
-//! produced by lints that know how to resolve their own findings:
-//! centralized-deps (`serde = "1"` → `serde = { workspace = true }`),
-//! unused-deps (line deletion), visibility (`pub` → `pub(crate)`),
-//! unused-pub (delete-or-tighten). The lint's `check` function attaches
-//! these to `Diagnostic.suggestions` with `Applicability::MachineApplicable`.
+//! `--fix` applies real per-lint rewrites — byte-range replacements produced by
+//! lints that know how to resolve their own findings: centralized-deps
+//! (`serde = "1"` → `serde = { workspace = true }`), unused-deps (line
+//! deletion), visibility (`pub` → `pub(crate)`), unused-pub
+//! (delete-or-tighten). The lint's `check` function attaches these to
+//! `Diagnostic.suggestions` with `Applicability::MachineApplicable`.
 //!
-//! Diagnostics without a structural suggestion are left untouched. The
-//! human/JSON/github renderers still print the diagnostic's "if intentional,
-//! silence with:" hint for a human to paste — `--fix` will never edit a
-//! file to suppress a diagnostic it didn't actually fix.
+//! It also writes **suppression directives — but only for findings deep
+//! verification (rust-analyzer SCIP) disproved** (see [`crate::deep`]): those
+//! arrive as the `inserts` argument to [`run`], a deliberate exception to the
+//! old "never silence on your behalf" rule. The exception is safe because
+//! `--fix` requires a clean git working tree ([`crate::git`]), so every
+//! written directive lands in a reviewable `git diff`. A diagnostic the deep
+//! pass *confirmed* (or that never ran through it) is still never silenced —
+//! the renderers print its "if intentional, silence with:" hint for a human.
 //!
 //! Correctness properties this module maintains:
 //!

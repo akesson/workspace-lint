@@ -27,7 +27,7 @@ pub(crate) struct NormalizedSymbol {
 }
 
 /// Parse and normalize a SCIP symbol. Returns `None` for a local symbol (no
-/// package) or an unparseable string — both are simply not reference evidence.
+/// package) or an unparsable string — both are simply not reference evidence.
 pub(crate) fn normalize_symbol(symbol: &str) -> Option<NormalizedSymbol> {
     let sym = scip::symbol::parse_symbol(symbol).ok()?;
     let package = sym.package.as_ref()?.name.replace('-', "_");
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_symbol_is_none() {
+    fn unparsable_symbol_is_none() {
         assert!(normalize_symbol("").is_none());
         assert!(normalize_symbol("garbage").is_none());
     }
