@@ -1,6 +1,0 @@
----
-source: crates/workspace-lint/src/messages.rs
-expression: "render(&scenario(\"config_unknown_key\"))"
-snapshot_kind: text
----
-::warning file=.workspace-lint.toml,line=1,col=1,title=workspace-lint%3A%3Aconfig::unknown configuration section `file-siz`

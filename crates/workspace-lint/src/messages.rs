@@ -660,12 +660,32 @@ mod tests {
 
         #[test]
         fn config_unknown_key() {
-            insta::assert_snapshot!(render(&scenario("config_unknown_key")));
+            insta::assert_snapshot!(render(&scenario("config_unknown_key")), @r"
+            warning: unknown configuration section `file-siz`
+             --> .workspace-lint.toml:1:1
+              |
+              = help: did you mean `file-size`?
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(config)
+              |
+              = note: `#[warn(workspace_lint::config)]` on by default
+            ");
         }
 
         #[test]
         fn unknown_lint_in_lints_table() {
-            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")));
+            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")), @r"
+            warning: unknown lint `unused-dep` in `[lints]`
+             --> .workspace-lint.toml:1:1
+              |
+              = help: did you mean `unused-deps`?
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(unknown-lint)
+              |
+              = note: `#[warn(workspace_lint::unknown_lint)]` on by default
+            ");
         }
     }
 
@@ -765,12 +785,61 @@ mod tests {
 
         #[test]
         fn config_unknown_key() {
-            insta::assert_snapshot!(render(&scenario("config_unknown_key")));
+            insta::assert_snapshot!(render(&scenario("config_unknown_key")), @r##"{"level":"warning","message":"unknown configuration section `file-siz`","code":{"code":"workspace-lint::config","explanation":null},"spans":[{"file_name":".workspace-lint.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":".workspace-lint.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(config)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"did you mean `file-size`?","spans":[]}],"rendered":null}"##);
         }
 
         #[test]
         fn unknown_lint_in_lints_table() {
-            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")));
+            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")), @r##"{"level":"warning","message":"unknown lint `unused-dep` in `[lints]`","code":{"code":"workspace-lint::unknown-lint","explanation":null},"spans":[{"file_name":".workspace-lint.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":".workspace-lint.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unknown-lint)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"did you mean `unused-deps`?","spans":[]}],"rendered":null}"##);
+        }
+
+        // The remaining scenarios complete JSON coverage so every distinct
+        // diagnostic is pinned in all three formats (unused-deps especially —
+        // `--fix` consumes its JSON `suggested_replacement`).
+
+        #[test]
+        fn centralized_deps_multiple_deps() {
+            insta::assert_snapshot!(render(&scenario("centralized_deps_multiple_deps")), @r##"{"level":"warning","message":"2 dependencies in crates/beta/Cargo.toml should use `workspace = true`","code":{"code":"workspace-lint::centralized-deps","explanation":null},"spans":[{"file_name":"crates/beta/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/beta/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(centralized-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] serde: version \"1.0\" not in [workspace.dependencies]","spans":[]},{"level":"help","message":"[dev-dependencies] rand: version \"0.8\" not in [workspace.dependencies]","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn crate_size_over_limit() {
+            insta::assert_snapshot!(render(&scenario("crate_size_over_limit")), @r##"{"level":"warning","message":"crate exceeds 5000 code lines (7321)","code":{"code":"workspace-lint::crate-size","explanation":null},"spans":[{"file_name":"crates/legacy/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/legacy/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(crate-size)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"split the crate into smaller, more focused crates","spans":[]},{"level":"note","message":"configured by [[crate-size.rules]] glob = \"crates/*\"","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn freshness_stale() {
+            insta::assert_snapshot!(render(&scenario("freshness_stale")), @r##"{"level":"warning","message":"`crates/api/CLAUDE.md` is older than source files it depends on","code":{"code":"workspace-lint::freshness","explanation":null},"spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(freshness)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"files matching `**/*.rs` in the subtree are newer","spans":[]},{"level":"help","message":"run `workspace-lint done` once the tracked file is up to date","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn cli_crate_version_rule_error() {
+            insta::assert_snapshot!(render(&scenario("cli_crate_version_rule_error")), @r##"{"level":"warning","message":"pattern `v(\\d+)` did not match the output of `wasm-bindgen --version`","code":{"code":"workspace-lint::cli-crate-version","explanation":null},"spans":[],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(cli-crate-version)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"the regex must capture the version in group 1","spans":[]},{"level":"note","message":"ran `wasm-bindgen --version`","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn stale_git_index() {
+            insta::assert_snapshot!(render(&scenario("stale_git_index")), @r##"{"level":"warning","message":"deleted file `crates/old/src/legacy.rs` is still tracked by git","code":{"code":"workspace-lint::stale-git-index","explanation":null},"spans":[],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(stale-git-index)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"run `git rm crates/old/src/legacy.rs` to stage the removal","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn unused_deps_one() {
+            insta::assert_snapshot!(render(&scenario("unused_deps_one")), @r##"{"level":"warning","message":"1 possibly unused dependency in crates/alpha/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] rand","spans":[]},{"level":"note","message":"proc-macro crates and build.rs-generated code may cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn unused_deps_multiple() {
+            insta::assert_snapshot!(render(&scenario("unused_deps_multiple")), @r##"{"level":"warning","message":"2 possibly unused dependencies in crates/beta/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/beta/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/beta/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] foo","spans":[]},{"level":"help","message":"[dev-dependencies] bar","spans":[]},{"level":"note","message":"proc-macro crates and build.rs-generated code may cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn unused_pub_tighten_visibility() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r##"{"level":"warning","message":"pub struct `Builder` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"#[cfg]-gated items, proc-macro usage, and re-exports may cause false positives","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn unused_pub_publish_hint() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_publish_hint")), @r##"{"level":"warning","message":"crate `mycrate` has 3 public items unused within the workspace","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"if `mycrate` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt)","spans":[]},{"level":"note","message":"workspace-lint treats a crate as workspace-internal unless it declares `publish = true` (or a registry); see the unused-pub docs","spans":[]}],"rendered":null}"##);
         }
     }
 
@@ -884,12 +953,12 @@ mod tests {
 
         #[test]
         fn config_unknown_key() {
-            insta::assert_snapshot!(render(&scenario("config_unknown_key")));
+            insta::assert_snapshot!(render(&scenario("config_unknown_key")), @"::warning file=.workspace-lint.toml,line=1,col=1,title=workspace-lint%3A%3Aconfig::unknown configuration section `file-siz`");
         }
 
         #[test]
         fn unknown_lint_in_lints_table() {
-            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")));
+            insta::assert_snapshot!(render(&scenario("unknown_lint_in_lints_table")), @"::warning file=.workspace-lint.toml,line=1,col=1,title=workspace-lint%3A%3Aunknown-lint::unknown lint `unused-dep` in `[lints]`");
         }
 
         #[test]

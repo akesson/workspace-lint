@@ -1,6 +1,0 @@
----
-source: crates/workspace-lint/src/messages.rs
-expression: "render(&scenario(\"unknown_lint_in_lints_table\"))"
-snapshot_kind: text
----
-::warning file=.workspace-lint.toml,line=1,col=1,title=workspace-lint%3A%3Aunknown-lint::unknown lint `unused-dep` in `[lints]`

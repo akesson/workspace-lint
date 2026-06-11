@@ -343,13 +343,13 @@ fn cases_pass_or_track_known_limitations() {
         return;
     }
 
-    if count == 0 {
-        // Don't fail the test when no cases are defined yet; this lets the
-        // test file exist before any fixtures are added. Promote to an
-        // assertion once the directory is meant to be populated.
-        eprintln!("No cases found under tests/cases/");
-        return;
-    }
+    // The taxonomy is populated (100+ committed cases), so zero discovered
+    // cases means the discovery walk (or `cases_root()`) is broken — fail loudly
+    // rather than green-pass on an empty sweep.
+    assert!(
+        count > 0,
+        "no cases discovered under tests/cases/ — the discovery walk is broken"
+    );
 
     if !failures.is_empty() {
         let report = failures

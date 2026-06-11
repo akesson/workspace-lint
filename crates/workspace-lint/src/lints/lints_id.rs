@@ -431,4 +431,29 @@ deny = [\"crates/b/**\"]
              Remove the stale arm, or add the lint to LintId (or CONFIG_FILE_ONLY)."
         );
     }
+
+    // --- case-fixture coverage: every lint ships taxonomy fixtures ---
+
+    /// Lints with no `tests/cases/<short>/` directory, each with its reason.
+    /// `cli-crate-version` needs an executable fake tool, so it's exercised by
+    /// the dedicated `tests/cli_crate_version.rs` harness instead.
+    const NO_CASES_DIR: &[LintId] = &[LintId::CliCrateVersion];
+
+    #[test]
+    fn every_lint_has_case_fixtures() {
+        let cases = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/cases");
+        let mut missing: Vec<&str> = LintId::ALL
+            .iter()
+            .filter(|id| !NO_CASES_DIR.contains(id))
+            .filter(|id| !cases.join(id.short()).is_dir())
+            .map(|id| id.short())
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "every lint needs a kebab-case `tests/cases/<short>/` directory (or an entry \
+             in NO_CASES_DIR with a reason); missing: {missing:?}\n\
+             Note: the directory name must match `LintId::short()` exactly."
+        );
+    }
 }

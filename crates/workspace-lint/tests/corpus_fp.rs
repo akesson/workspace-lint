@@ -3,9 +3,10 @@
 //! Runs the resolver-backed lints against real third-party crates (vendored as
 //! git submodules under `corpus/`) and snapshots the diagnostics. A clean crate
 //! produces an empty snapshot; any diagnostic is either a **real resolver false
-//! positive** to fix, or — if it reflects a documented limitation — baked into
-//! the committed snapshot with a `# known-FP:` note (the forcing function
-//! as snapshot content). New, unexplained diagnostics fail the build.
+//! positive** to fix, or — if it reflects a documented limitation — captured in
+//! the committed snapshot (the snapshot content is itself the forcing function),
+//! with the per-finding triage tracked in `tests/corpus_fp/README.md`. New,
+//! unexplained diagnostics fail the build.
 //!
 //! Scope: **`unused-deps` everywhere; `unused-pub` only on multi-member crates.**
 //! On a standalone single-crate library every `pub` item has no cross-crate
