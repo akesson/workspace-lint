@@ -1,0 +1,13 @@
+[unused-pub]
+# `beta` is called only from the unit-test module, through `use super::*` +
+# a bare name. Once the GlobImportPass binds that candidate the item reads
+# IntraCrate (the `pub(crate)` advice is valid for a unit test, which lives
+# inside the crate); this drops the intra-crate "tighten visibility" finding,
+# leaving a clean pass. Without the pass the bare name is invisible and the
+# fn reads Unused → "appears unused" (the false positive this fixture guards
+# against).
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"

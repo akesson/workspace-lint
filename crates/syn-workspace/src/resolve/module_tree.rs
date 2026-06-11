@@ -207,6 +207,15 @@ fn collect_module_contents(
     // doesn't matter, so we collect names in one pass before processing use
     // statements.
     let sibling_names: HashSet<String> = syn_items.iter().filter_map(sibling_name).collect();
+    // Whether any module-level `use` here carries a glob leaf (`use m::*;`).
+    // Gates the bare-ident `GlobCandidate` capture in `extract_code_paths`:
+    // without a glob in scope, an unmatched bare ident is always a local or
+    // prelude name. Function-local glob imports are not detected — a
+    // documented miss, mirroring the module-level-only glob recording below.
+    let has_glob_import = syn_items.iter().any(|it| match it {
+        syn::Item::Use(item_use) => use_tree_has_glob(&item_use.tree),
+        _ => false,
+    });
 
     let mut items = Vec::new();
     let mut submodules = Vec::new();
@@ -480,10 +489,22 @@ fn collect_module_contents(
             tokens,
             &use_bindings,
             &sibling_names,
+            has_glob_import,
             parent_file,
             own_decl.as_ref(),
             &mut occurrences,
         );
+    }
+
+    // GlobCandidate volume control: the Phase B pass binds by *name*, so a
+    // bare name repeated through a module (a test calling the same helper
+    // fifty times) carries no extra signal. Keep one occurrence per name.
+    if has_glob_import {
+        let mut seen: HashSet<String> = HashSet::new();
+        occurrences.retain(|o| {
+            o.origin != Origin::GlobCandidate
+                || o.segments.first().is_some_and(|s| seen.insert(s.clone()))
+        });
     }
 
     // Phase B: resolve every raw occurrence centrally, filling in its canonical
@@ -585,6 +606,11 @@ fn extract_code_paths(
     tokens: proc_macro2::TokenStream,
     use_bindings: &[UseBinding],
     sibling_names: &HashSet<String>,
+    // When the surrounding module has a glob import (`use m::*;`), bare
+    // single idents that match no binding or sibling are kept as
+    // `Origin::GlobCandidate` occurrences for the Phase B `GlobImportPass`
+    // (most are locals and never bind — see that pass's precision notes).
+    keep_bare_for_glob: bool,
     file: &Path,
     own_decl: Option<&SourceSpan>,
     out: &mut Vec<Occurrence>,
@@ -642,7 +668,25 @@ fn extract_code_paths(
                 || (segments.len() == 1
                     && (use_bindings.iter().any(|b| b.local_name == segments[0])
                         || sibling_names.contains(&segments[0])));
-            if keep {
+            // GlobCandidate filter: skip keywords/primitives, idents in
+            // field/method position (preceded by `.`), lifetimes (preceded
+            // by `'`), and names declaring a binding/field/bound (followed
+            // by a lone `:` — a `::` run was already consumed above, and a
+            // turbofish's first `:` is Joint, so a lone Alone `:` is left).
+            let glob_candidate = !keep
+                && keep_bare_for_glob
+                && segments.len() == 1
+                && is_glob_candidate_name(&segments[0])
+                && !matches!(
+                    (i > 0).then(|| &stream[i - 1]),
+                    Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '.' || p.as_char() == '\''
+                )
+                && !matches!(
+                    stream.get(j),
+                    Some(proc_macro2::TokenTree::Punct(p))
+                        if p.as_char() == ':' && p.spacing() == proc_macro2::Spacing::Alone
+                );
+            if keep || glob_candidate {
                 let occ_span = span_to_source_span(file, first.span());
                 // Drop the item's own declaration name — a single-ident
                 // occurrence at the declaring ident's span is the definition,
@@ -653,7 +697,11 @@ fn extract_code_paths(
                         segments,
                         path: None,
                         span: Some(occ_span),
-                        origin: Origin::Code,
+                        origin: if keep {
+                            Origin::Code
+                        } else {
+                            Origin::GlobCandidate
+                        },
                     });
                 }
             }
@@ -665,6 +713,7 @@ fn extract_code_paths(
                 group.stream(),
                 use_bindings,
                 sibling_names,
+                keep_bare_for_glob,
                 file,
                 own_decl,
                 out,
@@ -672,6 +721,103 @@ fn extract_code_paths(
         }
         i += 1;
     }
+}
+
+/// Whether a `use` tree contains a glob leaf anywhere (`use a::b::*;`,
+/// `use a::{b, c::*};`). Drives the per-module `GlobCandidate` capture gate
+/// in [`collect_module_contents`].
+fn use_tree_has_glob(tree: &syn::UseTree) -> bool {
+    match tree {
+        syn::UseTree::Glob(_) => true,
+        syn::UseTree::Path(p) => use_tree_has_glob(&p.tree),
+        syn::UseTree::Group(g) => g.items.iter().any(use_tree_has_glob),
+        syn::UseTree::Name(_) | syn::UseTree::Rename(_) => false,
+    }
+}
+
+/// Idents that can never be a glob-imported item name — Rust keywords (strict,
+/// reserved, and the contextual ones that show up in token position) plus
+/// primitive type names. Filters the `GlobCandidate` capture in
+/// [`extract_code_paths`].
+fn is_glob_candidate_name(name: &str) -> bool {
+    const NON_CANDIDATES: &[&str] = &[
+        // Strict keywords.
+        "as",
+        "break",
+        "const",
+        "continue",
+        "crate",
+        "dyn",
+        "else",
+        "enum",
+        "extern",
+        "false",
+        "fn",
+        "for",
+        "if",
+        "impl",
+        "in",
+        "let",
+        "loop",
+        "match",
+        "mod",
+        "move",
+        "mut",
+        "pub",
+        "ref",
+        "return",
+        "self",
+        "Self",
+        "static",
+        "struct",
+        "super",
+        "trait",
+        "true",
+        "type",
+        "unsafe",
+        "use",
+        "where",
+        "while",
+        "async",
+        "await",
+        // Reserved / contextual.
+        "abstract",
+        "become",
+        "box",
+        "do",
+        "final",
+        "macro",
+        "override",
+        "priv",
+        "try",
+        "typeof",
+        "union",
+        "unsized",
+        "virtual",
+        "yield",
+        "macro_rules",
+        "raw",
+        "_",
+        // Primitives.
+        "bool",
+        "char",
+        "str",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "u128",
+        "usize",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "i128",
+        "isize",
+        "f32",
+        "f64",
+    ];
+    !NON_CANDIDATES.contains(&name)
 }
 
 /// Apply `crate::` / `self::` / `super::` prefix peeling to the leading
@@ -830,6 +976,10 @@ fn resolve_occurrence(
         // `foo!(…)` resolves in the *macro* namespace (crate-global for an
         // exported `macro_rules!`), which path resolution doesn't model.
         Origin::MacroCall => None,
+        // Deferred to the core Phase B `GlobImportPass`: a bare ident in a
+        // glob-importing module can only be bound once the glob target's
+        // module tree exists.
+        Origin::GlobCandidate => None,
         Origin::GlobUse | Origin::ExternCrate => Some(ResolvedPath::new(occ.segments.clone())),
     }
 }

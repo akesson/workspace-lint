@@ -7,6 +7,21 @@ follows [SemVer](https://semver.org/).
 ## [Unreleased] — 0.4.0
 
 ### Added
+- **Glob-import binding** (core Phase B `GlobImportPass`): names brought into
+  scope by `use m::*;` now resolve when the glob target is a workspace
+  module — both bare idents (`helper()` after `use my_lib::*;`, the universal
+  `#[cfg(test)] mod tests { use super::*; … }` shape) and multi-segment runs
+  rooted at a glob-imported name (`helpers::run()`). Phase A captures the
+  bare-ident candidates as the new `Origin::GlobCandidate` (keyword/primitive/
+  position-filtered, deduped per module; excluded from the SCIP projection
+  like `Component`/`MacroCall`). By-name binding is FP-safe: an over-link only
+  suppresses an unused-finding. External-crate globs remain a non-goal.
+- `Workspace::referenced_from_sibling_target(path) -> bool` — true when a
+  path is referenced from a package's *sibling target* (integration test,
+  bench, example, non-primary bin). Sibling targets link the lib as an
+  external crate, so such items must stay `pub`; `unused-pub` uses this to
+  classify them like cross-crate uses instead of advising `pub(crate)`
+  (which would break the bench/test).
 - `Workspace::crate_relative_path(path) -> PathBuf` — strips the workspace
   root prefix from an absolute path so callers (mostly diagnostic-anchor
   builders) can produce paths that round-trip with the suppression
@@ -18,11 +33,20 @@ follows [SemVer](https://semver.org/).
   canonical (LHS) ident, since that's what the binding resolves to.
 
 ### Changed
+- `Workspace::referring_crates` is now **prefix-credited**: a recorded
+  reference to `a::b::c` also answers for `a::b` (length ≥ 2 prefixes) — a
+  `Type::assoc_fn()` call is a use of `Type`, a `module::item` path of
+  `module`. `iter_canonical_references` yields the prefix entries too.
 - `bindings_from_use(item, scope)` now takes a third `file: &Path`
   parameter so it can populate `UseBinding::source`. Breaking — every
   caller must thread the parsed file's path through. The in-tree
   consumer (`module_tree::collect_module_contents`) migrates in
   lockstep.
+
+### Fixed
+- `use path::{self as alias}` now binds the module under `alias` (previously
+  a bogus `path::self` path), completing the group-self fix that the
+  unrenamed `{self, …}` form received earlier.
 
 ### Migration
 | Before | After |

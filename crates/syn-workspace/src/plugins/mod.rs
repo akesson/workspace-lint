@@ -26,6 +26,7 @@ use proc_macro2::TokenStream;
 use crate::macros::annotation::is_expansion_uses;
 use crate::resolve::{Crate, Occurrence, ResolvedPath, SourceSpan};
 
+pub(crate) mod glob_imports;
 pub(crate) mod macro_calls;
 pub(crate) mod quote;
 
@@ -140,6 +141,13 @@ pub(crate) fn claims_any(site: &MacroSite) -> bool {
 pub(crate) struct ContributedRef {
     pub from: String,
     pub to: ResolvedPath,
+    /// True when the referencing site lives in a *sibling target* of its
+    /// package (integration test, bench, example, non-primary bin) — those
+    /// link the package's lib as an external crate, so the referenced item
+    /// must stay `pub`. Routed into `Workspace::sibling_target_refs`
+    /// alongside the ordinary merge. Passes that don't track target
+    /// provenance leave this `false`.
+    pub via_sibling_target: bool,
 }
 
 /// A Phase-B resolution contributor — the resolver's *semantic* extension point,
@@ -161,13 +169,17 @@ pub(crate) trait ResolvePass: Send + Sync {
 }
 
 /// All built-in Phase-B resolve passes: the core [`macro_calls::MacroCallPass`]
-/// (always present — `macro_rules!` is a language feature) plus any framework
-/// passes gated on their feature (e.g. the Dioxus component pass; see
-/// `DESIGN-ir-pipeline.md` §4). Each is an independent pure contributor; order doesn't matter.
+/// and [`glob_imports::GlobImportPass`] (always present — `macro_rules!` and
+/// glob imports are language features) plus any framework passes gated on
+/// their feature (e.g. the Dioxus component pass; see `DESIGN-ir-pipeline.md`
+/// §4). Each is an independent pure contributor; order doesn't matter.
 pub(crate) fn builtin_resolve_passes() -> Vec<Box<dyn ResolvePass>> {
     // `mut` only needed when a feature-gated pass is enabled.
     #[allow(unused_mut)]
-    let mut passes: Vec<Box<dyn ResolvePass>> = vec![Box::new(macro_calls::MacroCallPass)];
+    let mut passes: Vec<Box<dyn ResolvePass>> = vec![
+        Box::new(macro_calls::MacroCallPass),
+        Box::new(glob_imports::GlobImportPass),
+    ];
     #[cfg(feature = "dioxus")]
     passes.push(Box::new(dioxus_rsx::DioxusComponentPass));
     passes

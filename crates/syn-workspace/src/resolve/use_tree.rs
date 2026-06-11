@@ -183,8 +183,22 @@ fn walk(
             }
         }
         syn::UseTree::Rename(r) => {
-            let mut canon = prefix.to_vec();
-            canon.push(r.ident.to_string());
+            // `use foo::bar::{self as alias};` — like the `Name` branch's
+            // `self` case, the leaf imports the module `bar` itself, NOT a
+            // name called `self`; the only difference is the local name is
+            // the rename. Bind `alias` to the prefix so `alias::Item`
+            // references resolve. An empty prefix can't occur in valid
+            // Rust (`self as x` outside a group list is E0429).
+            let canon = if r.ident == "self" {
+                if prefix.is_empty() {
+                    return;
+                }
+                prefix.to_vec()
+            } else {
+                let mut canon = prefix.to_vec();
+                canon.push(r.ident.to_string());
+                canon
+            };
             out.push(UseBinding {
                 local_name: r.rename.to_string(),
                 canonical: ResolvedPath::new(canon),
@@ -392,6 +406,29 @@ mod tests {
                 ("Serialize".into(), "serde::Serialize".into()),
                 ("serde".into(), "serde".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn group_self_rename_binds_the_module_under_the_alias() {
+        // `use foo::{self as f};` imports the module `foo` under the local
+        // name `f` — the renamed twin of the bare `{self, …}` case above.
+        // The binding must target `foo` itself (NOT `foo::self`), so that
+        // later `f::Item` references resolve.
+        let s = scope("demo", &[]);
+        let mut got = bindings("use crate::styles::{self as st, Category};", &s);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("Category".into(), "demo::styles::Category".into()),
+                ("st".into(), "demo::styles".into()),
+            ]
+        );
+        // External crate form: `use serde::{self as s};`.
+        assert_eq!(
+            bindings("use serde::{self as s};", &s),
+            vec![("s".into(), "serde".into())]
         );
     }
 

@@ -316,6 +316,16 @@ fn item_skipped_by_filters(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> 
 }
 
 fn classify_usage(item: &Item, ctx: &CheckCtx<'_>) -> Usage {
+    // A reference from a sibling target (integration test, bench, example,
+    // non-primary bin) counts as cross-crate: those targets link this
+    // package's lib as an *external* crate, so the item must stay `pub` —
+    // suggesting `pub(crate)` (the IntraCrate advice) would break them.
+    if ctx
+        .workspace
+        .referenced_from_sibling_target(&item.canonical)
+    {
+        return Usage::CrossCrate;
+    }
     let referring = ctx.workspace.referring_crates(&item.canonical);
     let used_cross = referring
         .map(|set| set.iter().any(|c| c != ctx.crate_code))
