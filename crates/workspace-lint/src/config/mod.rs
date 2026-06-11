@@ -89,7 +89,7 @@ impl Config {
             LintId::Architecture => self
                 .architecture
                 .as_ref()
-                .is_some_and(|a| !a.rules.is_empty()),
+                .is_some_and(ArchitectureConfig::is_active),
             _ => true,
         }
     }

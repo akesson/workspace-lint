@@ -99,7 +99,7 @@ pub(crate) fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
     // --- policy lints: gated on `level != allow` AND a present config table ---
     if level_on(config, LintId::Architecture)
         && let Some(ref ac) = config.architecture
-        && !ac.rules.is_empty()
+        && ac.is_active()
     {
         out.push(Box::new(architecture::Architecture::new(ac.clone())));
     }

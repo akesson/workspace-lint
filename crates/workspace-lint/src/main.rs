@@ -25,6 +25,7 @@ mod lints;
 mod messages;
 mod suggest;
 mod suppress;
+mod util;
 
 use clap::Parser;
 use std::io::{self, IsTerminal};

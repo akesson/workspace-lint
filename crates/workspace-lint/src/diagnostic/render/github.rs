@@ -9,7 +9,7 @@
 use std::io::{self, Write};
 
 use super::display_path;
-use crate::diagnostic::{Diagnostic, Level, SilenceAnchor};
+use crate::diagnostic::{Diagnostic, SilenceAnchor};
 
 pub(crate) fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
     for d in diagnostics {
@@ -19,10 +19,9 @@ pub(crate) fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Resu
 }
 
 pub(crate) fn write_one(d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
-    let command = match d.level {
-        Level::Warn => "warning",
-        Level::Deny => "error",
-    };
+    // GitHub's `::warning`/`::error` command names coincide with rustc's level
+    // strings (see [`Level::as_str`]).
+    let command = d.level.as_str();
     let (file, line, col) = location(d);
     let file = escape_property(&file);
     let title = escape_property(&d.lint);
@@ -67,6 +66,7 @@ fn escape_data(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::Level;
     use crate::diagnostic::builder::{at_file, at_line, at_workspace};
 
     fn render_one(d: &Diagnostic) -> String {

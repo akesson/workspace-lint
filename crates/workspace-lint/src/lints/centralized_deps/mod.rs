@@ -85,12 +85,11 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             // path and the suppression anchor — so a per-Cargo.toml
             // directive (`# workspace-lint: allow(centralized-deps)`)
             // can actually match the diagnostic's `SilenceAnchor::Crate`.
-            // Force forward-slash separators in the rendered string so
-            // Windows runs of this lint produce the same diagnostic text
-            // as Linux/macOS (snapshot fixtures lock that in).
+            // `display_path` forces forward slashes so Windows runs produce the
+            // same diagnostic text as Linux/macOS (snapshot fixtures lock it in).
             let manifest_path_rel = workspace.crate_relative_path(manifest.path());
             let manifest_dir_rel = workspace.crate_relative_path(&krate.manifest_dir);
-            let cargo_path_str = manifest_path_rel.display().to_string().replace('\\', "/");
+            let cargo_path_str = crate::diagnostic::render::display_path(&manifest_path_rel);
             let mut builder = at_crate(
                 lint_id,
                 format!(

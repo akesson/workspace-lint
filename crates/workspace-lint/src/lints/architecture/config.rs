@@ -8,6 +8,16 @@ pub(crate) struct ArchitectureConfig {
     pub rules: Vec<ArchitectureRule>,
 }
 
+impl ArchitectureConfig {
+    /// An `[architecture]` table with no rules is inert (nothing to enforce), so
+    /// it counts as "no config table" for enablement. Single source of truth for
+    /// this rule, shared by [`crate::config::Config::has_table_for`] and the
+    /// `registry` gating so the two can't drift.
+    pub fn is_active(&self) -> bool {
+        !self.rules.is_empty()
+    }
+}
+
 #[derive(Deserialize, Clone)]
 pub(crate) struct ArchitectureRule {
     /// Display name surfaced in diagnostics. Optional but recommended.

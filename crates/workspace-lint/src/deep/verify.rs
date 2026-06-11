@@ -111,11 +111,11 @@ fn first_disproving<'a>(
             package_name,
         } => {
             let want = package_name.replace('-', "_");
-            let want_stripped = separator_stripped(&want);
+            let want_stripped = crate::util::separator_stripped(&want);
             index.occurrences.iter().find(|o| {
                 map.owner(&o.file).as_deref() == Some(krate_code.as_str())
                     && (o.symbol.package == want
-                        || separator_stripped(&o.symbol.package) == want_stripped)
+                        || crate::util::separator_stripped(&o.symbol.package) == want_stripped)
             })
         }
         Evidence::PubUnused {
@@ -160,12 +160,6 @@ fn describe(evidence: &Evidence) -> String {
         Evidence::DepUnused { package_name, .. } => format!("dependency `{package_name}`"),
         Evidence::PubUnused { canonical, .. } => format!("`{}`", canonical.join("::")),
     }
-}
-
-/// A crate name with `-`/`_` removed — the FP-safe lib-name fallback
-/// (`md_5` ↔ `md5`). Mirrors the one in `unused_deps`.
-fn separator_stripped(name: &str) -> String {
-    name.chars().filter(|c| *c != '-' && *c != '_').collect()
 }
 
 /// Maps a SCIP document path (workspace-root-relative, `/`-separated) to its

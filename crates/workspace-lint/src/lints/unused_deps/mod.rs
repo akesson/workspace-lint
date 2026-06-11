@@ -109,7 +109,7 @@ pub(crate) fn check(
         // matches the crate-anchored diagnostic shape.
         let manifest_dir_rel = workspace.crate_relative_path(&krate.manifest_dir);
         let manifest_path_rel = workspace.crate_relative_path(manifest.path());
-        let cargo_path_str = manifest_path_rel.display().to_string().replace('\\', "/");
+        let cargo_path_str = crate::diagnostic::render::display_path(&manifest_path_rel);
         let mut builder = at_crate(
             lint_id,
             format!(
@@ -276,14 +276,8 @@ fn find_unused_deps(
     deps.into_iter()
         .filter(|(normalized, _)| {
             !referenced.contains(normalized)
-                && !referenced.contains(&separator_stripped(normalized))
+                && !referenced.contains(&crate::util::separator_stripped(normalized))
         })
         .flat_map(|(_, entries)| entries)
         .collect()
-}
-
-/// A crate name with all `-`/`_` separators removed, for the H3 lib-name
-/// fallback match (`md_5` collapses to `md5` to match a `md5` lib target).
-fn separator_stripped(name: &str) -> String {
-    name.chars().filter(|c| *c != '-' && *c != '_').collect()
 }
