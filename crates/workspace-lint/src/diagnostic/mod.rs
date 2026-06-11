@@ -37,7 +37,11 @@ impl Level {
 pub(crate) enum Applicability {
     MachineApplicable,
     MaybeIncorrect,
+    // We never emit these two, but keep the enum a 1:1 mirror of
+    // `rustc::lint::Applicability` (all four are handled by `as_str`).
+    #[allow(dead_code)]
     HasPlaceholders,
+    #[allow(dead_code)]
     Unspecified,
 }
 
@@ -202,14 +206,6 @@ impl SilenceAnchor {
             SilenceAnchor::Line { file, .. } | SilenceAnchor::File { file } => Some(file),
             SilenceAnchor::Crate { manifest_dir } => Some(manifest_dir),
             SilenceAnchor::Workspace => None,
-        }
-    }
-
-    /// Line the anchor targets, if any.
-    pub fn line(&self) -> Option<u32> {
-        match self {
-            SilenceAnchor::Line { line, .. } => Some(*line),
-            _ => None,
         }
     }
 }

@@ -31,29 +31,6 @@ use crate::resolve::{
     Crate, Error, LoadWarning, ResolvedPath, Result, Target, TargetKind, module_tree,
 };
 
-/// Run `cargo metadata` on the workspace at `root` and return the absolute
-/// path of every workspace member's `Cargo.toml`.
-///
-/// Honors cargo's full workspace semantics: `members`, glob patterns,
-/// `exclude`, and `default-members`. Use this in preference to parsing the
-/// root `Cargo.toml`'s `members` table by hand — the by-hand version
-/// silently diverges on `exclude` and non-trivial globs.
-pub fn member_manifests(root: &Path) -> Result<Vec<PathBuf>> {
-    let manifest = root.join("Cargo.toml");
-    // `--no-deps` for the same reason as `load_members`: only workspace member
-    // manifests are needed, so dependency resolution (and the network / lockfile
-    // it would require) is pure overhead.
-    let metadata = MetadataCommand::new()
-        .manifest_path(&manifest)
-        .no_deps()
-        .exec()?;
-    Ok(metadata
-        .workspace_packages()
-        .into_iter()
-        .map(|pkg| pkg.manifest_path.as_std_path().to_path_buf())
-        .collect())
-}
-
 /// Run `cargo metadata` on the workspace at `root` and return the root
 /// [`Manifest`] alongside one [`Crate`] per workspace member, plus any
 /// non-fatal warnings collected during the walk.

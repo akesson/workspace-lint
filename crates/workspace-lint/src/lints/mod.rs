@@ -41,8 +41,10 @@ use syn_workspace::Workspace;
 /// [`LintContext`] passed to [`Lint::check`] carries only state shared across
 /// lints (currently just the resolver-loaded [`Workspace`]).
 pub(crate) trait Lint: 'static {
-    /// Stable identity used by the suppression map, the `[lints]` severity
-    /// table, and the snapshot-coverage tests.
+    /// Stable identity, asserted against `LintId::ALL` by the registry-coverage
+    /// and CLI-dispatch tests. The runtime routes on each diagnostic's string
+    /// `lint` field, so this is test-only today.
+    #[allow(dead_code)]
     fn id(&self) -> LintId;
 
     /// Declared up-front so the runner can decide whether to pay the

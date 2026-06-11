@@ -134,7 +134,8 @@ impl LintId {
 }
 
 /// Compatibility view: every lint's full ID in stable order. Equivalent to
-/// `LintId::ALL.iter().map(|l| l.id())`.
+/// `LintId::ALL.iter().map(|l| l.id())`. Test-only (registry invariants).
+#[allow(dead_code)]
 pub(crate) const ALL_LINTS: &[&str] = &[
     LintId::Architecture.id(),
     LintId::CentralizedDeps.id(),
@@ -175,6 +176,7 @@ pub(crate) const ALL_LINTS: &[&str] = &[
 /// - `architecture`, `feature-drift`, `module-tree`: the structural fixes
 ///   for these are planned but not yet implemented; once `--fix` rewrites
 ///   them, add fixtures and move them up.
+#[allow(dead_code)] // test-only (drives the fix-fixture coverage guard)
 pub(crate) const FIXTURABLE_LINTS: &[&str] = &[
     LintId::CentralizedDeps.id(),
     LintId::UnusedDeps.id(),
@@ -183,7 +185,8 @@ pub(crate) const FIXTURABLE_LINTS: &[&str] = &[
 
 /// Strip the `workspace-lint::` prefix so callers can derive the short
 /// kebab form (`file-size`) used in fixture directory names and comment
-/// directives.
+/// directives. Test-only (the fix-fixture coverage guard).
+#[allow(dead_code)]
 pub(crate) fn short(lint: &str) -> &str {
     lint.strip_prefix("workspace-lint::").unwrap_or(lint)
 }

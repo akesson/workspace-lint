@@ -17,14 +17,7 @@
 //! invocation sites happens after Tier 1 rename resolution, so
 //! `use tokio::main as runtime; #[runtime]` matches the `tokio::main`
 //! entry.
-
-/// One declared external-macro entry — typically constructed by a
-/// consumer from its own config format.
-#[derive(Debug, Clone)]
-pub struct ExternalMacro {
-    /// Canonical path of the macro definition (e.g. `tokio::main`,
-    /// `sqlx::query!`). Trailing `!` is optional and stripped on parse.
-    pub path: String,
-    /// Paths the macro's expansion references.
-    pub expansion_uses: Vec<String>,
-}
+//!
+//! `register_external_macro_uses` takes an iterator of already-parsed canonical
+//! paths — the consumer owns the entry type (e.g. the binary parses its own
+//! config struct), so this module is documentation only, with no public types.

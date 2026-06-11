@@ -4,7 +4,7 @@
 //! crate, file, line) so the resulting [`SilenceAnchor`] is correct.
 
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::{Diagnostic, Level, SilenceAnchor, Span};
 
@@ -35,6 +35,9 @@ impl DiagnosticBuilder {
         }
     }
 
+    // Test-only: production builds diagnostics at the default `Warn` and lets
+    // `apply_lint_levels` rewrite the level; only tests set it at construction.
+    #[allow(dead_code)]
     pub fn level(mut self, level: Level) -> Self {
         self.level = level;
         self
@@ -142,22 +145,6 @@ pub(crate) fn at_line(
     })
 }
 
-/// Strip the leading `./` that `tokei` and others tack onto relative paths,
-/// so the rendered diagnostic shows `src/foo.rs` rather than `./src/foo.rs`.
-pub(crate) fn normalize_path(p: &str) -> &str {
-    p.strip_prefix("./").unwrap_or(p)
-}
-
-/// Convenience wrapper to build a path with the `./` prefix stripped.
-pub(crate) fn clean_path(p: &str) -> PathBuf {
-    PathBuf::from(normalize_path(p))
-}
-
-/// Strip `./` from a Path's string form (when the caller has a Path, not a str).
-pub(crate) fn clean_pathbuf(p: &Path) -> PathBuf {
-    clean_path(&p.display().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,11 +212,5 @@ mod tests {
         assert_eq!(d.helps, vec!["hello".to_string()]);
         assert_eq!(d.notes, vec!["there".to_string()]);
         assert_eq!(d.suggestions, vec![s]);
-    }
-
-    #[test]
-    fn normalize_strips_dot_slash() {
-        assert_eq!(normalize_path("./src/foo.rs"), "src/foo.rs");
-        assert_eq!(normalize_path("src/foo.rs"), "src/foo.rs");
     }
 }

@@ -76,7 +76,7 @@ pub(crate) fn span_to_source_span(file: &Path, span: proc_macro2::Span) -> Sourc
 /// nor `main.rs` at the standard location — for non-standard layouts, the
 /// caller should pass an explicit entry point to a future variant.
 #[cfg(test)]
-pub fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module> {
+pub(crate) fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module> {
     let src_dir = manifest_dir.join("src");
     let candidates = [src_dir.join("lib.rs"), src_dir.join("main.rs")];
 
@@ -1052,6 +1052,10 @@ fn resolve_occurrence(
 
 /// Outer attributes of a syn item. Returned as a slice so the caller can
 /// iterate without copying.
+///
+/// `pub(crate)`, so it's mirrored (not reused) by `crate_size::shipped_source`
+/// in the workspace-lint binary; keep the two arm-for-arm identical when a new
+/// `syn::Item` variant appears.
 fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     match item {
         syn::Item::Const(i) => &i.attrs,

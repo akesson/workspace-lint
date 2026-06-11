@@ -1,27 +1,12 @@
 mod cli;
 mod config;
 mod deep;
-#[allow(dead_code)]
-// Diagnostic types include a few helpers (some Applicability variants,
-// clean_path/clean_pathbuf) that aren't yet referenced; upcoming steps
-// (--fix, snapshot tests) will use them. Suppress until then to keep
-// `cargo clippy -D warnings` green.
 mod diagnostic;
 mod directives;
 mod expand;
 mod fix;
 mod git;
-#[allow(dead_code)]
-// `LintId::ALL`, `FIXTURABLE_LINTS`, and the `Lint::id()` trait method are
-// referenced from the registry-coverage and scenario tests, not the binary
-// runtime. The string-form `lint` field on each `Diagnostic` is what drives
-// suppression, rendering, and severity lookup.
 mod lints;
-#[allow(dead_code)]
-// Compiled into the binary only because all module-level tests must be
-// visible to `cargo test`. The `scenarios()` builder is `pub` but the
-// snapshot tests inside `mod tests` are what actually exercise the
-// diagnostics — see the file's module docs.
 mod messages;
 mod suggest;
 mod suppress;

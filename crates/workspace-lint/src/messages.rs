@@ -37,6 +37,9 @@ use crate::diagnostic::builder::{at_crate, at_file, at_line, at_workspace};
 /// three *renderers* (human/json/github), not the lints' own logic. The real
 /// message strings a lint emits are pinned only where a `tests/cases/` fixture
 /// runs it end-to-end; keep the strings here in sync with the lint by hand.
+///
+/// Test-only: consumed by the snapshot tests below and `messages_quality.rs`.
+#[allow(dead_code)]
 pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
     vec![
         // centralized-deps: one offending member crate.
