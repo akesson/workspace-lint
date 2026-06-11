@@ -419,6 +419,18 @@ pub enum Origin {
     /// captures are local variables and never bind — excluded from the SCIP
     /// projection like [`Origin::Component`] / [`Origin::MacroCall`].
     GlobCandidate,
+    /// A reference *asserted* by a built-in Tier-H usage rule
+    /// ([`crate::assertions`]), not parsed from a real path: a syntactic
+    /// trigger (a strum derive, `#[wasm_bindgen_test]`, `#[serde(with = "…")]`)
+    /// implies, by the upstream crate's documented contract, that some path is
+    /// referenced. `rule` is the asserting rule's stable id, kept for provenance
+    /// (a future `--explain`). Anchored at the trigger's span. Evidence-only:
+    /// asserted refs flow into the crate-level reference sets (suppressing
+    /// `unused-deps` / `unused-pub` false positives) but, like the over-linking
+    /// Phase B passes, can only ever *suppress* a finding — never create one.
+    /// Excluded from the SCIP projection and from [`Module::references`] so the
+    /// precision gate and per-module reference surface stay parsed-evidence-only.
+    Asserted { rule: &'static str },
 }
 
 /// A single reference occurrence in a module — the resolver's primary
@@ -523,12 +535,14 @@ impl Module {
     }
 
     /// Resolved paths referenced from this module's regular code, glob imports,
-    /// and `extern crate` declarations (every [`Origin`] except `Macro`).
-    /// Unresolved occurrences are skipped.
+    /// and `extern crate` declarations — parsed evidence only (every [`Origin`]
+    /// except `Macro` and the contract-`Asserted` Tier-H refs, which are
+    /// reachable via `occurrences` if a consumer wants them). Unresolved
+    /// occurrences are skipped.
     pub fn references(&self) -> impl Iterator<Item = &ResolvedPath> + '_ {
         self.occurrences
             .iter()
-            .filter(|o| o.origin != Origin::Macro)
+            .filter(|o| !matches!(o.origin, Origin::Macro | Origin::Asserted { .. }))
             .filter_map(|o| o.path.as_ref())
     }
 

@@ -149,6 +149,12 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
     `.context()`, `serde` where only `Serialize`/`Deserialize` *derives* appear
     with no `serde::` path (the trait is glob-imported from a prelude). Type
     inference and trait solving are explicit non-goals.
+  - **`#[serde(with)]` helper fns — FIXED.** `dioxus_liveview`'s
+    `history.rs::routes::{serialize, deserialize}` read "appears unused": they're
+    invoked only through `#[serde(with = "routes")]`, code the serde derive
+    generates. Closed by the Tier-H `serde-with` assertion (see History), which
+    credits the named module plus its `serialize`/`deserialize` children — they
+    now read IntraCrate.
   - **Re-export-path deps (known-FP).** `const_format` / `xxhash-rust` /
     `self-replace` are referenced only as `other_crate::dep::…` (a re-export of a
     transitive dep), never via the direct dep's own root segment.
@@ -161,6 +167,18 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
     in this bucket until Phase 4 increment 4 (below) — their references were
     real but invisible (test-module glob imports; an own-variant `pub use`
     path) — leaving the genuinely-referrer-less items still flagged.
+
+> **History (Phase 5 — Tier-H assertions, 2026-06-11):** the two
+> `dioxus_liveview` `history.rs` `unused-pub` findings (`routes::serialize` /
+> `routes::deserialize`, used only via `#[serde(with = "routes")]`) were cleared
+> by the built-in `serde-with` usage assertion (`syn-workspace/src/assertions.rs`),
+> which parses the `with`-named path and credits its `serialize`/`deserialize`
+> children. This is the corpus's only Tier-H-visible case; the strum / wasm-bindgen
+> / md-5 rules that motivated the tier don't appear in the dioxus tree (they're
+> guarded by `tests/cases/unused-deps/true_negatives/asserted_*`). The dep audit
+> is unmoved — `axum` and friends stay flagged (a `__axum` macro-interpolation
+> local does *not* vouch for them; the `md5-libname` fallback strips only the
+> manifest side, not referenced names).
 
 > **History (Phase 3, increment 8 — feature-plumbing deps):** the last corpus FP,
 > regex's `aho-corasick`, was closed. `Manifest::feature_dep_refs`

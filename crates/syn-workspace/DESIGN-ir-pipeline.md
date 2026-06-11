@@ -429,9 +429,18 @@ limits, by design:
   external-crate glob exports (need rustdoc JSON), block doc comments (`/** … */`),
   trait dispatch via `dyn`/generics, and `#[derive(...)]`-driven uses.
 
-## 13. Reference-evidence tiers: resolving vs. asserting plugins (design)
+## 13. Reference-evidence tiers: resolving vs. asserting plugins
 
-Status: **design — not yet implemented.** Motivated by the 2026-06-11
+Status: **implemented** (H1 `strum-derive` / `wasm-bindgen-test`, H2 `serde-with`,
+H3 `md5-libname`). The built-in rule table lives in `syn-workspace/src/assertions.rs`
+(`builtin_assertions()`), surfaced through the new `Origin::Asserted { rule }`;
+H3 (a manifest, not a syntax, assertion) lives in the `unused-deps` matcher.
+Follow-ups deferred from this increment: (a) migrate the user-facing
+`[[macros.external]]` config onto the same trigger-narrowed mechanism (it keeps
+its workspace-wide broadcast for now); (b) a `--explain <dep|item>` that walks
+from a suppressed finding back to the asserting rule and trigger span.
+
+Motivated by the 2026-06-11
 own-workspace audit: after the increment-4 core fixes, every remaining
 `unused-deps` false positive came from *macro-contract* knowledge the resolver
 can't parse — `#[derive(EnumString)]` expanding to code that references

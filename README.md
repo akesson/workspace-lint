@@ -342,6 +342,28 @@ instead — either with the zero-dep `syn-workspace-marker` crate
 `// workspace-syn: expansion-uses(...)` comment directive, placed immediately
 before the `macro_rules!` definition.
 
+### Built-in usage assertions
+
+Some upstream crates have a *documented contract* the resolver can't see by
+parsing: a derive macro expands to code that references a runtime crate, an
+attribute requires a crate at expansion time, or an attribute names a path
+inside a string literal. `workspace-lint` ships built-in assertions for the
+common ones, so `unused-deps` / `unused-pub` don't report them as false
+positives. They fire on a syntactic trigger and only ever *suppress* a finding —
+never create one.
+
+| Rule | Trigger | Credits |
+|------|---------|---------|
+| `strum-derive` | `#[derive(EnumString \| EnumIter \| …)]`, or any `strum::…` / `strum_macros::…` derive | `strum` |
+| `wasm-bindgen-test` | `#[wasm_bindgen_test]` | `wasm-bindgen` |
+| `serde-with` | `#[serde(with = "…")]` / `#[serde(crate = "…")]` | the named module + its `serialize` / `deserialize` |
+| `md5-libname` | a dep whose hyphen-stripped name matches a referenced lib (e.g. `md-5` → `md5`) | the dep |
+
+These are not configurable. For project-specific cases use `[[macros.external]]`
+above (still applied workspace-wide) or the `[unused-deps] ignore` knob; a bare
+`#[derive(Display)]` is intentionally *not* covered by `strum-derive` because it
+is ambiguous with `derive_more`.
+
 ## Output formats
 
 `--message-format` picks the renderer (default `human`):

@@ -1448,38 +1448,6 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-warning: pub fn `serialize` in crate `dioxus_liveview` appears unused — consider removing
- --> <TMP>/packages/liveview/src/history.rs:356:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-356 - <existing>
-356 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-356 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub fn `deserialize` in crate `dioxus_liveview` appears unused — consider removing
- --> <TMP>/packages/liveview/src/history.rs:367:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-367 - <existing>
-367 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-367 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
 warning: pub type `ProgressRx` in crate `dioxus_cli` appears unused — consider removing
  --> <TMP>/packages/cli/src/build/context.rs:23:1
   |
@@ -1736,4 +1704,4 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-workspace-lint: generated 74 warnings (run `workspace-lint --fix` to apply 152 suggestions)
+workspace-lint: generated 72 warnings (run `workspace-lint --fix` to apply 152 suggestions)
