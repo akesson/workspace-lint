@@ -81,7 +81,14 @@ max-code-lines = 500
 
 ### crate-size
 
-Enforces maximum total code lines per crate directory. Optionally filter which files to count with `include`.
+Enforces maximum *shipped* code lines per crate directory. Counts Rust source
+(via [tokei](https://github.com/XAMPPRocky/tokei)), excluding test code: the
+`tests/`, `benches/`, and `examples/` dev-target directories wholesale, plus
+in-file test items (anything gated by exactly `#[cfg(test)]`, `#[test]` /
+`#[wasm_bindgen_test]` functions, and out-of-line `#[cfg(test)] mod x;` files).
+The budget is about maintained product code, not the test mass that often dwarfs
+it. Override which files count with `include` (non-Rust types are counted as-is —
+no test-stripping).
 
 ```toml
 [[crate-size.rules]]

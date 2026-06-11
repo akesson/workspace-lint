@@ -1,0 +1,12 @@
+# Budget of 10 sits above the crate's five shipped fns but far below its total
+# Rust: the `#[cfg(test)] mod tests` block adds ~16 more code lines. The crate
+# passes ONLY because crate-size counts shipped source and blanks in-file test
+# code. If `#[cfg(test)]` items ever count again this case flips to a finding
+# and fails.
+[[crate-size.rules]]
+glob = "crates/*"
+max-code-lines = 10
+
+[lints]
+default = "allow"
+crate-size = "warn"

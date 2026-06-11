@@ -1,5 +1,5 @@
 use globset::{Glob, GlobSetBuilder};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use syn_workspace::Workspace;
 use tokei::{Config as TokeiConfig, Languages};
 
@@ -9,6 +9,7 @@ use crate::diagnostic::builder::at_crate;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
+mod shipped_source;
 #[cfg(test)]
 mod tests;
 
@@ -63,12 +64,14 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
     for rule in &config.rules {
         let matcher = rule.glob.compiled().compile_matcher();
 
-        // A crate-size budget is about *code*, not committed data: JSON oracle
-        // snapshots and TOML fixture manifests that live under a crate dir
-        // shouldn't count against its line budget. So only Rust source (`*.rs`)
-        // is counted by default. Override per rule with `include` to count
-        // other file types or to narrow to specific Rust files. Patterns match
-        // the file name (not the full path).
+        // A crate-size budget is about *shipped code*, not committed data and
+        // not tests: JSON oracle snapshots and TOML fixture manifests under a
+        // crate dir, the `tests/` / `benches/` / `examples/` dev-target trees,
+        // and in-file `#[cfg(test)]` items all sit outside the budget (see
+        // `shipped_source`). So only Rust source (`*.rs`) is counted by default.
+        // Override per rule with `include` to count other file types or to
+        // narrow to specific Rust files. Patterns match the file name (not the
+        // full path).
         let mut include_builder = GlobSetBuilder::new();
         match &rule.include {
             Some(patterns) => {
@@ -119,9 +122,12 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
     diagnostics
 }
 
-/// Sum the `*.rs` (or `include`-filtered) code lines under a member's on-disk
-/// directory. The absolute path is passed so tokei's walk doesn't depend on the
-/// process cwd. `include` patterns match the file *name* only (not the path).
+/// Sum the `*.rs` (or `include`-filtered) *shipped* code lines under a member's
+/// on-disk directory. The absolute path is passed so tokei's walk doesn't depend
+/// on the process cwd. `include` patterns match the file *name* only (not the
+/// path). Test code is excluded: dev-target dirs wholesale, and in-file test
+/// items per `shipped_source`. Non-Rust includes (e.g. `*.json`) keep tokei's
+/// own count — syn can't parse them, and they carry no test items to remove.
 fn count_crate_code(abs: &Path, include_set: &globset::GlobSet) -> usize {
     let mut languages = Languages::new();
     languages.get_statistics(
@@ -130,16 +136,25 @@ fn count_crate_code(abs: &Path, include_set: &globset::GlobSet) -> usize {
         &TokeiConfig::default(),
     );
 
-    let mut total_code = 0;
+    let mut rust_files: Vec<PathBuf> = Vec::new();
+    let mut other_code = 0;
     for language in languages.values() {
         for report in &language.reports {
             let name = report.name.file_name().unwrap_or_default();
-            if include_set.is_match(Path::new(name)) {
-                total_code += report.stats.code;
+            if !include_set.is_match(Path::new(name)) {
+                continue;
+            }
+            if shipped_source::in_dev_target_dir(abs, &report.name) {
+                continue;
+            }
+            if report.name.extension().and_then(|e| e.to_str()) == Some("rs") {
+                rust_files.push(report.name.clone());
+            } else {
+                other_code += report.stats.code;
             }
         }
     }
-    total_code
+    other_code + shipped_source::count_rust_shipped(&rust_files)
 }
 
 /// Pure projection: emit a diagnostic for each `(crate_relative_dir, total)`

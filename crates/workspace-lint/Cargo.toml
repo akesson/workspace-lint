@@ -1,6 +1,3 @@
-# workspace-lint: expect(crate-size)
-# Acknowledge that the binary crate holds the entire tool. If it shrinks
-# back under the limit, stale-expect nudges us to remove this directive.
 [package]
 name = "workspace-lint"
 version = "0.1.0"

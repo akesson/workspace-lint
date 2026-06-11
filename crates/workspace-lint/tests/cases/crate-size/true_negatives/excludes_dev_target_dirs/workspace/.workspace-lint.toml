@@ -1,0 +1,13 @@
+# Budget of 10 sits above the crate's shipped `src/lib.rs` (three lines) but
+# below the total once the dev-target trees count: the `tests/` integration
+# file and `examples/` demo together add ~15 more code lines. The crate passes
+# ONLY because crate-size skips `tests/` / `benches/` / `examples/` (cargo dev
+# targets, never shipped). If those dirs ever count again this case flips to a
+# finding and fails.
+[[crate-size.rules]]
+glob = "crates/*"
+max-code-lines = 10
+
+[lints]
+default = "allow"
+crate-size = "warn"

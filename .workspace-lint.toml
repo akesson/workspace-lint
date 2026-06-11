@@ -39,11 +39,15 @@ max-code-lines = 500
 
 [[crate-size.rules]]
 glob = "crates/*"
-# Counts Rust source only (`*.rs`); committed data (JSON oracle snapshots,
-# TOML fixture manifests under a crate's `tests/`) no longer inflates the
-# budget. syn-workspace is ~4.6k Rust lines (src + test-fixture `.rs`), so
-# 6000 leaves headroom while still tripping on real source growth. (The
-# 7000 bump in #33 was a workaround for JSON inflation — now unnecessary.)
+# Counts *shipped* Rust source only: committed data (JSON oracle snapshots,
+# TOML fixtures) is skipped, and so is test code — the `tests/`/`benches/`/
+# `examples/` dev-target trees and in-file `#[cfg(test)]` items / `#[test]`
+# fns (a crate-size budget is about maintained product code, not the test
+# mass that dwarfs it — see `crate_size::shipped_source`). Under this metric
+# syn-workspace is ~4.0k and workspace-lint ~4.8k shipped lines, so 6000
+# leaves real headroom while still tripping on genuine source growth. This is
+# why the two `expect(crate-size)` directives are gone: both crates are
+# legitimately under budget once tests stop counting.
 max-code-lines = 6000
 
 # `unused-deps` `ignore` is scoped per-crate (a worked example of the
