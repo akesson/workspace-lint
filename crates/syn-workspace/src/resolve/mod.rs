@@ -410,6 +410,15 @@ pub enum Origin {
     /// Multi-segment macro paths (`m::foo!`) are ordinary [`Origin::Code`] runs,
     /// not this.
     MacroCall,
+    /// A bare single ident in a module that has at least one glob import
+    /// (`use m::*;`), matching neither a `use` binding nor a same-module
+    /// sibling — potentially a name the glob brought into scope. Left
+    /// unresolved by the central resolver (a glob's contents aren't known
+    /// per-file); the core Phase B `GlobImportPass` binds it against the
+    /// glob target's items when the target is a workspace module. Most
+    /// captures are local variables and never bind — excluded from the SCIP
+    /// projection like [`Origin::Component`] / [`Origin::MacroCall`].
+    GlobCandidate,
 }
 
 /// A single reference occurrence in a module — the resolver's primary
@@ -721,13 +730,24 @@ pub struct Workspace {
     references_by_crate: std::collections::HashMap<String, std::collections::HashSet<ResolvedPath>>,
     /// Reverse index: for each canonical path, the set of code-form crate
     /// names that reference it. Built from `references_by_crate` with each
-    /// path passed through the `pub use` chain in `re_exports`. Same
-    /// referrer may appear because intra-crate refs are retained — callers
-    /// that want "cross-crate only" filter on `path.crate_name() !=
-    /// referrer`. Pre-computed so the re-export resolution runs once
-    /// regardless of how many consumers query it.
+    /// path passed through the `pub use` chain in `re_exports`. Every proper
+    /// prefix (length ≥ 2) of a referenced path is credited too: a reference
+    /// to `a::b::c` is a use of `a::b` (`Type::assoc_fn()` uses `Type`,
+    /// `module::item` uses `module`). Same referrer may appear because
+    /// intra-crate refs are retained — callers that want "cross-crate only"
+    /// filter on `path.crate_name() != referrer`. Pre-computed so the
+    /// re-export resolution runs once regardless of how many consumers
+    /// query it.
     canonical_refs_by_path:
         std::collections::HashMap<ResolvedPath, std::collections::HashSet<String>>,
+    /// Canonical paths (with prefixes, like `canonical_refs_by_path` keys)
+    /// referenced from a *sibling target* of their own package — an
+    /// integration test, bench, example, or non-primary bin. Those targets
+    /// link the package's library as an external crate, so they can only
+    /// import `pub` items; consumers (`unused-pub`) treat a sibling-target
+    /// reference like a cross-crate one — the item must stay `pub`. See
+    /// [`Workspace::referenced_from_sibling_target`].
+    sibling_target_refs: std::collections::HashSet<ResolvedPath>,
     /// Per-crate set of crate names referenced inside rust-compiling doc-test
     /// code fences (see [`module_tree`]/`doc_fences`). Keyed by code name, like
     /// [`Self::references_by_crate`]. Kept *separate* from the occurrence-derived
@@ -774,6 +794,12 @@ impl Workspace {
             String,
             std::collections::HashSet<String>,
         > = std::collections::HashMap::new();
+        // Raw (un-canonicalized) paths referenced from sibling targets —
+        // every target of a package other than its primary unit. Expanded
+        // with prefixes and canonicalized into `sibling_target_refs` below,
+        // after the Phase B passes have contributed their flagged edges.
+        let mut sibling_target_raw: std::collections::HashSet<ResolvedPath> =
+            std::collections::HashSet::new();
         for krate in &crates {
             if !krate.is_workspace_member {
                 continue;
@@ -784,6 +810,7 @@ impl Workspace {
             let doc_entry = doctest_dep_refs_by_crate
                 .entry(code_name.clone())
                 .or_default();
+            let primary = krate.lib_or_main().map(|t| t as *const Target);
             // Walk every target (lib/bin/example/test/bench/build-script).
             // Each target's tree was built with the parent crate's code_name
             // as canonical root, so cross-crate references (e.g.
@@ -797,6 +824,16 @@ impl Workspace {
                 collect_macro_implicit_refs(&target.root, macro_entry);
                 collect_module_references(&target.root, entry);
                 collect_doctest_refs(&target.root, doc_entry);
+                // A sibling target (integration test, bench, example,
+                // non-primary bin) links the package's library as an
+                // *external* crate — it can only import `pub` items, so its
+                // references mark items that must stay `pub`. The build
+                // script is technically not a consumer of the lib at all,
+                // but including it is harmless (its refs can't name lib
+                // items the lib itself could see anyway).
+                if primary != Some(target as *const Target) {
+                    collect_module_references(&target.root, &mut sibling_target_raw);
+                }
             }
         }
         // Phase B resolve passes (framework semantics). Each pass is an
@@ -808,7 +845,15 @@ impl Workspace {
         // exactly like code references. Order-independent: the merge target is a
         // set, so the union is the same regardless of pass order.
         for pass in crate::plugins::builtin_resolve_passes() {
-            for crate::plugins::ContributedRef { from, to } in pass.contribute(&crates) {
+            for crate::plugins::ContributedRef {
+                from,
+                to,
+                via_sibling_target,
+            } in pass.contribute(&crates)
+            {
+                if via_sibling_target {
+                    sibling_target_raw.insert(to.clone());
+                }
                 references_by_crate.entry(from).or_default().insert(to);
             }
         }
@@ -818,12 +863,18 @@ impl Workspace {
         > = std::collections::HashMap::new();
         for (referring_crate, refs) in &references_by_crate {
             for path in refs {
-                let canonical = re_exports.canonical(path);
-                canonical_refs_by_path
-                    .entry(canonical)
-                    .or_default()
-                    .insert(referring_crate.clone());
+                for canonical in canonical_with_prefixes(&re_exports, path) {
+                    canonical_refs_by_path
+                        .entry(canonical)
+                        .or_default()
+                        .insert(referring_crate.clone());
+                }
             }
+        }
+        let mut sibling_target_refs: std::collections::HashSet<ResolvedPath> =
+            std::collections::HashSet::new();
+        for path in &sibling_target_raw {
+            sibling_target_refs.extend(canonical_with_prefixes(&re_exports, path));
         }
         Ok(Self {
             crates,
@@ -834,6 +885,7 @@ impl Workspace {
             external_macro_refs: std::collections::HashSet::new(),
             references_by_crate,
             canonical_refs_by_path,
+            sibling_target_refs,
             doctest_dep_refs_by_crate,
             warnings,
         })
@@ -1164,13 +1216,47 @@ impl Workspace {
     /// Set of code-form crate names that reference `canonical` (after
     /// `pub use` chain resolution). `None` means no recorded reference at
     /// all. The returned set may include `canonical.crate_name()` itself
-    /// when the defining crate references its own item.
+    /// when the defining crate references its own item. Prefix-credited: a
+    /// recorded reference to `a::b::c` also answers for `a::b` (a
+    /// `Type::assoc_fn()` call is a use of `Type`; a `module::item` path is
+    /// a use of `module`).
     pub fn referring_crates(
         &self,
         canonical: &ResolvedPath,
     ) -> Option<&std::collections::HashSet<String>> {
         self.canonical_refs_by_path.get(canonical)
     }
+
+    /// True iff `canonical` is referenced (directly, or as a prefix of a
+    /// longer referenced path) from a *sibling target* of some package — an
+    /// integration test, bench, example, or non-primary bin. Sibling
+    /// targets link their package's library as an external crate, so they
+    /// can only import `pub` items: an item whose only referrers are
+    /// sibling targets must stay `pub` (narrowing it to `pub(crate)` would
+    /// break the test/bench). `unused-pub` treats such references like
+    /// cross-crate ones.
+    pub fn referenced_from_sibling_target(&self, canonical: &ResolvedPath) -> bool {
+        self.sibling_target_refs.contains(canonical)
+    }
+}
+
+/// The canonical (re-export-resolved) form of `path`, plus the canonical form
+/// of every proper prefix of length ≥ 2. A reference to `a::b::c` is also a
+/// use of `a::b` — `Type::assoc_fn()` uses `Type`, `module::item` uses
+/// `module` — so reverse indexes built from references credit each prefix
+/// too. Length-1 prefixes (bare crate names) are skipped: crate-level
+/// reference data lives in `references_by_crate`.
+fn canonical_with_prefixes(
+    re_exports: &re_export::ReExportIndex,
+    path: &ResolvedPath,
+) -> Vec<ResolvedPath> {
+    let segments = path.segments();
+    let mut out = Vec::with_capacity(segments.len().max(2) - 1);
+    out.push(re_exports.canonical(path));
+    for len in 2..segments.len() {
+        out.push(re_exports.canonical(&ResolvedPath::new(segments[..len].to_vec())));
+    }
+    out
 }
 
 fn collect_macro_implicit_refs(module: &Module, out: &mut std::collections::HashSet<ResolvedPath>) {

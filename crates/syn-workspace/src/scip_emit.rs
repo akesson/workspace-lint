@@ -126,12 +126,16 @@ impl Workspace {
                         }
                     }
                     // References — every resolved, non-macro code occurrence.
-                    // `Component` / `MacroCall` (bare names a Phase B pass binds)
-                    // are out of the in-class set, like `Macro`.
+                    // `Component` / `MacroCall` / `GlobCandidate` (bare names
+                    // a Phase B pass binds) are out of the in-class set, like
+                    // `Macro`.
                     for occ in &module.occurrences {
                         if matches!(
                             occ.origin,
-                            Origin::Macro | Origin::Component | Origin::MacroCall
+                            Origin::Macro
+                                | Origin::Component
+                                | Origin::MacroCall
+                                | Origin::GlobCandidate
                         ) {
                             continue;
                         }

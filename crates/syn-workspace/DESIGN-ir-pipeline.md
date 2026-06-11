@@ -427,3 +427,76 @@ limits, by design:
   syntax that needs type inference), `#[cfg_attr]` / `include!` path resolution,
   external-crate glob exports (need rustdoc JSON), block doc comments (`/** … */`),
   trait dispatch via `dyn`/generics, and `#[derive(...)]`-driven uses.
+
+## 13. Reference-evidence tiers: resolving vs. asserting plugins (design)
+
+Status: **design — not yet implemented.** Motivated by the 2026-06-11
+own-workspace audit: after the increment-4 core fixes, every remaining
+`unused-deps` false positive came from *macro-contract* knowledge the resolver
+can't parse — `#[derive(EnumString)]` expanding to code that references
+`strum`, `#[serde(with = "::serde_with::…")]` naming a path inside a string
+literal, `#[wasm_bindgen_test]` requiring `wasm-bindgen` at expansion time, the
+`md-5` package exposing a `md5` lib target. Each is fixable, but **not by
+parsing more syntax** — only by *asserting* a contract. That is a different
+kind of evidence than the `rsx!` lowerer produces, and conflating them would
+rot the precision story. So: name the tiers, give every reference edge a
+provenance, and hold each tier to its own contract.
+
+**Tier R — resolving (evidence: parsed syntax).** What exists today.
+- *R1, Phase A `MacroLowerer`* (§3): parses the actual macro body with the real
+  grammar (`dioxus-rsx`), emits span-carrying occurrences. Contract: a wrong
+  occurrence is a **bug**; structured output is fixture- and corpus-gated.
+- *R2, Phase B `ResolvePass`* (§4): binds captured-but-unresolved names against
+  the resolved model (`MacroCallPass`, `GlobImportPass`,
+  `DioxusComponentPass`). Contract: by-name binding may **over-link, only in
+  the FP-safe direction** (suppresses findings, never creates them), with the
+  tradeoff documented per pass; origins excluded from the SCIP projection.
+
+**Tier H — asserting (evidence: a declared upstream contract).** The new tier.
+An assertion says "when trigger X appears, refs Y exist", citing the upstream
+crate's documented behavior — a *vendored* `expansion_uses!`, exactly the
+shape the user-facing `[[macros.external]]` config already has. Sub-kinds:
+- *H1, expansion assertions*: derive/attribute/macro name → implied crate or
+  item refs. `EnumString|Display|…` (strum_macros) → `strum`;
+  `#[wasm_bindgen_test]` → `wasm_bindgen`; `#[tokio::main]` →
+  `tokio::runtime`.
+- *H2, string-path assertions*: an attribute whose **value is a path by the
+  framework's contract** — `#[serde(with = "…")]`, `#[serde(crate = "…")]`.
+  The trigger names the attribute key; the value is parsed as a path.
+- *H3, manifest assertions*: knowledge about dep naming, not code —
+  separator-insensitive dep matching (`md-5` ↔ `md5::…`) inside the dep lint.
+
+**One mechanism, three sources.** Built-in H rules, user `[[macros.external]]`
+entries, and in-source `expansion_uses!` / comment directives are the same
+concept at three ownership levels. Implementation: generalize the config shape
+into a `UsageAssertion { id, trigger, implies }` model; built-ins ship as a
+static data table (no code per rule). Application is **trigger-narrowed**: an
+assertion fires only in modules where its trigger actually appears (derive
+list, attribute path, macro invocation), emitting occurrences with
+`Origin::Asserted { rule }` *at the trigger's span* — which also delivers the
+long-promised narrowing of the Layer-3 workspace-wide broadcast, and gives
+every suppression an addressable site.
+
+**Traceability invariants** (what keeps the tiers honest):
+1. **Provenance everywhere.** Every reference edge carries its mechanism:
+   `Origin` for occurrences (extended with `Asserted{rule}`), a provenance id
+   on `ContributedRef`. A future `--explain <dep|item>` walks from a would-be
+   finding to the evidence that suppressed it ("used: asserted by
+   `strum-derive` at src/html_tag.rs:3").
+2. **Registry with forcing function.** Each built-in rule = `{id, trigger,
+   implies, upstream citation, guarding fixture}`. A coverage test asserts
+   every rule has its `true_negatives` fixture (the `LintId::ALL` ↔
+   `messages::scenarios()` pattern). A rule that can't cite an upstream
+   contract doesn't ship — it's config, not a built-in.
+3. **Tier contracts in CI.** R1 stays SCIP-diffable; R2/H origins stay out of
+   the SCIP projection so the precision gate measures only parsed evidence.
+   Removing a wrong H rule is always correct; "patching" one (making it
+   conditional) means it was really R-shaped and should be promoted.
+4. **Assertions never create findings.** All H evidence flows into reference
+   sets only — it can suppress an unused-finding, never trigger one. (Same
+   FP-safe direction R2 already commits to.)
+
+Out of scope for tier H: `cargo-husky`-style side-effect-only deps (no code
+contract to assert — that's the `[unused-deps] ignore` knob's job) and
+trait-method dispatch (`.context()` → `anyhow`), which no assertion can see —
+that's the SCIP-backend option's territory, not a plugin's.

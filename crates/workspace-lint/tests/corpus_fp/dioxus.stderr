@@ -1138,19 +1138,14 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_deps)]` on by default
 
-warning: 3 possibly unused dependencies in packages/playwright-tests/wasm-split-harness/Cargo.toml
+warning: 2 possibly unused dependencies in packages/playwright-tests/wasm-split-harness/Cargo.toml
  --> packages/playwright-tests/wasm-split-harness/Cargo.toml:1:1
   |
-  = help: [dependencies] dioxus-router
   = help: [dependencies] getrandom
   = help: [dependencies] wasm-bindgen-futures
   = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
   = note: verify by removing the dep and running `cargo build --all-targets`
   = note: if the build breaks, add the dep to [unused-deps] ignore in your config
-help: remove unused dependency `dioxus-router`
-  |
-10 - …
-  |
 help: remove unused dependency `getrandom`
   |
 29 - …
@@ -1361,11 +1356,10 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_deps)]` on by default
 
-warning: 6 possibly unused dependencies in Cargo.toml
+warning: 5 possibly unused dependencies in Cargo.toml
  --> /Cargo.toml:1:1
   |
   = help: [dev-dependencies] anyhow
-  = help: [dev-dependencies] dioxus-stores
   = help: [dev-dependencies] form_urlencoded
   = help: [dev-dependencies] getrandom
   = help: [dependencies] wasm-splitter
@@ -1376,10 +1370,6 @@ warning: 6 possibly unused dependencies in Cargo.toml
 help: remove unused dependency `anyhow`
   |
 472 - …
-  |
-help: remove unused dependency `dioxus-stores`
-  |
-462 - …
   |
 help: remove unused dependency `form_urlencoded`
   |
@@ -1399,22 +1389,6 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_deps)]` on by default
 
-warning: pub enum `Component` in crate `dioxus_core` appears unused — consider removing
- --> <TMP>/packages/core/src/suspense/component.rs:251:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-251 - <existing>
-251 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-251 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
 warning: pub macro `eq_impls` in crate `dioxus_signals` appears unused — consider removing
  --> <TMP>/packages/signals/src/impls.rs:269:1
   |
@@ -1423,22 +1397,6 @@ warning: pub macro `eq_impls` in crate `dioxus_signals` appears unused — consi
 help: if intentional, silence with:
   |
 269 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub type `WebSocketStream` in crate `dioxus_fullstack` appears unused — consider removing
- --> <TMP>/packages/fullstack/src/payloads/websocket.rs:1286:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-1286 - <existing>
-1286 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-1286 + workspace_lint::expect!(unused_pub);
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
@@ -1650,102 +1608,6 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-warning: pub struct `PermissionsConfig` in crate `dioxus_cli` appears unused — consider removing
- --> <TMP>/packages/cli/src/config/manifest.rs:32:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-32 - <existing>
-32 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-32 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub struct `DeepLinkConfig` in crate `dioxus_cli` appears unused — consider removing
- --> <TMP>/packages/cli/src/config/manifest.rs:135:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-135 - <existing>
-135 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-135 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub struct `BackgroundConfig` in crate `dioxus_cli` appears unused — consider removing
- --> <TMP>/packages/cli/src/config/manifest.rs:170:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-170 - <existing>
-170 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-170 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub struct `IosConfig` in crate `dioxus_cli` appears unused — consider removing
- --> <TMP>/packages/cli/src/config/manifest.rs:286:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-286 - <existing>
-286 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-286 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub struct `AndroidConfig` in crate `dioxus_cli` appears unused — consider removing
- --> <TMP>/packages/cli/src/config/manifest.rs:544:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-544 - <existing>
-544 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-544 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub struct `MacosConfig` in crate `dioxus_cli` appears unused — consider removing
- --> <TMP>/packages/cli/src/config/manifest.rs:812:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-812 - <existing>
-812 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-812 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
 warning: pub struct `WindowsConfig` in crate `dioxus_cli` appears unused — consider removing
  --> <TMP>/packages/cli/src/config/manifest.rs:1040:1
   |
@@ -1775,22 +1637,6 @@ help: tighten to `pub(crate)`
 help: if intentional, silence with:
   |
 1310 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
-
-warning: pub fn `generate_manifest_schema` in crate `dioxus_cli` appears unused — consider removing
- --> <TMP>/packages/cli/src/config/manifest.rs:1451:1
-  |
-  = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
-help: tighten to `pub(crate)`
-  |
-1451 - <existing>
-1451 + pub(crate)
-  |
-help: if intentional, silence with:
-  |
-1451 + workspace_lint::expect!(unused_pub);
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
@@ -1890,4 +1736,4 @@ help: if intentional, silence with:
   |
   = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
-workspace-lint: generated 83 warnings (run `workspace-lint --fix` to apply 154 suggestions)
+workspace-lint: generated 74 warnings (run `workspace-lint --fix` to apply 152 suggestions)

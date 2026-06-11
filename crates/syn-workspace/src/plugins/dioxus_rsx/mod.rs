@@ -243,6 +243,9 @@ impl ResolvePass for DioxusComponentPass {
                             out.push(ContributedRef {
                                 from: from.clone(),
                                 to: (*canonical).clone(),
+                                // Component usage sites are rsx!/route
+                                // captures; target provenance isn't tracked.
+                                via_sibling_target: false,
                             });
                         }
                     }

@@ -1,3 +1,7 @@
+# workspace-lint: expect(crate-size)
+# 6118 vs the 6000 budget after the two core Phase B passes (GlobImportPass +
+# sibling-target reference channel) landed. If the resolver grows further,
+# split (e.g. plugins/ into a sibling crate) instead of widening this.
 [package]
 name = "syn-workspace"
 version = "0.4.0"

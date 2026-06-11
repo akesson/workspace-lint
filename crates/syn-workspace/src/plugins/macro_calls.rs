@@ -68,6 +68,9 @@ impl ResolvePass for MacroCallPass {
                             out.push(ContributedRef {
                                 from: from.clone(),
                                 to: (*canonical).clone(),
+                                // Macros aren't `pub`-narrowable items, so
+                                // sibling-target provenance buys nothing here.
+                                via_sibling_target: false,
                             });
                         }
                     }

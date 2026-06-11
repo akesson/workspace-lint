@@ -157,8 +157,10 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
     JavaScript — invisible to a Rust resolver.
   - **`ignore`-doc / genuinely-unused (true positives).** `dioxus`'s `tokio`
     dev-dep appears only in a `rust,ignore` doc fence (deliberately not scanned);
-    `dioxus_core::Component` (a `suspense` internal) and the `dioxus_cli` platform
-    config structs have no workspace referrer. Left flagged — real lint wins.
+    the `dioxus_cli` platform config structs and `dioxus_core::Component` were
+    in this bucket until Phase 4 increment 4 (below) — their references were
+    real but invisible (test-module glob imports; an own-variant `pub use`
+    path) — leaving the genuinely-referrer-less items still flagged.
 
 > **History (Phase 3, increment 8 — feature-plumbing deps):** the last corpus FP,
 > regex's `aho-corasick`, was closed. `Manifest::feature_dep_refs`
@@ -256,6 +258,49 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > `#[derive(Routable)]` enum whose `pub fn` components have no `rsx!` site, so only
 > the route capture can link them) plus capture unit tests in `routable.rs`.
 
+> **History (Phase 4, increment 4 — glob-import binding, prefix crediting,
+> sibling-target classification, `{self as alias}`):** an own-workspace audit
+> (run against this repo author's seven sibling projects, 2026-06-11) surfaced
+> three resolver gaps the library-shaped corpus structurally couldn't — their
+> reference patterns (bench/test-module glob imports) produce no `unused-pub`
+> signal on crates whose items are consumed everywhere. All three fixed in
+> `syn-workspace`, plus one classification fix they exposed:
+> - **Glob-import bare names** (`use my_lib::*;` in a bench, `use super::*;`
+>   in a `#[cfg(test)]` module, then bare `helper()` / `helpers::run()`): Tier 1
+>   deliberately emits no bindings for globs, so these references were
+>   invisible. Phase A now captures unmatched bare idents in glob-importing
+>   modules as `Origin::GlobCandidate` (keyword/primitive/position-filtered,
+>   deduped per module); the core Phase B `GlobImportPass`
+>   (`syn-workspace/src/plugins/glob_imports.rs`) binds them — and
+>   multi-segment runs whose root a glob brought into scope — against the glob
+>   target's items/submodules/re-exports when the target is a workspace module.
+>   FP-safe by-name binding, mirroring `MacroCallPass`; excluded from the SCIP
+>   projection.
+> - **Associated-path prefix crediting**: a reference to `a::b::c` now also
+>   credits `a::b` in `referring_crates` — `Type::assoc_fn()` is a use of
+>   `Type`, `module::item` of `module`. This is what resolved
+>   `dioxus_core::Component` (its own variant is `pub use`d one line below the
+>   enum — a real reference the exact-path index missed).
+> - **`use path::{self as alias}`**: the `Rename` branch bound a bogus
+>   `path::self`; it now binds the module under the alias, like the unrenamed
+>   `{self, …}` form fixed in Phase 3.
+> - **Sibling-target classification** (exposed by the glob fix): references
+>   from a package's *sibling targets* (integration tests, benches, examples,
+>   non-primary bins) now classify as cross-crate, not intra-crate — those
+>   targets link the lib as an external crate, so the `pub(crate)` advice
+>   would break them (`Workspace::referenced_from_sibling_target`).
+>
+> The re-bless removed nine dioxus `unused-pub` findings (the `dioxus_cli`
+> config structs + `generate_manifest_schema`, referenced from `#[cfg(test)]`
+> glob-importing modules — now IntraCrate, suppressed by this audit's
+> `suppress-intra-crate`; `dioxus_core::Component` and
+> `dioxus_fullstack::WebSocketStream` via prefix crediting) and two
+> `unused-deps` names (`dioxus-router`, `dioxus-stores` — used only through
+> prelude-glob bare names). Each removal was re-verified against the source as
+> a genuine reference. Guarded by
+> `unused-pub/true_negatives/{used_via_group_self_rename,used_via_assoc_fn_path,used_via_glob_import_in_bench,used_via_glob_import_test_mod}`
+> plus resolver unit tests in `use_tree.rs`.
+
 > **History (target-specific dependency tables):** `unused-deps` (and
 > `centralized-deps`) now enumerate `[target.<cfg>.dependencies]` /
 > `dev-dependencies` / `build-dependencies`, closing a silent false *negative* —
@@ -299,8 +344,10 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 - **Known-FP classes are now framework-scale and structural.** Every resolver FP
   class found to date is closed: the feature-plumbing-only-dependency FP via the
   `[features]` table (increment 8); the intra-crate exported-macro FP via
-  `MacroCallPass` (Phase 4 increment 2); and the `#[derive(Routable)]` router
-  cross-linking FP via the route-component capture (Phase 4 increment 3). What
+  `MacroCallPass` (Phase 4 increment 2); the `#[derive(Routable)]` router
+  cross-linking FP via the route-component capture (Phase 4 increment 3); and
+  the glob-import / assoc-path-prefix / `{self as alias}` trio via
+  `GlobImportPass` + prefix crediting (Phase 4 increment 4). What
   `dioxus` documents above are *structural non-goals* — macro expansion,
   trait-method and re-export-path attribution, derive-via-re-export, JS interop —
   each requiring semantics (type/trait solving, macro expansion) the resolver
