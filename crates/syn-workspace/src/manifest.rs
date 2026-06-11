@@ -274,6 +274,39 @@ impl Manifest {
         table.get("version")?.as_str()
     }
 
+    /// The package a dependency entry actually resolves to, when the entry
+    /// renames it via `package = "…"` — `foo = { package = "bar" }` or a
+    /// `[section.foo]` block with a `package` key. Returns `None` when the
+    /// entry carries no rename (the caller then uses the dep key itself as the
+    /// package name) or when the dep is absent.
+    ///
+    /// Does **not** follow `workspace = true` inheritance — a member entry may
+    /// inherit a rename declared in the root `[workspace.dependencies]`. Detect
+    /// that with [`Manifest::dep_uses_workspace`] and resolve against
+    /// [`crate::Workspace::root_manifest`]'s
+    /// [`DepSection::WorkspaceDependencies`].
+    pub fn dep_package_name(&self, section: DepSection, dep_name: &str) -> Option<String> {
+        let table = self
+            .section_table(section)?
+            .get(dep_name)?
+            .as_table_like()?;
+        Some(table.get("package")?.as_str()?.to_string())
+    }
+
+    /// `true` if the dep entry inherits from `[workspace.dependencies]` via
+    /// `foo.workspace = true` / `foo = { workspace = true }`. Such an entry may
+    /// pick up a `package = "…"` rename declared centrally — see
+    /// [`Manifest::dep_package_name`].
+    pub fn dep_uses_workspace(&self, section: DepSection, dep_name: &str) -> bool {
+        self.section_table(section)
+            .and_then(|t| t.get(dep_name))
+            .and_then(Item::as_table_like)
+            .and_then(|t| t.get("workspace"))
+            .and_then(Item::as_value)
+            .and_then(toml_edit::Value::as_bool)
+            .unwrap_or(false)
+    }
+
     /// This crate's `[package] publish` declaration. See [`Publish`] for why
     /// this reads the parsed document instead of relying on `cargo metadata`.
     /// Returns [`Publish::Inherited`] for `publish.workspace = true`; resolve
@@ -613,6 +646,45 @@ mod tests {
                 .feature_dep_refs()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn dep_package_name_reads_inline_table_rename() {
+        let m = parse("[dependencies]\nfoo = { package = \"bar\", version = \"1\" }\n");
+        assert_eq!(
+            m.dep_package_name(DepSection::Dependencies, "foo")
+                .as_deref(),
+            Some("bar")
+        );
+    }
+
+    #[test]
+    fn dep_package_name_reads_block_rename() {
+        let m = parse("[dependencies.foo]\npackage = \"bar\"\nversion = \"1\"\n");
+        assert_eq!(
+            m.dep_package_name(DepSection::Dependencies, "foo")
+                .as_deref(),
+            Some("bar")
+        );
+    }
+
+    #[test]
+    fn dep_package_name_none_without_rename() {
+        let m = parse("[dependencies]\nserde = \"1\"\nfoo = { version = \"1\" }\n");
+        assert_eq!(m.dep_package_name(DepSection::Dependencies, "serde"), None);
+        assert_eq!(m.dep_package_name(DepSection::Dependencies, "foo"), None);
+        assert_eq!(m.dep_package_name(DepSection::Dependencies, "absent"), None);
+    }
+
+    #[test]
+    fn dep_uses_workspace_detects_inheritance() {
+        let m = parse(
+            "[dependencies]\nfoo.workspace = true\nbar = { workspace = true }\nbaz = \"1\"\n",
+        );
+        assert!(m.dep_uses_workspace(DepSection::Dependencies, "foo"));
+        assert!(m.dep_uses_workspace(DepSection::Dependencies, "bar"));
+        assert!(!m.dep_uses_workspace(DepSection::Dependencies, "baz"));
+        assert!(!m.dep_uses_workspace(DepSection::Dependencies, "absent"));
     }
 
     #[test]

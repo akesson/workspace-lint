@@ -47,6 +47,17 @@ const FIXTURES: &[Fixture] = &[
         out: "crates/syn-workspace/tests/corpus_oracle/itertools",
         kind: FixtureKind::SingleCrate { member: "itertools" },
     },
+    // Deep `--fix` verification fixture: a real `rust-analyzer scip` index over
+    // the fixture workspace, committed so the hermetic test
+    // (`crates/workspace-lint/tests/fix_fixtures.rs`, driven via `--scip-index`)
+    // needs no rust-analyzer in CI. Path-dep-only, so the bless resolves offline.
+    Fixture {
+        source: "crates/workspace-lint/tests/fixtures/fix__deep_unused_pub/input",
+        out: "crates/workspace-lint/tests/fixtures/fix__deep_unused_pub",
+        kind: FixtureKind::RawScip {
+            index_name: "index.scip",
+        },
+    },
 ];
 
 struct Fixture {
@@ -68,6 +79,11 @@ enum FixtureKind {
     /// (re-export blindness). `member` is the crate's code-form name; every SCIP
     /// document belongs to it.
     SingleCrate { member: &'static str },
+    /// Deep `--fix` fixture: write the **raw `rust-analyzer scip` index**
+    /// (scrubbed of the machine-specific `project_root` / tool version for a
+    /// deterministic re-bless) so `workspace-lint`'s `--fix --scip-index` test
+    /// runs hermetically. `index_name` is the output file under the fixture dir.
+    RawScip { index_name: &'static str },
 }
 
 fn main() -> Result<()> {
@@ -89,7 +105,34 @@ fn bless(repo: &Path, fx: &Fixture) -> Result<()> {
             bless_workspace(repo, ws, expected, rustdoc_crate)
         }
         FixtureKind::SingleCrate { member } => bless_single_crate(repo, ws, expected, member),
+        FixtureKind::RawScip { index_name } => bless_raw_scip(repo, ws, expected, index_name),
     }
+}
+
+/// Write a scrubbed raw SCIP index for a deep-`--fix` fixture: run
+/// `rust-analyzer scip` over the fixture workspace, blank the machine-specific
+/// `metadata.project_root` and `tool_info.version` (so a re-bless on another
+/// machine is byte-identical), and serialize the protobuf back out. The
+/// `workspace-lint` loader reads only per-document relative paths + symbols, so
+/// blanking those metadata fields is safe.
+fn bless_raw_scip(repo: &Path, ws: PathBuf, out_dir: PathBuf, index_name: &str) -> Result<()> {
+    let scip_path = gen_scip(&ws)?;
+    let mut index = Index::parse_from_bytes(&std::fs::read(&scip_path)?).context("parse SCIP")?;
+    ensure!(
+        !index.documents.is_empty(),
+        "rust-analyzer scip produced no documents — did it fail to load the fixture workspace?"
+    );
+    if let Some(meta) = index.metadata.as_mut() {
+        meta.project_root = String::new();
+        if let Some(tool) = meta.tool_info.as_mut() {
+            tool.version = String::new();
+        }
+    }
+    let bytes = index.write_to_bytes().context("serialize scrubbed SCIP")?;
+    let out = out_dir.join(index_name);
+    std::fs::write(&out, bytes)?;
+    println!("  wrote {} ({} documents)", rel(repo, &out), index.documents.len());
+    Ok(())
 }
 
 /// Full hand-authored fixture: rustdoc (public + private) + SCIP (set-level,

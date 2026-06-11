@@ -377,6 +377,19 @@ normalization specifics are §8. Complementary oracles: rustdoc JSON for the pub
 item/visibility graph (committed net in `tests/oracle.rs`) and cargo-udeps as a
 compiler-backed `unused-deps` oracle (noted, not core).
 
+**Same oracle, at `--fix` time (implemented).** The consumer `workspace-lint`
+now runs this differential at `--fix` time too: `src/deep/` ingests a live
+`rust-analyzer scip` index and uses it — same one-directional doctrine — to
+*disprove* `unused-deps` / `unused-pub` findings before acting on them, writing
+an `expect` directive for a disproved one instead of applying the structural
+fix (gated on a clean git tree). Normalization is ported from `oracle-bless`
+(`parse_symbol`, the `impl#[T]m → T::m` collapse). Observed in practice: the
+resolver is precise enough that most real false positives left are method/macro
+attributions SCIP *also* can't pin to the right symbol (trait-via-method
+dispatch resolves to the `impl`, not the trait; macro expansions don't surface
+in the caller's occurrences), so deep verification mainly disproves cross-crate
+*type* uses (caught via the impl-method prefix match) and otherwise confirms.
+
 ## 11. Testing strategy
 
 Four altitudes, cheapest/most-precise at the base:

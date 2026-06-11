@@ -24,9 +24,17 @@ fs-err = "3"
 globset = "0.4"
 ignore = "0.4"
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# Needed by the `protobuf::Message` trait to decode a `rust-analyzer scip`
+# index for `--fix`'s deep verification. Kept open (^3) so it tracks whatever
+# protobuf `scip` itself pins (same call `tools/oracle-bless` makes). Binary-only
+# — the published library crates never pull it.
+protobuf = "3"
 quote = "1"
 regex = "1"
 rustfix = "0.9"
+# SCIP index parser for `--fix` deep verification (binary-only; the published
+# `syn-workspace` library stays scip-free, emitting its own `ScipOccurrence`s).
+scip = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shell-words = "1"

@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod deep;
 #[allow(dead_code)]
 // Diagnostic types include a few helpers (some Applicability variants,
 // clean_path/clean_pathbuf) that aren't yet referenced; upcoming steps
@@ -9,6 +10,7 @@ mod diagnostic;
 mod directives;
 mod expand;
 mod fix;
+mod git;
 #[allow(dead_code)]
 // `LintId::ALL`, `FIXTURABLE_LINTS`, and the `Lint::id()` trait method are
 // referenced from the registry-coverage and scenario tests, not the binary
@@ -40,6 +42,11 @@ fn main() {
 
     match cli.command {
         None => {
+            // `--fix` mutates tracked files in place; gate on a clean working
+            // tree up front so the whole change stays reviewable as one diff.
+            if cli.fix {
+                git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
+            }
             let (config, config_diags) = config::load();
             let (mut diagnostics, workspace) = run_all(&config);
             // Config-validation findings join the stream before suppression
@@ -60,7 +67,12 @@ fn main() {
             apply_suppression(workspace.as_ref(), &mut diagnostics);
             apply_lint_levels(&config, workspace.as_ref(), &mut diagnostics);
             if cli.fix {
-                fix::run(&diagnostics);
+                apply_fix(
+                    cli.no_deep,
+                    cli.scip_index.as_deref(),
+                    &mut diagnostics,
+                    workspace.as_ref(),
+                );
             }
             report_and_exit(diagnostics, format);
         }
@@ -73,6 +85,9 @@ fn main() {
             }
         }
         Some(Commands::Check { rule }) => {
+            if cli.fix {
+                git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
+            }
             // For single-check runs we still honor the `[lints]` table if a
             // config file exists, so `workspace-lint check file-size` and the
             // default run agree on severity.
@@ -83,7 +98,12 @@ fn main() {
                 apply_lint_levels(cfg, workspace.as_ref(), &mut diagnostics);
             }
             if cli.fix {
-                fix::run(&diagnostics);
+                apply_fix(
+                    cli.no_deep,
+                    cli.scip_index.as_deref(),
+                    &mut diagnostics,
+                    workspace.as_ref(),
+                );
             }
             report_and_exit(diagnostics, format);
         }
@@ -97,6 +117,27 @@ fn main() {
             expand::run(&ec);
         }
     }
+}
+
+/// The `--fix` action shared by the default and `check` runs. Unless
+/// `--no-deep` is set, deep verification (rust-analyzer SCIP) runs first: it
+/// downgrades any disproved structural suggestion (so `fix::run` skips it) and
+/// returns the `expect` directive insertions to write for those false
+/// positives. `fix::run` then applies the surviving structural fixes plus those
+/// insertions in one pass. The clean-tree gate already ran at the call site, so
+/// every change here lands in a reviewable working tree.
+fn apply_fix(
+    no_deep: bool,
+    scip_index: Option<&std::path::Path>,
+    diagnostics: &mut [Diagnostic],
+    workspace: Option<&Workspace>,
+) {
+    let inserts = if no_deep {
+        Vec::new()
+    } else {
+        deep::verify_findings(diagnostics, workspace, scip_index)
+    };
+    fix::run(diagnostics, &inserts);
 }
 
 /// Apply the lint-level cascade to the collected diagnostics: **drop** any

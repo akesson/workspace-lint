@@ -1,16 +1,21 @@
-//! Apply `MachineApplicable` structural suggestions to source files.
+//! Apply `MachineApplicable` structural suggestions (and deep-verification
+//! directive insertions) to source files.
 //!
-//! `--fix` only applies real per-lint rewrites — byte-range replacements
-//! produced by lints that know how to resolve their own findings:
-//! centralized-deps (`serde = "1"` → `serde = { workspace = true }`),
-//! unused-deps (line deletion), visibility (`pub` → `pub(crate)`),
-//! unused-pub (delete-or-tighten). The lint's `check` function attaches
-//! these to `Diagnostic.suggestions` with `Applicability::MachineApplicable`.
+//! `--fix` applies real per-lint rewrites — byte-range replacements produced by
+//! lints that know how to resolve their own findings: centralized-deps
+//! (`serde = "1"` → `serde = { workspace = true }`), unused-deps (line
+//! deletion), visibility (`pub` → `pub(crate)`), unused-pub
+//! (delete-or-tighten). The lint's `check` function attaches these to
+//! `Diagnostic.suggestions` with `Applicability::MachineApplicable`.
 //!
-//! Diagnostics without a structural suggestion are left untouched. The
-//! human/JSON/github renderers still print the diagnostic's "if intentional,
-//! silence with:" hint for a human to paste — `--fix` will never edit a
-//! file to suppress a diagnostic it didn't actually fix.
+//! It also writes **suppression directives — but only for findings deep
+//! verification (rust-analyzer SCIP) disproved** (see [`crate::deep`]): those
+//! arrive as the `inserts` argument to [`run`], a deliberate exception to the
+//! old "never silence on your behalf" rule. The exception is safe because
+//! `--fix` requires a clean git working tree ([`crate::git`]), so every
+//! written directive lands in a reviewable `git diff`. A diagnostic the deep
+//! pass *confirmed* (or that never ran through it) is still never silenced —
+//! the renderers print its "if intentional, silence with:" hint for a human.
 //!
 //! Correctness properties this module maintains:
 //!
@@ -30,9 +35,17 @@ use fs_err as fs;
 
 use crate::diagnostic::{Applicability, Diagnostic, Suggestion};
 
-/// Apply machine-applicable structural suggestions to disk. Returns the
-/// count of files modified.
-pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
+/// Apply machine-applicable structural suggestions to disk, plus any
+/// `inserts` — zero-width directive insertions produced by deep verification
+/// for findings rust-analyzer disproved. Returns the count of files modified.
+///
+/// `inserts` bypass the `byte_end > byte_start` filter that excludes the
+/// degenerate silence-hint suggestion from structural fixes: an insertion is
+/// *deliberately* zero-width (it adds a line without replacing anything). They
+/// merge into the same per-file apply, so the reverse-byte-order application
+/// interleaves an insertion above one finding with a structural fix to another
+/// (different findings never share a span; a genuine overlap still aborts).
+pub(crate) fn run(diagnostics: &[Diagnostic], inserts: &[Suggestion]) -> usize {
     let mut structural_count = 0usize;
     let mut candidates: Vec<Suggestion> = Vec::new();
     for d in diagnostics {
@@ -45,15 +58,22 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
             }
         }
     }
+    candidates.extend(inserts.iter().cloned());
 
-    if structural_count == 0 {
+    if candidates.is_empty() {
         eprintln!("workspace-lint --fix: no structural fixes available");
         return 0;
     }
 
+    let insert_count = inserts.len();
     eprintln!(
-        "workspace-lint --fix: applying {structural_count} structural fix{}",
-        if structural_count == 1 { "" } else { "es" }
+        "workspace-lint --fix: applying {structural_count} structural fix{}{}",
+        if structural_count == 1 { "" } else { "es" },
+        match insert_count {
+            0 => String::new(),
+            1 => " + 1 expect directive".to_string(),
+            n => format!(" + {n} expect directives"),
+        },
     );
 
     let mut by_file: BTreeMap<std::path::PathBuf, Vec<Suggestion>> = BTreeMap::new();
@@ -210,6 +230,7 @@ mod tests {
                 message: "tighten".into(),
                 replacement: replacement.into(),
                 applicability: Applicability::MachineApplicable,
+                evidence: None,
             }],
             silence_anchor: SilenceAnchor::File {
                 file: path.to_path_buf(),
@@ -220,7 +241,7 @@ mod tests {
 
     #[test]
     fn fix_with_no_diagnostics_is_a_noop() {
-        let modified = run(&[]);
+        let modified = run(&[], &[]);
         assert_eq!(modified, 0);
     }
 
@@ -246,7 +267,7 @@ mod tests {
             level_is_explicit: false,
         };
 
-        let modified = run(&[d]);
+        let modified = run(&[d], &[]);
         assert_eq!(modified, 0);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
     }
@@ -269,6 +290,7 @@ mod tests {
             message: "tighten".into(),
             replacement: "pub(crate)".into(),
             applicability: Applicability::MachineApplicable,
+            evidence: None,
         };
         let modified = apply_to_file(&p, std::slice::from_ref(&s)).unwrap();
         assert!(modified);
@@ -299,7 +321,7 @@ mod tests {
             byte_end: 10,
         };
         let d = structural_diag(&p, span, "pub(crate)");
-        let modified = run(std::slice::from_ref(&d));
+        let modified = run(std::slice::from_ref(&d), &[]);
         assert_eq!(modified, 0, "no-op fix should not touch the file");
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
@@ -325,6 +347,7 @@ mod tests {
             message: "a".into(),
             replacement: "X".into(),
             applicability: Applicability::MachineApplicable,
+            evidence: None,
         };
         let mut b = a.clone();
         b.span.byte_start = 3;

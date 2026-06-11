@@ -11,8 +11,12 @@ fs-err = { workspace = true }
 globset = { workspace = true }
 ignore = { workspace = true }
 proc-macro2 = { workspace = true }
+# scip + protobuf: decode a `rust-analyzer scip` index for `--fix`'s deep
+# verification (see src/deep/). Binary-only — kept off the published crates.
+protobuf = { workspace = true }
 regex = { workspace = true }
 rustfix = { workspace = true }
+scip = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shell-words = { workspace = true }

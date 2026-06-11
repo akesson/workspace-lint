@@ -7,6 +7,13 @@ follows [SemVer](https://semver.org/).
 ## [Unreleased] — 0.4.0
 
 ### Added
+- `Manifest::dep_package_name(section, dep_name)` and
+  `Manifest::dep_uses_workspace(section, dep_name)` — resolve a dependency
+  entry's real package behind a `package = "…"` rename, and detect
+  `workspace = true` inheritance (so a centrally-declared rename can be
+  followed through `root_manifest()`). The deep `--fix` SCIP verifier needs the
+  true package name because rust-analyzer's symbols carry it, not the local
+  rename alias. Non-breaking additions.
 - **Tier-H usage assertions** (`assertions` module): a built-in rule table
   (`builtin_assertions()` → `UsageAssertion` / `Trigger`) that, when a syntactic
   trigger appears (a strum derive, `#[wasm_bindgen_test]`, `#[serde(with = "…")]`),

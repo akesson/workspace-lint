@@ -176,15 +176,16 @@ impl SuppressionMap {
 }
 
 /// `true` if `directive` is at the same scope as `diag`, a wider one
-/// containing it, or (for line-level TOML directives) within
-/// `LOOKBACK_FORWARD` lines above the diagnostic.
+/// containing it, or (for line-level directives) within `LOOKBACK_FORWARD`
+/// lines above the diagnostic. Path comparisons are base-insensitive — see
+/// [`SilenceAnchor::contains`] / [`SilenceAnchor::same_file`].
 fn applies(directive: &SilenceAnchor, diag: &SilenceAnchor) -> bool {
     if directive.contains(diag) {
         return true;
     }
-    // Special case for TOML/Markdown: a comment directive *above* a dep
-    // line should still apply. Containment math doesn't capture that, so
-    // explicitly handle the line-near-line case.
+    // A line directive *above* the diagnostic (a comment above a dep line, or
+    // the `// workspace-lint: expect(...)` written above an item) still applies
+    // within the lookback window. Containment only catches the exact-line case.
     if let (
         SilenceAnchor::Line {
             file: f_dir,
@@ -195,7 +196,7 @@ fn applies(directive: &SilenceAnchor, diag: &SilenceAnchor) -> bool {
             line: l_diag,
         },
     ) = (directive, diag)
-        && f_dir == f_diag
+        && SilenceAnchor::same_file(f_dir, f_diag)
         && *l_diag >= *l_dir
         && *l_diag - *l_dir <= LOOKBACK_FORWARD
     {
@@ -379,6 +380,48 @@ mod tests {
         )]);
         let d = at_file("workspace-lint::file-size", "x", "crates/bar/src/lib.rs").build();
         assert!(!map.is_suppressed(&d));
+    }
+
+    #[test]
+    fn relative_directive_suppresses_absolute_diagnostic() {
+        // The directive scanner yields workspace-relative paths; `unused-pub`
+        // anchors with the resolver's absolute paths. They must still match.
+        let mut map = SuppressionMap::from_directives(vec![allow(
+            "unused-pub",
+            SilenceAnchor::Line {
+                file: PathBuf::from("crates/demo/src/lib.rs"),
+                line: 5,
+            },
+        )]);
+        let d = build_at_line(
+            "workspace-lint::unused-pub",
+            "x",
+            "/abs/wl/crates/demo/src/lib.rs",
+            5,
+        )
+        .build();
+        assert!(map.is_suppressed(&d));
+    }
+
+    #[test]
+    fn relative_comment_directive_above_absolute_item_suppresses() {
+        // The `--fix`-written form: a comment directive on line 4 (relative)
+        // suppresses the item finding on line 5 (absolute) via lookback.
+        let mut map = SuppressionMap::from_directives(vec![allow(
+            "unused-pub",
+            SilenceAnchor::Line {
+                file: PathBuf::from("crates/demo/src/lib.rs"),
+                line: 4,
+            },
+        )]);
+        let d = build_at_line(
+            "workspace-lint::unused-pub",
+            "x",
+            "/abs/wl/crates/demo/src/lib.rs",
+            5,
+        )
+        .build();
+        assert!(map.is_suppressed(&d));
     }
 
     #[test]

@@ -27,11 +27,11 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use syn_workspace::Workspace;
-use syn_workspace::manifest::{DeclaredDep, Manifest};
+use syn_workspace::manifest::{DeclaredDep, DepSection, Manifest};
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
-use crate::diagnostic::{Applicability, Span, Suggestion};
+use crate::diagnostic::{Applicability, Evidence, Span, Suggestion};
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
@@ -124,7 +124,14 @@ pub(crate) fn check(
                 entry.section.as_str(),
                 entry.original_name
             ));
-            if let Some(s) = build_delete_suggestion(manifest, entry) {
+            // Deep `--fix` verification matches SCIP symbols by the dep's
+            // *package* name (rust-analyzer carries the real package, not the
+            // `package = "…"` rename or the lib-name alias), so resolve it now.
+            let evidence = Evidence::DepUnused {
+                krate_code: krate.code_name(),
+                package_name: resolve_package_name(workspace, manifest, entry),
+            };
+            if let Some(s) = build_delete_suggestion(manifest, entry, Some(evidence)) {
                 builder = builder.suggestion(s);
             }
         }
@@ -146,7 +153,11 @@ pub(crate) fn check(
 /// and the multi-line forms — a wrapped inline table or a `[<section>.dep]`
 /// block — via the span locator. Returns `None` only if the entry can't be
 /// located at all.
-fn build_delete_suggestion(manifest: &Manifest, entry: &DeclaredDep) -> Option<Suggestion> {
+fn build_delete_suggestion(
+    manifest: &Manifest,
+    entry: &DeclaredDep,
+    evidence: Option<Evidence>,
+) -> Option<Suggestion> {
     let location = manifest
         .locate_dep(entry.section, &entry.original_name)
         .or_else(|| manifest.locate_dep_entry(entry.section, &entry.original_name))?;
@@ -176,7 +187,28 @@ fn build_delete_suggestion(manifest: &Manifest, entry: &DeclaredDep) -> Option<S
         message: format!("remove unused dependency `{}`", entry.original_name),
         replacement: String::new(),
         applicability: Applicability::MachineApplicable,
+        evidence,
     })
+}
+
+/// The package name a declared dep resolves to, for SCIP symbol matching.
+/// A `package = "…"` rename (local or inherited from the root
+/// `[workspace.dependencies]`) wins; otherwise the dep key itself is the
+/// package. rust-analyzer's SCIP symbols carry the real package name, so this
+/// — not the rename alias or a lib-name alias like `md-5`→`md5` — is what the
+/// deep verifier matches against.
+fn resolve_package_name(workspace: &Workspace, manifest: &Manifest, entry: &DeclaredDep) -> String {
+    if let Some(pkg) = manifest.dep_package_name(entry.section, &entry.original_name) {
+        return pkg;
+    }
+    if manifest.dep_uses_workspace(entry.section, &entry.original_name)
+        && let Some(pkg) = workspace
+            .root_manifest()
+            .dep_package_name(DepSection::WorkspaceDependencies, &entry.original_name)
+    {
+        return pkg;
+    }
+    entry.original_name.clone()
 }
 
 fn referenced_crate_names(workspace: &Workspace, krate: &syn_workspace::Crate) -> HashSet<String> {

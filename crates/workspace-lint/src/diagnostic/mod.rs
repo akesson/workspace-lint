@@ -90,6 +90,50 @@ pub(crate) struct Suggestion {
     pub message: String,
     pub replacement: String,
     pub applicability: Applicability,
+    /// Optional side-channel for `--fix`'s deep (rust-analyzer SCIP)
+    /// verification. Present on reference-evidence findings (`unused-deps`,
+    /// `unused-pub`) so the verifier can decide — per finding — whether the
+    /// resolver and rust-analyzer agree (apply the structural fix) or
+    /// disagree (write a suppression directive instead). `None` for every
+    /// other suggestion; ignored by all three renderers and by `fix::run`.
+    pub evidence: Option<Evidence>,
+}
+
+/// What a [`Suggestion`] asserts about a reference-evidence finding, so
+/// `--fix`'s deep pass can check it against the SCIP ground truth. Only
+/// attached to `MachineApplicable` suggestions (the ones `--fix` would act on).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Evidence {
+    /// An `unused-deps` finding: dependency `package_name` (the *resolved*
+    /// package name — `package = "…"` renames followed through) of crate
+    /// `krate_code` looks unreferenced. SCIP disproves it if any occurrence in
+    /// that crate's documents references a symbol in `package_name`.
+    DepUnused {
+        krate_code: String,
+        package_name: String,
+    },
+    /// An `unused-pub` finding: the item at canonical path `canonical`, owned
+    /// by crate `krate_code`, with the resolver's [`PubVerdict`]. SCIP
+    /// disproves it per the verdict's rule (see [`PubVerdict`]).
+    PubUnused {
+        krate_code: String,
+        canonical: Vec<String>,
+        verdict: PubVerdict,
+    },
+}
+
+/// The resolver's usage verdict for an `unused-pub` finding — selects what
+/// counts as a disproving SCIP reference. (`CrossCrate` items never produce a
+/// fix, so they're absent here.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PubVerdict {
+    /// Zero referrers found → the fix deletes the item. *Any* SCIP reference
+    /// to it (or to one of its methods) disproves the finding.
+    Unused,
+    /// Only same-crate referrers found → the fix tightens to `pub(crate)`.
+    /// Only a SCIP reference from a *different* crate (or a sibling target)
+    /// disproves it; a same-crate reference is consistent with tightening.
+    IntraCrate,
 }
 
 /// What "silencing this lint" means for a given diagnostic — the unit the
@@ -110,27 +154,44 @@ impl SilenceAnchor {
     /// `true` if `other` is the same anchor or a strictly narrower one
     /// contained inside `self`. Used by the suppression map to decide
     /// whether a directive applies to a diagnostic.
+    ///
+    /// File comparisons are **path-base-insensitive** ([`SilenceAnchor::same_file`]):
+    /// the directive scanner produces workspace-relative paths, but some lints
+    /// (notably `unused-pub`) anchor with the resolver's *absolute* paths, so a
+    /// directive on `crates/x/src/lib.rs` must still contain a diagnostic on
+    /// `/abs/…/crates/x/src/lib.rs`.
     pub fn contains(&self, other: &SilenceAnchor) -> bool {
         match (self, other) {
             (SilenceAnchor::Workspace, _) => true,
             (SilenceAnchor::Crate { manifest_dir }, SilenceAnchor::Crate { manifest_dir: o }) => {
-                manifest_dir == o
+                Self::same_file(manifest_dir, o)
             }
             (SilenceAnchor::Crate { manifest_dir }, SilenceAnchor::File { file })
             | (SilenceAnchor::Crate { manifest_dir }, SilenceAnchor::Line { file, .. }) => {
                 file.starts_with(manifest_dir)
             }
-            (SilenceAnchor::File { file }, SilenceAnchor::File { file: o }) => file == o,
-            (SilenceAnchor::File { file }, SilenceAnchor::Line { file: o, .. }) => file == o,
+            (SilenceAnchor::File { file }, SilenceAnchor::File { file: o }) => {
+                Self::same_file(file, o)
+            }
+            (SilenceAnchor::File { file }, SilenceAnchor::Line { file: o, .. }) => {
+                Self::same_file(file, o)
+            }
             (
                 SilenceAnchor::Line { file, line },
                 SilenceAnchor::Line {
                     file: o_file,
                     line: o_line,
                 },
-            ) => file == o_file && line == o_line,
+            ) => Self::same_file(file, o_file) && line == o_line,
             _ => false,
         }
+    }
+
+    /// Two anchor file paths name the same file despite possibly differing
+    /// bases: equal, or one is a whole-component suffix of the other (a
+    /// workspace-relative path vs the resolver's absolute one).
+    pub fn same_file(a: &Path, b: &Path) -> bool {
+        a == b || a.ends_with(b) || b.ends_with(a)
     }
 
     /// Returns the file the anchor refers to, if any. Used by renderers that
@@ -237,6 +298,7 @@ impl Diagnostic {
             message: "if intentional, silence with:".into(),
             replacement,
             applicability: Applicability::MachineApplicable,
+            evidence: None,
         })
     }
 }

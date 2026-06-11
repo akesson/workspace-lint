@@ -117,7 +117,7 @@ fn find_unused_partial() {
 #[test]
 fn delete_consumes_lf_after_dep_line() {
     let m = parse_manifest("[dependencies]\nrand = \"0.8\"\nfoo = \"1\"\n");
-    let s = build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand")).unwrap();
+    let s = build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand"), None).unwrap();
     let start = s.span.byte_start as usize;
     let end = s.span.byte_end as usize;
     assert_eq!(&m.raw()[start..end], "rand = \"0.8\"\n");
@@ -126,7 +126,7 @@ fn delete_consumes_lf_after_dep_line() {
 #[test]
 fn delete_consumes_crlf_after_dep_line() {
     let m = parse_manifest("[dependencies]\r\nrand = \"0.8\"\r\nfoo = \"1\"\r\n");
-    let s = build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand")).unwrap();
+    let s = build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand"), None).unwrap();
     let start = s.span.byte_start as usize;
     let end = s.span.byte_end as usize;
     assert_eq!(&m.raw()[start..end], "rand = \"0.8\"\r\n");
@@ -166,4 +166,22 @@ fn find_unused_separator_fallback_overmatches_safely() {
     let mut refs = HashSet::new();
     refs.insert("mycrate".into());
     assert!(find_unused_deps(deps, &refs).is_empty());
+}
+
+#[test]
+fn delete_suggestion_carries_supplied_evidence() {
+    // The deep-verification payload threads through onto the suggestion so the
+    // SCIP verifier can match this dep's package against rust-analyzer symbols.
+    let m = parse_manifest("[dependencies]\nrand = \"0.8\"\n");
+    let evidence = Evidence::DepUnused {
+        krate_code: "demo".into(),
+        package_name: "rand".into(),
+    };
+    let s = build_delete_suggestion(
+        &m,
+        &entry(DepSection::Dependencies, "rand"),
+        Some(evidence.clone()),
+    )
+    .unwrap();
+    assert_eq!(s.evidence, Some(evidence));
 }
