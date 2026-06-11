@@ -131,3 +131,39 @@ fn delete_consumes_crlf_after_dep_line() {
     let end = s.span.byte_end as usize;
     assert_eq!(&m.raw()[start..end], "rand = \"0.8\"\r\n");
 }
+
+#[test]
+fn find_unused_md5_libname_suppressed_by_separator_fallback() {
+    // Package `md-5` normalizes to `md_5`, but its lib target is `md5`, so the
+    // only reference is to `md5`. The H3 separator-insensitive fallback matches.
+    let mut deps = BTreeMap::new();
+    deps.insert("md_5".into(), vec![entry(DepSection::Dependencies, "md-5")]);
+    let mut refs = HashSet::new();
+    refs.insert("md5".into());
+    assert!(find_unused_deps(deps, &refs).is_empty());
+}
+
+#[test]
+fn find_unused_genuinely_unused_dep_still_flagged() {
+    // No reference under any separator form → still reported.
+    let mut deps = BTreeMap::new();
+    deps.insert("md_5".into(), vec![entry(DepSection::Dependencies, "md-5")]);
+    let refs = HashSet::new();
+    let unused = find_unused_deps(deps, &refs);
+    assert_eq!(unused, vec![entry(DepSection::Dependencies, "md-5")]);
+}
+
+#[test]
+fn find_unused_separator_fallback_overmatches_safely() {
+    // `my_crate` and `mycrate` collapse to the same stripped form, so a ref to
+    // `mycrate` suppresses the `my_crate` dep. This is the documented, FP-safe
+    // over-match: it can only hide an unused dep, never invent one.
+    let mut deps = BTreeMap::new();
+    deps.insert(
+        "my_crate".into(),
+        vec![entry(DepSection::Dependencies, "my-crate")],
+    );
+    let mut refs = HashSet::new();
+    refs.insert("mycrate".into());
+    assert!(find_unused_deps(deps, &refs).is_empty());
+}

@@ -1,0 +1,11 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_with = "3"

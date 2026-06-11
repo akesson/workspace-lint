@@ -239,6 +239,13 @@ fn collect_module_contents(
             extract_cfg_feature_names(attr, &mut cfg_features);
         }
 
+        // Tier-H usage assertions: scan the item's full attribute subtree (item,
+        // field, and variant attrs) for built-in triggers — strum derives,
+        // `#[wasm_bindgen_test]`, `#[serde(with = "…")]` — emitting
+        // `Origin::Asserted` reference evidence. Inline modules are skipped here
+        // and scanned by their own recursive pass below.
+        crate::assertions::scan_item(syn_item, parent_file, &mut occurrences);
+
         // A `#[derive(Routable)]` enum references its `pub fn` components only
         // through code the derive macro generates (never a bare `rsx!` or a
         // `use`), so they're invisible to the token/AST scans below. Capture
@@ -508,13 +515,15 @@ fn collect_module_contents(
     }
 
     // Phase B: resolve every raw occurrence centrally, filling in its canonical
-    // `path` in place (occurrences that don't resolve keep `path = None`). The
-    // resolved occurrences are this module's reference surface.
-    for occ in &mut occurrences {
-        let resolved =
-            resolve_occurrence(occ, &scope, &use_bindings, &sibling_names, parent_canonical);
-        occ.path = resolved;
-    }
+    // `path` in place. The resolved occurrences are this module's reference
+    // surface.
+    resolve_occurrences_in_place(
+        &mut occurrences,
+        &scope,
+        &use_bindings,
+        &sibling_names,
+        parent_canonical,
+    );
 
     Ok(ModuleContents {
         items,
@@ -945,6 +954,26 @@ pub(crate) fn resolve_macro_path(
     Some(ResolvedPath::new(prefix))
 }
 
+/// Phase B: fill in each occurrence's canonical `path` in place. An occurrence
+/// that already carries a `path` is left as-is — only Tier-H assertions do this,
+/// pre-setting an absolute implied path at extraction; re-resolving would route
+/// a canonical path back through use-binding substitution. Every other origin
+/// arrives with `path == None`, so the guard is behaviour-neutral for them.
+fn resolve_occurrences_in_place(
+    occurrences: &mut [Occurrence],
+    scope: &use_tree::Scope,
+    use_bindings: &[UseBinding],
+    sibling_names: &HashSet<String>,
+    parent_canonical: &ResolvedPath,
+) {
+    for occ in occurrences {
+        if occ.path.is_some() {
+            continue;
+        }
+        occ.path = resolve_occurrence(occ, scope, use_bindings, sibling_names, parent_canonical);
+    }
+}
+
 /// Canonicalize one raw occurrence — the single home for the crate/self/super
 /// peeling + use-binding substitution + sibling rewrite that used to be smeared
 /// across the extractors. Dispatches on [`Origin`]: `Code` paths resolve against
@@ -980,6 +1009,24 @@ fn resolve_occurrence(
         // glob-importing module can only be bound once the glob target's
         // module tree exists.
         Origin::GlobCandidate => None,
+        // A Tier-H assertion's *relative* implied path (an `#[serde(with =
+        // "routes")]` string, say) resolves like ordinary code: a `use`
+        // binding, a `crate`/`self`/`super` prefix, or a same-module sibling.
+        // A form `resolve_code_path` drops (a bare external single segment such
+        // as `with = "serde_bytes"`) falls back to its raw segments as an
+        // already-resolved path, so the leading segment still credits the dep.
+        // Over-crediting is FP-safe by the §13 tier contract — a wrongly bound
+        // segment only fails to suppress, it can never create a finding.
+        // (Absolute implied paths are pre-set at extraction and never reach
+        // here — see the `occ.path.is_some()` guard in Phase B.)
+        Origin::Asserted { .. } => resolve_code_path(
+            occ.segments.clone(),
+            scope,
+            siblings,
+            use_bindings,
+            parent_canonical,
+        )
+        .or_else(|| Some(ResolvedPath::new(occ.segments.clone()))),
         Origin::GlobUse | Origin::ExternCrate => Some(ResolvedPath::new(occ.segments.clone())),
     }
 }

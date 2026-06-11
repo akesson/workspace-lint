@@ -128,7 +128,9 @@ impl Workspace {
                     // References — every resolved, non-macro code occurrence.
                     // `Component` / `MacroCall` / `GlobCandidate` (bare names
                     // a Phase B pass binds) are out of the in-class set, like
-                    // `Macro`.
+                    // `Macro`. `Asserted` (Tier-H contract evidence, not parsed
+                    // syntax) is excluded too, so the precision gate measures
+                    // only parsed references.
                     for occ in &module.occurrences {
                         if matches!(
                             occ.origin,
@@ -136,6 +138,7 @@ impl Workspace {
                                 | Origin::Component
                                 | Origin::MacroCall
                                 | Origin::GlobCandidate
+                                | Origin::Asserted { .. }
                         ) {
                             continue;
                         }

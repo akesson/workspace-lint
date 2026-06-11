@@ -37,6 +37,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod assertions;
 pub mod macros;
 pub mod manifest;
 pub(crate) mod plugins;
@@ -48,6 +49,7 @@ mod walk;
 /// related types without adding their own direct dep.
 pub use toml_edit;
 
+pub use assertions::{Trigger, UsageAssertion, builtin_assertions};
 pub use manifest::{DeclaredDep, DepLocation, DepSection, Manifest, Publish};
 pub use resolve::{
     BrokenModDecl, Crate, Error, Item, ItemKind, LoadOptions, LoadWarning, Module, Occurrence,

@@ -1,0 +1,10 @@
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+# The serde `with` helper fns are pub (a serde requirement) but live in a
+# private module, so they aren't part of the published API and would normally
+# read as "appears unused". The serde-with assertion credits them as referenced,
+# flipping them to intra-crate, which suppress-intra-crate then hides.
+[unused-pub]
+suppress-intra-crate = true

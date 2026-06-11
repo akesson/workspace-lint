@@ -7,6 +7,20 @@ follows [SemVer](https://semver.org/).
 ## [Unreleased] — 0.4.0
 
 ### Added
+- **Tier-H usage assertions** (`assertions` module): a built-in rule table
+  (`builtin_assertions()` → `UsageAssertion` / `Trigger`) that, when a syntactic
+  trigger appears (a strum derive, `#[wasm_bindgen_test]`, `#[serde(with = "…")]`),
+  emits reference evidence tagged with the new `Origin::Asserted { rule }`. These
+  encode a *declared upstream contract* the resolver can't reach by parsing — the
+  referencing code only exists post-expansion. Evidence-only and FP-safe: asserted
+  refs flow into `references_from_crate` / `referring_crates` (suppressing
+  `unused-deps` / `unused-pub` false positives) but never create a finding. See
+  `DESIGN-ir-pipeline.md` §13.
+- `Origin::Asserted { rule: &'static str }` — a new variant of the
+  `#[non_exhaustive]` `Origin` enum. In-crate exhaustive matches gain an arm;
+  out-of-crate matchers already need a wildcard. Excluded from the SCIP
+  projection and from `Module::references()` (parsed-evidence-only), but included
+  in the crate-level reference indexes (the suppression path).
 - **Glob-import binding** (core Phase B `GlobImportPass`): names brought into
   scope by `use m::*;` now resolve when the glob target is a workspace
   module — both bare idents (`helper()` after `use my_lib::*;`, the universal

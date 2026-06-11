@@ -228,8 +228,30 @@ fn find_unused_deps(
     deps: BTreeMap<String, Vec<DeclaredDep>>,
     referenced: &HashSet<String>,
 ) -> Vec<DeclaredDep> {
+    // H3 manifest assertion `md5-libname` (DESIGN-ir-pipeline.md §13): a dep
+    // also counts as referenced when its *separator-stripped* name matches a
+    // referenced crate name verbatim. Package `md-5` ships a lib target named
+    // `md5` (https://docs.rs/md-5 — `[lib] name = "md5"`), but `cargo metadata
+    // --no-deps` can't surface external lib-target names, so exact normalized
+    // matching (`md_5` vs `md5`) misses it.
+    //
+    // Only the *dep* name is stripped — the referenced set is matched verbatim.
+    // Stripping both sides was too loose: a referenced name like a `__axum`
+    // macro-interpolation local strips to `axum` and would wrongly vouch for an
+    // unrelated `axum` dep. A real lib-name rename always drops a separator the
+    // code can't write (`md-5` → `md5`), so stripping the manifest side alone is
+    // sufficient. The match is still FP-safe — it only ever suppresses a finding.
     deps.into_iter()
-        .filter(|(normalized, _)| !referenced.contains(normalized))
+        .filter(|(normalized, _)| {
+            !referenced.contains(normalized)
+                && !referenced.contains(&separator_stripped(normalized))
+        })
         .flat_map(|(_, entries)| entries)
         .collect()
+}
+
+/// A crate name with all `-`/`_` separators removed, for the H3 lib-name
+/// fallback match (`md_5` collapses to `md5` to match a `md5` lib target).
+fn separator_stripped(name: &str) -> String {
+    name.chars().filter(|c| *c != '-' && *c != '_').collect()
 }
