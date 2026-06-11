@@ -210,6 +210,7 @@ mod tests {
                 message: "tighten".into(),
                 replacement: replacement.into(),
                 applicability: Applicability::MachineApplicable,
+                evidence: None,
             }],
             silence_anchor: SilenceAnchor::File {
                 file: path.to_path_buf(),
@@ -269,6 +270,7 @@ mod tests {
             message: "tighten".into(),
             replacement: "pub(crate)".into(),
             applicability: Applicability::MachineApplicable,
+            evidence: None,
         };
         let modified = apply_to_file(&p, std::slice::from_ref(&s)).unwrap();
         assert!(modified);
@@ -325,6 +327,7 @@ mod tests {
             message: "a".into(),
             replacement: "X".into(),
             applicability: Applicability::MachineApplicable,
+            evidence: None,
         };
         let mut b = a.clone();
         b.span.byte_start = 3;

@@ -33,8 +33,8 @@ use std::collections::{HashMap, HashSet};
 use syn_workspace::{Crate, Item, ItemKind, Module, Publish, ResolvedPath, Visibility, Workspace};
 
 use crate::config::GlobPattern;
-use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::{at_crate, at_line};
+use crate::diagnostic::{Applicability, Diagnostic, Evidence, PubVerdict};
 
 /// Number of unused-pub findings an internal crate must accumulate before we
 /// emit the one-time `publish = true` hint. Used when the config leaves
@@ -373,7 +373,34 @@ fn build_diagnostic(
         .note(
             "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
         );
-    apply_structural_fix(builder, item, ctx.auto_delete, span, usage).build()
+    let mut diag = apply_structural_fix(builder, item, ctx.auto_delete, span, usage).build();
+    attach_pub_evidence(&mut diag, item, ctx, usage);
+    diag
+}
+
+/// Tag the diagnostic's structural suggestion with the [`Evidence`] deep
+/// `--fix` verification needs to check this finding against rust-analyzer's
+/// SCIP index. Each `unused-pub` diagnostic carries at most one structural
+/// suggestion (a `pub(crate)` tighten or a deletion); we stamp every
+/// `MachineApplicable` one — the only kind `--fix` acts on — with the item's
+/// canonical path, owning crate, and the resolver's verdict. `CrossCrate`
+/// items never reach a fix, so they get no evidence.
+fn attach_pub_evidence(diag: &mut Diagnostic, item: &Item, ctx: &CheckCtx<'_>, usage: &Usage) {
+    let verdict = match usage {
+        Usage::IntraCrate => PubVerdict::IntraCrate,
+        Usage::Unused => PubVerdict::Unused,
+        Usage::CrossCrate => return,
+    };
+    let evidence = Evidence::PubUnused {
+        krate_code: ctx.crate_code.to_string(),
+        canonical: item.canonical.segments().to_vec(),
+        verdict,
+    };
+    for s in &mut diag.suggestions {
+        if s.applicability == Applicability::MachineApplicable {
+            s.evidence = Some(evidence.clone());
+        }
+    }
 }
 
 /// Structural fix policy:
@@ -439,6 +466,8 @@ fn build_tighten_suggestion(item: &Item, usage: &Usage) -> Option<crate::diagnos
         message: "tighten to `pub(crate)`".into(),
         replacement: "pub(crate)".into(),
         applicability,
+        // Filled in by `attach_pub_evidence` once the diagnostic is built.
+        evidence: None,
     })
 }
 
@@ -507,6 +536,8 @@ fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
         message: "delete the unused item".into(),
         replacement: String::new(),
         applicability,
+        // Filled in by `attach_pub_evidence` once the diagnostic is built.
+        evidence: None,
     };
     if applicability == crate::diagnostic::Applicability::MachineApplicable {
         DeleteOutcome::Apply(suggestion)
