@@ -1,5 +1,10 @@
 mod cli;
 mod config;
+// Deep `--fix` verification (rust-analyzer SCIP). The ingest + normalization
+// land first (this commit); `report_and_exit`-side wiring follows in the next
+// step, so allow the as-yet-unreferenced loader until then.
+#[allow(dead_code)]
+mod deep;
 #[allow(dead_code)]
 // Diagnostic types include a few helpers (some Applicability variants,
 // clean_path/clean_pathbuf) that aren't yet referenced; upcoming steps
