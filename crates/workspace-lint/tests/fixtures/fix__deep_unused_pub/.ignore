@@ -1,0 +1,7 @@
+# Keep the directive-scanner (and other `ignore`-crate walks) out of this
+# fixture's expected/ tree: its committed `// workspace-lint: expect(unused-pub)`
+# is the *asserted output* of a --fix deep run, not a live directive, so the
+# dogfood must not scan it and fire a phantom stale-expect. Not a .gitignore —
+# git still tracks expected/; this only scopes the `ignore` crate's walker.
+# (The fix_fixtures harness reads expected/ via std::fs, unaffected.)
+expected/

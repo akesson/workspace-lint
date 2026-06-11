@@ -1,0 +1,9 @@
+# Deep-verification fixture: enable unused-pub so the default `--fix` run flags
+# `Calc` (intra-crate false positive) and `OnlyHere` (true intra-crate). The
+# `--scip-index` rust-analyzer pass then disproves Calc (→ expect directive) and
+# confirms OnlyHere (→ pub(crate)).
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"

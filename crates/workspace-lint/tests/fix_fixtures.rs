@@ -23,6 +23,14 @@ fn manifest_dir() -> PathBuf {
 }
 
 fn run_fix_fixture(name: &str) {
+    // Default fixtures declare unfetchable deps; skip the rust-analyzer pass.
+    run_fix_fixture_with(name, &["--no-deep"]);
+}
+
+/// Like [`run_fix_fixture`] but with explicit extra `--fix` args. Deep fixtures
+/// pass `--scip-index <fixture>/index.scip` to verify the rust-analyzer-backed
+/// path hermetically (the committed index needs no rust-analyzer in CI).
+fn run_fix_fixture_with(name: &str, extra_args: &[&str]) {
     let fixture = manifest_dir().join("tests/fixtures").join(name);
     let input = fixture.join("input");
     let expected = fixture.join("expected");
@@ -45,15 +53,21 @@ fn run_fix_fixture(name: &str) {
 
     // --fix runs the renderer after fixing, which exits 1 if any Deny-level
     // diagnostic survived. Fixture tests focus on the resulting tree, not
-    // exit status, so the assertion is dropped here. `--no-deep` skips the
-    // rust-analyzer SCIP pass — these fixtures declare unfetchable deps and
-    // assert the plain structural-fix behavior; the deep path has its own
-    // `fix__deep_*` fixtures driven via `--scip-index`.
-    let _ = workspace_lint()
-        .current_dir(tmp.path())
-        .arg("--fix")
-        .arg("--no-deep")
-        .assert();
+    // exit status, so the assertion is dropped here. The extra args select the
+    // verification mode: `--no-deep` for the plain structural-fix fixtures,
+    // `--scip-index <committed>` for the deep ones (hermetic, no rust-analyzer).
+    let mut cmd = workspace_lint();
+    cmd.current_dir(tmp.path()).arg("--fix");
+    for a in extra_args {
+        // `--scip-index` paths are given relative to the fixture dir; make them
+        // absolute so they resolve from the tempdir cwd.
+        if let Some(rel) = a.strip_prefix("--scip-index=") {
+            cmd.arg(format!("--scip-index={}", fixture.join(rel).display()));
+        } else {
+            cmd.arg(a);
+        }
+    }
+    let _ = cmd.assert();
 
     if bless_enabled() {
         sync_tree(tmp.path(), &expected).expect("bless expected/");
@@ -128,4 +142,14 @@ fn fix_unused_deps() {
 #[test]
 fn fix_unused_pub() {
     run_fix_fixture("fix__unused_pub");
+}
+
+/// Deep verification end-to-end via a committed `rust-analyzer scip` index:
+/// `Calc` (a resolver intra-crate false positive that app uses cross-crate via
+/// an inferred return + method call) gets an `expect` directive written instead
+/// of being tightened, while `OnlyHere` (genuinely intra-crate, confirmed by
+/// rust-analyzer) is tightened to `pub(crate)`.
+#[test]
+fn fix_deep_unused_pub() {
+    run_fix_fixture_with("fix__deep_unused_pub", &["--scip-index=index.scip"]);
 }
