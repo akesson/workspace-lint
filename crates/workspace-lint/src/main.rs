@@ -9,6 +9,7 @@ mod diagnostic;
 mod directives;
 mod expand;
 mod fix;
+mod git;
 #[allow(dead_code)]
 // `LintId::ALL`, `FIXTURABLE_LINTS`, and the `Lint::id()` trait method are
 // referenced from the registry-coverage and scenario tests, not the binary
@@ -40,6 +41,11 @@ fn main() {
 
     match cli.command {
         None => {
+            // `--fix` mutates tracked files in place; gate on a clean working
+            // tree up front so the whole change stays reviewable as one diff.
+            if cli.fix {
+                git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
+            }
             let (config, config_diags) = config::load();
             let (mut diagnostics, workspace) = run_all(&config);
             // Config-validation findings join the stream before suppression
@@ -73,6 +79,9 @@ fn main() {
             }
         }
         Some(Commands::Check { rule }) => {
+            if cli.fix {
+                git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
+            }
             // For single-check runs we still honor the `[lints]` table if a
             // config file exists, so `workspace-lint check file-size` and the
             // default run agree on severity.

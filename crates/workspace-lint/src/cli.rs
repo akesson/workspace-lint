@@ -22,11 +22,16 @@ pub(crate) struct Cli {
     /// or `github` (Actions annotations).
     #[arg(long, global = true)]
     pub message_format: Option<String>,
-    /// Apply machine-applicable structural rewrites in-place. Lints without a
-    /// structural fix are reported but left untouched; `--fix` never inserts
-    /// silence directives on your behalf.
+    /// Apply machine-applicable structural rewrites in-place. Requires a clean
+    /// git working tree (override with `--allow-dirty`) so every change is
+    /// reviewable as one diff. With deep verification (default; see `--no-deep`)
+    /// a directive is auto-written only for a finding rust-analyzer disproves.
     #[arg(long, global = true, default_value_t = false)]
     pub fix: bool,
+    /// Allow `--fix` to run even when the git working tree has uncommitted
+    /// changes to tracked files. Off by default so fixes stay reviewable.
+    #[arg(long, global = true, default_value_t = false, requires = "fix")]
+    pub allow_dirty: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

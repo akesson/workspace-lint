@@ -1,6 +1,9 @@
 //! Parse `workspace_lint::allow!`/`expect!` macro invocations from Rust files
 //! and `# workspace-lint: allow(...)`/`expect(...)` comments from TOML and
-//! Markdown.
+//! Markdown. Rust files additionally accept a **line-comment** directive form
+//! (`// workspace-lint: allow|expect(...)`) so an item-level finding can be
+//! silenced without depending on the `workspace-lint-marker` crate — this is
+//! the form `--fix` writes when deep verification disproves a finding.
 //!
 //! Each directive becomes a [`Directive`] entry in the
 //! [`crate::suppress::SuppressionMap`]. Diagnostics whose lint name and
@@ -44,12 +47,15 @@ pub(crate) struct DirectiveOrigin {
 /// Scan the workspace for directives. Walks every file ignoring git-ignored
 /// paths via the `ignore` crate. Per file:
 ///
-/// - `.rs` → parse with syn for `allow!`/`expect!` macro invocations.
+/// - `.rs` → parse with syn for `allow!`/`expect!` macro invocations, AND
+///   line-scan for `// workspace-lint: allow|expect(...)` comment directives.
 /// - `.toml`, `.md` → line-scan for `# workspace-lint: allow|expect(...)`.
 ///
 /// The anchor of each parsed directive depends on the file kind:
 ///
-/// - `.rs` file-level: [`SilenceAnchor::File`].
+/// - `.rs` macro invocation: [`SilenceAnchor::File`] (plus a [`SilenceAnchor::Line`]
+///   when it immediately precedes an item).
+/// - `.rs` comment directive: [`SilenceAnchor::Line`] at the comment's own line.
 /// - `Cargo.toml` line directive: [`SilenceAnchor::Line`] anchored at the
 ///   line *after* the comment (1-3 line lookback when matching).
 /// - Other TOML/MD: [`SilenceAnchor::File`].
@@ -79,7 +85,10 @@ fn scan_inner(root: &Path, parsed_lookup: &HashMap<PathBuf, syn::File>) -> Vec<D
         let path = entry.path();
         let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
         match kind_for(&rel) {
-            FileKind::Rust => scan_rust(path, &rel, parsed_lookup, &mut directives),
+            FileKind::Rust => {
+                scan_rust(path, &rel, parsed_lookup, &mut directives);
+                scan_rust_comments(path, &rel, &mut directives);
+            }
             FileKind::TomlOrMd => scan_text(path, &rel, &mut directives),
             FileKind::Skip => {}
         }
@@ -154,6 +163,59 @@ fn scan_rust(
         return;
     };
     walk_items(&file.items, rel, out);
+}
+
+/// Line-scan a `.rs` file for `// workspace-lint: allow|expect(...)` comment
+/// directives, each emitting a [`SilenceAnchor::Line`] at the comment's own
+/// line. This is the marker-crate-free way to silence an item-level finding
+/// (`unused-pub`, `visibility`): write the comment immediately above the item
+/// and the suppression lookback (up to `LOOKBACK_FORWARD` lines, see
+/// [`crate::suppress`]) binds it to the finding below. It's the form `--fix`
+/// writes for a deep-verification-disproved finding.
+///
+/// Deliberately narrow to avoid false suppression: the directive text must
+/// *start* the line (after the `//`), so doc comments (`///`, `//!` both leave
+/// a leading non-`//` char after one strip) and trailing comments after code
+/// (`x = 1; // …` doesn't start with `//`) never match. The one accepted
+/// blind spot — a line *inside a multi-line string literal* that happens to
+/// start with `// workspace-lint:` — mirrors the TOML scanner's, and only ever
+/// over-*suppresses* (FP-safe).
+fn scan_rust_comments(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
+    let Ok(content) = fs::read_to_string(abs_path) else {
+        return;
+    };
+    let re = directive_regex();
+    for (idx, raw) in content.lines().enumerate() {
+        let line_no = (idx + 1) as u32;
+        // A single `//` strip leaves `///`/`//!` with a leading `/`/`!`, which
+        // the `^\s*workspace-lint:` regex rejects — so doc comments are out.
+        let body = raw.trim_start().trim_start_matches("//").trim();
+        let Some(caps) = re.captures(body) else {
+            continue;
+        };
+        let kind = match &caps[1] {
+            "allow" => DirectiveKind::Allow,
+            "expect" => DirectiveKind::Expect,
+            _ => continue,
+        };
+        for lint in caps[2].split(',').map(str::trim) {
+            if lint.is_empty() {
+                continue;
+            }
+            out.push(Directive {
+                kind,
+                lint: lint.to_string(),
+                anchor: SilenceAnchor::Line {
+                    file: rel.to_path_buf(),
+                    line: line_no,
+                },
+                origin: DirectiveOrigin {
+                    file: rel.to_path_buf(),
+                    line: line_no,
+                },
+            });
+        }
+    }
 }
 
 /// Walk a sequence of top-level items, emitting directives with the right
@@ -340,251 +402,4 @@ fn directive_regex() -> &'static Regex {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    fn write(dir: &Path, name: &str, content: &str) {
-        let path = dir.join(name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(path, content).unwrap();
-    }
-
-    // --- Rust file macros ---
-
-    #[test]
-    fn parses_workspace_lint_allow_invocation() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "src/lib.rs",
-            "workspace_lint::allow!(file_size);\n",
-        );
-        let directives = scan(tmp.path());
-        assert_eq!(directives.len(), 1);
-        assert_eq!(directives[0].lint, "file-size");
-        assert_eq!(directives[0].kind, DirectiveKind::Allow);
-        match &directives[0].anchor {
-            SilenceAnchor::File { file } => assert_eq!(file, &PathBuf::from("src/lib.rs")),
-            other => panic!("expected File anchor, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_workspace_lint_expect_invocation() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "src/lib.rs",
-            "workspace_lint::expect!(unused_pub);\n",
-        );
-        let directives = scan(tmp.path());
-        assert_eq!(directives.len(), 1);
-        assert_eq!(directives[0].kind, DirectiveKind::Expect);
-        assert_eq!(directives[0].lint, "unused-pub");
-    }
-
-    #[test]
-    fn parses_comma_separated_lint_list() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "src/lib.rs",
-            "workspace_lint::allow!(file_size, unused_pub, centralized_deps);\n",
-        );
-        let directives = scan(tmp.path());
-        let mut lints: Vec<&str> = directives.iter().map(|d| d.lint.as_str()).collect();
-        lints.sort();
-        assert_eq!(lints, ["centralized-deps", "file-size", "unused-pub"]);
-    }
-
-    #[test]
-    fn parses_unqualified_allow_after_use() {
-        // Accept `allow!(...)` when the file presumably did `use workspace_lint::*`.
-        let tmp = TempDir::new().unwrap();
-        write(tmp.path(), "src/lib.rs", "allow!(file_size);\n");
-        let directives = scan(tmp.path());
-        assert_eq!(directives.len(), 1);
-        assert_eq!(directives[0].lint, "file-size");
-    }
-
-    #[test]
-    fn ignores_other_macros() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "src/lib.rs",
-            "println!(\"hi\");\nvec![1,2,3];\nformat!(\"x\");\n",
-        );
-        assert!(scan(tmp.path()).is_empty());
-    }
-
-    #[test]
-    fn ignores_malformed_macros() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "src/lib.rs",
-            "workspace_lint::allow!(\"not an ident\");\n",
-        );
-        assert!(scan(tmp.path()).is_empty());
-    }
-
-    // --- TOML comment directives ---
-
-    #[test]
-    fn parses_toml_comment_directive_emits_line_and_crate_anchors() {
-        // For a Cargo.toml directive we emit two anchors (Line at the comment
-        // line, Crate at the parent dir) so the comment naturally silences
-        // either a per-line diagnostic on a nearby dep line or a crate-level
-        // diagnostic like centralized-deps anchored at the manifest dir.
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "crates/foo/Cargo.toml",
-            "[package]\nname = \"foo\"\n\n# workspace-lint: allow(unused-deps)\n[dependencies]\nfoo = \"1\"\n",
-        );
-        let directives = scan(tmp.path());
-        assert_eq!(directives.len(), 2);
-        assert!(directives.iter().any(|d| matches!(
-            &d.anchor,
-            SilenceAnchor::Line { file, line }
-                if file == &PathBuf::from("crates/foo/Cargo.toml") && *line == 4,
-        )));
-        assert!(directives.iter().any(|d| matches!(
-            &d.anchor,
-            SilenceAnchor::Crate { manifest_dir }
-                if manifest_dir == &PathBuf::from("crates/foo"),
-        )));
-        assert!(directives.iter().all(|d| d.lint == "unused-deps"));
-    }
-
-    #[test]
-    fn parses_toml_comma_list() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "non-cargo.toml",
-            "# workspace-lint: allow(unused-deps, centralized-deps)\n",
-        );
-        let directives = scan(tmp.path());
-        // Non-Cargo.toml files only emit one anchor per lint (Line).
-        let mut lints: Vec<&str> = directives.iter().map(|d| d.lint.as_str()).collect();
-        lints.sort();
-        assert_eq!(lints, ["centralized-deps", "unused-deps"]);
-    }
-
-    #[test]
-    fn parses_md_comment_directive() {
-        let tmp = TempDir::new().unwrap();
-        // `// workspace-lint: ...` style in Markdown also accepted.
-        write(
-            tmp.path(),
-            "README.md",
-            "Some text.\n// workspace-lint: allow(freshness)\nMore text.\n",
-        );
-        let directives = scan(tmp.path());
-        assert_eq!(directives.len(), 1);
-        assert_eq!(directives[0].lint, "freshness");
-        match &directives[0].anchor {
-            SilenceAnchor::File { file } => assert_eq!(file, &PathBuf::from("README.md")),
-            other => panic!("expected File anchor, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_html_comment_directive() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "README.md",
-            "<!-- workspace-lint: expect(freshness) -->\n",
-        );
-        let directives = scan(tmp.path());
-        assert_eq!(directives.len(), 1);
-        assert_eq!(directives[0].kind, DirectiveKind::Expect);
-        assert_eq!(directives[0].lint, "freshness");
-    }
-
-    #[test]
-    fn ignores_unrelated_toml_comments() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "Cargo.toml",
-            "# this is just a comment\n# TODO: something\n",
-        );
-        assert!(scan(tmp.path()).is_empty());
-    }
-
-    // --- Origin info ---
-
-    #[test]
-    fn origin_records_file_and_line() {
-        let tmp = TempDir::new().unwrap();
-        write(
-            tmp.path(),
-            "src/lib.rs",
-            "\n\nworkspace_lint::allow!(file_size);\n",
-        );
-        let directives = scan(tmp.path());
-        assert_eq!(directives[0].origin.file, PathBuf::from("src/lib.rs"));
-        assert_eq!(directives[0].origin.line, 3);
-    }
-
-    #[test]
-    fn skips_non_text_extensions() {
-        let tmp = TempDir::new().unwrap();
-        write(tmp.path(), "data.bin", "anything goes here");
-        assert!(scan(tmp.path()).is_empty());
-    }
-
-    // --- item_anchor_line ---
-
-    fn parse_one(src: &str) -> syn::Item {
-        let file: syn::File = syn::parse_str(src).unwrap();
-        file.items.into_iter().next().unwrap()
-    }
-
-    #[test]
-    fn item_anchor_line_for_fn_points_at_ident() {
-        // `pub fn foo()` is on line 2 → the `foo` ident lives on line 2.
-        let item = parse_one("\npub fn foo() {}\n");
-        assert_eq!(item_anchor_line(&item), Some(2));
-    }
-
-    #[test]
-    fn item_anchor_line_for_struct_enum_union() {
-        assert_eq!(item_anchor_line(&parse_one("\nstruct S;")), Some(2));
-        assert_eq!(item_anchor_line(&parse_one("\n\nenum E { A, B }")), Some(3));
-        assert_eq!(item_anchor_line(&parse_one("union U { x: u8 }")), Some(1));
-    }
-
-    #[test]
-    fn item_anchor_line_for_trait_type_const_static() {
-        assert_eq!(item_anchor_line(&parse_one("trait T {}")), Some(1));
-        assert_eq!(item_anchor_line(&parse_one("\ntype A = u8;")), Some(2));
-        assert_eq!(item_anchor_line(&parse_one("const C: u8 = 1;")), Some(1));
-        assert_eq!(item_anchor_line(&parse_one("static X: u8 = 1;")), Some(1));
-    }
-
-    #[test]
-    fn item_anchor_line_for_mod_and_impl() {
-        assert_eq!(item_anchor_line(&parse_one("\nmod m {}")), Some(2));
-        // For Impl, the anchor is the `impl` keyword line, not an ident.
-        assert_eq!(
-            item_anchor_line(&parse_one("\nstruct S;\nimpl S {}")),
-            Some(2),
-        );
-    }
-
-    #[test]
-    fn item_anchor_line_none_for_unsupported_kinds() {
-        // syn::Item::Use is not one of the matched arms.
-        assert_eq!(item_anchor_line(&parse_one("use std::io;")), None);
-        // syn::Item::ExternCrate, ForeignMod, Macro etc. → also None.
-        assert_eq!(item_anchor_line(&parse_one("extern crate foo;")), None);
-    }
-}
+mod tests;
