@@ -6,7 +6,7 @@
 //! resolved through the call-site scope) handles. So this lowerer simply
 //! [`claims`](MacroLowerer::claims) the `quote!` paths and asks for a
 //! [`Lowered::TokenScan`] — no structured extraction, and no fake-empty
-//! reference list to gate the scan (the old `MacroBodyParser` no-op hack).
+//! reference list to gate the scan.
 
 use crate::plugins::{LowerCtx, Lowered, MacroLowerer, MacroSite};
 

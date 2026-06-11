@@ -3,7 +3,7 @@ name = "workspace-lint"
 version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
-repository = "https://github.com/human-solutions/workspace-lint"
+repository = "https://github.com/akesson/workspace-lint"
 
 [dependencies]
 clap = { workspace = true }
@@ -15,7 +15,6 @@ proc-macro2 = { workspace = true }
 # verification (see src/deep/). Binary-only — kept off the published crates.
 protobuf = { workspace = true }
 regex = { workspace = true }
-rustfix = { workspace = true }
 scip = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

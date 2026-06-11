@@ -69,14 +69,16 @@ fn line_start_and_indent(source: &str, line: u32) -> Option<(u32, String)> {
 }
 
 /// `true` if an identical `expect(<lint>)` directive already sits on one of the
-/// up-to-three lines immediately above `line` — the same window
-/// [`crate::suppress`] looks back over, so writing another would be redundant.
+/// lines immediately above `line`, within the same [`crate::suppress::LOOKBACK_FORWARD`]
+/// window the suppressor honors — so writing another would be redundant.
 fn directive_already_present(source: &str, line: u32, lint: &str) -> bool {
     let needle = format!("expect({lint})");
     let lines: Vec<&str> = source.lines().collect();
-    // Lines above `line` (1-based): indices line-2, line-3, line-4 (0-based).
+    // The LOOKBACK_FORWARD lines above `line` (1-based): the suppressor binds a
+    // directive to a diagnostic up to that many lines below it, so a directive
+    // within that window above the item already covers it.
     let above_end = (line as usize).saturating_sub(1); // 0-based index of `line`'s predecessor + 1
-    let above_start = above_end.saturating_sub(3);
+    let above_start = above_end.saturating_sub(crate::suppress::LOOKBACK_FORWARD as usize);
     lines
         .get(above_start..above_end)
         .into_iter()
@@ -136,7 +138,7 @@ mod tests {
     fn allows_when_different_lint_present() {
         let (_t, p) = write(
             "lib.rs",
-            "// workspace-lint: expect(visibility) -- x\npub fn helper() {}\n",
+            "// workspace-lint: expect(file-size) -- x\npub fn helper() {}\n",
         );
         assert!(
             build_expect_insert(&p, 2, "unused-pub", "new").is_some(),

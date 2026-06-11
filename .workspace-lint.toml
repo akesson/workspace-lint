@@ -61,9 +61,6 @@ ignore = [
     "proc-macro2",
     # Build-script-only (installs git hooks); never appears in source.
     "cargo-husky",
-    # Pre-added for a planned follow-up routing non-insertion suggestions
-    # through it (see src/fix.rs). Not imported yet — drop the dep if no movement.
-    "rustfix",
 ]
 
 # `unused-pub` is resolver-backed (no SCIP, no rust-analyzer subprocess), so it

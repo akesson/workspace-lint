@@ -7,7 +7,7 @@ rust-version.workspace = true
 # `unused-pub` uses to treat this crate's public API as external (so its items
 # aren't flagged just because no *workspace* crate references them).
 publish = true
-repository = "https://github.com/human-solutions/workspace-lint"
+repository = "https://github.com/akesson/workspace-lint"
 description = "A resolved workspace model for Rust: per-file imports, cross-file module trees, pub-use chains, and macro-body parsing — built on syn, no rust-analyzer required."
 license = "MIT OR Apache-2.0"
 keywords = ["syn", "workspace", "cargo", "ast", "resolver"]

@@ -134,7 +134,8 @@ impl LintId {
 }
 
 /// Compatibility view: every lint's full ID in stable order. Equivalent to
-/// `LintId::ALL.iter().map(|l| l.id())`.
+/// `LintId::ALL.iter().map(|l| l.id())`. Test-only (registry invariants).
+#[allow(dead_code)]
 pub(crate) const ALL_LINTS: &[&str] = &[
     LintId::Architecture.id(),
     LintId::CentralizedDeps.id(),
@@ -174,7 +175,8 @@ pub(crate) const ALL_LINTS: &[&str] = &[
 ///   structural fix — the remedy is a hand edit of the config / directive.
 /// - `architecture`, `feature-drift`, `module-tree`: the structural fixes
 ///   for these are planned but not yet implemented; once `--fix` rewrites
-///   them through rustfix, add fixtures and move them up.
+///   them, add fixtures and move them up.
+#[allow(dead_code)] // test-only (drives the fix-fixture coverage guard)
 pub(crate) const FIXTURABLE_LINTS: &[&str] = &[
     LintId::CentralizedDeps.id(),
     LintId::UnusedDeps.id(),
@@ -183,7 +185,8 @@ pub(crate) const FIXTURABLE_LINTS: &[&str] = &[
 
 /// Strip the `workspace-lint::` prefix so callers can derive the short
 /// kebab form (`file-size`) used in fixture directory names and comment
-/// directives.
+/// directives. Test-only (the fix-fixture coverage guard).
+#[allow(dead_code)]
 pub(crate) fn short(lint: &str) -> &str {
     lint.strip_prefix("workspace-lint::").unwrap_or(lint)
 }
@@ -294,6 +297,163 @@ mod tests {
             "every lint in FIXTURABLE_LINTS must have a paired fixture under \
              tests/fixtures/fix__<name>/{{input,expected}}/; missing: {missing:#?}\n\
              Add the fixture, then a #[test] wrapper in tests/fix_fixtures.rs."
+        );
+    }
+
+    // --- registry coverage: every non-meta lint must actually run ---
+
+    /// A maximal config that turns on every lint: each *policy* lint
+    /// ([`LintId::requires_config`]) needs its config table present, and no
+    /// lint is `allow`-ed (the built-in default is `warn`). Used to assert the
+    /// registry builds an instance for every non-meta lint.
+    const ALL_LINTS_ENABLED_CONFIG: &str = "\
+[[file-size.rules]]
+glob = \"**/*.rs\"
+max-code-lines = 500
+
+[[crate-size.rules]]
+glob = \"crates/*\"
+max-code-lines = 5000
+
+[[freshness.rules]]
+glob = \"**/CLAUDE.md\"
+depends-on = \"**/*.rs\"
+
+[[cli-crate-version.rules]]
+command = [\"wasm-bindgen\", \"--version\"]
+pattern = \"wasm-bindgen (\\\\S+)\"
+crate = \"wasm-bindgen\"
+
+[[architecture.rules]]
+from = [\"crates/a/**\"]
+deny = [\"crates/b/**\"]
+";
+
+    /// Lints that are emitted by the config-audit / suppression pipeline rather
+    /// than a [`crate::lints::registry`] entry — they have no `Lint` instance.
+    /// Every *other* variant must be produced by the registry.
+    const META_LINTS: &[LintId] = &[LintId::Config, LintId::StaleExpect, LintId::UnknownLint];
+
+    #[test]
+    fn registry_covers_every_non_meta_lint() {
+        let config: crate::config::Config =
+            toml::from_str(ALL_LINTS_ENABLED_CONFIG).expect("maximal config parses");
+        let produced: std::collections::HashSet<LintId> = crate::lints::registry(&config)
+            .iter()
+            .map(|l| l.id())
+            .collect();
+
+        let mut missing: Vec<&str> = LintId::ALL
+            .iter()
+            .filter(|id| !META_LINTS.contains(id) && !produced.contains(id))
+            .map(|id| id.short())
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "every non-meta lint in LintId::ALL must be built by registry(); missing: {missing:?}\n\
+             Add a line in `lints::registry` wiring the new lint to its config block \
+             (or, if it's a config-audit/suppression meta lint, add it to META_LINTS)."
+        );
+
+        for id in META_LINTS {
+            assert!(
+                !produced.contains(id),
+                "meta lint `{}` must not appear in registry()",
+                id.short()
+            );
+        }
+    }
+
+    // --- marker-crate drift: the `expect!`/`allow!` macro arms must track
+    //     LintId so a stale arm (e.g. a removed lint) or a missing one fails ---
+
+    /// The two lints that are anchored to the config *file*, not a `.rs` source
+    /// item — a marker macro (which only appears in Rust source) can't silence
+    /// them, so the marker crate deliberately omits them.
+    const CONFIG_FILE_ONLY: &[LintId] = &[LintId::Config, LintId::UnknownLint];
+
+    /// Parse the marker crate's source for the single-lint macro arms (lines of
+    /// the form `(some_ident) => {};`), returning their kebab-cased names. The
+    /// recursive comma-list arm (`($first:ident, …)`) is skipped because its
+    /// inner text isn't a bare ident.
+    fn marker_arm_lints() -> std::collections::HashSet<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../workspace-lint-marker/src/lib.rs");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut out = std::collections::HashSet::new();
+        for line in src.lines() {
+            let t = line.trim();
+            let Some(rest) = t.strip_prefix('(') else {
+                continue;
+            };
+            let Some((inner, tail)) = rest.split_once(')') else {
+                continue;
+            };
+            if !tail.trim_start().starts_with("=>") {
+                continue;
+            }
+            // A single bare ident — skips the `$first:ident, …` recursive arm.
+            if !inner.is_empty()
+                && inner
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+            {
+                out.insert(inner.replace('_', "-"));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn marker_macro_arms_match_lint_ids() {
+        let arms = marker_arm_lints();
+        let expected: std::collections::HashSet<String> = LintId::ALL
+            .iter()
+            .filter(|id| !CONFIG_FILE_ONLY.contains(id))
+            .map(|id| id.short().to_string())
+            .collect();
+
+        let mut missing: Vec<&String> = expected.difference(&arms).collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "workspace-lint-marker is missing `expect!`/`allow!` arms for: {missing:?}\n\
+             Add the arm in crates/workspace-lint-marker/src/lib.rs (snake_case)."
+        );
+
+        let mut stale: Vec<&String> = arms.difference(&expected).collect();
+        stale.sort();
+        assert!(
+            stale.is_empty(),
+            "workspace-lint-marker has macro arms for non-existent lints: {stale:?}\n\
+             Remove the stale arm, or add the lint to LintId (or CONFIG_FILE_ONLY)."
+        );
+    }
+
+    // --- case-fixture coverage: every lint ships taxonomy fixtures ---
+
+    /// Lints with no `tests/cases/<short>/` directory, each with its reason.
+    /// `cli-crate-version` needs an executable fake tool, so it's exercised by
+    /// the dedicated `tests/cli_crate_version.rs` harness instead.
+    const NO_CASES_DIR: &[LintId] = &[LintId::CliCrateVersion];
+
+    #[test]
+    fn every_lint_has_case_fixtures() {
+        let cases = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/cases");
+        let mut missing: Vec<&str> = LintId::ALL
+            .iter()
+            .filter(|id| !NO_CASES_DIR.contains(id))
+            .filter(|id| !cases.join(id.short()).is_dir())
+            .map(|id| id.short())
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "every lint needs a kebab-case `tests/cases/<short>/` directory (or an entry \
+             in NO_CASES_DIR with a reason); missing: {missing:?}\n\
+             Note: the directory name must match `LintId::short()` exactly."
         );
     }
 }

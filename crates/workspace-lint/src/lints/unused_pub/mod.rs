@@ -585,8 +585,9 @@ fn build_glob_set(patterns: &[GlobPattern]) -> Option<GlobSet> {
     for pattern in patterns {
         builder.add(pattern.compiled().clone());
     }
-    Some(builder.build().unwrap_or_else(|e| {
-        eprintln!("failed to build glob filter: {e}");
-        std::process::exit(1);
-    }))
+    Some(
+        builder
+            .build()
+            .unwrap_or_else(|e| crate::util::fail(format!("failed to build glob filter: {e}"))),
+    )
 }

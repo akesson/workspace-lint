@@ -54,7 +54,6 @@ pub use manifest::{DeclaredDep, DepLocation, DepSection, Manifest, Publish};
 pub use resolve::{
     BrokenModDecl, Crate, Error, Item, ItemKind, LoadOptions, LoadWarning, Module, Occurrence,
     Origin, ResolvedPath, Result, SourceSpan, Target, TargetKind, Visibility, Workspace,
-    re_export::ReExportIndex,
+    re_export::ReExportIndex, use_tree::UseBinding,
 };
 pub use scip_emit::{ScipOccurrence, ScipRole, is_definition_kind};
-pub use walk::member_manifests;

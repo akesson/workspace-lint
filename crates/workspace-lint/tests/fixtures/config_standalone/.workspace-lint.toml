@@ -1,1 +1,3 @@
-# All checks disabled by default
+# Empty config: structural lints run at their default `warn` level. The fixture
+# workspace is clean, so the run still passes — this exercises the standalone
+# `.workspace-lint.toml` loading path.

@@ -42,7 +42,6 @@ macro_rules! allow {
     (module_tree) => {};
     (stale_git_index) => {};
     (feature_drift) => {};
-    (visibility) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
         $crate::allow!($first);
         $crate::allow!($($rest),+);
@@ -70,7 +69,6 @@ macro_rules! expect {
     (module_tree) => {};
     (stale_git_index) => {};
     (feature_drift) => {};
-    (visibility) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
         $crate::expect!($first);
         $crate::expect!($($rest),+);
@@ -96,7 +94,6 @@ mod tests {
         crate::allow!(module_tree);
         crate::allow!(stale_git_index);
         crate::allow!(feature_drift);
-        crate::allow!(visibility);
     }
 
     #[test]
@@ -120,7 +117,6 @@ mod tests {
         crate::expect!(module_tree);
         crate::expect!(stale_git_index);
         crate::expect!(feature_drift);
-        crate::expect!(visibility);
     }
 
     #[test]

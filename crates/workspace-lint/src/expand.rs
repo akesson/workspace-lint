@@ -12,7 +12,7 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
     for rule in &config.rules {
         let (program, args) = rule.command.split_first().unwrap_or_else(|| {
             eprintln!("expand: command must not be empty");
-            std::process::exit(1);
+            std::process::exit(2);
         });
 
         let output = Command::new(program)
@@ -20,7 +20,7 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
             .output()
             .unwrap_or_else(|e| {
                 eprintln!("expand: failed to run `{}`: {e}", rule.command.join(" "));
-                std::process::exit(1);
+                std::process::exit(2);
             });
 
         if !output.status.success() {
@@ -29,7 +29,7 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
                 rule.command.join(" "),
                 String::from_utf8_lossy(&output.stderr)
             );
-            std::process::exit(1);
+            std::process::exit(2);
         }
 
         let raw = strip_ansi_escapes::strip(&output.stdout);
@@ -51,16 +51,16 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
         for file in &files {
             let content = fs::read_to_string(file).unwrap_or_else(|e| {
                 eprintln!("expand: failed to read {}: {e}", file.display());
-                std::process::exit(1);
+                std::process::exit(2);
             });
 
             let Some(start) = content.find(&start_marker) else {
                 eprintln!("expand: {}: missing {start_marker}", file.display());
-                std::process::exit(1);
+                std::process::exit(2);
             };
             let Some(end) = content.find(&end_marker) else {
                 eprintln!("expand: {}: missing {end_marker}", file.display());
-                std::process::exit(1);
+                std::process::exit(2);
             };
 
             let new_content = format!(
@@ -75,7 +75,7 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
 
             fs::write(file, &new_content).unwrap_or_else(|e| {
                 eprintln!("expand: failed to write {}: {e}", file.display());
-                std::process::exit(1);
+                std::process::exit(2);
             });
 
             eprintln!(
@@ -92,7 +92,7 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
 
                 if !status.success() {
                     eprintln!("expand: git add {} failed", file.display());
-                    std::process::exit(1);
+                    std::process::exit(2);
                 }
             }
         }
@@ -123,7 +123,7 @@ fn replace_marker(
 fn find_files_matching(root: &Path, pattern: &str) -> Vec<PathBuf> {
     let glob = Glob::new(pattern).unwrap_or_else(|e| {
         eprintln!("expand: invalid glob pattern '{pattern}': {e}");
-        std::process::exit(1);
+        std::process::exit(2);
     });
     let matcher = glob.compile_matcher();
 

@@ -76,7 +76,7 @@ pub(crate) fn span_to_source_span(file: &Path, span: proc_macro2::Span) -> Sourc
 /// nor `main.rs` at the standard location — for non-standard layouts, the
 /// caller should pass an explicit entry point to a future variant.
 #[cfg(test)]
-pub fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module> {
+pub(crate) fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<Module> {
     let src_dir = manifest_dir.join("src");
     let candidates = [src_dir.join("lib.rs"), src_dir.join("main.rs")];
 
@@ -628,24 +628,7 @@ fn extract_code_paths(
     let mut i = 0;
     while i < stream.len() {
         if let proc_macro2::TokenTree::Ident(first) = &stream[i] {
-            let mut segments = vec![first.to_string()];
-            let mut j = i + 1;
-            while let (Some(p1), Some(p2), Some(next)) =
-                (stream.get(j), stream.get(j + 1), stream.get(j + 2))
-            {
-                let (proc_macro2::TokenTree::Punct(a), proc_macro2::TokenTree::Punct(b)) = (p1, p2)
-                else {
-                    break;
-                };
-                if a.as_char() != ':' || b.as_char() != ':' {
-                    break;
-                }
-                let proc_macro2::TokenTree::Ident(next) = next else {
-                    break;
-                };
-                segments.push(next.to_string());
-                j += 3;
-            }
+            let (segments, j) = consume_path_run(&stream, i);
             // A bare single-ident macro *invocation* — `foo!(…)` / `foo![…]` /
             // `foo!{…}`, i.e. `Ident` then `!` then a delimited group — resolves
             // in the macro namespace, where an exported `macro_rules!` is
@@ -730,6 +713,42 @@ fn extract_code_paths(
         }
         i += 1;
     }
+}
+
+/// Consume a path-run `Ident (:: Ident)*` beginning at `stream[start]` (which
+/// the caller has already matched as an `Ident`). Returns the dotted segments
+/// and the index just past the run (the next unconsumed token).
+///
+/// Shared by [`extract_code_paths`] and the macro-body scanner
+/// ([`crate::macros::autodetect::extract_macro_paths`]) so both see identical
+/// run boundaries — a change to run detection (turbofish spacing, raw idents,
+/// …) lands in both channels at once.
+pub(crate) fn consume_path_run(
+    stream: &[proc_macro2::TokenTree],
+    start: usize,
+) -> (Vec<String>, usize) {
+    let proc_macro2::TokenTree::Ident(first) = &stream[start] else {
+        // Caller guarantees an `Ident` at `start`; stay defensive rather than panic.
+        return (Vec::new(), start);
+    };
+    let mut segments = vec![first.to_string()];
+    let mut j = start + 1;
+    while let (Some(p1), Some(p2), Some(next)) =
+        (stream.get(j), stream.get(j + 1), stream.get(j + 2))
+    {
+        let (proc_macro2::TokenTree::Punct(a), proc_macro2::TokenTree::Punct(b)) = (p1, p2) else {
+            break;
+        };
+        if a.as_char() != ':' || b.as_char() != ':' {
+            break;
+        }
+        let proc_macro2::TokenTree::Ident(next) = next else {
+            break;
+        };
+        segments.push(next.to_string());
+        j += 3;
+    }
+    (segments, j)
 }
 
 /// Whether a `use` tree contains a glob leaf anywhere (`use a::b::*;`,
@@ -1033,6 +1052,10 @@ fn resolve_occurrence(
 
 /// Outer attributes of a syn item. Returned as a slice so the caller can
 /// iterate without copying.
+///
+/// `pub(crate)`, so it's mirrored (not reused) by `crate_size::shipped_source`
+/// in the workspace-lint binary; keep the two arm-for-arm identical when a new
+/// `syn::Item` variant appears.
 fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     match item {
         syn::Item::Const(i) => &i.attrs,

@@ -168,7 +168,7 @@ fn scan_rust(
 /// Line-scan a `.rs` file for `// workspace-lint: allow|expect(...)` comment
 /// directives, each emitting a [`SilenceAnchor::Line`] at the comment's own
 /// line. This is the marker-crate-free way to silence an item-level finding
-/// (`unused-pub`, `visibility`): write the comment immediately above the item
+/// (`unused-pub`): write the comment immediately above the item
 /// and the suppression lookback (up to `LOOKBACK_FORWARD` lines, see
 /// [`crate::suppress`]) binds it to the finding below. It's the form `--fix`
 /// writes for a deep-verification-disproved finding.
@@ -224,8 +224,8 @@ fn scan_rust_comments(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
 /// suppresses file-level findings like `file-size`); when the directive is
 /// *immediately* followed by a non-directive item (function, struct, …),
 /// it ALSO emits a [`SilenceAnchor::Line`] at the followed item's first
-/// line, so item-targeted findings like `visibility` and `unused-pub` get
-/// the more precise scope. Both anchors share the same `origin`, so the
+/// line, so item-targeted findings like `unused-pub` get the more precise
+/// scope. Both anchors share the same `origin`, so the
 /// stale-expect dedup collapses them back into one source-level directive.
 fn walk_items(items: &[syn::Item], rel: &Path, out: &mut Vec<Directive>) {
     let mut i = 0;

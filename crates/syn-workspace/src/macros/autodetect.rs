@@ -28,7 +28,7 @@
 
 use std::path::Path;
 
-use crate::resolve::module_tree::span_to_source_span;
+use crate::resolve::module_tree::{consume_path_run, span_to_source_span};
 use crate::resolve::{Occurrence, Origin};
 
 /// Scan a macro body token-stream for path-like sequences
@@ -44,24 +44,7 @@ pub(crate) fn extract_macro_paths(
     let mut i = 0;
     while i < stream.len() {
         if let proc_macro2::TokenTree::Ident(first) = &stream[i] {
-            let mut segments = vec![first.to_string()];
-            let mut j = i + 1;
-            while let (Some(p1), Some(p2), Some(next)) =
-                (stream.get(j), stream.get(j + 1), stream.get(j + 2))
-            {
-                let (proc_macro2::TokenTree::Punct(a), proc_macro2::TokenTree::Punct(b)) = (p1, p2)
-                else {
-                    break;
-                };
-                if a.as_char() != ':' || b.as_char() != ':' {
-                    break;
-                }
-                let proc_macro2::TokenTree::Ident(next) = next else {
-                    break;
-                };
-                segments.push(next.to_string());
-                j += 3;
-            }
+            let (segments, j) = consume_path_run(&stream, i);
             // Candidate selection only (multi-segment runs) — resolution is
             // central in `resolve_occurrence`.
             if segments.len() >= 2 {

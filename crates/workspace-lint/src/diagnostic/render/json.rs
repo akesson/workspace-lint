@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use serde::Serialize;
 
 use super::display_path;
-use crate::diagnostic::{Applicability, Diagnostic, Level, SilenceAnchor, Span, Suggestion};
+use crate::diagnostic::{Applicability, Diagnostic, SilenceAnchor, Span, Suggestion};
 
 #[derive(Serialize)]
 struct OutDiagnostic {
@@ -89,7 +89,7 @@ fn to_out(d: &Diagnostic) -> OutDiagnostic {
     }
 
     OutDiagnostic {
-        level: level_str(d.level),
+        level: d.level.as_str(),
         message: d.message.clone(),
         code: OutCode {
             code: d.lint.to_string(),
@@ -98,13 +98,6 @@ fn to_out(d: &Diagnostic) -> OutDiagnostic {
         spans,
         children,
         rendered: None,
-    }
-}
-
-fn level_str(l: Level) -> &'static str {
-    match l {
-        Level::Warn => "warning",
-        Level::Deny => "error",
     }
 }
 
@@ -164,6 +157,7 @@ fn suggestion_to_child(s: &Suggestion) -> OutChild {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::Level;
     use crate::diagnostic::builder::{at_file, at_workspace};
 
     fn render_one(d: &Diagnostic) -> serde_json::Value {

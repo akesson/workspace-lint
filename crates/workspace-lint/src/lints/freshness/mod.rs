@@ -84,11 +84,11 @@ fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
                 && newest > file_mtime
             {
                 let rel = file.strip_prefix(root).unwrap_or(file).to_path_buf();
-                // Force forward slashes in the rendered message so the
-                // diagnostic text is identical on Windows (the renderer already
-                // normalizes the anchor path, but not text embedded in the
-                // message). Matches centralized-deps / unused-deps.
-                let rel_str = rel.display().to_string().replace('\\', "/");
+                // `display_path` forces forward slashes so the message text is
+                // identical on Windows (the renderer normalizes the anchor path,
+                // but not text embedded in the message). Shared with the other
+                // path-rendering lints.
+                let rel_str = crate::diagnostic::render::display_path(&rel);
                 diagnostics.push(
                     at_file(
                         lint_id,

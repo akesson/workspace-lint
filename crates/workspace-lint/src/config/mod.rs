@@ -89,7 +89,7 @@ impl Config {
             LintId::Architecture => self
                 .architecture
                 .as_ref()
-                .is_some_and(|a| !a.rules.is_empty()),
+                .is_some_and(ArchitectureConfig::is_active),
             _ => true,
         }
     }
@@ -182,7 +182,7 @@ pub(crate) struct MacrosConfig {
     /// External macros (defined outside the workspace) whose expansion
     /// references items the resolver can't see from source alone. Each entry
     /// contributes its `expansion-uses` paths to the workspace-wide
-    /// implicit-refs set consulted by visibility / architecture / etc.
+    /// implicit-refs set consulted by unused-pub / unused-deps / architecture.
     #[serde(default)]
     pub external: Vec<ExternalMacro>,
 }
@@ -216,22 +216,15 @@ pub(crate) fn load() -> (Config, Vec<Diagnostic>) {
     let cargo_metadata = read_cargo_metadata();
 
     match (standalone_exists, cargo_metadata) {
-        (true, Some(_)) => {
-            eprintln!(
-                "error: found both {STANDALONE_FILE} and [workspace.metadata.workspace-lint] in Cargo.toml — use only one"
-            );
-            std::process::exit(1);
-        }
-        (false, None) => {
-            eprintln!(
-                "error: no configuration found — create {STANDALONE_FILE} or add [workspace.metadata.workspace-lint] to Cargo.toml"
-            );
-            std::process::exit(1);
-        }
+        (true, Some(_)) => crate::util::fail(format!(
+            "error: found both {STANDALONE_FILE} and [workspace.metadata.workspace-lint] in Cargo.toml — use only one"
+        )),
+        (false, None) => crate::util::fail(format!(
+            "error: no configuration found — create {STANDALONE_FILE} or add [workspace.metadata.workspace-lint] to Cargo.toml"
+        )),
         (true, None) => {
             let content = fs::read_to_string(STANDALONE_FILE).unwrap_or_else(|e| {
-                eprintln!("failed to read {STANDALONE_FILE}: {e}");
-                std::process::exit(1);
+                crate::util::fail(format!("failed to read {STANDALONE_FILE}: {e}"))
             });
             let config = parse_config(&content, STANDALONE_FILE);
             let diags = audit::audit(&content, STANDALONE_FILE, &config);
@@ -265,10 +258,8 @@ pub(crate) fn try_load() -> Option<Config> {
 }
 
 fn parse_config(toml_str: &str, source: &str) -> Config {
-    toml::from_str(toml_str).unwrap_or_else(|e| {
-        eprintln!("failed to parse config from {source}: {e}");
-        std::process::exit(1);
-    })
+    toml::from_str(toml_str)
+        .unwrap_or_else(|e| crate::util::fail(format!("failed to parse config from {source}: {e}")))
 }
 
 /// Extract the `[workspace.metadata.workspace-lint]` section from raw Cargo.toml content,

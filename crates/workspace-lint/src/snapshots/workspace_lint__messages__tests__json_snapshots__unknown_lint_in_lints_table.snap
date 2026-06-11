@@ -1,6 +1,0 @@
----
-source: crates/workspace-lint/src/messages.rs
-expression: "render(&scenario(\"unknown_lint_in_lints_table\"))"
-snapshot_kind: text
----
-{"level":"warning","message":"unknown lint `unused-dep` in `[lints]`","code":{"code":"workspace-lint::unknown-lint","explanation":null},"spans":[{"file_name":".workspace-lint.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":".workspace-lint.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unknown-lint)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"did you mean `unused-deps`?","spans":[]}],"rendered":null}

@@ -5,8 +5,10 @@
 //! `expect!` directive that documents the exception. Without it, the tool
 //! could regress on its own code and nobody would notice.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use std::path::PathBuf;
+
+mod common;
+use common::workspace_lint;
 
 #[test]
 fn workspace_lint_runs_clean_on_itself() {
@@ -24,7 +26,7 @@ fn workspace_lint_runs_clean_on_itself() {
         workspace_root.display()
     );
 
-    cargo_bin_cmd!("workspace-lint")
+    workspace_lint()
         .current_dir(workspace_root)
         .assert()
         .success();

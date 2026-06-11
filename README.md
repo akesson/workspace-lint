@@ -260,7 +260,21 @@ other lint. `config` and `unknown-lint` have one exception: a blanket
 workspace-lint
 ```
 
-Runs expand rules first (if configured), then all enabled checks.
+Runs all enabled checks. Any configured `[expand]` rules apply only under
+`--fix` (on a clean git tree), since they rewrite files — a plain run never
+mutates.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Clean — no `deny`-level findings survived. |
+| `1`  | Lint findings: at least one `deny`-level diagnostic. |
+| `2`  | Operational error — unusable config, a failed subprocess, an IO error, or a dirty tree under `--fix`. |
+
+Code `1` means the *linted code* has findings; code `2` means the *tool itself*
+couldn't run. Keep them distinct in CI so a broken config doesn't look like a
+lint failure (and vice versa).
 
 ### Run a single check
 
@@ -285,7 +299,7 @@ Touches all files matched by freshness rules so they appear newer than their dep
 workspace-lint expand --command "mise tasks" --glob "CLAUDE.md" --marker "MISE_TASKS" --auto-stage
 ```
 
-Runs a command and injects its output between `<!-- MARKER_START -->` / `<!-- MARKER_END -->` comment pairs in matched files. With `--auto-stage`, modified files are `git add`ed automatically.
+Runs a command and injects its output between `<!-- MARKER_START -->` / `<!-- MARKER_END -->` comment pairs in matched files. With `--auto-stage`, modified files are `git add`ed automatically. Because it rewrites files, the subcommand requires a clean git working tree (override with `--allow-dirty`). Configured `[expand]` rules are also applied as part of a `--fix` run.
 
 ## Configuration
 

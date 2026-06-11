@@ -31,7 +31,6 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 protobuf = "3"
 quote = "1"
 regex = "1"
-rustfix = "0.9"
 # SCIP index parser for `--fix` deep verification (binary-only; the published
 # `syn-workspace` library stays scip-free, emitting its own `ScipOccurrence`s).
 scip = "0.7"

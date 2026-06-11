@@ -1,33 +1,19 @@
 mod cli;
 mod config;
 mod deep;
-#[allow(dead_code)]
-// Diagnostic types include a few helpers (some Applicability variants,
-// clean_path/clean_pathbuf) that aren't yet referenced; upcoming steps
-// (--fix, snapshot tests) will use them. Suppress until then to keep
-// `cargo clippy -D warnings` green.
 mod diagnostic;
 mod directives;
 mod expand;
 mod fix;
 mod git;
-#[allow(dead_code)]
-// `LintId::ALL`, `FIXTURABLE_LINTS`, and the `Lint::id()` trait method are
-// referenced from the registry-coverage and scenario tests, not the binary
-// runtime. The string-form `lint` field on each `Diagnostic` is what drives
-// suppression, rendering, and severity lookup.
 mod lints;
-#[allow(dead_code)]
-// Compiled into the binary only because all module-level tests must be
-// visible to `cargo test`. The `scenarios()` builder is `pub` but the
-// snapshot tests inside `mod tests` are what actually exercise the
-// diagnostics — see the file's module docs.
 mod messages;
 mod suggest;
 mod suppress;
+mod util;
 
 use clap::Parser;
-use std::io::{self, IsTerminal};
+use std::io;
 
 use cli::{CheckRule, Cli, Commands};
 use config::MacrosConfig;
@@ -48,6 +34,16 @@ fn main() {
                 git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
             }
             let (config, config_diags) = config::load();
+            // `expand` mutates files in place (and may `git add` with
+            // `auto-stage`), so it runs only under `--fix` — gated by the
+            // clean-tree check above. This keeps the default/editor run (e.g.
+            // rust-analyzer's `check.overrideCommand`) side-effect-free. It runs
+            // before lints so the structural pass measures post-expansion files.
+            if cli.fix
+                && let Some(ref ec) = config.expand
+            {
+                expand::run(ec);
+            }
             let (mut diagnostics, workspace) = run_all(&config);
             // Config-validation findings join the stream before suppression
             // (so a `# workspace-lint: allow(config)` directive can silence
@@ -113,6 +109,10 @@ fn main() {
             marker,
             auto_stage,
         }) => {
+            // `expand` rewrites files (and may `git add`); gate it on a clean
+            // tree just like `--fix`, so its changes stay reviewable. Override
+            // with `--allow-dirty`.
+            git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
             let ec = CheckRule::into_expand_config(command, glob, marker, auto_stage);
             expand::run(&ec);
         }
@@ -246,10 +246,11 @@ fn parse_format(arg: Option<&str>) -> Format {
 /// `allow(stale-expect)` directive silences them (e.g. README example code
 /// that mentions an expect directive without intending to fire one).
 ///
-/// When a [`Workspace`] is available, the scanner reuses its cached
-/// `syn::File` ASTs and skips re-parsing every `.rs` file. Without one
-/// (e.g. for lint subcommands that don't load a workspace), we fall back
-/// to the on-demand parse path.
+/// When a [`Workspace`] is available, the scanner uses its known module list
+/// to parse each backing `.rs` file exactly once up front (the `Workspace`
+/// itself stores only file *paths*, not ASTs — it re-parses on demand to stay
+/// `Send + Sync`). Without one (e.g. for lint subcommands that don't load a
+/// workspace), we fall back to the per-file on-demand parse path.
 fn apply_suppression(
     workspace: Option<&syn_workspace::Workspace>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -271,10 +272,6 @@ fn apply_suppression(
 }
 
 fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<Workspace>) {
-    if let Some(ref ec) = config.expand {
-        expand::run(ec);
-    }
-
     let registry = lints::registry(config);
     // A loaded workspace is needed when some enabled lint asks for it, or when
     // a per-crate `[crates.*]` tier is present — the latter so per-crate levels
@@ -309,8 +306,9 @@ fn run_single_check(rule: CheckRule) -> (Vec<Diagnostic>, Option<Workspace>) {
 /// `Workspace` no longer prints them itself.
 fn load_workspace(macros: Option<&MacrosConfig>) -> Workspace {
     let mut ws = Workspace::load(".").unwrap_or_else(|e| {
-        eprintln!("failed to load workspace for resolver-backed lints: {e}");
-        std::process::exit(1);
+        util::fail(format!(
+            "failed to load workspace for resolver-backed lints: {e}"
+        ))
     });
     for w in ws.warnings() {
         eprintln!("workspace-lint: {w}");
@@ -335,13 +333,12 @@ fn report_and_exit(diagnostics: Vec<Diagnostic>, format: Format) {
         Format::Human => &mut stderr,
         Format::Json | Format::Github => &mut stdout,
     };
-    let deny_count = render(format, &diagnostics, out).unwrap_or_else(|e| {
-        let _ = io::stderr().is_terminal(); // ignore
-        eprintln!("error: failed to write diagnostics: {e}");
-        std::process::exit(2);
-    });
-    // Only `Deny`-level diagnostics flip exit. Configure escalation via the
-    // `[lints]` table; without it, every diagnostic stays advisory.
+    let deny_count = render(format, &diagnostics, out)
+        .unwrap_or_else(|e| util::fail(format!("error: failed to write diagnostics: {e}")));
+    // Exit-code policy (see [`util::fail`]): only a surviving `Deny` flips the
+    // code to `1` ("the linted code has findings"); operational failures use `2`.
+    // Configure escalation via `[lints]`; without it every diagnostic stays
+    // advisory and the run exits `0`.
     if deny_count > 0 {
         std::process::exit(1);
     }

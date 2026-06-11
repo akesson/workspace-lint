@@ -28,9 +28,10 @@ pub(crate) struct Cli {
     /// a directive is auto-written only for a finding rust-analyzer disproves.
     #[arg(long, global = true, default_value_t = false)]
     pub fix: bool,
-    /// Allow `--fix` to run even when the git working tree has uncommitted
-    /// changes to tracked files. Off by default so fixes stay reviewable.
-    #[arg(long, global = true, default_value_t = false, requires = "fix")]
+    /// Skip the clean-git-tree guard used by `--fix` and the `expand`
+    /// subcommand, letting them run with uncommitted changes to tracked files.
+    /// Off by default so the resulting changes stay reviewable as one diff.
+    #[arg(long, global = true, default_value_t = false)]
     pub allow_dirty: bool,
     /// Skip `--fix`'s deep (rust-analyzer SCIP) verification, restoring the
     /// plain "apply machine-applicable fixes" behavior with no second opinion.

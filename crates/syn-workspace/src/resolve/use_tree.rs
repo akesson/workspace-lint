@@ -53,28 +53,9 @@ pub struct UseBinding {
 /// root has `module_path: []`; a file at `crates/demo/src/a/b.rs` (reached
 /// via `mod a; mod a::b;`) has `module_path: ["a", "b"]`.
 #[derive(Debug, Clone)]
-pub struct Scope {
+pub(crate) struct Scope {
     pub crate_name: String,
     pub module_path: Vec<String>,
-}
-
-impl Scope {
-    pub fn new(crate_name: impl Into<String>) -> Self {
-        Self {
-            crate_name: crate_name.into(),
-            module_path: Vec::new(),
-        }
-    }
-
-    pub fn with_module<I, S>(mut self, segments: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.module_path
-            .extend(segments.into_iter().map(Into::into));
-        self
-    }
 }
 
 /// Walk a `use` declaration and emit one [`UseBinding`] per leaf name.
@@ -85,12 +66,18 @@ impl Scope {
 /// `file` is the path of the source file the `use` was parsed from; it's
 /// recorded on each binding's [`UseBinding::source`] so downstream lints
 /// can emit line-accurate diagnostics.
-pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope, file: &Path) -> Vec<UseBinding> {
+pub(crate) fn bindings_from_use(
+    item: &syn::ItemUse,
+    scope: &Scope,
+    file: &Path,
+) -> Vec<UseBinding> {
     let mut prefix: Vec<String> = Vec::new();
     let mut tree: &syn::UseTree = &item.tree;
 
-    if item.leading_colon.is_none() {
-        peel_leading_special(&mut tree, &mut prefix, scope);
+    if item.leading_colon.is_none() && !peel_leading_special(&mut tree, &mut prefix, scope) {
+        // A `super::` escaping the crate root — invalid Rust. Drop the use
+        // entirely rather than misattribute it to `crate::<rest>`.
+        return Vec::new();
     }
 
     let visibility = Visibility::from_syn(&item.vis);
@@ -103,7 +90,13 @@ pub fn bindings_from_use(item: &syn::ItemUse, scope: &Scope, file: &Path) -> Vec
 /// updating `prefix` to encode their effect. After this call, `tree` points
 /// to the first non-special path segment (or the original tree if the use
 /// didn't start with a special segment).
-fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scope: &Scope) {
+///
+/// Returns `false` if a `super::` would escape the crate root: rustc errors on
+/// those, so the caller drops the binding rather than misattribute it. This is
+/// the exact escape policy [`super::module_tree::peel_path_prefix`] applies to
+/// expression/macro paths, so a `use` and a code reference resolve the same
+/// (invalid) input the same way.
+fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scope: &Scope) -> bool {
     let mut started = false;
     while let syn::UseTree::Path(path) = tree {
         let ident = path.ident.to_string();
@@ -127,9 +120,10 @@ fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scop
                     prefix.extend(scope.module_path.iter().cloned());
                     started = true;
                 }
-                if prefix.len() > 1 {
-                    prefix.pop();
+                if prefix.len() <= 1 {
+                    return false;
                 }
+                prefix.pop();
                 true
             }
             _ => false,
@@ -140,6 +134,7 @@ fn peel_leading_special(tree: &mut &syn::UseTree, prefix: &mut Vec<String>, scop
             break;
         }
     }
+    true
 }
 
 fn walk(
@@ -242,7 +237,7 @@ fn source_span_from_ident(file: &Path, ident: &proc_macro2::Ident) -> SourceSpan
 /// exists so the references pass can still record what the glob targeted.
 /// Without it, `use predicates::prelude::*;` would look like a no-op and
 /// any dep-usage analysis would wrongly conclude `predicates` is unused.
-pub fn glob_targets_from_use(item: &syn::ItemUse, scope: &Scope) -> Vec<ResolvedPath> {
+pub(crate) fn glob_targets_from_use(item: &syn::ItemUse, scope: &Scope) -> Vec<ResolvedPath> {
     let mut prefix: Vec<String> = Vec::new();
     let mut tree: &syn::UseTree = &item.tree;
     if item.leading_colon.is_none() {
@@ -285,7 +280,10 @@ mod tests {
     }
 
     fn scope(crate_name: &str, modules: &[&str]) -> Scope {
-        Scope::new(crate_name).with_module(modules.iter().copied())
+        Scope {
+            crate_name: crate_name.to_string(),
+            module_path: modules.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     /// Stand-in path for unit tests — `bindings_from_use` records this as
@@ -356,16 +354,15 @@ mod tests {
     }
 
     #[test]
-    fn super_at_crate_root_stops_at_crate_name() {
-        // `use super::Foo;` from a file at the crate root is invalid Rust,
-        // but the resolver shouldn't panic — it should saturate at the
-        // crate name. The compiler will catch the invalid file at build
-        // time, not us.
+    fn super_at_crate_root_drops_the_binding() {
+        // `use super::Foo;` from a file at the crate root is invalid Rust. The
+        // resolver shouldn't panic, and it drops the reference rather than
+        // misattribute it to `crate::Foo` — the same escape policy
+        // `peel_path_prefix` applies to expression/macro paths, so a `use` and
+        // a code reference treat this invalid input identically. The compiler
+        // catches the invalid file at build time, not us.
         let s = scope("demo", &[]);
-        assert_eq!(
-            bindings("use super::Foo;", &s),
-            vec![("Foo".into(), "demo::Foo".into())]
-        );
+        assert_eq!(bindings("use super::Foo;", &s), Vec::new());
     }
 
     #[test]
