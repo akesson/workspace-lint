@@ -13,7 +13,7 @@ mod suppress;
 mod util;
 
 use clap::Parser;
-use std::io::{self, IsTerminal};
+use std::io;
 
 use cli::{CheckRule, Cli, Commands};
 use config::MacrosConfig;
@@ -306,8 +306,9 @@ fn run_single_check(rule: CheckRule) -> (Vec<Diagnostic>, Option<Workspace>) {
 /// `Workspace` no longer prints them itself.
 fn load_workspace(macros: Option<&MacrosConfig>) -> Workspace {
     let mut ws = Workspace::load(".").unwrap_or_else(|e| {
-        eprintln!("failed to load workspace for resolver-backed lints: {e}");
-        std::process::exit(1);
+        util::fail(format!(
+            "failed to load workspace for resolver-backed lints: {e}"
+        ))
     });
     for w in ws.warnings() {
         eprintln!("workspace-lint: {w}");
@@ -332,13 +333,12 @@ fn report_and_exit(diagnostics: Vec<Diagnostic>, format: Format) {
         Format::Human => &mut stderr,
         Format::Json | Format::Github => &mut stdout,
     };
-    let deny_count = render(format, &diagnostics, out).unwrap_or_else(|e| {
-        let _ = io::stderr().is_terminal(); // ignore
-        eprintln!("error: failed to write diagnostics: {e}");
-        std::process::exit(2);
-    });
-    // Only `Deny`-level diagnostics flip exit. Configure escalation via the
-    // `[lints]` table; without it, every diagnostic stays advisory.
+    let deny_count = render(format, &diagnostics, out)
+        .unwrap_or_else(|e| util::fail(format!("error: failed to write diagnostics: {e}")));
+    // Exit-code policy (see [`util::fail`]): only a surviving `Deny` flips the
+    // code to `1` ("the linted code has findings"); operational failures use `2`.
+    // Configure escalation via `[lints]`; without it every diagnostic stays
+    // advisory and the run exits `0`.
     if deny_count > 0 {
         std::process::exit(1);
     }

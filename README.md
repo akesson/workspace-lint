@@ -264,6 +264,18 @@ Runs all enabled checks. Any configured `[expand]` rules apply only under
 `--fix` (on a clean git tree), since they rewrite files — a plain run never
 mutates.
 
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Clean — no `deny`-level findings survived. |
+| `1`  | Lint findings: at least one `deny`-level diagnostic. |
+| `2`  | Operational error — unusable config, a failed subprocess, an IO error, or a dirty tree under `--fix`. |
+
+Code `1` means the *linted code* has findings; code `2` means the *tool itself*
+couldn't run. Keep them distinct in CI so a broken config doesn't look like a
+lint failure (and vice versa).
+
 ### Run a single check
 
 ```sh
