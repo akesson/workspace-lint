@@ -336,3 +336,100 @@ fn unknown_field(key: &str, ctx: &str, allowed: &[&str], config_path: &str) -> D
     }
     d.build()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A config that exercises **every** section and **every** field that
+    /// [`SECTIONS`] / [`section_schema`] know about. [`audit`] must report zero
+    /// findings: a stray finding means a typed `Config` field exists that the
+    /// schema doesn't list (so a valid config would draw a false `unknown key`).
+    ///
+    /// FORCING FUNCTION: when you add a field to any config struct, add it here
+    /// too — otherwise adding the field to the struct but forgetting
+    /// `section_schema` makes this test fail the moment the key appears below.
+    const EVERY_KEY_CONFIG: &str = r#"
+[lints]
+default = "warn"
+centralized-deps = "deny"
+file-size = "deny"
+
+[[file-size.rules]]
+glob = "**/*.rs"
+max-code-lines = 500
+
+[[crate-size.rules]]
+glob = "crates/*"
+max-code-lines = 5000
+include = ["*.rs"]
+
+[[freshness.rules]]
+glob = "**/CLAUDE.md"
+depends-on = "**/*.rs"
+
+[[cli-crate-version.rules]]
+command = ["wasm-bindgen", "--version"]
+pattern = 'wasm-bindgen (\S+)'
+crate = "wasm-bindgen"
+
+[[architecture.rules]]
+name = "layering"
+from = ["crates/a/**"]
+deny = ["crates/b/**"]
+exceptions = ["crates/a/src/special.rs"]
+severity = "deny"
+reason = "a must not depend on b"
+suggest = "use the shared crate"
+
+[[expand.rules]]
+command = ["mise", "tasks"]
+glob = "CLAUDE.md"
+marker = "MISE_TASKS"
+auto-stage = true
+
+[unused-deps]
+ignore = ["prost", "tonic"]
+
+[unused-pub]
+exclude-crates = ["api"]
+allowlist = ["*Error"]
+kinds = ["function", "struct"]
+exclude-paths = ["generated/**"]
+suppress-intra-crate = true
+auto-delete = false
+assume-all-public = false
+publish-hint-threshold = 3
+
+[[macros.external]]
+path = "tokio::main"
+expansion-uses = ["tokio::runtime::Runtime"]
+
+[crates.demo.lints]
+default = "warn"
+unused-pub = "deny"
+
+[crates.demo.unused-deps]
+ignore = ["foo"]
+
+[crates.demo.unused-pub]
+exclude-crates = ["x"]
+allowlist = ["Y"]
+"#;
+
+    #[test]
+    fn audit_schema_covers_every_config_key() {
+        let config: Config = toml::from_str(EVERY_KEY_CONFIG).expect("config parses");
+        let findings = audit(EVERY_KEY_CONFIG, ".workspace-lint.toml", &config);
+        assert!(
+            findings.is_empty(),
+            "audit flagged keys in a fully-populated config — the schema in \
+             config/audit.rs is out of sync with the typed Config:\n{}",
+            findings
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
