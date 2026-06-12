@@ -30,6 +30,9 @@ pub mod stale_git_index;
 pub mod unused_deps;
 pub mod unused_pub;
 
+/// Production-only line counting shared by `crate-size` and `file-size`.
+mod shipped_source;
+
 pub(crate) use lints_id::LintId;
 
 use crate::config::{Config, LintLevel};

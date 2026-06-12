@@ -17,13 +17,6 @@
 //! then re-running `cargo test` — insta will prompt you to accept the new
 //! snapshot lines.
 
-// This file is intentionally long: it lists every user-facing diagnostic
-// next to its rendered snapshot in three formats. Splitting it would scatter
-// the canonical message surface across multiple files. Acknowledge with
-// expect — stale-expect will nudge us when the file shrinks back under the
-// limit.
-workspace_lint_marker::expect!(file_size);
-
 use std::path::PathBuf;
 
 use crate::diagnostic::Diagnostic;
@@ -75,8 +68,9 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 "file exceeds 500 code lines (612)",
                 PathBuf::from("crates/web-api/src/handler.rs"),
             )
-            .help("split #[cfg(test)] modules into separate test files")
+            .help("split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)")
             .help("extract related structs, enums, or trait impls into their own modules")
+            .help("only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded")
             .note(r#"configured by [[file-size.rules]] glob = "**/*.rs""#)
             .build(),
         ),
@@ -324,8 +318,8 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
     ]
 }
 
-// Structural-quality assertions across every `scenarios()` Diagnostic live
-// in a sibling file so `messages.rs` stays under the `file-size` cap.
+// Structural-quality assertions across every `scenarios()` Diagnostic live in a
+// sibling file to keep this one focused on the message surface and its snapshots.
 #[cfg(test)]
 #[path = "messages_quality.rs"]
 mod quality_tests;
@@ -394,8 +388,9 @@ mod tests {
             warning: file exceeds 500 code lines (612)
              --> crates/web-api/src/handler.rs:1:1
               |
-              = help: split #[cfg(test)] modules into separate test files
+              = help: split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)
               = help: extract related structs, enums, or trait impls into their own modules
+              = help: only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded
               = note: configured by [[file-size.rules]] glob = "**/*.rs"
             help: if intentional, silence with:
               |
@@ -726,7 +721,7 @@ mod tests {
             // Validates the most important JSON contract: a Rust file
             // diagnostic carries a suggested_replacement with the `allow!`
             // macro text so the IDE quick-fix Just Works.
-            insta::assert_snapshot!(render(&scenario("file_size_over_limit")), @r#"{"level":"warning","message":"file exceeds 500 code lines (612)","code":{"code":"workspace-lint::file-size","explanation":null},"spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(file_size);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"split #[cfg(test)] modules into separate test files","spans":[]},{"level":"help","message":"extract related structs, enums, or trait impls into their own modules","spans":[]},{"level":"note","message":"configured by [[file-size.rules]] glob = \"**/*.rs\"","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("file_size_over_limit")), @r#"{"level":"warning","message":"file exceeds 500 code lines (612)","code":{"code":"workspace-lint::file-size","explanation":null},"spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(file_size);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)","spans":[]},{"level":"help","message":"extract related structs, enums, or trait impls into their own modules","spans":[]},{"level":"help","message":"only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded","spans":[]},{"level":"note","message":"configured by [[file-size.rules]] glob = \"**/*.rs\"","spans":[]}],"rendered":null}"#);
         }
 
         #[test]

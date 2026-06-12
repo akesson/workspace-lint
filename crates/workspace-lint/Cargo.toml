@@ -24,9 +24,6 @@ syn = { workspace = true }
 syn-workspace = { path = "../syn-workspace" }
 tokei = { workspace = true }
 toml = { workspace = true }
-# Zero-dep marker crate; needed at non-test config so the `expect!` macros
-# inside `src/` resolve. The macros expand to nothing, so no runtime cost.
-workspace-lint-marker = { path = "../workspace-lint-marker" }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

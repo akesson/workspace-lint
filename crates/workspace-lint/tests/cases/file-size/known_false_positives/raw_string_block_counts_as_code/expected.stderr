@@ -1,8 +1,9 @@
 error: file exceeds 5 code lines (12)
  --> crates/demo/src/lib.rs:1:1
   |
-  = help: split #[cfg(test)] modules into separate test files
+  = help: split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)
   = help: extract related structs, enums, or trait impls into their own modules
+  = help: only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded
   = note: configured by [[file-size.rules]] glob = "**/*.rs"
 help: if intentional, silence with:
   |
