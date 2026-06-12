@@ -10,9 +10,9 @@
 //! - **cargo dev-target directories** (`tests/`, `benches/`, `examples/`) at the
 //!   crate root, which hold integration tests, benches, examples, and fixtures —
 //!   never shipped. `build.rs` stays counted (it is maintained shipped source).
-//!   `crate-size` knows each crate's root and calls [`in_dev_target_dir`];
+//!   `crate-size` knows each crate's root and calls `in_dev_target_dir`;
 //!   `file-size` has no cargo metadata, so it discovers the owning crate root
-//!   itself via [`in_dev_target_dir_rootless`].
+//!   itself via `in_dev_target_dir_rootless`.
 //! - **in-file test items**: any item gated by exactly `#[cfg(test)]`, any fn
 //!   marked `#[test]` / `#[wasm_bindgen_test]`, and the sibling file an
 //!   out-of-line `#[cfg(test)] mod x;` resolves to.

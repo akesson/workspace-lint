@@ -33,8 +33,13 @@ stale-git-index = "deny"
 config = "deny"
 unknown-lint = "deny"
 
+# Applies to every crate's `src/` tree, not just the binary — the resolver no
+# longer exempts itself from the 500-line discipline. Counts *shipped* source
+# only (the same production-only metric `crate-size` uses: `#[cfg(test)]` items,
+# `#[test]` fns, and dev-target trees are excluded — see `lints::shipped_source`),
+# so a file's number reflects maintained product code, not its test mass.
 [[file-size.rules]]
-glob = "crates/workspace-lint/src/**/*.rs"
+glob = "crates/*/src/**/*.rs"
 max-code-lines = 500
 
 [[crate-size.rules]]
@@ -43,11 +48,10 @@ glob = "crates/*"
 # TOML fixtures) is skipped, and so is test code — the `tests/`/`benches/`/
 # `examples/` dev-target trees and in-file `#[cfg(test)]` items / `#[test]`
 # fns (a crate-size budget is about maintained product code, not the test
-# mass that dwarfs it — see `crate_size::shipped_source`). Under this metric
-# syn-workspace is ~4.0k and workspace-lint ~4.8k shipped lines, so 6000
-# leaves real headroom while still tripping on genuine source growth. This is
-# why the two `expect(crate-size)` directives are gone: both crates are
-# legitimately under budget once tests stop counting.
+# mass that dwarfs it — see `lints::shipped_source`, shared with `file-size`).
+# Under this metric syn-workspace is ~3.7k and workspace-lint ~5.4k shipped
+# lines, so 6000 still trips on genuine source growth. workspace-lint is the
+# binding crate — keep an eye on it as lints are added.
 max-code-lines = 6000
 
 # `unused-deps` `ignore` is scoped per-crate (a worked example of the
