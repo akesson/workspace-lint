@@ -1,4 +1,4 @@
-error: file exceeds 5 code lines (8)
+error: file exceeds 3 code lines (5)
  --> crates/demo/src/lib.rs:1:1
   |
   = help: split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)

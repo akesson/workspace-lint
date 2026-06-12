@@ -9,9 +9,10 @@ use crate::diagnostic::builder::at_crate;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
-mod shipped_source;
 #[cfg(test)]
 mod tests;
+
+use crate::lints::shipped_source;
 
 pub(crate) use config::{CrateSizeConfig, CrateSizeRule};
 

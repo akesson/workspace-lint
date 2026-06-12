@@ -1,14 +1,18 @@
-//! Shipped-source line counting for the crate-size budget.
+//! Shipped-source line counting, shared by the `crate-size` and `file-size`
+//! budgets.
 //!
-//! A crate-size budget is about the maintained *shipped* source, not the test
-//! mass that legitimately dwarfs it (in this very workspace ~40% of the binary
+//! A size budget is about the maintained *shipped* source, not the test mass
+//! that legitimately dwarfs it (in this very workspace ~40% of the binary
 //! crate's `src/` is `#[cfg(test)]` unit tests, on top of whole `tests/` trees).
-//! So this module counts code lines the way the lint always has — with the same
-//! tokei classifier `file-size` uses — but first removes test code:
+//! So this module counts code lines the way the lints always have — with the
+//! same tokei classifier — but first removes test code:
 //!
 //! - **cargo dev-target directories** (`tests/`, `benches/`, `examples/`) at the
 //!   crate root, which hold integration tests, benches, examples, and fixtures —
 //!   never shipped. `build.rs` stays counted (it is maintained shipped source).
+//!   `crate-size` knows each crate's root and calls `in_dev_target_dir`;
+//!   `file-size` has no cargo metadata, so it discovers the owning crate root
+//!   itself via `in_dev_target_dir_rootless`.
 //! - **in-file test items**: any item gated by exactly `#[cfg(test)]`, any fn
 //!   marked `#[test]` / `#[wasm_bindgen_test]`, and the sibling file an
 //!   out-of-line `#[cfg(test)] mod x;` resolves to.
@@ -19,8 +23,14 @@
 //! code as shipped) so the budget is never silently loosened: `cfg(any(test,
 //! …))` is not treated as test-only, and a file that fails to parse is counted
 //! whole.
+//!
+//! One deliberate divergence from a raw tokei walk: embedded code blocks (e.g. a
+//! `rust`-tagged fence inside a doc comment) are *not* counted, because the
+//! per-file parse here reports only the host language's `.code`, never tokei's
+//! embedded-language `children`. Both budgets share this definition, so they
+//! agree to the line.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use syn::spanned::Spanned;
@@ -34,7 +44,7 @@ const DEV_TARGET_DIRS: &[&str] = &["tests", "benches", "examples"];
 /// (`<crate>/tests/…`, `<crate>/benches/…`, `<crate>/examples/…`). A nested
 /// `src/…/tests.rs` is intentionally NOT matched here — its `#[cfg(test)]`
 /// content is removed by the in-file scan instead.
-pub(super) fn in_dev_target_dir(crate_dir: &Path, file: &Path) -> bool {
+pub(crate) fn in_dev_target_dir(crate_dir: &Path, file: &Path) -> bool {
     let Ok(rel) = file.strip_prefix(crate_dir) else {
         return false; // unexpected path shape — count it (never under-count).
     };
@@ -44,14 +54,40 @@ pub(super) fn in_dev_target_dir(crate_dir: &Path, file: &Path) -> bool {
         .is_some_and(|first| DEV_TARGET_DIRS.contains(&first))
 }
 
+/// Like [`in_dev_target_dir`], but for callers without cargo metadata: discover
+/// the owning crate root by walking ancestors to the nearest one holding a
+/// `Cargo.toml`, then apply the same top-level dev-target rule against it. Used
+/// by `file-size`, which counts files by glob and never loads a `Workspace`.
+///
+/// A `.rs` file with no `Cargo.toml` ancestor (outside any crate) is treated as
+/// shipped — never under-count.
+pub(crate) fn in_dev_target_dir_rootless(file: &Path) -> bool {
+    let mut ancestor = file.parent();
+    while let Some(dir) = ancestor {
+        if dir.join("Cargo.toml").is_file() {
+            return in_dev_target_dir(dir, file);
+        }
+        ancestor = dir.parent();
+    }
+    false
+}
+
 /// One parsed file awaiting the counting pass: its path, full source, and the
-/// 1-based test line ranges to blank.
+/// 1-based test line ranges to subtract.
 type ParsedFile<'a> = (&'a PathBuf, String, Vec<(usize, usize)>);
 
-/// Sum shipped (non-test) Rust code lines across `rust_files`, using tokei for
-/// the classification. Out-of-line `#[cfg(test)] mod x;` target files are
-/// skipped wholesale; in-file test items are blanked before counting.
-pub(super) fn count_rust_shipped(rust_files: &[PathBuf]) -> usize {
+/// Sum shipped (non-test) Rust code lines across `rust_files`. Thin wrapper over
+/// [`shipped_lines_by_file`]; `crate-size` wants one crate total.
+pub(crate) fn count_rust_shipped(rust_files: &[PathBuf]) -> usize {
+    shipped_lines_by_file(rust_files).values().sum()
+}
+
+/// Shipped (non-test) Rust code lines **per file**, using tokei for the
+/// classification. `file-size` needs the per-file breakdown; `crate-size` sums
+/// it. Out-of-line `#[cfg(test)] mod x;` target files are dropped from the map
+/// entirely (they have no shipped lines); for the rest, the production lines
+/// (everything outside the test ranges) are counted via [`production_code`].
+pub(crate) fn shipped_lines_by_file(rust_files: &[PathBuf]) -> HashMap<PathBuf, usize> {
     // Pass 1: parse each file once; record its test line ranges and collect the
     // sibling files declared as out-of-line test modules (resolvable only with
     // the whole file set in hand).
@@ -72,12 +108,44 @@ pub(super) fn count_rust_shipped(rust_files: &[PathBuf]) -> usize {
     parsed
         .iter()
         .filter(|(path, _, _)| !test_mod_files.contains(*path))
-        .map(|(_, content, ranges)| {
-            LanguageType::Rust
-                .parse_from_str(blank_lines(content, ranges), &cfg)
-                .code
-        })
-        .sum()
+        .map(|(path, content, ranges)| ((*path).clone(), production_code(content, ranges, &cfg)))
+        .collect()
+}
+
+/// Tokei code lines of the file's *production* source: the lines outside every
+/// test range, extracted into one buffer and counted together.
+///
+/// Removing the test lines (rather than blanking them in place to empty lines)
+/// is the load-bearing choice. tokei classifies lines with a *stateful*
+/// string/comment scanner, so a `'"'`-style token — a char literal holding a
+/// quote, e.g. `s.trim_matches('"')` — can leave the scanner believing a string
+/// is open. If the balancing quote sits inside a *blanked* test region, the
+/// scanner never closes and counts every following blank line as code, leaking
+/// the whole test block back in. Extracting only the production lines keeps the
+/// counted buffer self-contained and balanced, so that can't happen. Whatever
+/// residual `'"'` imprecision tokei has *within* production is the same it has
+/// on the raw file — this never makes the count larger than the raw file.
+fn production_code(content: &str, ranges: &[(usize, usize)], cfg: &TokeiConfig) -> usize {
+    if ranges.is_empty() {
+        return LanguageType::Rust.parse_from_str(content, cfg).code;
+    }
+    let mut in_test: HashSet<usize> = HashSet::new(); // 0-based line indices.
+    for &(start, end) in ranges {
+        for line in start..=end {
+            if line >= 1 {
+                in_test.insert(line - 1);
+            }
+        }
+    }
+    let production: Vec<&str> = content
+        .lines()
+        .enumerate()
+        .filter(|(i, _)| !in_test.contains(i))
+        .map(|(_, l)| l)
+        .collect();
+    LanguageType::Rust
+        .parse_from_str(production.join("\n"), cfg)
+        .code
 }
 
 /// Test line ranges (1-based, inclusive) in one file's source, plus the
@@ -151,7 +219,7 @@ fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
 }
 
 /// 1-based inclusive line range an item occupies, including its outer
-/// attributes so the `#[cfg(test)]` / `#[test]` line is blanked too.
+/// attributes so the `#[cfg(test)]` / `#[test]` line is subtracted too.
 fn item_line_range(attrs: &[syn::Attribute], item: &syn::Item) -> (usize, usize) {
     let span = item.span();
     let mut start = span.start().line;
@@ -170,29 +238,6 @@ fn out_of_line_mod_files(dir: &Path, name: &str) -> [PathBuf; 2] {
         dir.join(format!("{name}.rs")),
         dir.join(name).join("mod.rs"),
     ]
-}
-
-/// Replace every line within any `(start, end)` 1-based inclusive range with an
-/// empty line, so tokei counts it as a blank rather than code. Ranges may
-/// overlap; out-of-bounds entries are ignored.
-fn blank_lines(content: &str, ranges: &[(usize, usize)]) -> String {
-    if ranges.is_empty() {
-        return content.to_string();
-    }
-    let mut blanked: HashSet<usize> = HashSet::new(); // 0-based line indices.
-    for &(start, end) in ranges {
-        for line in start..=end {
-            if line >= 1 {
-                blanked.insert(line - 1);
-            }
-        }
-    }
-    content
-        .lines()
-        .enumerate()
-        .map(|(i, l)| if blanked.contains(&i) { "" } else { l })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Outer attributes of a syn item (mirrors the resolver's own `item_attrs`).
@@ -223,9 +268,7 @@ mod tests {
 
     fn shipped(content: &str) -> usize {
         let (ranges, _) = test_regions(content, Path::new(""));
-        LanguageType::Rust
-            .parse_from_str(blank_lines(content, &ranges), &TokeiConfig::default())
-            .code
+        production_code(content, &ranges, &TokeiConfig::default())
     }
 
     #[test]
@@ -323,8 +366,38 @@ pub mod feature {
 }
 ";
         // `pub mod feature {`, `pub fn shipped`, and the module's closing `}` —
-        // the inner cfg(test) block (incl. its braces) is blanked.
+        // the inner cfg(test) block (incl. its braces) is subtracted.
         assert_eq!(shipped(src), 3);
+    }
+
+    #[test]
+    fn test_region_with_quote_char_literal_does_not_overcount() {
+        // Regression: a `'"'` char literal in shipped code (here `trim_matches`)
+        // confuses tokei's stateful string scanner. The old approach blanked the
+        // test lines in place, which severed the scanner's quote balance and made
+        // every following blank line count as string-continuation "code" — the
+        // whole test mod leaked back in. Counting the region in isolation and
+        // subtracting avoids that: shipped is exactly the two production fns.
+        let src = "\
+pub fn parse(s: &str) -> &str {
+    s.trim_matches('\"')
+}
+pub fn other() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t1() {
+        assert_eq!(super::parse(\"x\"), \"x\");
+    }
+    #[test]
+    fn t2() {
+        assert_eq!(super::other(), ());
+    }
+}
+";
+        // `pub fn parse {`, `s.trim_matches`, `}`, `pub fn other` = 4 shipped.
+        assert_eq!(shipped(src), 4);
     }
 
     #[test]
@@ -355,5 +428,27 @@ pub mod feature {
             root,
             Path::new("/ws/crates/demo/src/tests.rs")
         ));
+    }
+
+    #[test]
+    fn rootless_discovers_crate_root_via_cargo_toml() {
+        // Build `<tmp>/crates/demo/{Cargo.toml, src/lib.rs, tests/it.rs}` and a
+        // workspace `Cargo.toml` at the root. The nearest `Cargo.toml` to each
+        // file is the crate dir, so the dev-target rule keys off the crate root
+        // even with no cargo metadata.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let demo = root.join("crates/demo");
+        std::fs::create_dir_all(demo.join("src")).unwrap();
+        std::fs::create_dir_all(demo.join("tests")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(demo.join("Cargo.toml"), "[package]\n").unwrap();
+
+        assert!(in_dev_target_dir_rootless(&demo.join("tests/it.rs")));
+        assert!(!in_dev_target_dir_rootless(&demo.join("src/lib.rs")));
+        // No `Cargo.toml` ancestor → treated as shipped (never under-count).
+        assert!(!in_dev_target_dir_rootless(Path::new(
+            "/nonexistent/tests/x.rs"
+        )));
     }
 }

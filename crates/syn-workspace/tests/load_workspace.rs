@@ -117,14 +117,15 @@ fn re_export_index_chases_self_chain() {
     let ws = Workspace::load(workspace_root()).expect("load workspace");
 
     // syn-workspace::lib.rs has `pub use resolve::ResolvedPath`, which Tier 2.5
-    // should chase to the original definition inside the `resolve` submodule.
-    // Canonical paths use the code-form crate name (underscores), matching what
-    // `use syn_workspace::...` writes in source.
+    // should chase through `resolve`'s own `pub use types::ResolvedPath` to the
+    // definition inside the `resolve::types` submodule. Canonical paths use the
+    // code-form crate name (underscores), matching what `use syn_workspace::...`
+    // writes in source.
     let exported_at_root = syn_workspace::ResolvedPath::new(["syn_workspace", "ResolvedPath"]);
     let canonical = ws.resolve_canonical(&exported_at_root);
     assert_eq!(
         canonical.display(),
-        "syn_workspace::resolve::ResolvedPath",
+        "syn_workspace::resolve::types::ResolvedPath",
         "pub use should chase to the definition site; got {}",
         canonical.display(),
     );
@@ -142,15 +143,22 @@ fn module_tree_extracts_pub_items() {
         .iter()
         .find(|m| m.name == "resolve")
         .expect("resolve submodule");
-    let pub_names: Vec<_> = resolve_mod
+    // The leaf value types live in `resolve::types`; `resolve/mod.rs` only
+    // re-exports them. Assert the walker reaches the nested module and sees the
+    // `pub struct` defined there.
+    let types_mod = resolve_mod
+        .submodules
+        .iter()
+        .find(|m| m.name == "types")
+        .expect("resolve::types submodule");
+    let pub_names: Vec<_> = types_mod
         .items
         .iter()
         .filter(|i| matches!(i.visibility, syn_workspace::Visibility::Public))
         .map(|i| i.name.as_str())
         .collect();
-    // resolve/mod.rs exposes ResolvedPath, Workspace, etc. at the module level.
     assert!(
         pub_names.contains(&"ResolvedPath"),
-        "resolve module should expose ResolvedPath; got {pub_names:?}"
+        "resolve::types module should expose ResolvedPath; got {pub_names:?}"
     );
 }

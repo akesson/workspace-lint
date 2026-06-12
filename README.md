@@ -71,7 +71,17 @@ centralized-deps = "deny"   # or "allow" to turn off
 
 ### file-size
 
-Enforces maximum code lines per file (blank lines and comments excluded, counted by [tokei](https://github.com/XAMPPRocky/tokei)).
+Enforces maximum code lines per file (blank lines and comments excluded, counted
+by [tokei](https://github.com/XAMPPRocky/tokei)).
+
+For `.rs` files matched by a rule, the count is *shipped* source only — the same
+production-only definition `crate-size` uses, so the two budgets agree to the
+line. Excluded: anything gated by exactly `#[cfg(test)]`, `#[test]` /
+`#[wasm_bindgen_test]` functions, files that are out-of-line `#[cfg(test)] mod x;`
+targets, and the `tests/`/`benches/`/`examples/` dev-target trees. Ambiguous code
+is counted (never under-counted): `#[cfg(any(test, …))]` stays in, and a file that
+fails to parse is counted whole. Non-Rust globs (e.g. `**/*.ts`) keep tokei's raw
+whole-file count.
 
 ```toml
 [[file-size.rules]]
