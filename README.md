@@ -148,7 +148,13 @@ only one member.
 Detects `pub` items that are never used across the workspace. Resolver-backed
 (built on `syn-workspace`): it needs **no** SCIP index and **no** `rust-analyzer`
 subprocess, so it runs the same locally and in CI. Items re-exported via `pub use`
-are always skipped (narrowing them would break the re-export).
+are always skipped (narrowing them would break the re-export). So are types that
+appear in the *public signature* of a more-visible item (a `pub fn` return type,
+a `pub` field, a trait-impl associated type, …) — tightening those would not
+compile (E0446 / `private_interfaces`). That exemption also covers a type a
+builder macro promotes into its generated public `build()` signature, recognized
+from the attribute: `typed_builder`'s `#[builder(build_method(into = T))]` and
+`derive_builder`'s `#[builder(build_fn(error = "T"))]`.
 
 **Publish-aware.** The lint can't see consumers outside your workspace, so it
 treats a crate's public API as off-limits **only when the crate declares it has

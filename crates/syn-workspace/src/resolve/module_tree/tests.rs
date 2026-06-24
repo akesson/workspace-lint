@@ -232,6 +232,46 @@ fn signature_exposure_skips_non_public_and_body_positions() {
     }
 }
 
+#[test]
+fn builder_attr_records_promoted_types() {
+    let root =
+        build_crate_tree(&manifest_dir("builder_exposure"), "builder_exposure").expect("build");
+    // Like the source-signature walk, attribute-promoted types are recorded at
+    // Public (the generated `build()` is public).
+    assert!(
+        root.walk()
+            .flat_map(|m| m.signature_exposures.iter())
+            .all(|e| e.enclosing_vis == Visibility::Public),
+        "every recorded exposure should be Public",
+    );
+    let exposed = signature_exposed(&root);
+    for ty in [
+        "builder_exposure::inner::TbErr", // typed_builder build_method(into = …)
+        "builder_exposure::inner::TbErrVis", // … reached past a `vis = "…"` sibling
+        "builder_exposure::inner::DbErr", // derive_builder build_fn(error = "…")
+    ] {
+        assert!(
+            exposed.contains(ty),
+            "expected `{ty}` exposed; got {exposed:?}"
+        );
+    }
+}
+
+#[test]
+fn builder_attr_skips_non_promoting_keys() {
+    let root =
+        build_crate_tree(&manifest_dir("builder_exposure"), "builder_exposure").expect("build");
+    let exposed = signature_exposed(&root);
+    // Named only by `crate_module_path = …` (not build_method/build_fn), so the
+    // targeted scan must not record it — proves we don't broadly scan every
+    // `#[builder(…)]` token stream. The bare-`into` and `build_fn(private)`
+    // cases in the fixture also exercise the parse without recording anything.
+    assert!(
+        !exposed.contains("builder_exposure::inner::NotExposed"),
+        "expected `inner::NotExposed` NOT exposed; got {exposed:?}"
+    );
+}
+
 // --- code-path extraction (regular non-macro item bodies) ---
 
 fn parse_items(src: &str) -> Vec<syn::Item> {
