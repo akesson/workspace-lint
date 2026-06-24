@@ -1,0 +1,14 @@
+# Cross-crate-only guard. A wildcard rule forbids EVERY crate from reaching ANY
+# `internal::` module. The single crate here references its OWN `internal` module
+# three ways — `use` binding, glob, and a fully-qualified call — each of which
+# resolves to an `app::internal::*` canonical that the deny pattern would match.
+# Architecture rules govern cross-crate layering, so all three passes must skip
+# own-crate references → all passed.
+[[architecture.rules]]
+name = "no-internal-anywhere"
+from = ["*"]
+deny = ["*::internal::**"]
+
+[lints]
+default = "allow"
+architecture = "deny"

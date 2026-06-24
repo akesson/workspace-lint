@@ -58,6 +58,17 @@ pub struct Workspace {
     /// reference like a cross-crate one — the item must stay `pub`. See
     /// [`Workspace::referenced_from_sibling_target`].
     pub(super) sibling_target_refs: std::collections::HashSet<ResolvedPath>,
+    /// For each canonical type path, the widest visibility at which it appears
+    /// in the **public signature surface** of some item (a `pub fn` return /
+    /// parameter type, a `pub` field, a trait-impl associated-type value, …),
+    /// with prefixes credited like [`Self::canonical_refs_by_path`]. Built from
+    /// each module's [`Module::signature_exposures`](crate::Module). Consumed by
+    /// [`Workspace::exposed_in_public_signature`], which `unused-pub` uses so it
+    /// never narrows a type a more-visible item exposes (E0446 /
+    /// `private_interfaces`). In the current build only `Public` exposures are
+    /// recorded; the `Visibility` value leaves room for a future precise variant.
+    pub(super) signature_exposure:
+        std::collections::HashMap<ResolvedPath, crate::resolve::Visibility>,
     /// Per-crate set of crate names referenced inside rust-compiling doc-test
     /// code fences (see [`module_tree`]/`doc_fences`). Keyed by code name, like
     /// [`Self::references_by_crate`]. Kept *separate* from the occurrence-derived
@@ -187,6 +198,34 @@ impl Workspace {
         for path in &sibling_target_raw {
             sibling_target_refs.extend(canonical_with_prefixes(&re_exports, path));
         }
+        // Aggregate signature exposures over every member's primary unit (the
+        // lib/main surface — the only API an intra-crate `pub(crate)` tighten
+        // could break). Prefix-credited like `canonical_refs_by_path` so a query
+        // matches whether the signature named the type directly, via a module
+        // path, or through a `pub use` alias. Keep the most-exposing visibility.
+        let mut signature_exposure: std::collections::HashMap<
+            ResolvedPath,
+            crate::resolve::Visibility,
+        > = std::collections::HashMap::new();
+        for krate in &crates {
+            if !krate.is_workspace_member {
+                continue;
+            }
+            if let Some(target) = krate.lib_or_main() {
+                for module in target.root.walk() {
+                    for exp in &module.signature_exposures {
+                        for canonical in canonical_with_prefixes(&re_exports, &exp.canonical) {
+                            let entry = signature_exposure
+                                .entry(canonical)
+                                .or_insert(exp.enclosing_vis);
+                            if exposure_rank(exp.enclosing_vis) > exposure_rank(*entry) {
+                                *entry = exp.enclosing_vis;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(Self {
             crates,
             root,
@@ -197,9 +236,24 @@ impl Workspace {
             references_by_crate,
             canonical_refs_by_path,
             sibling_target_refs,
+            signature_exposure,
             doctest_dep_refs_by_crate,
             warnings,
         })
+    }
+}
+
+/// Local visibility ranking used only to keep the most-exposing entry in the
+/// signature-exposure index. Deliberately *not* a public ordering on
+/// [`Visibility`](crate::resolve::Visibility): the restricted variants
+/// (`pub(crate)`/`pub(super)`/`pub(in)`) collapse to one rank because only the
+/// `Public` distinction matters to [`Workspace::exposed_in_public_signature`].
+fn exposure_rank(v: crate::resolve::Visibility) -> u8 {
+    use crate::resolve::Visibility::*;
+    match v {
+        Public => 2,
+        PubCrate | PubSuper | PubIn => 1,
+        Private => 0,
     }
 }
 

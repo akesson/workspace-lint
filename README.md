@@ -215,8 +215,17 @@ suggest = "move the shared type into a `core` crate" # help: line
 ```
 
 Patterns use `::` as the segment separator; `*` matches one segment, `**`
-matches zero or more. Only `use` bindings are inspected — a fully-qualified
-call site (`other_crate::infra::Thing::new()`) without a `use` won't fire.
+matches zero or more. Three reference forms are inspected: `use` bindings, glob
+imports (`use mod::*`), and fully-qualified call sites
+(`other_crate::infra::Thing::new()`) that have no `use`. A fully-qualified
+reference is matched against its canonical path *and every prefix* — so
+`Thing::new()` matches a `Thing` deny — and an `exceptions` entry on any prefix
+(e.g. `infra::Id`) exempts the whole reference. A given target is reported at
+most once per rule per module: a violation already surfaced through its `use`
+binding is not repeated by the call-site pass, and N call sites collapse to one
+diagnostic. References inside macro bodies are not inspected (resolver macro
+non-goal), and `pub(crate) use` re-export hops are invisible (only `pub use`
+edges are followed).
 
 ### module-tree
 

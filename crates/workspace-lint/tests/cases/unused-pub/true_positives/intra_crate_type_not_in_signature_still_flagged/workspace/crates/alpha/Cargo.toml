@@ -1,0 +1,7 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+# Published → the public fns are exempt; only the private-`mod` types are
+# evaluated, isolating the guard's discrimination (one flagged, one suppressed).
+publish = true

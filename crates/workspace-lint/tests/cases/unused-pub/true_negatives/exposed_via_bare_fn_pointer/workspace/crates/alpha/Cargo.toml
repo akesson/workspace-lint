@@ -1,0 +1,7 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+# Published → the public fns are exempt as external API surface; only the
+# private-`mod` types below go through the cross-crate-usage check.
+publish = true

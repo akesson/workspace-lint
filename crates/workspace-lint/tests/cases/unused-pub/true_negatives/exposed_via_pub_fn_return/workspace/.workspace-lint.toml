@@ -1,0 +1,10 @@
+# Signature-exposure guard, return-type form (the `pub fn tr() -> Tr` /
+# `-> Result<OAuthClient>` class). The `inner::*` types are named only inside
+# the crate, so the resolver classes them IntraCrate and would tighten them to
+# `pub(crate)` — but each is the return type of an exempt `pub fn`, so narrowing
+# it would trip `private_interfaces`. The guard suppresses them → all passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"

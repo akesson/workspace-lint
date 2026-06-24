@@ -1,0 +1,10 @@
+# Over-suppression control for the signature-exposure guard. `Exposed` is the
+# return type of a `pub fn` → suppressed (correct). `BodyOnly` is referenced only
+# from a function body, never a signature → it must STILL be flagged + tightened.
+# If the guard over-claims exposure, this case stops firing and the test fails —
+# pinning the lower bound of suppression.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"

@@ -1,0 +1,11 @@
+# Signature-exposure guard, bare-fn-pointer form. `Arg`/`Ret` are named only
+# inside the crate, so the resolver classes them IntraCrate and would tighten
+# them to `pub(crate)` — but each appears in the bare-fn-pointer type
+# (`fn(Arg) -> Ret`) returned by an exempt `pub fn`, so narrowing it would make a
+# `pub fn` expose a less-public type (`private_interfaces`). The signature walk's
+# `BareFn` arm records them, so the guard suppresses both → all passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"

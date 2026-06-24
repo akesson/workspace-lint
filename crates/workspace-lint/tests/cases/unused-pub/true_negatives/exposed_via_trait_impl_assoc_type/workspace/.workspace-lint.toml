@@ -1,0 +1,10 @@
+# Signature-exposure guard, the E0446 form (the `type Response =
+# JsonResponse<MockJoke>` class). `Resp` is named only inside the crate, so the
+# resolver would tighten it to `pub(crate)` — but it is the value of a public
+# trait-impl associated type, so narrowing it is a HARD compile error (E0446),
+# not just a warning. The guard must suppress it → all passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
