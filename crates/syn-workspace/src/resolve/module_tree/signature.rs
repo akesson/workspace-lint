@@ -64,125 +64,168 @@ pub(super) fn collect_signature_exposures(
         use_bindings,
         parent_canonical,
     };
+    // Thin dispatcher: each item kind's signature surface lives in its own
+    // walker below, so this match stays a flat fan-out (one arm = one kind).
     match syn_item {
-        syn::Item::Fn(f) => {
-            let vis = Visibility::from_syn(&f.vis);
-            if is_public(vis) {
-                walk_signature(&f.sig, vis, &ctx, out);
-            }
-        }
-        syn::Item::Struct(s) => {
-            let vis = Visibility::from_syn(&s.vis);
-            if is_public(vis) {
-                walk_generics(&s.generics, vis, &ctx, out);
-                // A field leaks only when the field itself is `pub` (its
-                // effective visibility is the more restrictive of struct and
-                // field — both must be public to expose at `Public`).
-                for field in &s.fields {
-                    if is_public(Visibility::from_syn(&field.vis)) {
-                        walk_type(&field.ty, vis, &ctx, out);
-                    }
-                }
-            }
-        }
-        syn::Item::Enum(e) => {
-            let vis = Visibility::from_syn(&e.vis);
-            if is_public(vis) {
-                walk_generics(&e.generics, vis, &ctx, out);
-                // Enum variant fields have no individual visibility — they are
-                // as visible as the enum itself.
-                for variant in &e.variants {
-                    for field in &variant.fields {
-                        walk_type(&field.ty, vis, &ctx, out);
-                    }
-                }
-            }
-        }
-        syn::Item::Union(u) => {
-            let vis = Visibility::from_syn(&u.vis);
-            if is_public(vis) {
-                walk_generics(&u.generics, vis, &ctx, out);
-                for field in &u.fields.named {
-                    if is_public(Visibility::from_syn(&field.vis)) {
-                        walk_type(&field.ty, vis, &ctx, out);
-                    }
-                }
-            }
-        }
-        syn::Item::Type(t) => {
-            let vis = Visibility::from_syn(&t.vis);
-            if is_public(vis) {
-                walk_type(&t.ty, vis, &ctx, out);
-                walk_generics(&t.generics, vis, &ctx, out);
-            }
-        }
-        syn::Item::Const(c) => {
-            let vis = Visibility::from_syn(&c.vis);
-            if is_public(vis) {
-                walk_type(&c.ty, vis, &ctx, out);
-            }
-        }
-        syn::Item::Static(s) => {
-            let vis = Visibility::from_syn(&s.vis);
-            if is_public(vis) {
-                walk_type(&s.ty, vis, &ctx, out);
-            }
-        }
-        syn::Item::Trait(tr) => {
-            let vis = Visibility::from_syn(&tr.vis);
-            if is_public(vis) {
-                walk_generics(&tr.generics, vis, &ctx, out);
-                walk_bounds(&tr.supertraits, vis, &ctx, out);
-                for item in &tr.items {
-                    match item {
-                        syn::TraitItem::Fn(f) => walk_signature(&f.sig, vis, &ctx, out),
-                        syn::TraitItem::Type(t) => {
-                            walk_bounds(&t.bounds, vis, &ctx, out);
-                            if let Some((_, default)) = &t.default {
-                                walk_type(default, vis, &ctx, out);
-                            }
-                            walk_generics(&t.generics, vis, &ctx, out);
-                        }
-                        syn::TraitItem::Const(c) => walk_type(&c.ty, vis, &ctx, out),
-                        _ => {}
-                    }
-                }
-            }
-        }
-        syn::Item::Impl(imp) => {
-            // Trait impls force their members to match the impl's reachability
-            // (E0446); treat them conservatively as `Public`. Inherent-impl
-            // members carry their own visibility. The self type and trait path
-            // are intentionally not recorded (see module docs).
-            let is_trait_impl = imp.trait_.is_some();
-            for item in &imp.items {
-                match item {
-                    syn::ImplItem::Fn(f) => {
-                        let vis = member_vis(is_trait_impl, &f.vis);
-                        if is_public(vis) {
-                            walk_signature(&f.sig, vis, &ctx, out);
-                        }
-                    }
-                    // The associated-type RHS — the E0446 trigger
-                    // (`type Response = JsonResponse<MockJoke>`).
-                    syn::ImplItem::Type(t) => {
-                        let vis = member_vis(is_trait_impl, &t.vis);
-                        if is_public(vis) {
-                            walk_type(&t.ty, vis, &ctx, out);
-                            walk_generics(&t.generics, vis, &ctx, out);
-                        }
-                    }
-                    syn::ImplItem::Const(c) => {
-                        let vis = member_vis(is_trait_impl, &c.vis);
-                        if is_public(vis) {
-                            walk_type(&c.ty, vis, &ctx, out);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        syn::Item::Fn(f) => walk_item_fn(f, &ctx, out),
+        syn::Item::Struct(s) => walk_item_struct(s, &ctx, out),
+        syn::Item::Enum(e) => walk_item_enum(e, &ctx, out),
+        syn::Item::Union(u) => walk_item_union(u, &ctx, out),
+        syn::Item::Type(t) => walk_item_type_alias(t, &ctx, out),
+        syn::Item::Const(c) => walk_public_typed(&c.vis, &c.ty, &ctx, out),
+        syn::Item::Static(s) => walk_public_typed(&s.vis, &s.ty, &ctx, out),
+        syn::Item::Trait(tr) => walk_item_trait(tr, &ctx, out),
+        syn::Item::Impl(imp) => walk_item_impl(imp, &ctx, out),
         // Other item kinds (Mod, Use, ExternCrate, Macro, …) expose no signature.
+        _ => {}
+    }
+}
+
+fn walk_item_fn(f: &syn::ItemFn, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    let vis = Visibility::from_syn(&f.vis);
+    if is_public(vis) {
+        walk_signature(&f.sig, vis, ctx, out);
+    }
+}
+
+fn walk_item_struct(s: &syn::ItemStruct, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    let vis = Visibility::from_syn(&s.vis);
+    if !is_public(vis) {
+        return;
+    }
+    walk_generics(&s.generics, vis, ctx, out);
+    // A field leaks only when the field itself is `pub` (its effective
+    // visibility is the more restrictive of struct and field — both must be
+    // public to expose at `Public`).
+    for field in &s.fields {
+        if is_public(Visibility::from_syn(&field.vis)) {
+            walk_type(&field.ty, vis, ctx, out);
+        }
+    }
+}
+
+fn walk_item_enum(e: &syn::ItemEnum, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    let vis = Visibility::from_syn(&e.vis);
+    if !is_public(vis) {
+        return;
+    }
+    walk_generics(&e.generics, vis, ctx, out);
+    // Enum variant fields have no individual visibility — they are as visible
+    // as the enum itself.
+    for variant in &e.variants {
+        for field in &variant.fields {
+            walk_type(&field.ty, vis, ctx, out);
+        }
+    }
+}
+
+fn walk_item_union(u: &syn::ItemUnion, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    let vis = Visibility::from_syn(&u.vis);
+    if !is_public(vis) {
+        return;
+    }
+    walk_generics(&u.generics, vis, ctx, out);
+    for field in &u.fields.named {
+        if is_public(Visibility::from_syn(&field.vis)) {
+            walk_type(&field.ty, vis, ctx, out);
+        }
+    }
+}
+
+fn walk_item_type_alias(t: &syn::ItemType, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    let vis = Visibility::from_syn(&t.vis);
+    if !is_public(vis) {
+        return;
+    }
+    walk_type(&t.ty, vis, ctx, out);
+    walk_generics(&t.generics, vis, ctx, out);
+}
+
+/// Shared walker for the `const`/`static` shape (a single typed item whose own
+/// `vis` gates exposure).
+fn walk_public_typed(
+    vis: &syn::Visibility,
+    ty: &syn::Type,
+    ctx: &Ctx,
+    out: &mut Vec<SignatureExposure>,
+) {
+    let vis = Visibility::from_syn(vis);
+    if is_public(vis) {
+        walk_type(ty, vis, ctx, out);
+    }
+}
+
+fn walk_item_trait(tr: &syn::ItemTrait, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    let vis = Visibility::from_syn(&tr.vis);
+    if !is_public(vis) {
+        return;
+    }
+    walk_generics(&tr.generics, vis, ctx, out);
+    walk_bounds(&tr.supertraits, vis, ctx, out);
+    for item in &tr.items {
+        walk_trait_item(item, vis, ctx, out);
+    }
+}
+
+fn walk_trait_item(
+    item: &syn::TraitItem,
+    vis: Visibility,
+    ctx: &Ctx,
+    out: &mut Vec<SignatureExposure>,
+) {
+    match item {
+        syn::TraitItem::Fn(f) => walk_signature(&f.sig, vis, ctx, out),
+        syn::TraitItem::Type(t) => {
+            walk_bounds(&t.bounds, vis, ctx, out);
+            if let Some((_, default)) = &t.default {
+                walk_type(default, vis, ctx, out);
+            }
+            walk_generics(&t.generics, vis, ctx, out);
+        }
+        syn::TraitItem::Const(c) => walk_type(&c.ty, vis, ctx, out),
+        _ => {}
+    }
+}
+
+fn walk_item_impl(imp: &syn::ItemImpl, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    // Trait impls force their members to match the impl's reachability (E0446);
+    // treat them conservatively as `Public`. Inherent-impl members carry their
+    // own visibility. The self type and trait path are intentionally not
+    // recorded (see module docs).
+    let is_trait_impl = imp.trait_.is_some();
+    for item in &imp.items {
+        walk_impl_item(item, is_trait_impl, ctx, out);
+    }
+}
+
+fn walk_impl_item(
+    item: &syn::ImplItem,
+    is_trait_impl: bool,
+    ctx: &Ctx,
+    out: &mut Vec<SignatureExposure>,
+) {
+    match item {
+        syn::ImplItem::Fn(f) => {
+            let vis = member_vis(is_trait_impl, &f.vis);
+            if is_public(vis) {
+                walk_signature(&f.sig, vis, ctx, out);
+            }
+        }
+        // The associated-type RHS — the E0446 trigger
+        // (`type Response = JsonResponse<MockJoke>`).
+        syn::ImplItem::Type(t) => {
+            let vis = member_vis(is_trait_impl, &t.vis);
+            if is_public(vis) {
+                walk_type(&t.ty, vis, ctx, out);
+                walk_generics(&t.generics, vis, ctx, out);
+            }
+        }
+        syn::ImplItem::Const(c) => {
+            let vis = member_vis(is_trait_impl, &c.vis);
+            if is_public(vis) {
+                walk_type(&c.ty, vis, ctx, out);
+            }
+        }
         _ => {}
     }
 }
