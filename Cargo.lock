@@ -1216,9 +1216,9 @@ dependencies = [
 
 [[package]]
 name = "scip"
-version = "0.7.1"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4d0e81b39f590b2edbe2369760641511898ed34062aed2e18e6d05eead3d6b7"
+checksum = "e46becf967b98a434bf7f19c8be30ca74bff57702ea7ef6af3628cbf52f57be0"
 dependencies = [
  "protobuf",
 ]
