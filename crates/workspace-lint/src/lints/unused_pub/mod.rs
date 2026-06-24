@@ -4,6 +4,14 @@
 //! intra-crate get a "tighten to `pub(crate)`" suggestion; items with no
 //! references at all get a "remove" suggestion.
 //!
+//! A type that appears in the *public signature* of a more-visible item (a
+//! `pub fn` return/parameter type, a `pub` field, a trait-impl associated type)
+//! is part of the crate's public API even when no other crate `use`s it, so it
+//! is exempt — narrowing it would not compile (E0446 / `private_interfaces`).
+//! That exemption is driven by
+//! [`Workspace::exposed_in_public_signature`](syn_workspace::Workspace::exposed_in_public_signature)
+//! and applied in [`item_skipped_by_filters`].
+//!
 //! ## Publish-awareness
 //!
 //! The resolver can't see consumers outside the workspace, so a crate's
@@ -305,6 +313,19 @@ fn item_skipped_by_filters(module: &Module, item: &Item, ctx: &CheckCtx<'_>) -> 
     if ctx.workspace.re_exports().is_target(&item.canonical) {
         return true;
     }
+    // The item appears in the *public signature* of a more-visible item — a
+    // `pub fn` return/parameter type, a `pub` field, a trait-impl associated
+    // type, or a nested generic argument thereof. Tightening it to `pub(crate)`
+    // would make a public API expose a less-public type, which the compiler
+    // rejects: E0446 (hard error) for a trait-impl associated type, the
+    // `private_interfaces` lint for fn signatures and fields. Like the
+    // re-export guard above this is publish-independent — a signature exposure
+    // is a within-crate compile constraint, so it must run *before* the
+    // `exempt_external_api`-gated reachability guard to protect internal crates
+    // too. The item is structurally required to stay `pub`; suppress entirely.
+    if ctx.workspace.exposed_in_public_signature(&item.canonical) {
+        return true;
+    }
     // Library-public reachability only exempts the item when the crate is
     // treated as having external (out-of-workspace) consumers — see
     // `exempt_external_api`. An internal crate's reachable `pub` items fall
@@ -404,8 +425,15 @@ fn attach_pub_evidence(diag: &mut Diagnostic, item: &Item, ctx: &CheckCtx<'_>, u
 }
 
 /// Structural fix policy:
-///  - `IntraCrate` → `pub` → `pub(crate)`, `MachineApplicable` (a referrer
-///    *was* found inside the crate, so tightening is provably safe).
+///  - `IntraCrate` → `pub` → `pub(crate)`, `MachineApplicable`. Safe to
+///    auto-apply because the item both has an intra-crate referrer *and* has
+///    already cleared every structural "must stay `pub`" guard in
+///    `item_skipped_by_filters` — it is not a re-export target and (via
+///    `Workspace::exposed_in_public_signature`) does not appear in any public
+///    signature. Finding a referrer alone is **not** sufficient: a type used
+///    only from a private body but re-exposed through a `pub fn` return type
+///    reads as `IntraCrate` yet must stay `pub` (E0446 / `private_interfaces`);
+///    that case is suppressed upstream and never reaches this arm.
 ///  - `Unused` + `auto_delete = true` + git-tracked-clean → delete.
 ///  - `Unused` + `auto_delete = true` + dirty/untracked → emit deletion
 ///    as `MaybeIncorrect` (so `--fix` skips it) plus an explanatory note.
@@ -443,9 +471,12 @@ fn apply_structural_fix(
 /// visibility span.
 ///
 /// Applicability follows the usage class: [`Usage::IntraCrate`] is
-/// `MachineApplicable` (a referrer was found, so `--fix` may apply it), while
-/// [`Usage::Unused`] is `MaybeIncorrect` (no referrer found = resolver blind
-/// spot, so `--fix` skips it). [`Usage::CrossCrate`] never reaches here.
+/// `MachineApplicable` — the item has an intra-crate referrer and has already
+/// passed every structural "must stay `pub`" guard in `item_skipped_by_filters`
+/// (not a re-export target, not exposed in a public signature), so `--fix` may
+/// apply it. [`Usage::Unused`] is `MaybeIncorrect` (no referrer found =
+/// resolver blind spot, so `--fix` skips it). [`Usage::CrossCrate`] never
+/// reaches here.
 fn build_tighten_suggestion(item: &Item, usage: &Usage) -> Option<crate::diagnostic::Suggestion> {
     let span = item.source.as_ref()?;
     let vis_range = item.vis_byte_range.clone()?;

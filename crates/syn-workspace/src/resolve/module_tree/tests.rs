@@ -175,6 +175,60 @@ fn missing_mod_target_is_recorded_as_broken() {
     );
 }
 
+// --- signature-exposure walk (signature.rs) ---
+
+/// Every distinct canonical recorded as a signature exposure, regardless of
+/// visibility.
+fn signature_exposed(root: &Module) -> std::collections::HashSet<String> {
+    root.walk()
+        .flat_map(|m| m.signature_exposures.iter())
+        .map(|e| e.canonical.display().to_string())
+        .collect()
+}
+
+#[test]
+fn signature_exposure_records_public_signature_types() {
+    let root =
+        build_crate_tree(&manifest_dir("signature_exposure"), "signature_exposure").expect("build");
+    // All recorded exposures are Public (the walk only records Public positions).
+    assert!(
+        root.walk()
+            .flat_map(|m| m.signature_exposures.iter())
+            .all(|e| e.enclosing_vis == Visibility::Public),
+        "every recorded exposure should be Public",
+    );
+    let exposed = signature_exposed(&root);
+    for ty in [
+        "signature_exposure::inner::RetType",    // fn return
+        "signature_exposure::inner::ParamType",  // fn parameter
+        "signature_exposure::inner::AssocType",  // trait-impl associated type (E0446)
+        "signature_exposure::inner::FieldType",  // pub field of pub struct
+        "signature_exposure::inner::NestedType", // nested in Vec<…>
+    ] {
+        assert!(
+            exposed.contains(ty),
+            "expected `{ty}` exposed; got {exposed:?}"
+        );
+    }
+}
+
+#[test]
+fn signature_exposure_skips_non_public_and_body_positions() {
+    let root =
+        build_crate_tree(&manifest_dir("signature_exposure"), "signature_exposure").expect("build");
+    let exposed = signature_exposed(&root);
+    for ty in [
+        "signature_exposure::inner::BodyOnly", // referenced only in a fn body
+        "signature_exposure::inner::CrateOnlyType", // exposed only by a pub(crate) fn
+        "signature_exposure::inner::PrivFieldType", // pub field of a private struct
+    ] {
+        assert!(
+            !exposed.contains(ty),
+            "expected `{ty}` NOT exposed; got {exposed:?}"
+        );
+    }
+}
+
 // --- code-path extraction (regular non-macro item bodies) ---
 
 fn parse_items(src: &str) -> Vec<syn::Item> {

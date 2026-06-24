@@ -36,7 +36,7 @@ use super::doc_fences;
 use super::use_tree::{self, UseBinding};
 use super::{
     BrokenModDecl, Error, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
-    SourceSpan, Visibility,
+    SignatureExposure, SourceSpan, Visibility,
 };
 use crate::macros::annotation::comment_expansion_uses_occurrences;
 use crate::macros::autodetect::extract_macro_paths;
@@ -44,6 +44,7 @@ use crate::plugins;
 
 mod items;
 mod occurrences;
+mod signature;
 #[cfg(test)]
 mod tests;
 mod uses;
@@ -55,6 +56,7 @@ pub(crate) use occurrences::consume_path_run;
 // read unchanged.
 use items::{decl_ident, extract_cfg_feature_names, item_attrs, item_from_syn, sibling_name};
 use occurrences::{extract_code_paths, resolve_occurrences_in_place, use_tree_has_glob};
+use signature::collect_signature_exposures;
 use uses::{
     function_local_use_bindings, pub_glob_reexport_targets, rewrite_sibling_local, scope_from,
 };
@@ -70,6 +72,7 @@ struct ModuleContents {
     cfg_features: Vec<String>,
     occurrences: Vec<Occurrence>,
     glob_reexports: Vec<ResolvedPath>,
+    signature_exposures: Vec<SignatureExposure>,
 }
 
 /// Convert a `proc_macro2::Span` to a [`SourceSpan`] anchored at `file` — the
@@ -135,6 +138,7 @@ fn empty_root(crate_name: &str) -> Module {
         cfg_features: Vec::new(),
         occurrences: Vec::new(),
         glob_reexports: Vec::new(),
+        signature_exposures: Vec::new(),
         file: None,
         doctest_crate_refs: HashSet::new(),
     }
@@ -191,6 +195,7 @@ pub(crate) fn build_module_from_file(
         cfg_features: contents.cfg_features,
         occurrences: contents.occurrences,
         glob_reexports: contents.glob_reexports,
+        signature_exposures: contents.signature_exposures,
         file: Some(file_path.to_path_buf()),
         // Scanned once per file (where `source` is in hand); inline submodules
         // share this file and carry an empty set.
@@ -391,6 +396,7 @@ fn collect_module_contents(
                     cfg_features: inline.cfg_features,
                     occurrences: inline.occurrences,
                     glob_reexports: inline.glob_reexports,
+                    signature_exposures: inline.signature_exposures,
                     file: Some(parent_file.to_path_buf()),
                     // Inline modules share the file; its doc fences are scanned
                     // once on the file-backed module.
@@ -542,6 +548,22 @@ fn collect_module_contents(
         parent_canonical,
     );
 
+    // Signature-exposure walk: AST-aware (not token-based like the scan above),
+    // so it can record which types appear in a *public signature* position.
+    // Reuses the now-complete `use_bindings` / `scope` / `sibling_names` so its
+    // resolved canonicals match the occurrence graph. See `signature.rs`.
+    let mut signature_exposures: Vec<SignatureExposure> = Vec::new();
+    for syn_item in syn_items {
+        collect_signature_exposures(
+            syn_item,
+            &scope,
+            &sibling_names,
+            &use_bindings,
+            parent_canonical,
+            &mut signature_exposures,
+        );
+    }
+
     Ok(ModuleContents {
         items,
         submodules,
@@ -550,6 +572,7 @@ fn collect_module_contents(
         cfg_features: cfg_features.into_iter().collect(),
         occurrences,
         glob_reexports,
+        signature_exposures,
     })
 }
 

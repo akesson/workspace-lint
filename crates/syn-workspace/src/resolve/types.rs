@@ -249,6 +249,27 @@ impl Visibility {
     }
 }
 
+/// A type path that appears in the *public signature surface* of an item — a
+/// `pub fn` parameter/return type, a `pub` field type, a trait-impl
+/// associated-type value, a type-alias RHS, etc., including types nested inside
+/// generic arguments (`Vec<Foo>`, `Result<Foo>`). Collected per module by the
+/// signature walk and aggregated into
+/// [`Workspace::exposed_in_public_signature`](crate::Workspace::exposed_in_public_signature).
+///
+/// `enclosing_vis` is the visibility of the item whose signature mentions the
+/// type. It bounds how far the referenced type's own visibility may be narrowed:
+/// Rust forbids a more-visible item from exposing a less-visible type — E0446
+/// (hard error) for a trait-impl associated type, the `private_interfaces` lint
+/// for fn signatures and fields. `unused-pub` reads this to avoid suggesting a
+/// `pub(crate)` tighten that would not compile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureExposure {
+    /// Canonical path of the type mentioned in the signature.
+    pub canonical: ResolvedPath,
+    /// Visibility of the item whose signature mentions it.
+    pub enclosing_vis: Visibility,
+}
+
 /// Kind of a declared item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ItemKind {

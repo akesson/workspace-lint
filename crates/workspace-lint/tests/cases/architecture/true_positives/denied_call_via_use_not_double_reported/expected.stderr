@@ -1,0 +1,11 @@
+error: import of `data_models::internal::InternalUser` from `apps-foo` violates architecture rule `apps-no-data-internals`
+ --> crates/apps-foo/src/lib.rs:5:1
+  |
+  = help: `data_models::internal::InternalUser` matches deny pattern of rule `apps-no-data-internals`
+help: if intentional, silence with:
+  |
+5 + workspace_lint::expect!(architecture);
+  |
+  = note: `#[deny(workspace_lint::architecture)]` on by default
+
+workspace-lint: generated 1 error

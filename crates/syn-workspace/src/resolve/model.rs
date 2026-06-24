@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use super::use_tree;
-use super::{BrokenModDecl, Item, Occurrence, Origin, ResolvedPath, Visibility};
+use super::{BrokenModDecl, Item, Occurrence, Origin, ResolvedPath, SignatureExposure, Visibility};
 
 /// A module within a crate. Modules form a tree rooted at the crate's `lib.rs`
 /// or `main.rs`.
@@ -50,6 +50,14 @@ pub struct Module {
     /// extended to globs). Private (`use M::*`) globs are not recorded — they
     /// import, they don't re-export.
     pub glob_reexports: Vec<ResolvedPath>,
+    /// Type paths that appear in this module's **public signature surface** —
+    /// `pub fn` parameter/return types, `pub` field types, trait-impl
+    /// associated-type values, type-alias RHSs, trait-item signatures, etc.,
+    /// each tagged with the visibility of the exposing item. Aggregated into
+    /// [`Workspace::exposed_in_public_signature`](crate::Workspace::exposed_in_public_signature),
+    /// which `unused-pub` consults so it never narrows a type that a more-visible
+    /// item exposes (which would not compile — E0446 / `private_interfaces`).
+    pub signature_exposures: Vec<SignatureExposure>,
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,

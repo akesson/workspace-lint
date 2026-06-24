@@ -329,7 +329,11 @@ fn peel_path_prefix(
 /// Resolve a code-path's leading segment through (in order):
 /// crate/self/super peeling, use-binding substitution, sibling lookup,
 /// then external-crate fallback. See [`extract_code_paths`] for context.
-fn resolve_code_path(
+///
+/// Exposed to the sibling `signature` module so the signature-exposure walk
+/// resolves type paths through the *identical* logic ordinary references use —
+/// guaranteeing its canonicals line up with the occurrence graph.
+pub(super) fn resolve_code_path(
     segments: Vec<String>,
     scope: &use_tree::Scope,
     siblings: &HashSet<String>,

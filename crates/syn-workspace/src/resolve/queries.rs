@@ -358,4 +358,23 @@ impl Workspace {
     pub fn referenced_from_sibling_target(&self, canonical: &ResolvedPath) -> bool {
         self.sibling_target_refs.contains(canonical)
     }
+
+    /// True iff `canonical` appears in the **public signature surface** of some
+    /// item — a `pub fn` return/parameter type, a `pub` field type, a trait-impl
+    /// associated-type value, a type-alias RHS, a trait-item signature, or a
+    /// type nested in a generic argument thereof (`Vec<canonical>`). Such a type
+    /// is part of the crate's public API even when no other crate `use`s it, so
+    /// it cannot be narrowed below `pub`: Rust rejects a more-visible item that
+    /// exposes a less-visible type (E0446 for a trait-impl associated type, the
+    /// `private_interfaces` lint for fn signatures and fields). `unused-pub`
+    /// consults this to suppress a `pub(crate)` tighten that would not compile.
+    ///
+    /// Prefix-credited like [`Self::referring_crates`]: a signature mentioning
+    /// `a::b::Type::Assoc` answers `true` for `a::b::Type` too.
+    pub fn exposed_in_public_signature(&self, canonical: &ResolvedPath) -> bool {
+        matches!(
+            self.signature_exposure.get(canonical),
+            Some(crate::resolve::Visibility::Public)
+        )
+    }
 }

@@ -1,0 +1,10 @@
+# A denied fully-qualified reference lives only in tests/integration.rs (a
+# sibling target), so it must be exempt — production lib.rs is clean.
+[[architecture.rules]]
+name = "apps-no-data-internals"
+from = ["apps-*"]
+deny = ["data-models::internal::**"]
+
+[lints]
+default = "allow"
+architecture = "deny"

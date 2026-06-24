@@ -30,6 +30,6 @@ mod workspace;
 pub use model::{Crate, Module, Target, TargetKind};
 pub use types::{
     BrokenModDecl, Error, Item, ItemKind, LoadOptions, LoadWarning, Occurrence, Origin,
-    ResolvedPath, Result, SourceSpan, Visibility,
+    ResolvedPath, Result, SignatureExposure, SourceSpan, Visibility,
 };
 pub use workspace::Workspace;

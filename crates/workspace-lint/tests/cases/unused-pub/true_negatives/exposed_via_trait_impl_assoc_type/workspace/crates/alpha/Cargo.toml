@@ -1,0 +1,7 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+# Published → the public trait/struct/impl are exempt; only the private-`mod`
+# associated-type value goes through the cross-crate-usage check.
+publish = true

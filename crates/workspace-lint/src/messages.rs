@@ -236,6 +236,21 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note("internal types are not part of the published API surface")
             .build(),
         ),
+        // architecture: the same rule violated by a *fully-qualified* reference
+        // (no `use`) — `data_models::internal::User::new()`. Distinct verb
+        // ("reference to" vs "import of"); anchored at the call line.
+        (
+            "architecture_denied_code_reference",
+            at_line(
+                "workspace-lint::architecture",
+                "reference to `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`",
+                PathBuf::from("crates/apps-foo/src/lib.rs"),
+                12,
+            )
+            .help("import from `data-models::api` instead")
+            .note("internal types are not part of the published API surface")
+            .build(),
+        ),
         // module-tree: a `mod foo;` declaration with no backing file.
         (
             "module_tree_broken_mod_decl",
@@ -591,6 +606,22 @@ mod tests {
         }
 
         #[test]
+        fn architecture_denied_code_reference() {
+            insta::assert_snapshot!(render(&scenario("architecture_denied_code_reference")), @r"
+            warning: reference to `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`
+             --> crates/apps-foo/src/lib.rs:12:1
+              |
+              = help: import from `data-models::api` instead
+              = note: internal types are not part of the published API surface
+            help: if intentional, silence with:
+              |
+            12 + workspace_lint::expect!(architecture);
+              |
+              = note: `#[warn(workspace_lint::architecture)]` on by default
+            ");
+        }
+
+        #[test]
         fn module_tree_broken_mod_decl() {
             insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @r#"
             warning: `mod missing` declared but no `missing.rs` or `missing/mod.rs` found
@@ -759,6 +790,11 @@ mod tests {
         }
 
         #[test]
+        fn architecture_denied_code_reference() {
+            insta::assert_snapshot!(render(&scenario("architecture_denied_code_reference")), @r#"{"level":"warning","message":"reference to `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(architecture);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
         fn module_tree_broken_mod_decl() {
             insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @r#"{"level":"warning","message":"`mod missing` declared but no `missing.rs` or `missing/mod.rs` found","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = \"…\"]` attribute","spans":[]},{"level":"note","message":"`mod foo;` with no inline body must resolve to a source file","spans":[]}],"rendered":null}"#);
         }
@@ -924,6 +960,11 @@ mod tests {
         #[test]
         fn architecture_denied_import() {
             insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @"::warning file=crates/apps-foo/src/lib.rs,line=7,col=1,title=workspace-lint%3A%3Aarchitecture::import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`");
+        }
+
+        #[test]
+        fn architecture_denied_code_reference() {
+            insta::assert_snapshot!(render(&scenario("architecture_denied_code_reference")), @"::warning file=crates/apps-foo/src/lib.rs,line=12,col=1,title=workspace-lint%3A%3Aarchitecture::reference to `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`");
         }
 
         #[test]
