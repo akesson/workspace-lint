@@ -22,7 +22,7 @@ jobs:
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -62,7 +62,7 @@ jobs:
       # tests (smoke / lint-FP audit / set-level SCIP differential) load them via
       # `cargo metadata --no-deps`, so they need no network — but they do need the
       # submodule sources checked out. Without them the corpus tests skip cleanly.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
@@ -78,7 +78,7 @@ jobs:
     name: CRAP (coverage × complexity)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
