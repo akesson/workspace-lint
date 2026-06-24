@@ -62,23 +62,57 @@ fn denies_via_prefix_when_trailing_method() {
 }
 
 #[test]
-fn exception_on_prefix_exempts_call_site() {
+fn exception_at_denied_prefix_exempts_call_site() {
     // deny `internal::**` with an exception for `internal::PublicToken`. A call
-    // `PublicToken::issue()` has a denied prefix, but the `PublicToken` prefix is
-    // an exception — so the whole reference is exempt (matching the loop's
-    // "any prefix is an exception ⇒ skip", which keeps an exception effective
-    // even against a broad `**` rule).
+    // `PublicToken::issue()` resolves to `internal::PublicToken::issue`: the
+    // denied prefix is `...::PublicToken`, and the exception sits *at* that
+    // prefix — so the at-or-below slice the code-ref pass checks sees it and the
+    // whole reference is exempt, keeping an exception effective even under a
+    // broad `**` rule.
     let mut rl = rule(&["apps-*"], &["data-models::internal::**"]);
     rl.exceptions = vec!["data-models::internal::PublicToken".into()];
     let r = CompiledRule::compile(&rl).unwrap();
     let canonical = ResolvedPath::new(["data_models", "internal", "PublicToken", "issue"]);
     let prefixes = canonical_prefixes(&canonical);
+    let denied_idx = prefixes
+        .iter()
+        .position(|p| r.denies(p))
+        .expect("a prefix matches the deny");
     assert!(
-        prefixes.iter().any(|p| r.denies(p)),
-        "some prefix matches the deny",
+        prefixes[denied_idx..].iter().any(|p| r.is_exception(p)),
+        "the PublicToken exception is at the denied prefix, exempting the call site",
+    );
+}
+
+#[test]
+fn exception_above_denied_prefix_does_not_exempt() {
+    // deny `internal::**`, but the exception is the bare `internal` MODULE — a
+    // strict ancestor of the denied item. A call `Secret::new()` resolves to
+    // `internal::Secret::new`: the denied prefix is `...::Secret`, and the
+    // exception lies ABOVE it. The code-ref pass exempts only at or below the
+    // denied prefix, so this reference still fires — matching the `use` pass,
+    // which checks the imported item itself, not an ancestor module.
+    let mut rl = rule(&["apps-*"], &["data-models::internal::**"]);
+    rl.exceptions = vec!["data-models::internal".into()];
+    let r = CompiledRule::compile(&rl).unwrap();
+    let canonical = ResolvedPath::new(["data_models", "internal", "Secret", "new"]);
+    let prefixes = canonical_prefixes(&canonical);
+    let denied_idx = prefixes
+        .iter()
+        .position(|p| r.denies(p))
+        .expect("a prefix matches the deny");
+    assert_eq!(
+        prefixes[denied_idx].display().to_string(),
+        "data_models::internal::Secret",
+        "shortest denied prefix is the type, not the ancestor module",
     );
     assert!(
+        !prefixes[denied_idx..].iter().any(|p| r.is_exception(p)),
+        "an ancestor-module exception must not exempt the denied item",
+    );
+    // The over-broad old predicate (any prefix) WOULD have wrongly exempted it.
+    assert!(
         prefixes.iter().any(|p| r.is_exception(p)),
-        "the PublicToken prefix is an exception, exempting the call site",
+        "the ancestor module is indeed an exception prefix — the old false-exempt",
     );
 }

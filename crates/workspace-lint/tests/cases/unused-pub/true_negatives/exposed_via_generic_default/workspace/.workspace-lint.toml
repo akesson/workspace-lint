@@ -1,0 +1,11 @@
+# Signature-exposure guard, generic-default form. `DefaultArg` is named only
+# inside the crate, so the resolver classes it IntraCrate and would tighten it to
+# `pub(crate)` — but it is the default type argument of the public `Defaulted`
+# struct (`Defaulted<T = DefaultArg>`), a public-signature position. The
+# signature walk records generic defaults, so the guard suppresses it → all
+# passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"

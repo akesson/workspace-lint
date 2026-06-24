@@ -274,6 +274,13 @@ fn walk_generics(
     for param in &generics.params {
         if let syn::GenericParam::Type(tp) = param {
             walk_bounds(&tp.bounds, vis, ctx, out);
+            // A default type argument (`T = inner::Secret`) is a signature
+            // position too. Const-generic defaults are *values* and a const
+            // param's type must be integral/bool/char, so it can't name a
+            // private type — only `Type` defaults matter here.
+            if let Some(default) = &tp.default {
+                walk_type(default, vis, ctx, out);
+            }
         }
     }
     if let Some(where_clause) = &generics.where_clause {
@@ -329,9 +336,20 @@ fn walk_type(ty: &syn::Type, vis: Visibility, ctx: &Ctx, out: &mut Vec<Signature
         }
         syn::Type::TraitObject(to) => walk_bounds(&to.bounds, vis, ctx, out),
         syn::Type::ImplTrait(it) => walk_bounds(&it.bounds, vis, ctx, out),
-        // `BareFn`, `Macro`, `Infer`, `Never`, `Verbatim`, … expose no named
-        // workspace type (or one we can't resolve from the signature) —
-        // intentionally skipped.
+        // A bare-fn pointer (`fn(A) -> B`) names `A`/`B` in signature position,
+        // so walk its inputs and return type — the same surface the
+        // `Parenthesized` path-argument arm walks for `Fn(A) -> B`.
+        syn::Type::BareFn(bare) => {
+            for input in &bare.inputs {
+                walk_type(&input.ty, vis, ctx, out);
+            }
+            if let syn::ReturnType::Type(_, ty) = &bare.output {
+                walk_type(ty, vis, ctx, out);
+            }
+        }
+        // `Macro`, `Infer`, `Never`, `Verbatim`, … expose no named workspace
+        // type (or one we can't resolve from the signature) — intentionally
+        // skipped.
         _ => {}
     }
 }

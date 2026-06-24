@@ -204,6 +204,9 @@ fn signature_exposure_records_public_signature_types() {
         "signature_exposure::inner::AssocType",  // trait-impl associated type (E0446)
         "signature_exposure::inner::FieldType",  // pub field of pub struct
         "signature_exposure::inner::NestedType", // nested in Vec<…>
+        "signature_exposure::inner::BareFnArg",  // bare-fn pointer param
+        "signature_exposure::inner::BareFnRet",  // bare-fn pointer return
+        "signature_exposure::inner::DefaultArg", // generic default type arg
     ] {
         assert!(
             exposed.contains(ty),

@@ -32,6 +32,15 @@ pub struct Holder {
     pub field: inner::FieldType,
 }
 
+// Bare-fn pointer in a `pub fn` return — names its param/return types in the
+// signature surface (the `BareFn` walk arm).
+pub fn callback() -> fn(inner::BareFnArg) -> inner::BareFnRet {
+    |_| inner::BareFnRet
+}
+
+// Default type argument of a `pub struct` — a signature position too.
+pub struct Defaulted<T = inner::DefaultArg>(std::marker::PhantomData<T>);
+
 // --- negatives: must NOT be recorded as Public signature exposures ---
 
 // Referenced only from a fn body, never a signature position.
@@ -55,6 +64,9 @@ mod inner {
     pub struct ParamType;
     pub struct NestedType;
     pub struct FieldType;
+    pub struct BareFnArg;
+    pub struct BareFnRet;
+    pub struct DefaultArg;
     pub struct BodyOnly;
     pub struct CrateOnlyType;
     pub struct PrivFieldType;

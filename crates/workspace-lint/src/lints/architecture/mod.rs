@@ -27,7 +27,7 @@
 //! - **References inside macro bodies are not inspected** — only regular-code
 //!   ([`Origin::Code`]) references, matching the resolver's macro non-goals.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use globset::{Glob, GlobMatcher};
 use syn_workspace::{Module, Origin, ResolvedPath, SourceSpan, Workspace};
@@ -90,16 +90,24 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
     for (krate, target) in workspace.primary_units() {
         let from_name = krate.name.as_str();
         for module in target.root.walk() {
-            // One report per `(matched-canonical, rule)` within a module: a
-            // violation surfaced via a `use` binding (or glob) is recorded here
-            // so the fully-qualified-reference pass below doesn't repeat it, and
-            // so N call sites of the same denied path collapse to one diagnostic.
-            let mut reported: HashSet<(usize, String)> = HashSet::new();
+            // Within a module, map a denied path's glob form → the set of rule
+            // indices that have already reported it: a violation surfaced via a
+            // `use` binding (or glob) is recorded here so the fully-qualified-
+            // reference pass below doesn't repeat it, and so N call sites of the
+            // same denied path collapse to one diagnostic. A map (not a set of
+            // `(idx, String)`) lets the code-reference pass probe by borrowed
+            // key, with no per-rule string allocation.
+            let mut reported: HashMap<String, HashSet<usize>> = HashMap::new();
 
             // Explicit `use` bindings — the canonical path is the imported item,
             // which is both what we match against `deny` and what we display.
             for binding in &module.use_bindings {
                 let canonical = workspace.resolve_canonical(&binding.canonical);
+                // Architecture rules govern *cross-crate* layering; a crate
+                // referencing its own modules is never a violation.
+                if is_own_crate_ref(&canonical, krate) {
+                    continue;
+                }
                 for (rule_idx, rule) in compiled.iter().enumerate() {
                     if !rule.matches_from(from_name) || !rule.denies(&canonical) {
                         continue;
@@ -110,7 +118,10 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
                     // Record even when a duplicate `use` wouldn't re-fire (it
                     // can't, source-unique) — the point is to claim this
                     // (canonical, rule) so the code-reference pass skips it.
-                    reported.insert((rule_idx, path_to_glob_form(&canonical)));
+                    reported
+                        .entry(path_to_glob_form(&canonical))
+                        .or_default()
+                        .insert(rule_idx);
                     diagnostics.push(build_diagnostic(
                         rule,
                         workspace,
@@ -135,6 +146,9 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
                     continue;
                 };
                 let canonical = workspace.resolve_canonical(prefix);
+                if is_own_crate_ref(&canonical, krate) {
+                    continue;
+                }
                 let child = ResolvedPath::new(
                     canonical
                         .segments()
@@ -149,7 +163,10 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
                     if rule.is_exception(&child) {
                         continue;
                     }
-                    reported.insert((rule_idx, path_to_glob_form(&child)));
+                    reported
+                        .entry(path_to_glob_form(&child))
+                        .or_default()
+                        .insert(rule_idx);
                     diagnostics.push(build_diagnostic(
                         rule,
                         workspace,
@@ -166,9 +183,10 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
             // out of scope (resolver macro non-goals); bare-ident origins carry
             // no resolved path. Each reference is tested against its canonical
             // and every prefix, so `Type::method` matches a `Type` deny, and the
-            // shortest denied prefix is what we report — unless any prefix is an
-            // exception (then the whole reference is exempt, so an exception on
-            // `a::b::Foo` still covers `a::b::Foo::method` even under `a::b::**`).
+            // shortest denied prefix is what we report — unless an exception lies
+            // at or below that denied prefix (so an exception on `a::b::Foo`
+            // still covers `a::b::Foo::method` under `a::b::**`, but a broader
+            // ancestor like `a::b` does *not* exempt, matching the `use` pass).
             for occ in module
                 .occurrences
                 .iter()
@@ -178,15 +196,26 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
                     continue;
                 };
                 let canonical = workspace.resolve_canonical(path);
+                // Cross-crate only: a crate's reference to its own modules is
+                // never a layering violation (see `use`-binding pass above).
+                if is_own_crate_ref(&canonical, krate) {
+                    continue;
+                }
                 let prefixes = canonical_prefixes(&canonical);
+                // Each prefix's glob form, computed once and reused across rules
+                // (the dedup probe below would otherwise re-allocate per rule).
+                let prefix_keys: Vec<String> = prefixes.iter().map(path_to_glob_form).collect();
                 for (rule_idx, rule) in compiled.iter().enumerate() {
                     if !rule.matches_from(from_name) {
                         continue;
                     }
-                    let Some(denied) = prefixes.iter().find(|p| rule.denies(p)) else {
+                    let Some(denied_idx) = prefixes.iter().position(|p| rule.denies(p)) else {
                         continue;
                     };
-                    if prefixes.iter().any(|p| rule.is_exception(p)) {
+                    // Only an exception *at or below* the denied prefix exempts
+                    // the reference — a shorter ancestor must not (that would
+                    // diverge from the `use` pass, which checks the item itself).
+                    if prefixes[denied_idx..].iter().any(|p| rule.is_exception(p)) {
                         continue;
                     }
                     // Skip if a `use`/glob or an earlier reference already
@@ -195,13 +224,17 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
                     // recorded at item granularity still dedups a reference a
                     // broad `**` rule would otherwise report at module
                     // granularity — and so N call sites collapse to one.
-                    if prefixes
-                        .iter()
-                        .any(|p| reported.contains(&(rule_idx, path_to_glob_form(p))))
-                    {
+                    if prefix_keys.iter().any(|k| {
+                        reported
+                            .get(k)
+                            .is_some_and(|rules| rules.contains(&rule_idx))
+                    }) {
                         continue;
                     }
-                    reported.insert((rule_idx, path_to_glob_form(denied)));
+                    reported
+                        .entry(prefix_keys[denied_idx].clone())
+                        .or_default()
+                        .insert(rule_idx);
                     diagnostics.push(build_diagnostic(
                         rule,
                         workspace,
@@ -209,7 +242,7 @@ pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<D
                         module,
                         occ.span.as_ref(),
                         RefKind::Code,
-                        denied,
+                        &prefixes[denied_idx],
                     ));
                 }
             }
@@ -228,6 +261,15 @@ enum RefKind<'a> {
     Glob,
     /// A fully-qualified reference in regular code (`mod::Type::method()`).
     Code,
+}
+
+/// A reference is "own-crate" when its resolved canonical is rooted in the crate
+/// doing the referencing. Architecture rules govern *cross-crate* layering, so a
+/// crate touching its own modules is never a violation — even under a wildcard
+/// rule like `from = ["*"]`, `deny = ["*::internal::**"]`. Both sides are already
+/// in code form (underscored), so the comparison is exact.
+fn is_own_crate_ref(canonical: &ResolvedPath, krate: &syn_workspace::Crate) -> bool {
+    canonical.crate_name() == Some(krate.code_name().as_str())
 }
 
 /// The canonical plus every prefix of length ≥ 2, shortest first. A reference to
