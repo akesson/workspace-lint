@@ -64,7 +64,7 @@ impl ResolverPlugin for DioxusPlugin {
         // expose per-ref spans). Qualified paths resolve through the central
         // resolver (`Macro`); a *bare* component name can't be resolved without
         // the whole-workspace component set, so it's `Component` — left for the
-        // Phase B `DioxusComponentPass`.
+        // Phase B `global_facts` hook below.
         let mut occurrences: Vec<Occurrence> = collected
             .macro_paths
             .into_iter()

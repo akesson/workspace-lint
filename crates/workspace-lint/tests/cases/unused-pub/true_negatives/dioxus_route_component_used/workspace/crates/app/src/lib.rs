@@ -8,7 +8,7 @@
 // never visit, so without the Phase A Routable capture each component has zero
 // referrers and reads "appears unused" — the false positive this guards against.
 // The capture emits them as bare `Origin::Component` occurrences and the Phase B
-// `DioxusComponentPass` binds them to the same-crate `pub fn`s, making each
+// dioxus `global_facts` hook binds them to the same-crate `pub fn`s, making each
 // IntraCrate (suppressed here), so this passes cleanly.
 
 // Private (not a pub item, so not finding-eligible itself); the route attributes

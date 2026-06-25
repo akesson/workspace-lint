@@ -6,7 +6,7 @@
 //! left unresolved by the central path resolver: an exported `macro_rules!`
 //! lives in the *macro* namespace and is crate-global, not reachable by a module
 //! path. This pass — a structural sibling of [`super::dioxus_rsx`]'s
-//! `DioxusComponentPass` — reads the resolved model and emits a reference edge
+//! `global_facts` hook — reads the resolved model and emits a reference edge
 //! from each `MacroCall` occurrence to the matching same-crate macro definition,
 //! so an exported macro used only via intra-crate invocation isn't
 //! false-positived by `unused-pub`.

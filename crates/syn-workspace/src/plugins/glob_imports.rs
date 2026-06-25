@@ -18,8 +18,9 @@
 //! looks up the target module(s) by canonical path and binds candidates whose
 //! name matches one of the target's items, submodules, or re-exported `use`
 //! bindings — emitting reference edges like its structural siblings
-//! [`super::macro_calls::MacroCallPass`] / `DioxusComponentPass`. Like them it
-//! is **core** (always registered): glob imports are a language feature.
+//! [`super::macro_calls::MacroCallPass`] / the dioxus plugin's `global_facts`.
+//! Like them it is **core** (always registered): glob imports are a language
+//! feature.
 //!
 //! ## Precision tradeoffs (all in the FP-safe direction)
 //!

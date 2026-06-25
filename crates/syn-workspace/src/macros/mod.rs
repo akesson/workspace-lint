@@ -16,11 +16,11 @@
 //! workspace-owned macros, else `Layer 3` for declared externals, else
 //! empty.
 //!
-//! Plugins (`crate::plugins::MacroLowerer`) are a fourth, orthogonal
+//! Plugins (`crate::plugins::ResolverPlugin`) are a fourth, orthogonal
 //! mechanism: instead of declaring references statically, they parse
 //! macro bodies on demand into structured ASTs (e.g. `dioxus-rsx` for
-//! `rsx!`). The module walker dispatches to the lowerer registry via
-//! `plugins::builtin_lowerers` / `plugins::claims_any`.
+//! `rsx!`). The module walker dispatches to the plugin registry via
+//! `plugins::builtin_plugins` / `ResolverPlugin::claims_macro`.
 
 pub mod annotation;
 pub mod autodetect;

@@ -275,8 +275,8 @@ fn collect_module_contents(
         // through code the derive macro generates (never a bare `rsx!` or a
         // `use`), so they're invisible to the token/AST scans below. Capture
         // those component names as bare `Origin::Component` occurrences; the
-        // Phase B `DioxusComponentPass` binds them to the same-crate `pub fn`,
-        // exactly like a bare `rsx!` component. Gated with the rest of the
+        // dioxus plugin's Phase B `global_facts` binds them to the same-crate
+        // `pub fn`, exactly like a bare `rsx!` component. Gated with the rest of the
         // Dioxus semantics — with `dioxus` off, route enums are ordinary code.
         #[cfg(feature = "dioxus")]
         if let syn::Item::Enum(item_enum) = syn_item {

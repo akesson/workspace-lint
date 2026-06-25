@@ -448,8 +448,9 @@ fn resolve_occurrence(
         Origin::Macro => {
             resolve_macro_path(occ.segments.clone(), scope, siblings, parent_canonical)
         }
-        // Deferred to a Phase B `ResolvePass`: a bare framework-component name
-        // carries no scope the central resolver can use without wrongly binding it.
+        // Deferred to a Phase B resolver plugin (`global_facts`): a bare
+        // framework-component name carries no scope the central resolver can use
+        // without wrongly binding it.
         Origin::Component => None,
         // Deferred to the core Phase B `MacroCallPass`: a bare macro invocation
         // `foo!(…)` resolves in the *macro* namespace (crate-global for an
