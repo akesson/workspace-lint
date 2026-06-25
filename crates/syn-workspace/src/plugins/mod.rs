@@ -1,19 +1,31 @@
 //! Resolver plugins — the resolver's unified extension point.
 //!
 //! A [`ResolverPlugin`] teaches the resolver about one macro, crate, or framework
-//! whose reality the plain `syn` walk can't see. Each plugin contributes through up
-//! to four hooks, all defaulted to no-ops, so a plugin implements only what it needs:
+//! whose reality the plain `syn` walk can't see. Each plugin contributes through a
+//! handful of hooks, all defaulted to no-ops, so a plugin implements only what it needs:
 //!
 //! - [`ResolverPlugin::claims_macro`] / [`ResolverPlugin::lower_macro`] — *walk
 //!   control* over a class of macro *bodies*: run the baseline token scan, replace it
-//!   with structured occurrences, or both (see [`Lowered`]). This is the only hook
-//!   that steers traversal; the others emit data.
+//!   with structured occurrences, or both (see [`Lowered`]).
+//! - [`ResolverPlugin::local_occurrences`] — raw [`Occurrence`]s captured from one
+//!   item's *syn AST* during the walk, for a reference the resolved model can't
+//!   reconstruct afterwards (e.g. an attribute it drops) and that a later pass binds.
+//!   These join the occurrence stream before resolution; the dioxus
+//!   `#[derive(Routable)]` route-enum capture lives here.
 //! - [`ResolverPlugin::local_facts`] — [`Fact`]s derived from a single item during the
 //!   walk (its attributes, its signature position). The builder-attribute exposure
-//!   recognizer lives here ([`builder::BuilderAttrPlugin`]).
+//!   recognizer lives here ([`builder::BuilderAttrPlugin`]); the Tier-H usage
+//!   assertions ([`assertions`]) emit their reference facts here.
 //! - [`ResolverPlugin::global_facts`] — [`Fact`]s derived from the whole resolved
 //!   member set, after the walk: framework semantics a path resolution can't produce
 //!   (e.g. a Dioxus component bound to a bare `Foo {}` `rsx!` invocation).
+//!
+//! [`claims_macro`](ResolverPlugin::claims_macro) and
+//! [`emits_structured_occurrences`](ResolverPlugin::emits_structured_occurrences) are
+//! cheap walk-control *predicates*, not data hooks: the walk consults them to skip
+//! work (the macro claim guard; the per-item nested-body traversal) when no registered
+//! plugin could contribute — without coupling either skip to a specific plugin's
+//! feature flag.
 //!
 //! A plugin only ever contributes one of **two** relations — a reference edge or a
 //! public-signature exposure ([`Fact`]) — because those are the only two semantic
@@ -218,10 +230,33 @@ pub(crate) trait ResolverPlugin: Send + Sync {
     fn claims_macro(&self, _site: &MacroSite) -> bool {
         false
     }
+    /// Walk-control (cheap predicate): can this plugin's
+    /// [`lower_macro`](ResolverPlugin::lower_macro) ever return *structured*
+    /// occurrences ([`Lowered::ScanPlus`] / [`Lowered::Exact`]), rather than only
+    /// steering the baseline token scan? The walk consults this once to decide whether
+    /// to run the per-item nested-body AST traversal at all, skipping it entirely when
+    /// no registered plugin could contribute there. Keyed on the *capability*, not any
+    /// feature flag — so adding a structured lowerer turns the traversal on without
+    /// touching the walk.
+    fn emits_structured_occurrences(&self) -> bool {
+        false
+    }
     /// Walk-control: lower a claimed macro body. Called only when
     /// [`claims_macro`](ResolverPlugin::claims_macro) returned true for this plugin.
     fn lower_macro(&self, _site: &MacroSite, _cx: &LowerCtx) -> Lowered {
         Lowered::TokenScan
+    }
+    /// Raw [`Occurrence`]s captured from one item's *syn AST* during the walk — for a
+    /// reference the resolved model can't reconstruct afterwards (e.g. an attribute it
+    /// doesn't retain) and that a later pass binds. Unlike
+    /// [`local_facts`](ResolverPlugin::local_facts) (whose facts feed the
+    /// reference/exposure *sets* directly, never entering `occurrences`), these join
+    /// the module's occurrence stream *before* Phase B resolution and are resolved in
+    /// place alongside everything else. The dioxus `#[derive(Routable)]` route-enum
+    /// capture lives here, emitting bare `Origin::Component` names that
+    /// [`global_facts`](ResolverPlugin::global_facts) binds to same-crate `pub fn`s.
+    fn local_occurrences(&self, _item: &syn::Item, _file: &Path) -> Vec<Occurrence> {
+        Vec::new()
     }
     /// Facts derived from one item during the walk (its attrs / signature surface).
     fn local_facts(&self, _item: &syn::Item, _cx: &LocalFactCtx) -> Vec<Fact> {

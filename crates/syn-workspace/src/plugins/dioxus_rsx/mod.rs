@@ -33,7 +33,7 @@ use crate::plugins::{
 use crate::resolve::{Crate, ItemKind, Occurrence, Origin, ResolvedPath};
 
 mod routable;
-pub(crate) use routable::route_component_occurrences;
+use routable::route_component_occurrences;
 
 /// Built-in lowerer for `rsx!` and `dioxus::rsx!` invocations. Token-scans the
 /// body (like any macro) AND adds the structured Component paths the scanner
@@ -50,6 +50,12 @@ impl ResolverPlugin for DioxusPlugin {
             [a, b] => b == "rsx" && (a == "dioxus" || a == "dioxus_core"),
             _ => false,
         }
+    }
+
+    /// `rsx!` lowering returns [`Lowered::ScanPlus`], so the per-item nested-body walk
+    /// must run for this plugin to reach fn-body `rsx!` invocations.
+    fn emits_structured_occurrences(&self) -> bool {
+        true
     }
 
     fn lower_macro(&self, site: &MacroSite, cx: &LowerCtx) -> Lowered {
@@ -87,6 +93,18 @@ impl ResolverPlugin for DioxusPlugin {
                 }),
         );
         Lowered::ScanPlus(occurrences)
+    }
+
+    /// Phase A: capture the component references a `#[derive(Routable)]` route enum
+    /// makes only through derive-generated code — invisible to the token/AST scans — as
+    /// bare [`Origin::Component`] occurrences. [`global_facts`](Self::global_facts) binds
+    /// each to the same-crate `pub fn`, exactly like a bare `rsx!` component. A no-op for
+    /// any item that isn't a `#[derive(Routable)]` enum.
+    fn local_occurrences(&self, item: &syn::Item, file: &std::path::Path) -> Vec<Occurrence> {
+        match item {
+            syn::Item::Enum(item_enum) => route_component_occurrences(item_enum, file),
+            _ => Vec::new(),
+        }
     }
 
     /// Phase B: bind a bare `Foo {}` component invocation inside `rsx!` (or a

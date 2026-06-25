@@ -262,27 +262,30 @@ fn collect_module_contents(
     let mut glob_reexports: Vec<ResolvedPath> = Vec::new();
 
     // Built once and reused for item-position macro dispatch, the fn-body
-    // dispatch, the code-path claim guard, and the per-item local-fact pass below.
+    // dispatch, the code-path claim guard, and the per-item local-occurrence /
+    // local-fact passes below.
     let resolver_plugins = plugins::builtin_plugins();
+    // Does any registered plugin emit structured macro occurrences? Gates the
+    // per-item nested-body AST walk on a *capability* rather than a feature flag, so
+    // the no-structured-lowerer case skips the traversal and a future non-dioxus
+    // lowerer enables it without touching this walk.
+    let has_structured_lowerer = resolver_plugins
+        .iter()
+        .any(|p| p.emits_structured_occurrences());
 
     for syn_item in syn_items {
         for attr in item_attrs(syn_item) {
             extract_cfg_feature_names(attr, &mut cfg_features);
         }
 
-        // A `#[derive(Routable)]` enum references its `pub fn` components only
-        // through code the derive macro generates (never a bare `rsx!` or a
-        // `use`), so they're invisible to the token/AST scans below. Capture
-        // those component names as bare `Origin::Component` occurrences; the
-        // dioxus plugin's Phase B `global_facts` binds them to the same-crate
-        // `pub fn`, exactly like a bare `rsx!` component. Gated with the rest of the
-        // Dioxus semantics — with `dioxus` off, route enums are ordinary code.
-        #[cfg(feature = "dioxus")]
-        if let syn::Item::Enum(item_enum) = syn_item {
-            occurrences.extend(plugins::dioxus_rsx::route_component_occurrences(
-                item_enum,
-                parent_file,
-            ));
+        // Phase-A occurrence capture: a plugin may read this item's syn AST for a
+        // reference the resolved model can't reconstruct afterwards (e.g. an attribute
+        // it drops) and contribute raw occurrences, bound later (typically in
+        // `global_facts`). The dioxus `#[derive(Routable)]` route-enum capture is the
+        // only producer today; with no such plugin registered the loop is a no-op.
+        // Runs pre-resolution so the captures join the stream Phase B resolves below.
+        for plugin in &resolver_plugins {
+            occurrences.extend(plugin.local_occurrences(syn_item, parent_file));
         }
 
         if let syn::Item::Use(item_use) = syn_item {
@@ -341,11 +344,10 @@ fn collect_module_contents(
             // bodies. Only structured (`ScanPlus`/`Exact`) lowerers contribute —
             // the baseline scan (`extract_code_paths`, below) already covers
             // fn-body macro *tokens*, so a `TokenScan` lowerer would double-count.
-            // The only structured lowerer today is the Dioxus `rsx!` one, so this
-            // is gated on its feature: with `dioxus` off, no lowerer can
-            // contribute and the per-item AST walk is pure waste.
-            #[cfg(feature = "dioxus")]
-            {
+            // Skipped entirely when no registered plugin emits structured occurrences
+            // (the per-item AST walk would be pure waste). Keyed on the capability, not
+            // a feature flag, so a future non-dioxus structured lowerer turns it on.
+            if has_structured_lowerer {
                 let mut v = NestedMacroLowering {
                     lowerers: &resolver_plugins,
                     marker_crates,
@@ -632,7 +634,6 @@ fn collect_local_facts(
 /// A macro inside a fn-body-nested `mod`/`fn` is attributed to the enclosing
 /// module rather than the nested one — harmless for the same-crate lints this
 /// feeds, and a documented non-goal.
-#[cfg(feature = "dioxus")]
 struct NestedMacroLowering<'a> {
     lowerers: &'a [Box<dyn plugins::ResolverPlugin>],
     marker_crates: &'a [String],
@@ -640,7 +641,6 @@ struct NestedMacroLowering<'a> {
     out: &'a mut Vec<Occurrence>,
 }
 
-#[cfg(feature = "dioxus")]
 impl<'ast, 'a> syn::visit::Visit<'ast> for NestedMacroLowering<'a> {
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         let site = plugins::MacroSite {
