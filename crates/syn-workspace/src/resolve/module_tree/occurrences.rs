@@ -460,24 +460,6 @@ fn resolve_occurrence(
         // glob-importing module can only be bound once the glob target's
         // module tree exists.
         Origin::GlobCandidate => None,
-        // A Tier-H assertion's *relative* implied path (an `#[serde(with =
-        // "routes")]` string, say) resolves like ordinary code: a `use`
-        // binding, a `crate`/`self`/`super` prefix, or a same-module sibling.
-        // A form `resolve_code_path` drops (a bare external single segment such
-        // as `with = "serde_bytes"`) falls back to its raw segments as an
-        // already-resolved path, so the leading segment still credits the dep.
-        // Over-crediting is FP-safe by the §13 tier contract — a wrongly bound
-        // segment only fails to suppress, it can never create a finding.
-        // (Absolute implied paths are pre-set at extraction and never reach
-        // here — see the `occ.path.is_some()` guard in Phase B.)
-        Origin::Asserted { .. } => resolve_code_path(
-            occ.segments.clone(),
-            scope,
-            siblings,
-            use_bindings,
-            parent_canonical,
-        )
-        .or_else(|| Some(ResolvedPath::new(occ.segments.clone()))),
         Origin::GlobUse | Origin::ExternCrate => Some(ResolvedPath::new(occ.segments.clone())),
     }
 }

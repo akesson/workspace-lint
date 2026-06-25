@@ -58,6 +58,15 @@ pub struct Module {
     /// which `unused-pub` consults so it never narrows a type that a more-visible
     /// item exposes (which would not compile — E0446 / `private_interfaces`).
     pub signature_exposures: Vec<SignatureExposure>,
+    /// Canonical targets of local-fact reference edges contributed by resolver
+    /// plugins from this module's items — the Tier-H usage assertions (a strum
+    /// derive ⇒ `strum`, `#[serde(with = "m")]` ⇒ `m::{serialize,deserialize}`, …).
+    /// Drained into [`Workspace::references_by_crate`](crate::Workspace) at load so they
+    /// suppress `unused-deps` / `unused-pub` false positives. Deliberately **not** in
+    /// `occurrences`: that keeps them out of the SCIP projection and
+    /// [`Module::references`], so the precision gate stays parsed-evidence-only.
+    /// `pub(crate)`: an internal resolution detail, not part of the published surface.
+    pub(crate) fact_references: Vec<ResolvedPath>,
     /// Provenance for every resolver-plugin [`Fact`](crate::plugins) produced from
     /// this module's items (the builder-attr exposures today). Aggregated into
     /// [`Workspace::fact_provenance`](crate::Workspace) for a future `--explain`;
@@ -103,13 +112,12 @@ impl Module {
 
     /// Resolved paths referenced from this module's regular code, glob imports,
     /// and `extern crate` declarations — parsed evidence only (every [`Origin`]
-    /// except `Macro` and the contract-`Asserted` Tier-H refs, which are
-    /// reachable via `occurrences` if a consumer wants them). Unresolved
-    /// occurrences are skipped.
+    /// except `Macro`). Tier-H assertion refs live on `fact_references`, not here, so
+    /// this surface stays parsed-evidence-only. Unresolved occurrences are skipped.
     pub fn references(&self) -> impl Iterator<Item = &ResolvedPath> + '_ {
         self.occurrences
             .iter()
-            .filter(|o| !matches!(o.origin, Origin::Macro | Origin::Asserted { .. }))
+            .filter(|o| !matches!(o.origin, Origin::Macro))
             .filter_map(|o| o.path.as_ref())
     }
 

@@ -312,6 +312,77 @@ fn builder_attr_records_provenance() {
     );
 }
 
+#[test]
+fn tier_h_assertions_record_local_fact_references() {
+    // A strum derive and a `#[serde(with = "…")]` whose only references to `strum`
+    // and the `helpers` module exist through their macro-expansion contracts.
+    let src = r#"
+        #[derive(EnumString)]
+        pub enum Mode { On, Off }
+
+        pub struct Wrapper {
+            #[serde(with = "helpers")]
+            pub bytes: Vec<u8>,
+        }
+
+        pub mod helpers {
+            pub fn serialize() {}
+            pub fn deserialize() {}
+        }
+    "#;
+    let parent_canonical = ResolvedPath::new(["demo".to_string()]);
+    let contents = collect_module_contents(
+        &parse_items(src),
+        std::path::Path::new("<test>"),
+        std::path::Path::new("<test>"),
+        &parent_canonical,
+        &default_markers(),
+        false,
+        Vec::new(),
+    )
+    .expect("collect");
+
+    let refs: Vec<String> = contents
+        .fact_references
+        .iter()
+        .map(|p| p.display())
+        .collect();
+    // strum derive ⇒ the `strum` runtime crate; serde-with ⇒ the sibling module's
+    // contract helpers, resolved against this module's scope.
+    assert!(
+        refs.contains(&"strum".to_string()),
+        "expected `strum`; got {refs:?}"
+    );
+    assert!(
+        refs.contains(&"demo::helpers::serialize".to_string())
+            && refs.contains(&"demo::helpers::deserialize".to_string()),
+        "expected serde-with children resolved against the sibling module; got {refs:?}",
+    );
+
+    // The whole point of `fact_references`: these edges never enter `occurrences`,
+    // so they stay out of the SCIP projection and `Module::references`.
+    let occ: Vec<String> = contents
+        .occurrences
+        .iter()
+        .filter_map(|o| o.path.as_ref())
+        .map(|p| p.display())
+        .collect();
+    assert!(
+        !occ.iter()
+            .any(|p| p == "strum" || p.starts_with("demo::helpers")),
+        "asserted refs must not leak into occurrences; got {occ:?}",
+    );
+
+    // The provenance side table attributes each fact to its owning crate + rule.
+    let prov: Vec<(&str, &str)> = contents
+        .fact_provenance
+        .iter()
+        .map(|p| (p.by.plugin, p.by.rule))
+        .collect();
+    assert!(prov.contains(&("strum", "strum-derive")), "got {prov:?}");
+    assert!(prov.contains(&("serde", "serde-with")), "got {prov:?}");
+}
+
 // --- code-path extraction (regular non-macro item bodies) ---
 
 fn parse_items(src: &str) -> Vec<syn::Item> {

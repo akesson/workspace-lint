@@ -47,6 +47,7 @@ use crate::macros::annotation::is_expansion_uses;
 use crate::resolve::use_tree::{Scope, UseBinding};
 use crate::resolve::{Crate, Occurrence, ResolvedPath, SignatureExposure, SourceSpan};
 
+pub(crate) mod assertions;
 pub(crate) mod builder;
 pub(crate) mod glob_imports;
 pub(crate) mod macro_calls;
@@ -104,11 +105,11 @@ pub(crate) enum Lowered {
 
 // ---- contributed facts ------------------------------------------------------
 
-/// Which plugin asserted a [`Fact`], and why. Generalizes the per-reference
-/// [`Origin::Asserted { rule }`](crate::Origin) provenance to *every* fact, and to
-/// exposures (which carry none on their own). Recorded into the workspace's
-/// provenance side table for a future `--explain`; it never affects whether a finding
-/// fires.
+/// Which plugin asserted a [`Fact`], and why. Subsumes the former per-reference
+/// `Origin::Asserted { rule }` tag (the Tier-H assertions are now
+/// [`assertions`]-module plugins) and extends provenance to exposures (which carry none
+/// on their own). Recorded into the workspace's provenance side table for a future
+/// `--explain`; it never affects whether a finding fires.
 #[allow(dead_code)] // fields read by a future `--explain`; populated + tested now.
 #[derive(Debug, Clone)]
 pub(crate) struct Provenance {
@@ -273,6 +274,11 @@ pub(crate) fn builtin_plugins() -> Vec<Box<dyn ResolverPlugin>> {
         Box::new(macro_calls::MacroCallPass),
         Box::new(glob_imports::GlobImportPass),
         Box::new(builder::BuilderAttrPlugin),
+        // Tier-H usage assertions — one plugin per crate whose macro-expansion
+        // contract names a path no source scan can see.
+        Box::new(assertions::strum::StrumPlugin),
+        Box::new(assertions::serde::SerdeWithPlugin),
+        Box::new(assertions::wasm_bindgen::WasmBindgenTestPlugin),
     ];
     #[cfg(feature = "dioxus")]
     v.push(Box::new(dioxus_rsx::DioxusPlugin));

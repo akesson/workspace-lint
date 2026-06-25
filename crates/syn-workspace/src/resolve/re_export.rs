@@ -228,6 +228,7 @@ mod tests {
             occurrences: Vec::new(),
             glob_reexports: Vec::new(),
             signature_exposures: Vec::new(),
+            fact_references: Vec::new(),
             fact_provenance: Vec::new(),
             file: None,
             doctest_crate_refs: std::collections::HashSet::new(),

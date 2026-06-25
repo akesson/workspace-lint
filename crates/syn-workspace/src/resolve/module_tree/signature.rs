@@ -427,3 +427,21 @@ pub(crate) fn record_exposed_type(
 ) {
     walk_type(ty, vis, &Ctx::from_local(cx), out);
 }
+
+/// Plugin entry point: resolve a written path's `segments` through the exact logic
+/// ordinary references use, falling back to the raw segments as an already-resolved
+/// path when resolution finds nothing (an external single segment such as
+/// `with = "serde_bytes"` still credits the dep). Used by the Tier-H assertion plugins
+/// for relative `#[serde(with = "…")]` paths — the same outcome the former
+/// `Origin::Asserted` Phase-B arm produced. FP-safe: over-crediting a wrongly bound
+/// segment only fails to suppress a finding, it can never create one.
+pub(crate) fn resolve_reference_path(segments: Vec<String>, cx: &LocalFactCtx) -> ResolvedPath {
+    resolve_code_path(
+        segments.clone(),
+        cx.scope,
+        cx.siblings,
+        cx.use_bindings,
+        cx.parent_canonical,
+    )
+    .unwrap_or_else(|| ResolvedPath::new(segments))
+}
