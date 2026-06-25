@@ -73,6 +73,10 @@ struct ModuleContents {
     occurrences: Vec<Occurrence>,
     glob_reexports: Vec<ResolvedPath>,
     signature_exposures: Vec<SignatureExposure>,
+    /// Canonical targets of local-fact reference edges (Tier-H assertion plugins
+    /// today). Drained into the crate-level reference set at load — kept off
+    /// `occurrences` so they stay out of the SCIP projection / `Module::references`.
+    fact_references: Vec<ResolvedPath>,
     fact_provenance: Vec<plugins::ProvenancedFact>,
 }
 
@@ -140,6 +144,7 @@ fn empty_root(crate_name: &str) -> Module {
         occurrences: Vec::new(),
         glob_reexports: Vec::new(),
         signature_exposures: Vec::new(),
+        fact_references: Vec::new(),
         fact_provenance: Vec::new(),
         file: None,
         doctest_crate_refs: HashSet::new(),
@@ -198,6 +203,7 @@ pub(crate) fn build_module_from_file(
         occurrences: contents.occurrences,
         glob_reexports: contents.glob_reexports,
         signature_exposures: contents.signature_exposures,
+        fact_references: contents.fact_references,
         fact_provenance: contents.fact_provenance,
         file: Some(file_path.to_path_buf()),
         // Scanned once per file (where `source` is in hand); inline submodules
@@ -263,13 +269,6 @@ fn collect_module_contents(
         for attr in item_attrs(syn_item) {
             extract_cfg_feature_names(attr, &mut cfg_features);
         }
-
-        // Tier-H usage assertions: scan the item's full attribute subtree (item,
-        // field, and variant attrs) for built-in triggers — strum derives,
-        // `#[wasm_bindgen_test]`, `#[serde(with = "…")]` — emitting
-        // `Origin::Asserted` reference evidence. Inline modules are skipped here
-        // and scanned by their own recursive pass below.
-        crate::assertions::scan_item(syn_item, parent_file, &mut occurrences);
 
         // A `#[derive(Routable)]` enum references its `pub fn` components only
         // through code the derive macro generates (never a bare `rsx!` or a
@@ -400,6 +399,7 @@ fn collect_module_contents(
                     occurrences: inline.occurrences,
                     glob_reexports: inline.glob_reexports,
                     signature_exposures: inline.signature_exposures,
+                    fact_references: inline.fact_references,
                     fact_provenance: inline.fact_provenance,
                     file: Some(parent_file.to_path_buf()),
                     // Inline modules share the file; its doc fences are scanned
@@ -565,7 +565,7 @@ fn collect_module_contents(
         parent_canonical,
         file: parent_file,
     };
-    let (signature_exposures, fact_provenance) =
+    let (signature_exposures, fact_references, fact_provenance) =
         collect_local_facts(syn_items, &resolver_plugins, &local_ctx);
 
     Ok(ModuleContents {
@@ -577,37 +577,47 @@ fn collect_module_contents(
         occurrences,
         glob_reexports,
         signature_exposures,
+        fact_references,
         fact_provenance,
     })
 }
 
 /// Run the AST-aware signature-exposure walk and the per-item `local_facts` plugins
-/// (the builder-attr recognizer today) over a module's items. Returns the recorded
-/// signature exposures and the provenance of every plugin-contributed fact. Split out
-/// of [`collect_module_contents`] to keep that function's complexity in check; the two
-/// outputs land on the module's `signature_exposures` / `fact_provenance`.
+/// (the builder-attr recognizer + Tier-H assertion plugins) over a module's items.
+/// Returns the recorded signature exposures, the canonical targets of local reference
+/// edges, and the provenance of every plugin-contributed fact. Split out of
+/// [`collect_module_contents`] to keep that function's complexity in check; the three
+/// outputs land on the module's `signature_exposures` / `fact_references` /
+/// `fact_provenance`.
 fn collect_local_facts(
     syn_items: &[syn::Item],
     resolver_plugins: &[Box<dyn plugins::ResolverPlugin>],
     local_ctx: &plugins::LocalFactCtx,
-) -> (Vec<SignatureExposure>, Vec<plugins::ProvenancedFact>) {
+) -> (
+    Vec<SignatureExposure>,
+    Vec<ResolvedPath>,
+    Vec<plugins::ProvenancedFact>,
+) {
     let mut signature_exposures: Vec<SignatureExposure> = Vec::new();
+    let mut fact_references: Vec<ResolvedPath> = Vec::new();
     let mut fact_provenance: Vec<plugins::ProvenancedFact> = Vec::new();
     for syn_item in syn_items {
         collect_signature_exposures(syn_item, local_ctx, &mut signature_exposures);
-        // Exposures join the signature vec; references would route via `occurrences`
-        // (no built-in local-reference producer yet). Every fact's provenance is kept.
+        // Exposures join the signature vec; reference edges (Tier-H assertions) join
+        // `fact_references`, drained into the crate-level reference set at load — never
+        // into `occurrences`, so they stay out of SCIP / `Module::references`. Every
+        // fact's provenance is kept.
         for plugin in resolver_plugins {
             for fact in plugin.local_facts(syn_item, local_ctx) {
                 fact_provenance.push(fact.provenance());
                 match fact {
                     plugins::Fact::Exposure { exp, .. } => signature_exposures.push(exp),
-                    plugins::Fact::Reference { .. } => {}
+                    plugins::Fact::Reference { edge, .. } => fact_references.push(edge.to),
                 }
             }
         }
     }
-    (signature_exposures, fact_provenance)
+    (signature_exposures, fact_references, fact_provenance)
 }
 
 /// Visits an item's nested bodies (fn bodies, expression position, …) and

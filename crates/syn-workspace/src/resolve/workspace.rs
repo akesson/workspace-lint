@@ -331,6 +331,10 @@ fn collect_module_references(module: &Module, out: &mut std::collections::HashSe
         // Every resolved occurrence, all origins (incl. Macro): a dep/item used
         // only inside a macro body must still count as referenced.
         out.extend(m.occurrences.iter().filter_map(|o| o.path.clone()));
+        // Local-fact reference edges (Tier-H assertion plugins): a strum derive,
+        // `#[serde(with = "…")]`, `#[wasm_bindgen_test]` references a path no source
+        // syntax names. Off `occurrences` so they stay out of SCIP / `references()`.
+        out.extend(m.fact_references.iter().cloned());
     }
 }
 
