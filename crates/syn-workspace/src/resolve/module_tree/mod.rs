@@ -42,9 +42,9 @@ use crate::macros::annotation::comment_expansion_uses_occurrences;
 use crate::macros::autodetect::extract_macro_paths;
 use crate::plugins;
 
-mod items;
+pub(crate) mod items;
 mod occurrences;
-mod signature;
+pub(crate) mod signature;
 #[cfg(test)]
 mod tests;
 mod uses;
@@ -73,6 +73,7 @@ struct ModuleContents {
     occurrences: Vec<Occurrence>,
     glob_reexports: Vec<ResolvedPath>,
     signature_exposures: Vec<SignatureExposure>,
+    fact_provenance: Vec<plugins::ProvenancedFact>,
 }
 
 /// Convert a `proc_macro2::Span` to a [`SourceSpan`] anchored at `file` — the
@@ -139,6 +140,7 @@ fn empty_root(crate_name: &str) -> Module {
         occurrences: Vec::new(),
         glob_reexports: Vec::new(),
         signature_exposures: Vec::new(),
+        fact_provenance: Vec::new(),
         file: None,
         doctest_crate_refs: HashSet::new(),
     }
@@ -196,6 +198,7 @@ pub(crate) fn build_module_from_file(
         occurrences: contents.occurrences,
         glob_reexports: contents.glob_reexports,
         signature_exposures: contents.signature_exposures,
+        fact_provenance: contents.fact_provenance,
         file: Some(file_path.to_path_buf()),
         // Scanned once per file (where `source` is in hand); inline submodules
         // share this file and carry an empty set.
@@ -252,9 +255,9 @@ fn collect_module_contents(
     // Targets of `pub use M::*;` glob re-exports declared in this module.
     let mut glob_reexports: Vec<ResolvedPath> = Vec::new();
 
-    // Built once and reused for both item-position dispatch and the fn-body
-    // dispatch below.
-    let lowerers = plugins::builtin_lowerers();
+    // Built once and reused for item-position macro dispatch, the fn-body
+    // dispatch, the code-path claim guard, and the per-item local-fact pass below.
+    let resolver_plugins = plugins::builtin_plugins();
 
     for syn_item in syn_items {
         for attr in item_attrs(syn_item) {
@@ -272,8 +275,8 @@ fn collect_module_contents(
         // through code the derive macro generates (never a bare `rsx!` or a
         // `use`), so they're invisible to the token/AST scans below. Capture
         // those component names as bare `Origin::Component` occurrences; the
-        // Phase B `DioxusComponentPass` binds them to the same-crate `pub fn`,
-        // exactly like a bare `rsx!` component. Gated with the rest of the
+        // dioxus plugin's Phase B `global_facts` binds them to the same-crate
+        // `pub fn`, exactly like a bare `rsx!` component. Gated with the rest of the
         // Dioxus semantics — with `dioxus` off, route enums are ordinary code.
         #[cfg(feature = "dioxus")]
         if let syn::Item::Enum(item_enum) = syn_item {
@@ -301,7 +304,7 @@ fn collect_module_contents(
                 tokens: &item_macro.mac.tokens,
                 marker_crates,
             };
-            if let Some(lowerer) = lowerers.iter().find(|l| l.claims(&site)) {
+            if let Some(plugin) = resolver_plugins.iter().find(|p| p.claims_macro(&site)) {
                 // Span for structured occurrences: the macro-invocation site
                 // (the plugin AST doesn't expose per-ref spans).
                 let mac_span = item_macro
@@ -313,7 +316,7 @@ fn collect_module_contents(
                 let cx = plugins::LowerCtx {
                     macro_span: mac_span,
                 };
-                match lowerer.lower(&site, &cx) {
+                match plugin.lower_macro(&site, &cx) {
                     plugins::Lowered::TokenScan => {
                         extract_macro_paths(
                             item_macro.mac.tokens.clone(),
@@ -345,7 +348,7 @@ fn collect_module_contents(
             #[cfg(feature = "dioxus")]
             {
                 let mut v = NestedMacroLowering {
-                    lowerers: &lowerers,
+                    lowerers: &resolver_plugins,
                     marker_crates,
                     file: parent_file,
                     out: &mut occurrences,
@@ -397,6 +400,7 @@ fn collect_module_contents(
                     occurrences: inline.occurrences,
                     glob_reexports: inline.glob_reexports,
                     signature_exposures: inline.signature_exposures,
+                    fact_provenance: inline.fact_provenance,
                     file: Some(parent_file.to_path_buf()),
                     // Inline modules share the file; its doc fences are scanned
                     // once on the file-backed module.
@@ -482,11 +486,13 @@ fn collect_module_contents(
             // occurrences in the macro pass. Skip to avoid double-counting them
             // as regular code.
             syn::Item::Macro(item_macro)
-                if plugins::claims_any(&plugins::MacroSite {
-                    is_macro_rules: item_macro.ident.is_some(),
-                    path: &item_macro.mac.path,
-                    tokens: &item_macro.mac.tokens,
-                    marker_crates,
+                if resolver_plugins.iter().any(|p| {
+                    p.claims_macro(&plugins::MacroSite {
+                        is_macro_rules: item_macro.ident.is_some(),
+                        path: &item_macro.mac.path,
+                        tokens: &item_macro.mac.tokens,
+                        marker_crates,
+                    })
                 }) =>
             {
                 continue;
@@ -548,21 +554,19 @@ fn collect_module_contents(
         parent_canonical,
     );
 
-    // Signature-exposure walk: AST-aware (not token-based like the scan above),
-    // so it can record which types appear in a *public signature* position.
-    // Reuses the now-complete `use_bindings` / `scope` / `sibling_names` so its
-    // resolved canonicals match the occurrence graph. See `signature.rs`.
-    let mut signature_exposures: Vec<SignatureExposure> = Vec::new();
-    for syn_item in syn_items {
-        collect_signature_exposures(
-            syn_item,
-            &scope,
-            &sibling_names,
-            &use_bindings,
-            parent_canonical,
-            &mut signature_exposures,
-        );
-    }
+    // Signature-exposure walk + per-item local-fact plugins (builder-attr today),
+    // factored into `collect_local_facts`. AST-aware (not token-based like the scan
+    // above); reuses the now-complete `use_bindings` / `scope` / `sibling_names` so
+    // resolved canonicals match the occurrence graph. See `signature.rs` / `plugins`.
+    let local_ctx = plugins::LocalFactCtx {
+        scope: &scope,
+        siblings: &sibling_names,
+        use_bindings: &use_bindings,
+        parent_canonical,
+        file: parent_file,
+    };
+    let (signature_exposures, fact_provenance) =
+        collect_local_facts(syn_items, &resolver_plugins, &local_ctx);
 
     Ok(ModuleContents {
         items,
@@ -573,7 +577,37 @@ fn collect_module_contents(
         occurrences,
         glob_reexports,
         signature_exposures,
+        fact_provenance,
     })
+}
+
+/// Run the AST-aware signature-exposure walk and the per-item `local_facts` plugins
+/// (the builder-attr recognizer today) over a module's items. Returns the recorded
+/// signature exposures and the provenance of every plugin-contributed fact. Split out
+/// of [`collect_module_contents`] to keep that function's complexity in check; the two
+/// outputs land on the module's `signature_exposures` / `fact_provenance`.
+fn collect_local_facts(
+    syn_items: &[syn::Item],
+    resolver_plugins: &[Box<dyn plugins::ResolverPlugin>],
+    local_ctx: &plugins::LocalFactCtx,
+) -> (Vec<SignatureExposure>, Vec<plugins::ProvenancedFact>) {
+    let mut signature_exposures: Vec<SignatureExposure> = Vec::new();
+    let mut fact_provenance: Vec<plugins::ProvenancedFact> = Vec::new();
+    for syn_item in syn_items {
+        collect_signature_exposures(syn_item, local_ctx, &mut signature_exposures);
+        // Exposures join the signature vec; references would route via `occurrences`
+        // (no built-in local-reference producer yet). Every fact's provenance is kept.
+        for plugin in resolver_plugins {
+            for fact in plugin.local_facts(syn_item, local_ctx) {
+                fact_provenance.push(fact.provenance());
+                match fact {
+                    plugins::Fact::Exposure { exp, .. } => signature_exposures.push(exp),
+                    plugins::Fact::Reference { .. } => {}
+                }
+            }
+        }
+    }
+    (signature_exposures, fact_provenance)
 }
 
 /// Visits an item's nested bodies (fn bodies, expression position, …) and
@@ -590,7 +624,7 @@ fn collect_module_contents(
 /// feeds, and a documented non-goal.
 #[cfg(feature = "dioxus")]
 struct NestedMacroLowering<'a> {
-    lowerers: &'a [Box<dyn plugins::MacroLowerer>],
+    lowerers: &'a [Box<dyn plugins::ResolverPlugin>],
     marker_crates: &'a [String],
     file: &'a Path,
     out: &'a mut Vec<Occurrence>,
@@ -605,7 +639,7 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for NestedMacroLowering<'a> {
             tokens: &mac.tokens,
             marker_crates: self.marker_crates,
         };
-        if let Some(lowerer) = self.lowerers.iter().find(|l| l.claims(&site)) {
+        if let Some(plugin) = self.lowerers.iter().find(|p| p.claims_macro(&site)) {
             let mac_span = mac
                 .path
                 .segments
@@ -614,7 +648,7 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for NestedMacroLowering<'a> {
             let cx = plugins::LowerCtx {
                 macro_span: mac_span,
             };
-            match lowerer.lower(&site, &cx) {
+            match plugin.lower_macro(&site, &cx) {
                 plugins::Lowered::ScanPlus(occs) | plugins::Lowered::Exact(occs) => {
                     self.out.extend(occs);
                 }

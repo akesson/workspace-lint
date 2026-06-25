@@ -272,6 +272,46 @@ fn builder_attr_skips_non_promoting_keys() {
     );
 }
 
+#[test]
+fn builder_attr_records_provenance() {
+    let root =
+        build_crate_tree(&manifest_dir("builder_exposure"), "builder_exposure").expect("build");
+    let provenance: Vec<_> = root.walk().flat_map(|m| m.fact_provenance.iter()).collect();
+
+    // The builder plugin tags every promoted exposure with its provenance — the
+    // asserting plugin and the specific build_method/build_fn rule.
+    assert!(
+        provenance
+            .iter()
+            .any(|p| p.by.plugin == "typed_builder" && p.by.rule == "build_method.into"),
+        "expected a typed_builder provenance entry; got {:?}",
+        provenance
+            .iter()
+            .map(|p| (p.by.plugin, p.by.rule))
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        provenance
+            .iter()
+            .any(|p| p.by.plugin == "derive_builder" && p.by.rule == "build_fn.error"),
+        "expected a derive_builder provenance entry",
+    );
+    // Builder facts are all exposures, each pointing at the promoted type path and
+    // anchored at the `#[builder]` attribute span.
+    assert!(
+        provenance
+            .iter()
+            .all(|p| p.kind == crate::plugins::FactKind::Exposure && p.by.trigger.is_some()),
+        "builder provenance: every entry is an Exposure with a trigger span",
+    );
+    assert!(
+        provenance
+            .iter()
+            .any(|p| p.path.display().contains("TbErr")),
+        "provenance records the promoted type's canonical path",
+    );
+}
+
 // --- code-path extraction (regular non-macro item bodies) ---
 
 fn parse_items(src: &str) -> Vec<syn::Item> {

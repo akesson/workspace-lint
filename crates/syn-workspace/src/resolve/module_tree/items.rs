@@ -14,7 +14,7 @@ use super::{Item, ItemKind, ResolvedPath, SourceSpan, Visibility};
 /// Mirrored (not reused) by `lints::shipped_source` in the workspace-lint
 /// binary; keep the two arm-for-arm identical when a new `syn::Item` variant
 /// appears.
-pub(super) fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+pub(crate) fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     match item {
         syn::Item::Const(i) => &i.attrs,
         syn::Item::Enum(i) => &i.attrs,

@@ -58,6 +58,12 @@ pub struct Module {
     /// which `unused-pub` consults so it never narrows a type that a more-visible
     /// item exposes (which would not compile — E0446 / `private_interfaces`).
     pub signature_exposures: Vec<SignatureExposure>,
+    /// Provenance for every resolver-plugin [`Fact`](crate::plugins) produced from
+    /// this module's items (the builder-attr exposures today). Aggregated into
+    /// [`Workspace::fact_provenance`](crate::Workspace) for a future `--explain`;
+    /// inert otherwise (it never affects whether a finding fires). `pub(crate)`:
+    /// an internal provenance detail, not part of the published model surface.
+    pub(crate) fact_provenance: Vec<crate::plugins::ProvenancedFact>,
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,

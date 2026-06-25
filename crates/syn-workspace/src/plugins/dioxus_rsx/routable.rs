@@ -20,10 +20,10 @@
 //! token/AST scans never see them and `unused-pub` false-positives them as dead.
 //!
 //! This is the Phase A *capture* half: it emits each referenced component name
-//! as a bare-ident [`Origin::Component`] occurrence. The existing
-//! [`super::DioxusComponentPass`] (Phase B) then binds each to the matching
-//! same-crate `pub fn` — identical handling to a bare `rsx!` component, so no
-//! new resolve pass is needed.
+//! as a bare-ident [`Origin::Component`] occurrence. [`super::DioxusPlugin`]'s
+//! `global_facts` hook (Phase B) then binds each to the matching same-crate
+//! `pub fn` — identical handling to a bare `rsx!` component, so no new plugin
+//! hook is needed.
 
 use std::path::Path;
 

@@ -5,8 +5,8 @@
 // card::*;` brings it into scope but does NOT create a named use-binding, so the
 // only thing referencing `Card` is the bare rsx usage. Both the structured rsx
 // walker and the baseline token scan drop single-ident names, so without the
-// Phase B `DioxusComponentPass` `Card` has zero referrers and reads "appears
-// unused" — the false positive. The pass binds the bare usage to the same-crate
+// Phase B dioxus `global_facts` hook `Card` has zero referrers and reads "appears
+// unused" — the false positive. The hook binds the bare usage to the same-crate
 // `pub fn Card`, making it IntraCrate (suppressed here), so this passes cleanly.
 
 mod card;

@@ -408,11 +408,11 @@ pub enum Origin {
     /// plugin-lowered macro such as `rsx!`).
     Macro,
     /// A bare framework-component name captured but left unresolved by the
-    /// central resolver — a Phase B resolve plugin binds it against the
+    /// central resolver — a Phase B resolver plugin binds it against the
     /// workspace. Two capture sources today, both Dioxus: the `rsx!` lowerer
     /// (a `Foo {}` invocation) and the `#[derive(Routable)]` enum walk (a route
-    /// variant ident or `#[layout(Foo)]` component). `DioxusComponentPass` binds
-    /// either to a same-crate `pub fn` of that name.
+    /// variant ident or `#[layout(Foo)]` component). The dioxus plugin's
+    /// `global_facts` hook binds either to a same-crate `pub fn` of that name.
     Component,
     /// A bare single-ident macro *invocation* (`foo!(…)` / `foo![…]` / `foo!{…}`)
     /// in regular code. Captured here but left unresolved by the central resolver

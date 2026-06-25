@@ -142,8 +142,8 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
     `#[derive(Routable)]` enum (`#[route]` / `#[layout(...)]`), not a bare `rsx!`
     invocation, so they read "appears unused". Closed in Phase 4 increment 3 (see
     History): the route component names are captured as `Origin::Component` and the
-    existing `DioxusComponentPass` binds them to the same-crate `pub fn` — they now
-    read IntraCrate, exactly like a bare `rsx!` component.
+    dioxus plugin's `global_facts` hook binds them to the same-crate `pub fn` — they
+    now read IntraCrate, exactly like a bare `rsx!` component.
   - **Trait-method / derive-via-re-export deps (known-FP — needs trait solving /
     macro expansion).** e.g. `digest` via `Sha256::digest`, `anyhow` via
     `.context()`, `serde` where only `Serialize`/`Deserialize` *derives* appear
@@ -247,7 +247,7 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > (`Ident !` + a delimited group — so multi-segment `m::foo!` and the `log::debug!`
 > path case are untouched, preserving increment-6) is captured as
 > `Origin::MacroCall` and bound to a same-crate `macro_rules!` of that name — the
-> macro twin of the Dioxus `DioxusComponentPass`, but **core** (always on) since
+> macro twin of the Dioxus `global_facts` hook, but **core** (always on) since
 > `macro_rules!` is a language feature. `Origin::MacroCall` is excluded from the
 > SCIP projection (like `Macro`/`Component`), so the differential is unmoved
 > (precision-neutral). Guarded by
@@ -258,8 +258,8 @@ on every crate and `unused-pub` on multi-member workspaces (see `corpus_fp.rs`).
 > **History (Phase 4, increment 3 — Dioxus router cross-linking):** the increment-2
 > audit's last tractable resolver FP — HotDog's `DogView` / `NavBar` / `Favorites`,
 > `pub fn` components referenced only through a `#[derive(Routable)]` enum — is
-> closed. The fix is **capture-only**: no new Phase B pass. The existing
-> `DioxusComponentPass` already binds any bare `Origin::Component` ident to a
+> closed. The fix is **capture-only**: no new Phase B hook. The dioxus plugin's
+> `global_facts` hook already binds any bare `Origin::Component` ident to a
 > same-crate `pub fn`; the gap was that route component names live in enum
 > *attributes* (`#[route(...)]` / `#[layout(...)]`), which the token/AST scans
 > never visit. A new capture
