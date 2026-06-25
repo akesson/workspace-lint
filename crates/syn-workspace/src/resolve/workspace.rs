@@ -69,6 +69,12 @@ pub struct Workspace {
     /// recorded; the `Visibility` value leaves room for a future precise variant.
     pub(super) signature_exposure:
         std::collections::HashMap<ResolvedPath, crate::resolve::Visibility>,
+    /// Flat provenance log for every resolver-plugin-contributed fact — which plugin
+    /// asserted it, which rule, and where — gathered at both fold sites (global
+    /// `global_facts` + per-module `local_facts`). Never consulted by the lint
+    /// pipeline; reserved for a future `--explain`. See [`crate::plugins::Fact`].
+    #[allow(dead_code)] // terminal sink: populated + tested; read by a future `--explain`.
+    pub(super) fact_provenance: Vec<crate::plugins::ProvenancedFact>,
     /// Per-crate set of crate names referenced inside rust-compiling doc-test
     /// code fences (see [`module_tree`]/`doc_fences`). Keyed by code name, like
     /// [`Self::references_by_crate`]. Kept *separate* from the occurrence-derived
@@ -158,25 +164,38 @@ impl Workspace {
                 }
             }
         }
-        // Phase B resolve passes (framework semantics). Each pass is an
+        let mut fact_provenance: Vec<crate::plugins::ProvenancedFact> = Vec::new();
+        let resolver_plugins = crate::plugins::builtin_plugins();
+        // Global resolver-plugin facts (framework semantics). Each plugin is an
         // independent pure contributor: it reads the resolved member crates and
-        // returns reference edges the mechanical resolver structurally can't
-        // produce (e.g. Dioxus `#[component]` ↔ bare `Foo {}` rsx usage). Folding
-        // them into `references_by_crate` *before* the reverse index is built
-        // means they flow through `re_exports.canonical()` and `referring_crates`
-        // exactly like code references. Order-independent: the merge target is a
-        // set, so the union is the same regardless of pass order.
-        for pass in crate::plugins::builtin_resolve_passes() {
-            for crate::plugins::ContributedRef {
-                from,
-                to,
-                via_sibling_target,
-            } in pass.contribute(&crates)
-            {
-                if via_sibling_target {
-                    sibling_target_raw.insert(to.clone());
+        // returns facts the mechanical resolver structurally can't produce (e.g. a
+        // Dioxus `#[component]` ↔ bare `Foo {}` rsx reference edge). Folding the
+        // reference edges into `references_by_crate` *before* the reverse index is
+        // built means they flow through `re_exports.canonical()` and `referring_crates`
+        // exactly like code references. Order-independent: the merge target is a set,
+        // so the union is the same regardless of plugin order.
+        for plugin in &resolver_plugins {
+            for fact in plugin.global_facts(&crates) {
+                fact_provenance.push(fact.provenance());
+                match fact {
+                    crate::plugins::Fact::Reference {
+                        edge:
+                            crate::plugins::ContributedRef {
+                                from,
+                                to,
+                                via_sibling_target,
+                            },
+                        by: _,
+                    } => {
+                        if via_sibling_target {
+                            sibling_target_raw.insert(to.clone());
+                        }
+                        references_by_crate.entry(from).or_default().insert(to);
+                    }
+                    // No built-in plugin emits a *global* exposure yet; a future one
+                    // folds into the signature index built below (cell wired here).
+                    crate::plugins::Fact::Exposure { .. } => {}
                 }
-                references_by_crate.entry(from).or_default().insert(to);
             }
         }
         let mut canonical_refs_by_path: std::collections::HashMap<
@@ -226,6 +245,17 @@ impl Workspace {
                 }
             }
         }
+        // Aggregate per-module resolver-plugin provenance (local facts — the
+        // builder-attr exposures today) into the flat workspace log, joining the
+        // global-fact provenance gathered above. Inert; for a future `--explain`.
+        for krate in &crates {
+            if !krate.is_workspace_member {
+                continue;
+            }
+            for module in krate.all_modules() {
+                fact_provenance.extend(module.fact_provenance.iter().cloned());
+            }
+        }
         Ok(Self {
             crates,
             root,
@@ -237,6 +267,7 @@ impl Workspace {
             canonical_refs_by_path,
             sibling_target_refs,
             signature_exposure,
+            fact_provenance,
             doctest_dep_refs_by_crate,
             warnings,
         })

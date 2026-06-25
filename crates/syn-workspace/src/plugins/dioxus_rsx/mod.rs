@@ -9,9 +9,9 @@
 //!
 //! ## Dispatch
 //!
-//! The module-tree walker finds the first [`super::MacroLowerer`] that
-//! [`claims`](super::MacroLowerer::claims) the macro site; this lowerer returns
-//! [`Lowered::ScanPlus`](super::Lowered::ScanPlus), so the body is token-scanned
+//! The module-tree walker finds the first [`super::ResolverPlugin`] that
+//! [`claims_macro`](super::ResolverPlugin::claims_macro)s the macro site; this plugin
+//! returns [`Lowered::ScanPlus`](super::Lowered::ScanPlus), so the body is token-scanned
 //! (the baseline, like `quote!`) AND the AST walk below adds the Component refs
 //! the token scanner misses:
 //!
@@ -27,7 +27,9 @@ use std::collections::HashMap;
 use syn::parse2;
 use syn::visit::Visit;
 
-use crate::plugins::{ContributedRef, LowerCtx, Lowered, MacroLowerer, MacroSite, ResolvePass};
+use crate::plugins::{
+    ContributedRef, Fact, LowerCtx, Lowered, MacroSite, Provenance, ResolverPlugin,
+};
 use crate::resolve::{Crate, ItemKind, Occurrence, Origin, ResolvedPath};
 
 mod routable;
@@ -36,10 +38,10 @@ pub(crate) use routable::route_component_occurrences;
 /// Built-in lowerer for `rsx!` and `dioxus::rsx!` invocations. Token-scans the
 /// body (like any macro) AND adds the structured Component paths the scanner
 /// misses — i.e. [`Lowered::ScanPlus`].
-pub(crate) struct DioxusRsxLowerer;
+pub(crate) struct DioxusPlugin;
 
-impl MacroLowerer for DioxusRsxLowerer {
-    fn claims(&self, site: &MacroSite) -> bool {
+impl ResolverPlugin for DioxusPlugin {
+    fn claims_macro(&self, site: &MacroSite) -> bool {
         if site.is_macro_rules {
             return false;
         }
@@ -50,7 +52,7 @@ impl MacroLowerer for DioxusRsxLowerer {
         }
     }
 
-    fn lower(&self, site: &MacroSite, cx: &LowerCtx) -> Lowered {
+    fn lower_macro(&self, site: &MacroSite, cx: &LowerCtx) -> Lowered {
         let mut collected = Collected::default();
         // Malformed rsx! bodies aren't our problem — the rustc / dx toolchain
         // surfaces those; we just contribute no structured refs from a partial
@@ -85,6 +87,72 @@ impl MacroLowerer for DioxusRsxLowerer {
                 }),
         );
         Lowered::ScanPlus(occurrences)
+    }
+
+    /// Phase B: bind a bare `Foo {}` component invocation inside `rsx!` (or a
+    /// `#[derive(Routable)]` route variant) to the matching `pub fn Foo` in the
+    /// *same* crate. Bare usages arrive as [`Origin::Component`] occurrences — emitted
+    /// by `lower_macro` above and by [`route_component_occurrences`] — so this reads
+    /// the resolved model only, no source re-parse.
+    ///
+    /// Same-crate only: a bare name matches `pub fn`s in its own crate (components are
+    /// capitalized `pub fn`s; by-name matching needs no attribute model and only ever
+    /// *suppresses* an unused-finding — the FP-safe direction). Cross-crate component
+    /// libraries are a documented non-goal; a `use other::Foo;` already counts as a
+    /// reference.
+    fn global_facts(&self, crates: &[Crate]) -> Vec<Fact> {
+        let mut out = Vec::new();
+        for krate in crates {
+            if !krate.is_workspace_member {
+                continue;
+            }
+            // Candidate component definitions: every public fn, keyed by bare name
+            // (a name may be defined in more than one module).
+            let mut defs: HashMap<&str, Vec<&ResolvedPath>> = HashMap::new();
+            for item in krate.pub_items() {
+                if item.kind == ItemKind::Fn {
+                    defs.entry(item.name.as_str())
+                        .or_default()
+                        .push(&item.canonical);
+                }
+            }
+            if defs.is_empty() {
+                continue;
+            }
+            let from = krate.code_name();
+            // Bare component usages captured as Origin::Component occurrences.
+            for module in krate.all_modules() {
+                for occ in &module.occurrences {
+                    if occ.origin != Origin::Component {
+                        continue;
+                    }
+                    let Some(name) = occ.segments.last() else {
+                        continue;
+                    };
+                    if let Some(canonicals) = defs.get(name.as_str()) {
+                        for canonical in canonicals {
+                            out.push(ContributedRef {
+                                from: from.clone(),
+                                to: (*canonical).clone(),
+                                // Component usage sites are rsx!/route captures;
+                                // target provenance isn't tracked.
+                                via_sibling_target: false,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out.into_iter()
+            .map(|edge| Fact::Reference {
+                edge,
+                by: Provenance {
+                    plugin: "dioxus",
+                    rule: "component",
+                    trigger: None,
+                },
+            })
+            .collect()
     }
 }
 
@@ -193,69 +261,6 @@ fn path_to_resolved(path: &syn::Path) -> Option<ResolvedPath> {
     Some(ResolvedPath::new(segments))
 }
 
-/// Phase B pass: binds a bare `Foo {}` component invocation inside `rsx!` to the
-/// matching `pub fn Foo` defined in the *same* crate. The bare usages arrive as
-/// [`Origin::Component`] occurrences in the IR (the lowerer above emits them, and
-/// the module walk now dispatches fn-body `rsx!` too), so this pass only reads
-/// the resolved model — no source re-parse.
-///
-/// ## Scope: same-crate only
-///
-/// A bare name matches `pub fn`s in its own crate by name (components are
-/// capitalized `pub fn`s; matching by name needs no attribute model and is
-/// precise enough — over-linking a same-named non-component only *suppresses* an
-/// unused-finding, the FP-safe direction). Cross-crate component libraries are a
-/// documented non-goal; a named `use other::Foo;` already counts as a reference.
-pub(crate) struct DioxusComponentPass;
-
-impl ResolvePass for DioxusComponentPass {
-    fn contribute(&self, crates: &[Crate]) -> Vec<ContributedRef> {
-        let mut out = Vec::new();
-        for krate in crates {
-            if !krate.is_workspace_member {
-                continue;
-            }
-            // Candidate component definitions: every public fn, keyed by bare
-            // name (a name may be defined in more than one module).
-            let mut defs: HashMap<&str, Vec<&ResolvedPath>> = HashMap::new();
-            for item in krate.pub_items() {
-                if item.kind == ItemKind::Fn {
-                    defs.entry(item.name.as_str())
-                        .or_default()
-                        .push(&item.canonical);
-                }
-            }
-            if defs.is_empty() {
-                continue;
-            }
-            let from = krate.code_name();
-            // Bare component usages captured as Origin::Component occurrences.
-            for module in krate.all_modules() {
-                for occ in &module.occurrences {
-                    if occ.origin != Origin::Component {
-                        continue;
-                    }
-                    let Some(name) = occ.segments.last() else {
-                        continue;
-                    };
-                    if let Some(canonicals) = defs.get(name.as_str()) {
-                        for canonical in canonicals {
-                            out.push(ContributedRef {
-                                from: from.clone(),
-                                to: (*canonical).clone(),
-                                // Component usage sites are rsx!/route
-                                // captures; target provenance isn't tracked.
-                                via_sibling_target: false,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,7 +270,7 @@ mod tests {
     fn claims(path: &str) -> bool {
         let p = syn::parse_str(path).expect("valid path");
         let t = TokenStream::new();
-        DioxusRsxLowerer.claims(&MacroSite {
+        DioxusPlugin.claims_macro(&MacroSite {
             is_macro_rules: false,
             path: &p,
             tokens: &t,
@@ -282,7 +287,7 @@ mod tests {
             tokens: &body,
             marker_crates: &[],
         };
-        match DioxusRsxLowerer.lower(&site, &LowerCtx { macro_span: None }) {
+        match DioxusPlugin.lower_macro(&site, &LowerCtx { macro_span: None }) {
             Lowered::ScanPlus(occs) => occs.iter().map(|o| o.segments.join("::")).collect(),
             other => panic!(
                 "rsx lowerer should ScanPlus, got {:?}",
@@ -341,7 +346,7 @@ mod tests {
             tokens: &body,
             marker_crates: &[],
         };
-        match DioxusRsxLowerer.lower(&site, &LowerCtx { macro_span: None }) {
+        match DioxusPlugin.lower_macro(&site, &LowerCtx { macro_span: None }) {
             Lowered::ScanPlus(occs) => occs,
             _ => panic!("rsx lowerer should ScanPlus"),
         }

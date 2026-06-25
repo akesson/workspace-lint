@@ -34,7 +34,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::plugins::{ContributedRef, ResolvePass};
+use crate::plugins::{ContributedRef, Fact, Provenance, ResolverPlugin};
 use crate::resolve::{Crate, ItemKind, Module, Origin, ResolvedPath, Target};
 
 /// Phase B pass: binds glob-imported names to the glob target's items when
@@ -113,8 +113,8 @@ impl<'a> TargetSurface<'a> {
     }
 }
 
-impl ResolvePass for GlobImportPass {
-    fn contribute(&self, crates: &[Crate]) -> Vec<ContributedRef> {
+impl ResolverPlugin for GlobImportPass {
+    fn global_facts(&self, crates: &[Crate]) -> Vec<Fact> {
         // Canonical module path → every member module carrying it. Target
         // roots all carry the crate's code name, so one canonical can map to
         // several modules (lib root + bench roots, …) — binding against the
@@ -223,6 +223,15 @@ impl ResolvePass for GlobImportPass {
                 }
             }
         }
-        out
+        out.into_iter()
+            .map(|edge| Fact::Reference {
+                edge,
+                by: Provenance {
+                    plugin: "glob_imports",
+                    rule: "glob-binding",
+                    trigger: None,
+                },
+            })
+            .collect()
     }
 }

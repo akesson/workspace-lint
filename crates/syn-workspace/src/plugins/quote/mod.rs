@@ -3,18 +3,18 @@
 //! `quote!` bodies are token streams the proc-macro emits as Rust source at
 //! expansion time; their contents reference items the caller sees at the
 //! expansion site, which the baseline token scan (multi-segment path tokens,
-//! resolved through the call-site scope) handles. So this lowerer simply
-//! [`claims`](MacroLowerer::claims) the `quote!` paths and asks for a
+//! resolved through the call-site scope) handles. So this plugin simply
+//! [`claims_macro`](ResolverPlugin::claims_macro)s the `quote!` paths and asks for a
 //! [`Lowered::TokenScan`] — no structured extraction, and no fake-empty
 //! reference list to gate the scan.
 
-use crate::plugins::{LowerCtx, Lowered, MacroLowerer, MacroSite};
+use crate::plugins::{LowerCtx, Lowered, MacroSite, ResolverPlugin};
 
 /// Built-in lowerer for `quote!` and `quote::quote!` invocations.
 pub(crate) struct QuoteLowerer;
 
-impl MacroLowerer for QuoteLowerer {
-    fn claims(&self, site: &MacroSite) -> bool {
+impl ResolverPlugin for QuoteLowerer {
+    fn claims_macro(&self, site: &MacroSite) -> bool {
         if site.is_macro_rules {
             return false;
         }
@@ -28,7 +28,7 @@ impl MacroLowerer for QuoteLowerer {
         }
     }
 
-    fn lower(&self, _site: &MacroSite, _cx: &LowerCtx) -> Lowered {
+    fn lower_macro(&self, _site: &MacroSite, _cx: &LowerCtx) -> Lowered {
         Lowered::TokenScan
     }
 }
@@ -47,7 +47,7 @@ mod tests {
 
     fn claims(path: &str) -> bool {
         let (p, t) = site(path);
-        QuoteLowerer.claims(&MacroSite {
+        QuoteLowerer.claims_macro(&MacroSite {
             is_macro_rules: false,
             path: &p,
             tokens: &t,
@@ -67,7 +67,7 @@ mod tests {
         assert!(!claims("quote_spanned"));
         // A `macro_rules!` definition is owned by MacroRulesLowerer.
         let (p, t) = site("quote");
-        assert!(!QuoteLowerer.claims(&MacroSite {
+        assert!(!QuoteLowerer.claims_macro(&MacroSite {
             is_macro_rules: true,
             path: &p,
             tokens: &t,

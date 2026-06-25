@@ -26,15 +26,15 @@
 
 use std::collections::HashMap;
 
-use crate::plugins::{ContributedRef, ResolvePass};
+use crate::plugins::{ContributedRef, Fact, Provenance, ResolverPlugin};
 use crate::resolve::{Crate, ItemKind, Origin, ResolvedPath};
 
 /// Phase B pass: binds a bare `foo!(…)` invocation to the same-crate
 /// `macro_rules! foo` of that name.
 pub(crate) struct MacroCallPass;
 
-impl ResolvePass for MacroCallPass {
-    fn contribute(&self, crates: &[Crate]) -> Vec<ContributedRef> {
+impl ResolverPlugin for MacroCallPass {
+    fn global_facts(&self, crates: &[Crate]) -> Vec<Fact> {
         let mut out = Vec::new();
         for krate in crates {
             if !krate.is_workspace_member {
@@ -77,6 +77,18 @@ impl ResolvePass for MacroCallPass {
                 }
             }
         }
-        out
+        out.into_iter().map(reference_fact).collect()
+    }
+}
+
+/// Wrap a discovered edge as a [`Fact::Reference`] tagged with this pass's provenance.
+fn reference_fact(edge: ContributedRef) -> Fact {
+    Fact::Reference {
+        edge,
+        by: Provenance {
+            plugin: "macro_calls",
+            rule: "macro-call",
+            trigger: None,
+        },
     }
 }
