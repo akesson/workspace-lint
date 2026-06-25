@@ -8,7 +8,12 @@
 //! `pub fn` return/parameter type, a `pub` field, a trait-impl associated type)
 //! is part of the crate's public API even when no other crate `use`s it, so it
 //! is exempt — narrowing it would not compile (E0446 / `private_interfaces`).
-//! That exemption is driven by
+//! The same exemption covers a type a builder macro promotes into a *generated*
+//! public `build()` signature — `typed_builder`'s
+//! `#[builder(build_method(into = T))]` and `derive_builder`'s
+//! `#[builder(build_fn(error = "T"))]` — which the resolver recognizes from the
+//! attribute even though the generated method isn't in source. That exemption
+//! is driven by
 //! [`Workspace::exposed_in_public_signature`](syn_workspace::Workspace::exposed_in_public_signature)
 //! and applied in [`item_skipped_by_filters`].
 //!
@@ -32,8 +37,10 @@
 //!   (`tests/cases/unused-pub/known_false_negatives/pub_method_in_impl_block`).
 //! - Trait methods dispatched through `dyn Trait` or generic method calls are
 //!   not tracked, and `#[derive(...)]`-driven uses aren't seen — structural
-//!   non-goals (no type inference / trait solving / proc-macro expansion).
-//!   Derive-aware handling is deferred to a Phase B plugin (see syn-workspace
+//!   non-goals (no type inference / trait solving / proc-macro expansion). The
+//!   one exception is the builder-attribute visibility exemption noted above:
+//!   it's a targeted source-text recognition, not macro expansion. Broader
+//!   derive-aware handling is deferred to a Phase B plugin (see syn-workspace
 //!   `DESIGN-ir-pipeline.md` §4).
 
 use globset::{GlobSet, GlobSetBuilder};

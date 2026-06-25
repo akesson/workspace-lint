@@ -15,6 +15,12 @@
 //! which `unused-pub` consults to avoid suggesting a `pub(crate)` tighten on a
 //! type that a more-visible item exposes (E0446 / `private_interfaces`).
 //!
+//! Beyond the source signature surface, this pass also recognizes the two
+//! builder-macro attributes that promote a user type into a *generated* public
+//! `build()` signature — `typed_builder`'s `#[builder(build_method(into = T))]`
+//! and `derive_builder`'s `#[builder(build_fn(error = "T"))]` — recording the
+//! named types as `Public` exposures (see the bottom of this file).
+//!
 //! ## Visibility policy
 //!
 //! Only `Public`-exposed types matter to the binary query, so we record an
@@ -35,6 +41,7 @@
 
 use std::collections::HashSet;
 
+use super::items::item_attrs;
 use super::occurrences::resolve_code_path;
 use super::use_tree::{self, UseBinding};
 use super::{ResolvedPath, SignatureExposure, Visibility};
@@ -79,6 +86,11 @@ pub(super) fn collect_signature_exposures(
         // Other item kinds (Mod, Use, ExternCrate, Macro, …) expose no signature.
         _ => {}
     }
+    // Builder macros (`typed_builder`, `derive_builder`) generate a public
+    // `build()` whose return type names types that appear in no *source*
+    // signature — only inside a `#[builder(…)]` attribute. Recognize those
+    // attribute forms so the promoted types are recorded as Public exposures.
+    collect_builder_attr_exposures(syn_item, &ctx, out);
 }
 
 fn walk_item_fn(f: &syn::ItemFn, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
@@ -402,4 +414,103 @@ fn record_path(path: &syn::Path, vis: Visibility, ctx: &Ctx, out: &mut Vec<Signa
             enclosing_vis: vis,
         });
     }
+}
+
+// --- Builder-macro attribute recognition -------------------------------------
+//
+// `typed_builder` and `derive_builder` both generate a public `build()` method
+// whose return type can name a user-declared type that appears in no source
+// signature — only inside the struct's `#[builder(…)]` attribute. Two forms
+// promote such a type into the generated signature:
+//
+//   - typed_builder: `#[builder(build_method(into = <Type>))]`
+//                    ⇒ `pub fn build(self) -> <Type>`
+//   - derive_builder: `#[builder(build_fn(error = "<Type>"))]`
+//                    ⇒ `pub fn build(&self) -> Result<Self, <Type>>`
+//
+// We record every type named in `<Type>` as a `Public` exposure (reusing
+// [`walk_type`], so nested generics like `Result<Foo, FooErr>` are covered).
+// Keyed on the attribute shape alone — *not* gated on the `#[derive(…)]` —
+// because recording is FP-safe (a `SignatureExposure` can only suppress a
+// tighten, never create a finding) and these attribute shapes are near-unique
+// fingerprints of the two macros. `#[cfg_attr(…, builder(…))]` wrappers are not
+// unwrapped, so those rare forms are (FP-safely) missed.
+
+/// Scan an item's own attributes for builder-macro forms that promote a type
+/// into the generated `build()` signature, recording each as a Public exposure.
+fn collect_builder_attr_exposures(
+    syn_item: &syn::Item,
+    ctx: &Ctx,
+    out: &mut Vec<SignatureExposure>,
+) {
+    for attr in item_attrs(syn_item) {
+        if attr.path().is_ident("builder") {
+            record_typed_builder_into(attr, ctx, out);
+            record_derive_builder_error(attr, ctx, out);
+        }
+    }
+}
+
+/// `#[builder(build_method(into = <Type>))]` → walk `<Type>` at `Public`.
+fn record_typed_builder_into(attr: &syn::Attribute, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    let _ = attr.parse_nested_meta(|outer| {
+        if !outer.path.is_ident("build_method") {
+            return skip_meta_entry(&outer);
+        }
+        outer.parse_nested_meta(|inner| {
+            if !inner.path.is_ident("into") {
+                return skip_meta_entry(&inner);
+            }
+            // A bare `into` (no `= <type>`) yields a generic builder with no
+            // concrete type to record; `value()` errors and we move on.
+            if let Ok(value) = inner.value()
+                && let Ok(ty) = value.parse::<syn::Type>()
+            {
+                walk_type(&ty, Visibility::Public, ctx, out);
+            }
+            Ok(())
+        })
+    });
+}
+
+/// `#[builder(build_fn(error = "<Type>"))]` → parse the string as a type and
+/// walk it at `Public`. (The `error(…)` list form is FP-safely skipped.)
+fn record_derive_builder_error(attr: &syn::Attribute, ctx: &Ctx, out: &mut Vec<SignatureExposure>) {
+    let _ = attr.parse_nested_meta(|outer| {
+        if !outer.path.is_ident("build_fn") {
+            return skip_meta_entry(&outer);
+        }
+        outer.parse_nested_meta(|inner| {
+            if !inner.path.is_ident("error") {
+                return skip_meta_entry(&inner);
+            }
+            let Ok(value) = inner.value() else {
+                return skip_meta_entry(&inner);
+            };
+            if let Ok(lit) = value.parse::<syn::LitStr>()
+                && let Ok(ty) = syn::parse_str::<syn::Type>(&lit.value())
+            {
+                walk_type(&ty, Visibility::Public, ctx, out);
+            }
+            Ok(())
+        })
+    });
+}
+
+/// Consume an unrecognized nested-meta entry's payload (`= value` or `(group)`)
+/// so [`syn::Attribute::parse_nested_meta`] can advance to the next sibling key.
+/// A `= value` is read token-tree by token-tree up to the next top-level comma;
+/// this is safe because the only value that can carry a top-level type comma
+/// (`into`/`error`) is handled by its caller, never skipped here.
+fn skip_meta_entry(meta: &syn::meta::ParseNestedMeta) -> syn::Result<()> {
+    if meta.input.peek(syn::token::Paren) {
+        return meta.parse_nested_meta(|_| Ok(()));
+    }
+    if meta.input.peek(syn::Token![=]) {
+        let value = meta.value()?;
+        while !value.is_empty() && !value.peek(syn::Token![,]) {
+            value.parse::<proc_macro2::TokenTree>()?;
+        }
+    }
+    Ok(())
 }

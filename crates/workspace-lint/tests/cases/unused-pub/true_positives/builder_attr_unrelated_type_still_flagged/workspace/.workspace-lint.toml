@@ -1,0 +1,12 @@
+# Over-suppression control for the builder-attr guard. `PromotedErr` is named in
+# `build_method(into = …)` → suppressed (correct). `Unrelated` lives in the same
+# private `mod` but is named only inside a function body — not promoted by any
+# builder attribute and not in any signature — so it must STILL be flagged and
+# tightened. If the recognition broadly scanned every `#[builder(…)]` token
+# stream (or otherwise over-claimed), this case stops firing and the test fails,
+# pinning the targeted-vs-broad boundary.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"

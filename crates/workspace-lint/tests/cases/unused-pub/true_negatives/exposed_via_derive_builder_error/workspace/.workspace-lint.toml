@@ -1,0 +1,12 @@
+# Builder-attr signature-exposure guard, derive_builder form. `BuildErr` is
+# named inside the crate (the `impl From<String>` self-type), so the resolver
+# classes it IntraCrate and would tighten it to `pub(crate)`. But derive_builder
+# expands `#[builder(build_fn(error = "BuildErr"))]` into
+# `pub fn build(&self) -> Result<Widget, BuildErr>`, a generated public
+# signature exposing `BuildErr`. Recognizing `build_fn(error = "…")` records it
+# as a Public exposure → suppressed → all passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"

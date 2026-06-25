@@ -1,0 +1,12 @@
+# Builder-attr signature-exposure guard, typed_builder form. `NoticeErr` is
+# named inside the crate (the `impl From` self-type), so the resolver classes it
+# IntraCrate and would emit a MachineApplicable `pub(crate)` tighten. But
+# typed_builder generates `pub fn build(self) -> Result<Notice, NoticeErr>`, so
+# narrowing `NoticeErr` makes a generated public fn expose a less-public type
+# (E0446 / `private_interfaces`). Recognizing `build_method(into = …)` records
+# it as a Public exposure → suppressed → all passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
