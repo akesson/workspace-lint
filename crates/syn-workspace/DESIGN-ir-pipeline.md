@@ -1,8 +1,9 @@
 # Design: occurrence IR + unified macro-lowering for `syn-workspace`
 
-Status: **living design doc** — the IR refactor (§7) has landed and the framework
-Phase B hook (§4) is in active use. Scope: `crates/syn-workspace` internals + its
-public model. The project thesis, SCIP-oracle rationale, testing strategy, and
+Status: **living design doc** — the IR refactor (§7) has landed, the framework
+Phase B hook (§4) is in active use, and the resolver's three extension points have
+since **unified into one `ResolverPlugin` trait** (§3). Scope:
+`crates/syn-workspace` internals + its public model. The project thesis, SCIP-oracle rationale, testing strategy, and
 project-level non-goals (formerly the standalone `docs/ROADMAP.md`, retired once
 the phased build-out completed — its development log lives in git history) now
 live in §9–§12 below.
@@ -108,10 +109,24 @@ origin), with ergonomic accessors `Module::references()` (origin ∈
 > excludes macro refs from the reference set. Only the per-crate suppression
 > channel `Workspace::macro_implicit_refs_for` filters to `origin = Macro`.
 
-## 3. The unified Phase-A extension point: `MacroLowerer`
+## 3. The Phase-A extension point: macro-body lowering (now `ResolverPlugin`)
 
-The *only* extension point is macro-body lowering — exactly what four of the
-eight mechanisms do. `MacroBodyParser` becomes:
+> **Unified (landed).** `MacroLowerer` is no longer a standalone trait. It folded —
+> together with the Phase-B `ResolvePass` (§4) and the builder-attribute recognizer
+> that used to live in the signature walk — into **one `ResolverPlugin` trait** with
+> four defaulted hooks: `claims_macro` / `lower_macro` (the macro-body lowering
+> described below), `local_facts` (per-item attribute/signature facts — the
+> builder-attr recognizer moved here), and `global_facts` (the whole-member-set
+> Phase-B contribution of §4). A single registry, `builtin_plugins()`, replaces the
+> former `builtin_lowerers()` / `builtin_resolve_passes()` split, so adding a
+> resolver is one file + one registry line. The `claims` / `lower` method names in
+> the sketch below are now `claims_macro` / `lower_macro`; the original
+> "macro-lowering is the only extension point" framing is kept as the design
+> rationale that motivated the trait.
+
+Macro-body lowering is the Phase-A extension point — exactly what four of the
+eight mechanisms do. `MacroBodyParser` becomes (sketch; landed as the
+`claims_macro`/`lower_macro` hooks of `ResolverPlugin`):
 
 ```rust
 trait MacroLowerer: Send + Sync {
@@ -129,7 +144,7 @@ enum Lowered {
 `Lowered`'s three variants are exactly the three behaviors the current code
 hand-codes as separate `if` branches in `collect_module_contents`:
 
-| Today | Becomes a built-in `MacroLowerer` returning |
+| Today | Becomes a built-in `ResolverPlugin` returning |
 |---|---|
 | `macro_rules!` autodetect | `claims` ident-defs → `TokenScan` |
 | `expansion_uses!` annotation | `claims` marker path → `TokenScan` (over args) |
@@ -142,16 +157,17 @@ canonicalize, so `ResolveContext`'s reason-to-exist evaporates and `LowerCtx`
 can be minimal. That genuinely *shrinks* the plugin contract.
 
 **Guardrail:** code-path extraction, use-tree walking, mod resolution,
-extern-crate stay **core**, not lowerers. The trait is `MacroLowerer`, not a
-general `Lowerer`. Resisting "everything is a plugin" is what keeps this
-maintainable.
+extern-crate stay **core**, not plugins. The macro hooks claim a *macro* site
+(`claims_macro`), not arbitrary syntax, and the fact hooks only ever *suppress* a
+finding — `ResolverPlugin` is not a general "rewrite the model" hook. Resisting
+"everything is a plugin" is what keeps this maintainable.
 
 ## 4. The two phases
 
 **Phase A — Lower** (per file, syntactic, lossy → `ModuleIr` tree):
 parse syn → sibling names + items + mod-decl resolution (structure) → use-trees
-→ bindings; run the `MacroLowerer` registry over each macro site →
-`Origin::Macro` occurrences; run the core code-path extractor over regular items
+→ bindings; run the `ResolverPlugin` registry's `claims_macro`/`lower_macro` over
+each macro site → `Origin::Macro` occurrences; run the core code-path extractor over regular items
 → raw `Origin::Code` occurrences; glob-use + extern-crate occurrences. Output is
 **raw and unresolved**.
 
@@ -177,26 +193,30 @@ fn resolve(&self, tree: &mut ResolvedWorkspace) {}  // default no-op
 Framework semantics (Dioxus `#[component]` ↔ rsx cross-linking) land here later,
 demand-driven by a failing SCIP/case test.
 
-**Landed (Phase 4, increment 1).** The hook shipped as `ResolvePass`
-(`plugins/mod.rs`), with one deliberate divergence from the `&mut
-ResolvedWorkspace` sketch above: a pass is `fn contribute(&self, crates: &[Crate])
--> Vec<ContributedRef>` — it *reads* the resolved members and *returns* reference
-edges rather than mutating the tree, which makes "independent pure contributors
-merged deterministically" hold by construction (the single writer unions the
-edges into `references_by_crate` before `canonical_refs_by_path` is built; set
-union is order-free). The first pass, `DioxusComponentPass`, links bare `Foo {}`
-rsx invocations to the same-crate `pub fn Foo`, reading them straight from the
+**Landed (Phase 4, increment 1; later folded into `ResolverPlugin` — §3).** The
+hook shipped first as a standalone `ResolvePass` trait, with one deliberate
+divergence from the `&mut ResolvedWorkspace` sketch above: it *reads* the resolved
+members and *returns* reference edges rather than mutating the tree, which makes
+"independent pure contributors merged deterministically" hold by construction (the
+single writer unions the edges into `references_by_crate` before
+`canonical_refs_by_path` is built; set union is order-free). It is now the
+`global_facts(&self, crates: &[Crate]) -> Vec<Fact>` hook of `ResolverPlugin`
+(`plugins/mod.rs`) — same read-and-return contract, but each returned `Fact`
+(`Reference`/`Exposure`) now carries `Provenance`, and the single writer unwraps
+`Fact::Reference` edges into `references_by_crate` exactly as before. The first
+contributor, now `DioxusPlugin`'s `global_facts`, links bare `Foo {}` rsx
+invocations to the same-crate `pub fn Foo`, reading them straight from the
 occurrence IR.
 
 Making the IR carry those bare usages required one Phase A change: the
 macro-lowering dispatch previously fired only on *item-position* `syn::Item::Macro`,
 but `rsx!` lives in fn bodies. The walk now also visits each item's nested bodies
-(`NestedMacroLowering` in `module_tree.rs`) and dispatches claimed macros, taking
+(`NestedMacroLowering` in `module_tree`) and dispatches claimed macros, taking
 only the **structured** (`ScanPlus`/`Exact`) output — the baseline token scan
-already covers fn-body macro *tokens*, so `TokenScan` lowerers are skipped to
+already covers fn-body macro *tokens*, so `TokenScan` plugins are skipped to
 avoid double-counting. Bare component names become `Origin::Component` occurrences
 (unresolved by the central resolver, excluded from the SCIP projection like
-`Origin::Macro`) that the pass binds. Gated on the `dioxus` feature (the only
+`Origin::Macro`) that `global_facts` binds. Gated on the `dioxus` feature (the only
 structured lowerer today), so a feature-off build skips the nested walk entirely.
 This is what keeps the plugin pure — it reads the model, never re-parses source —
 and gives any future structured lowerer fn-body capture for free.
@@ -212,7 +232,7 @@ and gives any future structured lowerer fn-body capture for free.
 
 - **Occurrence volume / memory.** Raw occurrences carry spans and aren't deduped → larger than today's `BTreeSet<ResolvedPath>`. Bound it by keeping candidate-selection in Phase A (don't emit every bare ident); dedup is a view concern. These trees are small; measure, don't pre-optimize.
 - **Behavior drift.** Steps 1–4 must be semantics-preserving. Guardrail: the existing `cases.rs` snapshots + fixture assertions + inline unit tests (and later the SCIP diff). Anything that changes output is a separate, test-gated step.
-- **Layer 3 nuance.** Folding external macros into `MacroLowerer` *can* make attribution per-site instead of workspace-wide — strictly more precise, but a semantics change. Deferred to a follow-up so it doesn't ride in on the mechanical refactor.
+- **Layer 3 nuance.** Folding external macros into a `ResolverPlugin` *can* make attribution per-site instead of workspace-wide — strictly more precise, but a semantics change. Deferred to a follow-up so it doesn't ride in on the mechanical refactor.
 - **Scope — this changes extraction/resolution faithfulness, not analysis depth.** The IR does *not* close gaps that need type info or cross-item reasoning, and those stay tracked misses: trait-method dispatch via `dyn`/generics, `pub(crate) use` re-export hops (re-export-index design limit, not extraction), transitive architecture violations (a lint-side graph analysis), and **`pub` items inside `impl` blocks** (an item-*enumeration* gap — `item_from_syn` only walks module-level items; fixable in Phase A but explicitly out of the mechanical refactor — tracked in §12).
 - **Monolithic crate (recorded option, not forced).** Everything — core resolver, the `dioxus-rsx` lowerer, the plugin traits — lives in one crate, so every consumer pulls the (default-on) `dioxus` feature's dep tree. Splitting `plugins/dioxus_rsx` into a sibling crate behind a public plugin API is a clean follow-up *if* the API matures or the dep weight bites a downstream user. It is no longer pressured by the `crate-size` budget: that lint counts shipped source only (tests excluded), under which this crate sits well under its limit. Do it for API/dependency reasons, not to chase a line count.
 
@@ -238,9 +258,10 @@ and gives any future structured lowerer fn-body capture for free.
    `to_scip_index()` wrapper that emits the real foreign type is deferred until a
    consumer needs to produce a `.scip` (none in Phase 1). The empty Phase B
    `resolve()` hook remains a Phase 4 item.
-6. *(framework Phase B semantics — landed; see §4)* the
-   `ResolvePass` hook + `DioxusComponentPass` (see §4). Per-site external macros
-   remain a later test-gated follow-up.
+6. *(framework Phase B semantics — landed; see §4)* the Phase-B hook (shipped as
+   `ResolvePass`, now `ResolverPlugin::global_facts`) + the Dioxus component
+   binder (now `DioxusPlugin`). Per-site external macros remain a later
+   test-gated follow-up.
 
 ## 8. Spike-validated normalization + encoding spec (2026-05-30)
 
@@ -395,7 +416,7 @@ in the caller's occurrences), so deep verification mainly disproves cross-crate
 Four altitudes, cheapest/most-precise at the base:
 
 1. **Table-driven unit tests** on resolver functions (`bindings_from_use`,
-   `resolve_occurrence`, each `MacroLowerer`) — microsecond, pinpoint failures;
+   `resolve_occurrence`, each `ResolverPlugin`) — microsecond, pinpoint failures;
    where the variant matrix below is exercised.
 2. **Curated fixture crates** with hand-authored expectations — `workspace-lint`'s
    `tests/cases/` four-kind taxonomy.
@@ -465,15 +486,16 @@ kind of evidence than the `rsx!` lowerer produces, and conflating them would
 rot the precision story. So: name the tiers, give every reference edge a
 provenance, and hold each tier to its own contract.
 
-**Tier R — resolving (evidence: parsed syntax).** What exists today.
-- *R1, Phase A `MacroLowerer`* (§3): parses the actual macro body with the real
-  grammar (`dioxus-rsx`), emits span-carrying occurrences. Contract: a wrong
-  occurrence is a **bug**; structured output is fixture- and corpus-gated.
-- *R2, Phase B `ResolvePass`* (§4): binds captured-but-unresolved names against
-  the resolved model (`MacroCallPass`, `GlobImportPass`,
-  `DioxusComponentPass`). Contract: by-name binding may **over-link, only in
+**Tier R — resolving (evidence: parsed syntax).** What exists today. Both R1 and
+R2 are now hooks of the unified `ResolverPlugin` trait (§3).
+- *R1, Phase A `claims_macro`/`lower_macro`* (§3): parses the actual macro body
+  with the real grammar (`dioxus-rsx`), emits span-carrying occurrences. Contract:
+  a wrong occurrence is a **bug**; structured output is fixture- and corpus-gated.
+- *R2, Phase B `global_facts`* (§4): binds captured-but-unresolved names against
+  the resolved model (`MacroCallPass`, `GlobImportPass`, and `DioxusPlugin`'s
+  `global_facts`). Contract: by-name binding may **over-link, only in
   the FP-safe direction** (suppresses findings, never creates them), with the
-  tradeoff documented per pass; origins excluded from the SCIP projection.
+  tradeoff documented per plugin; origins excluded from the SCIP projection.
 
 **Tier H — asserting (evidence: a declared upstream contract).** The new tier.
 An assertion says "when trigger X appears, refs Y exist", citing the upstream
@@ -502,9 +524,11 @@ every suppression an addressable site.
 
 **Traceability invariants** (what keeps the tiers honest):
 1. **Provenance everywhere.** Every reference edge carries its mechanism:
-   `Origin` for occurrences (extended with `Asserted{rule}`), a provenance id
-   on `ContributedRef`. A future `--explain <dep|item>` walks from a would-be
-   finding to the evidence that suppressed it ("used: asserted by
+   `Origin` for occurrences (extended with `Asserted{rule}`), and — now landed —
+   a `Provenance { plugin, rule, trigger }` on every plugin-contributed `Fact`
+   (§3), aggregated into the inert `Workspace::fact_provenance` side table. A
+   future `--explain <dep|item>` (the as-yet-unbuilt consumer of that table) walks
+   from a would-be finding to the evidence that suppressed it ("used: asserted by
    `strum-derive` at src/html_tag.rs:3").
 2. **Registry with forcing function.** Each built-in rule = `{id, trigger,
    implies, upstream citation, guarding fixture}`. A coverage test asserts
