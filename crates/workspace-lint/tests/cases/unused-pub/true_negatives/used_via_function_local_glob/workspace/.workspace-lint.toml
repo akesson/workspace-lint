@@ -1,0 +1,13 @@
+# `suppress-intra-crate` drops the "consider pub(crate)" (IntraCrate) class and
+# keeps only the resolver-FP-prone `Unused` class. `AF` is referenced
+# (intra-crate) only through a function-local `use data::*;` + a bare `AF`, so
+# the resolver must honor that glob import: with it (once the Phase B
+# GlobImportPass binds the candidate) `AF` reads IntraCrate (suppressed → clean);
+# without it `AF` looks Unused and "appears unused" fires. Real-world trigger:
+# an auto-generated 460-const country table, every const a false "appears unused".
+[unused-pub]
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"

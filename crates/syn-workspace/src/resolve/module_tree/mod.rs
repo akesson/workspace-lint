@@ -238,12 +238,13 @@ fn collect_module_contents(
     // doesn't matter, so we collect names in one pass before processing use
     // statements.
     let sibling_names: HashSet<String> = syn_items.iter().filter_map(sibling_name).collect();
-    // Whether any module-level `use` here carries a glob leaf (`use m::*;`).
-    // Gates the bare-ident `GlobCandidate` capture in `extract_code_paths`:
-    // without a glob in scope, an unmatched bare ident is always a local or
-    // prelude name. Function-local glob imports are not detected — a
-    // documented miss, mirroring the module-level-only glob recording below.
-    let has_glob_import = syn_items.iter().any(|it| match it {
+    // Whether any `use` in scope here carries a glob leaf (`use m::*;`). Gates
+    // the bare-ident `GlobCandidate` capture in `extract_code_paths`: without a
+    // glob in scope, an unmatched bare ident is always a local or prelude name.
+    // Seeded from module-level `use`s; function-local globs are folded in after
+    // the main loop (see `function_local_use_bindings` below), mirroring the
+    // function-local glob recording there.
+    let mut has_glob_import = syn_items.iter().any(|it| match it {
         syn::Item::Use(item_use) => use_tree_has_glob(&item_use.tree),
         _ => false,
     });
@@ -440,13 +441,21 @@ fn collect_module_contents(
     // module-level `use` items. Fold in the nested ones so a crate-local path
     // like `age::BY_NAME` (after a function-local `use crate::…::age;`) resolves
     // instead of being treated as an external `age` crate.
-    use_bindings.extend(function_local_use_bindings(
+    let function_local = function_local_use_bindings(
         syn_items,
         &scope,
         parent_file,
         parent_canonical,
         &sibling_names,
-    ));
+    );
+    use_bindings.extend(function_local.bindings);
+    // A function-local `use m::*;` is recorded like a module-level one: each
+    // becomes a `GlobUse` occurrence (so the Phase B `GlobImportPass` can bind
+    // the bare idents it brought into scope), and its presence flips the
+    // `GlobCandidate` capture gate for the whole module — the same module-scoped
+    // over-approximation already applied to function-local named bindings.
+    has_glob_import |= !function_local.glob_occurrences.is_empty();
+    occurrences.extend(function_local.glob_occurrences);
 
     // Second pass: extract regular-code path references. Done after the main
     // loop so the use_bindings set is complete — references can resolve any

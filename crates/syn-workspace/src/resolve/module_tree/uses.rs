@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::use_tree::{self, UseBinding};
-use super::{ResolvedPath, Visibility};
+use super::{Occurrence, Origin, ResolvedPath, Visibility};
 
 /// Canonicalized targets of a `pub use M::*;` glob re-export, or empty for a
 /// private (`use M::*;`) glob — private globs import, they don't re-export.
@@ -69,20 +69,36 @@ impl<'ast> syn::visit::Visit<'ast> for NestedUseCollector<'ast> {
     }
 }
 
-/// Bindings from every `use` statement nested inside an item body (fn /
-/// impl-method blocks). Module-scoped — a slight over-approximation that only
-/// *adds* references the code already makes (it can't invent a cross-crate ref
-/// out of nothing), so the cross-crate SCIP precision gate is unaffected,
-/// mirroring the sibling-name broadening. Module-level `use` items are handled
-/// in the main pass; nested `mod`s carry their own scope and are skipped here.
+/// What [`function_local_use_bindings`] extracts from `use` statements nested
+/// inside item bodies: named bindings, plus `Origin::GlobUse` occurrences for
+/// any glob (`use m::*;`) imports among them.
+pub(super) struct FunctionLocalUses {
+    /// One binding per named leaf (`use crate::m::Item;`).
+    pub bindings: Vec<UseBinding>,
+    /// One `Origin::GlobUse` occurrence per function-local glob import, its
+    /// segments the canonicalized target module. Glob leaves emit no named
+    /// binding (Tier 1 can't know what `m::*` contains), so these are recorded —
+    /// the same shape the module-level pass records — so the Phase B
+    /// `GlobImportPass` can bind the bare idents the glob brought into scope.
+    pub glob_occurrences: Vec<Occurrence>,
+}
+
+/// Bindings and glob targets from every `use` statement nested inside an item
+/// body (fn / impl-method blocks). Module-scoped — a slight over-approximation
+/// that only *adds* references the code already makes (it can't invent a
+/// cross-crate ref out of nothing), so the cross-crate SCIP precision gate is
+/// unaffected, mirroring the sibling-name broadening. Module-level `use` items
+/// are handled in the main pass; nested `mod`s carry their own scope and are
+/// skipped here.
 pub(super) fn function_local_use_bindings(
     syn_items: &[syn::Item],
     scope: &use_tree::Scope,
     parent_file: &Path,
     parent_canonical: &ResolvedPath,
     sibling_names: &HashSet<String>,
-) -> Vec<UseBinding> {
-    let mut out = Vec::new();
+) -> FunctionLocalUses {
+    let mut bindings = Vec::new();
+    let mut glob_occurrences = Vec::new();
     for syn_item in syn_items {
         if matches!(syn_item, syn::Item::Use(_) | syn::Item::Mod(_)) {
             continue;
@@ -90,14 +106,36 @@ pub(super) fn function_local_use_bindings(
         let mut collector = NestedUseCollector::default();
         syn::visit::Visit::visit_item(&mut collector, syn_item);
         for item_use in collector.uses {
-            let mut bindings = use_tree::bindings_from_use(item_use, scope, parent_file);
-            for binding in &mut bindings {
+            let mut item_bindings = use_tree::bindings_from_use(item_use, scope, parent_file);
+            for binding in &mut item_bindings {
                 rewrite_sibling_local(binding, parent_canonical, sibling_names);
             }
-            out.extend(bindings);
+            bindings.extend(item_bindings);
+            // A glob leaf produces no named binding, so record its target module
+            // for the Phase B `GlobImportPass` to bind the bare idents it brings
+            // into scope. `GlobUse` occurrences resolve to their segments
+            // verbatim (`occurrences::resolve_occurrence`), so anchor a bare
+            // sibling/child target (`use data::*` → `crate::data`) here — the
+            // same canonicalization `pub_glob_reexport_targets` applies — or
+            // `GlobImportPass`'s `modules_by_canonical` lookup won't find it.
+            for target in use_tree::glob_targets_from_use(item_use, scope) {
+                let canonical = canonicalize_glob_target(&target, parent_canonical, sibling_names);
+                glob_occurrences.push(Occurrence {
+                    segments: canonical.segments().to_vec(),
+                    path: None,
+                    span: Some(super::span_to_source_span(
+                        parent_file,
+                        item_use.use_token.span,
+                    )),
+                    origin: Origin::GlobUse,
+                });
+            }
         }
     }
-    out
+    FunctionLocalUses {
+        bindings,
+        glob_occurrences,
+    }
 }
 
 /// If `binding`'s canonical path starts with a name that's declared in the
