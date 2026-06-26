@@ -582,6 +582,59 @@ fn code_path_resolves_function_local_braced_use() {
     );
 }
 
+/// `segments.join("::")` of every occurrence with the given origin. The Phase B
+/// `GlobImportPass` (which binds glob candidates to targets) runs at the
+/// workspace level, after `collect_module_contents`, so resolved-path helpers
+/// like `collect_refs` can't observe glob binding here — but the capture this
+/// pass *depends on* (the `GlobUse` target and the `GlobCandidate` ident) is
+/// produced inside `collect_module_contents` and is observable directly.
+fn occurrence_segments(src: &str, origin: Origin) -> Vec<String> {
+    let parent_canonical = ResolvedPath::new(["demo".to_string()]);
+    let items = parse_items(src);
+    let markers = default_markers();
+    let contents = collect_module_contents(
+        &items,
+        std::path::Path::new("<test>"),
+        std::path::Path::new("<test>"),
+        &parent_canonical,
+        &markers,
+        false,
+        Vec::new(),
+    )
+    .expect("collect");
+    contents
+        .occurrences
+        .iter()
+        .filter(|o| o.origin == origin)
+        .map(|o| o.segments.join("::"))
+        .collect()
+}
+
+#[test]
+fn function_local_glob_use_is_recorded() {
+    // Regression: a bare ident brought into scope by a *function-local* glob
+    // import (`use data::*;` inside a fn body) was invisible to the resolver —
+    // the glob emitted no `GlobUse` occurrence and never flipped the
+    // `GlobCandidate` capture gate, so `data::AF` read as unused (≈460 false
+    // positives in a real auto-generated country table whose consts are reached
+    // only via `use data::*; … AF`). Assert both halves the Phase B
+    // `GlobImportPass` later needs: the recorded glob target and the captured
+    // bare-ident candidate.
+    let src = "mod data { pub const AF: &str = \"af\"; } \
+               fn f() -> &'static str { use data::*; AF }";
+    let glob_uses = occurrence_segments(src, Origin::GlobUse);
+    assert!(
+        glob_uses.contains(&"demo::data".to_string()),
+        "function-local `use data::*;` not recorded as a crate-anchored GlobUse \
+         target; got {glob_uses:?}"
+    );
+    let candidates = occurrence_segments(src, Origin::GlobCandidate);
+    assert!(
+        candidates.contains(&"AF".to_string()),
+        "bare `AF` not captured as a GlobCandidate; got {candidates:?}"
+    );
+}
+
 #[test]
 fn code_path_records_bare_sibling_type_reference() {
     // The thiserror FP class: a sibling type referenced by *bare* name in a
