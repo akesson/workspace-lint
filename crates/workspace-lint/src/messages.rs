@@ -130,7 +130,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 PathBuf::from("crates/alpha"),
             )
             .help("[dependencies] rand")
-            .note("proc-macro crates and build.rs-generated code may cause false positives")
+            .note("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
             .note("verify by removing the dep and running `cargo build --all-targets`")
             .note("if the build breaks, add the dep to [unused-deps] ignore in your config")
             .build(),
@@ -145,7 +145,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .help("[dependencies] foo")
             .help("[dev-dependencies] bar")
-            .note("proc-macro crates and build.rs-generated code may cause false positives")
+            .note("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
             .note("verify by removing the dep and running `cargo build --all-targets`")
             .note("if the build breaks, add the dep to [unused-deps] ignore in your config")
             .build(),
@@ -161,7 +161,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .help("remove the item or its `pub` visibility")
             .note(
-                "#[cfg]-gated items, proc-macro usage, and re-exports may cause false positives",
+                "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
             )
             .build(),
         ),
@@ -176,7 +176,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .help("consider `pub(crate)` to tighten visibility")
             .note(
-                "#[cfg]-gated items, proc-macro usage, and re-exports may cause false positives",
+                "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
             )
             .build(),
         ),
@@ -482,7 +482,7 @@ mod tests {
              --> crates/alpha/Cargo.toml:1:1
               |
               = help: [dependencies] rand
-              = note: proc-macro crates and build.rs-generated code may cause false positives
+              = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
               = note: verify by removing the dep and running `cargo build --all-targets`
               = note: if the build breaks, add the dep to [unused-deps] ignore in your config
             help: if intentional, silence with:
@@ -501,7 +501,7 @@ mod tests {
               |
               = help: [dependencies] foo
               = help: [dev-dependencies] bar
-              = note: proc-macro crates and build.rs-generated code may cause false positives
+              = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
               = note: verify by removing the dep and running `cargo build --all-targets`
               = note: if the build breaks, add the dep to [unused-deps] ignore in your config
             help: if intentional, silence with:
@@ -519,7 +519,7 @@ mod tests {
              --> crates/mycrate/src/lib.rs:42:1
               |
               = help: remove the item or its `pub` visibility
-              = note: #[cfg]-gated items, proc-macro usage, and re-exports may cause false positives
+              = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
             help: if intentional, silence with:
               |
             42 + workspace_lint::expect!(unused_pub);
@@ -535,7 +535,7 @@ mod tests {
              --> crates/mycrate/src/builder.rs:7:1
               |
               = help: consider `pub(crate)` to tighten visibility
-              = note: #[cfg]-gated items, proc-macro usage, and re-exports may cause false positives
+              = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
             help: if intentional, silence with:
               |
             7 + workspace_lint::expect!(unused_pub);
@@ -855,17 +855,17 @@ mod tests {
 
         #[test]
         fn unused_deps_one() {
-            insta::assert_snapshot!(render(&scenario("unused_deps_one")), @r##"{"level":"warning","message":"1 possibly unused dependency in crates/alpha/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] rand","spans":[]},{"level":"note","message":"proc-macro crates and build.rs-generated code may cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("unused_deps_one")), @r##"{"level":"warning","message":"1 possibly unused dependency in crates/alpha/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] rand","spans":[]},{"level":"note","message":"build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
         }
 
         #[test]
         fn unused_deps_multiple() {
-            insta::assert_snapshot!(render(&scenario("unused_deps_multiple")), @r##"{"level":"warning","message":"2 possibly unused dependencies in crates/beta/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/beta/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/beta/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] foo","spans":[]},{"level":"help","message":"[dev-dependencies] bar","spans":[]},{"level":"note","message":"proc-macro crates and build.rs-generated code may cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("unused_deps_multiple")), @r##"{"level":"warning","message":"2 possibly unused dependencies in crates/beta/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/beta/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/beta/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] foo","spans":[]},{"level":"help","message":"[dev-dependencies] bar","spans":[]},{"level":"note","message":"build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
         }
 
         #[test]
         fn unused_pub_tighten_visibility() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r##"{"level":"warning","message":"pub struct `Builder` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"#[cfg]-gated items, proc-macro usage, and re-exports may cause false positives","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r##"{"level":"warning","message":"pub struct `Builder` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives","spans":[]}],"rendered":null}"##);
         }
 
         #[test]
