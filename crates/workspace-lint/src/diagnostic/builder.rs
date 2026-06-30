@@ -200,6 +200,7 @@ mod tests {
             message: "m".into(),
             replacement: "r".into(),
             applicability: Applicability::MachineApplicable,
+            original: None,
             evidence: None,
         };
         let d = at_workspace("workspace-lint::centralized-deps", "x")

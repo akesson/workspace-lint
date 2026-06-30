@@ -7,7 +7,7 @@ error: 1 possibly unused dependency in crates/consumer/Cargo.toml
   = note: if the build breaks, add the dep to [unused-deps] ignore in your config
 help: remove unused dependency `provider`
   |
-10 - …
+10 - provider = { path = "../provider" }
   |
 help: if intentional, silence with:
   |

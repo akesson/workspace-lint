@@ -5,7 +5,7 @@ error: pub fn `entry` in crate `alpha` appears unused — consider removing
   = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |
-3 - <existing>
+3 - pub
 3 + pub(crate)
   |
 help: if intentional, silence with:
@@ -18,16 +18,10 @@ error: pub fn `used_intra_crate` in crate `alpha` is only used inside the crate
  --> <TMP>/crates/alpha/src/helpers.rs:1:1
   |
   = help: consider `pub(crate)` to tighten visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |
-1 - <existing>
+1 - pub
 1 + pub(crate)
   |
-help: if intentional, silence with:
-  |
-1 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[deny(workspace_lint::unused_pub)]` on by default
 
 workspace-lint: generated 2 errors (run `workspace-lint --fix` to apply 1 suggestion)

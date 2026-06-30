@@ -4,7 +4,7 @@ error: 1 dependency in crates/alpha/Cargo.toml should use `workspace = true`
   = help: [dependencies] my_serde: version "1.0.200" not in [workspace.dependencies] — add it there and use { workspace = true }
 help: use { workspace = true } for `my_serde`
   |
-15 - <existing>
+15 - my_serde = { package = "serde", version = "1.0.200" }
 15 + my_serde = { workspace = true }
   |
 help: if intentional, silence with:

@@ -94,6 +94,13 @@ pub(crate) struct Suggestion {
     pub message: String,
     pub replacement: String,
     pub applicability: Applicability,
+    /// The exact source bytes the span covers, captured at build time so the
+    /// human renderer can show the real `-` line in a deletion/replacement diff
+    /// (clippy-style) instead of a `…` / `<existing>` placeholder. `None` for
+    /// pure insertions and for the rare site that can't read its source; the
+    /// renderer falls back to the placeholder then. Renderers other than
+    /// `human` ignore it, and `--fix` never reads it.
+    pub original: Option<String>,
     /// Optional side-channel for `--fix`'s deep (rust-analyzer SCIP)
     /// verification. Present on reference-evidence findings (`unused-deps`,
     /// `unused-pub`) so the verifier can decide — per finding — whether the
@@ -294,6 +301,7 @@ impl Diagnostic {
             message: "if intentional, silence with:".into(),
             replacement,
             applicability: Applicability::MachineApplicable,
+            original: None,
             evidence: None,
         })
     }

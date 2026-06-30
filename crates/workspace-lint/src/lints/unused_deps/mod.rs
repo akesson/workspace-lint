@@ -187,6 +187,7 @@ fn build_delete_suggestion(
         message: format!("remove unused dependency `{}`", entry.original_name),
         replacement: String::new(),
         applicability: Applicability::MachineApplicable,
+        original: Some(deleted.to_string()),
         evidence,
     })
 }

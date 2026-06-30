@@ -7,7 +7,7 @@ warning: 1 possibly unused dependency in Cargo.toml
   = note: if the build breaks, add the dep to [unused-deps] ignore in your config
 help: remove unused dependency `syn`
   |
-24 - …
+24 - syn = { version = "2.0", features = ["full"] }
   |
 help: if intentional, silence with:
   |

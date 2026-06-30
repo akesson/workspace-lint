@@ -5,7 +5,7 @@ error: pub fn `exported_for_ffi` in crate `alpha` appears unused — consider re
   = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |
-14 - <existing>
+14 - pub
 14 + pub(crate)
   |
 help: if intentional, silence with:

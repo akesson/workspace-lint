@@ -491,6 +491,12 @@ fn build_tighten_suggestion(item: &Item, usage: &Usage) -> Option<crate::diagnos
         Usage::IntraCrate => crate::diagnostic::Applicability::MachineApplicable,
         Usage::Unused | Usage::CrossCrate => crate::diagnostic::Applicability::MaybeIncorrect,
     };
+    // The existing visibility text (the `pub` token) for the rendered `-` diff
+    // line; falls back to a placeholder if the file can't be read.
+    let original = fs_err::read_to_string(&span.file).ok().and_then(|src| {
+        src.get(vis_range.start as usize..vis_range.end as usize)
+            .map(str::to_string)
+    });
     Some(crate::diagnostic::Suggestion {
         span: crate::diagnostic::Span {
             file: span.file.clone(),
@@ -504,6 +510,7 @@ fn build_tighten_suggestion(item: &Item, usage: &Usage) -> Option<crate::diagnos
         message: "tighten to `pub(crate)`".into(),
         replacement: "pub(crate)".into(),
         applicability,
+        original,
         // Filled in by `attach_pub_evidence` once the diagnostic is built.
         evidence: None,
     })
@@ -553,6 +560,9 @@ fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
     if start >= end {
         return DeleteOutcome::Unavailable;
     }
+    // The item text itself (sans the trailing newline the deletion also eats),
+    // for the rendered `-` diff line.
+    let original = source[start..end].to_string();
     if end < source.len() && source.as_bytes()[end] == b'\n' {
         end += 1;
     }
@@ -574,6 +584,7 @@ fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
         message: "delete the unused item".into(),
         replacement: String::new(),
         applicability,
+        original: Some(original),
         // Filled in by `attach_pub_evidence` once the diagnostic is built.
         evidence: None,
     };
