@@ -41,6 +41,14 @@ pub(crate) struct Cli {
     /// of invoking rust-analyzer (for CI caching and hermetic tests).
     #[arg(long, global = true, value_name = "PATH", requires = "fix")]
     pub scip_index: Option<std::path::PathBuf>,
+    /// Skip the `cargo check` that harvests build-script env (`OUT_DIR` and
+    /// `cargo::rustc-env=` exports) for resolving `include!(concat!(env!(…), …))`
+    /// generated code. Keeps the run fully offline and subprocess-light; literal
+    /// and `CARGO_*`-based includes still resolve. By default the harvest runs
+    /// only for crates that have both a `build.rs` and an `include!`, so a
+    /// workspace without that combination already pays nothing.
+    #[arg(long, global = true, default_value_t = false)]
+    pub no_build_env: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

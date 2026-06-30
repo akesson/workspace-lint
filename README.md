@@ -607,6 +607,12 @@ removed files in the post-fix tree propagate correctly.
 - `workspace-lint --fix --scip-index <path>` — verify against an existing
   `rust-analyzer scip` index instead of invoking rust-analyzer (CI caching,
   hermetic tests).
+- `workspace-lint --no-build-env` — skip the build-script env harvest. By
+  default the binary runs a scoped `cargo check` to resolve `OUT_DIR`-based
+  generated code (only for crates that have **both** a `build.rs` and an
+  `include!`; see **Generated code** below), so a default run is not necessarily
+  offline. This flag skips that subprocess, keeping the run fully offline;
+  literal and `CARGO_*`-based `include!`s still resolve.
 - `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.
 
@@ -637,3 +643,30 @@ rust-analyzer's say-so alone, and the clean-tree gate keeps everything
 reviewable. Trait visibility used only via method dispatch is a known blind spot
 the symbol-level match can't disprove (rust-analyzer attributes the call to the
 concrete `impl`, not the trait); the clean-tree review catches those.
+
+### Generated code (`include!`)
+
+The resolver follows `include!(...)` and splices the included file into the
+model, so generated code **participates in analysis** — a dependency or `pub`
+item used only from generated code is seen as used (no `unused-deps` /
+`unused-pub` / `module-tree` false positive) — while findings anchored *in* a
+generated file are dropped (a generated `pub fn` is never reported unused). Two
+tiers:
+
+- **Literal / `CARGO_*` includes** (`include!("table.rs")`,
+  `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/gen.rs"))`) resolve with no
+  subprocess — always on.
+- **`OUT_DIR` / build-script includes** (`include!(concat!(env!("OUT_DIR"),
+  "/proto.rs"))`) need a build script's environment. For crates that have
+  **both** a `build.rs` and an `include!`, a scoped `cargo check
+  --message-format=json` is run to harvest `OUT_DIR` and any
+  `cargo::rustc-env=` exports. This harvest is **on by default** (so a default
+  run may spawn `cargo check`); a workspace without that combination pays
+  nothing; a `cargo check` failure degrades to literal-only resolution with a
+  prominent warning rather than erroring (so `OUT_DIR`-only references may then
+  resurface as false positives). Pass `--no-build-env` to skip the harvest and
+  stay fully offline.
+
+Only `include!` is followed: `mod`/`#[path]` already resolve checked-in files,
+while proc-macro / `#[derive]` expansion (which produces no file to read)
+remains out of scope.

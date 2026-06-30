@@ -56,6 +56,18 @@ impl Workspace {
         self.crates.iter().filter(|c| c.is_workspace_member)
     }
 
+    /// Absolute paths of every file spliced into the workspace via
+    /// `include!(...)` (generated code), across all crates. The diagnostic
+    /// pipeline uses this set to drop findings anchored within generated files:
+    /// generated code participates in analysis (its references count) but is not
+    /// a place users can act on. Empty unless some `include!` resolved during the
+    /// load.
+    pub fn generated_files(&self) -> impl Iterator<Item = &Path> {
+        self.crates
+            .iter()
+            .flat_map(|c| c.generated_files.iter().map(PathBuf::as_path))
+    }
+
     /// Each workspace member paired with its primary unit (lib / proc-macro /
     /// main bin). Members without a primary target — proc-macro-less binaries
     /// without a `[[bin]]` entry, etc. — are skipped. The pair iterator

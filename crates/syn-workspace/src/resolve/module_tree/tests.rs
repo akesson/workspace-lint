@@ -1,5 +1,6 @@
 //! Module-tree assembly and occurrence-resolution tests, split out of `mod.rs`.
 
+use super::splice::AmbientScope;
 use super::*;
 
 fn manifest_dir(name: &str) -> PathBuf {
@@ -15,6 +16,140 @@ fn flat_lib_collects_top_level_items() {
     let names: Vec<_> = root.items.iter().map(|i| i.name.as_str()).collect();
     assert!(names.contains(&"public_fn"), "got {names:?}");
     assert!(names.contains(&"PrivateStruct"), "got {names:?}");
+}
+
+#[test]
+fn include_macro_splices_generated_items_and_marks_file() {
+    // A literal `include!("generated.rs")` (Tier 1 — no build script needed):
+    // the generated file's items must land in the including module's scope, and
+    // the file must be recorded as generated.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "include!(\"generated.rs\");\npub fn uses_gen() { helper(); }\n",
+    )
+    .unwrap();
+    // The generated code references an external crate by a multi-segment path —
+    // the kind of reference unused-deps relies on seeing.
+    std::fs::write(
+        src.join("generated.rs"),
+        "pub fn helper() { external_dep::do_thing(); }\n",
+    )
+    .unwrap();
+
+    let root = build_crate_tree(dir.path(), "demo").expect("build");
+
+    let names: Vec<_> = root.items.iter().map(|i| i.name.as_str()).collect();
+    assert!(
+        names.contains(&"helper"),
+        "spliced generated item missing from {names:?}"
+    );
+    assert!(names.contains(&"uses_gen"), "{names:?}");
+    assert!(
+        root.generated_files
+            .iter()
+            .any(|p| p.ends_with("generated.rs")),
+        "generated.rs not recorded: {:?}",
+        root.generated_files
+    );
+    // The generated code's outgoing reference is folded into the model, so a dep
+    // used only from generated code is visible (no unused-deps false positive).
+    let refs: Vec<String> = root.references().map(|p| p.segments().join("::")).collect();
+    assert!(
+        refs.iter().any(|r| r.starts_with("external_dep")),
+        "expected the generated file's external_dep reference, got {refs:?}"
+    );
+}
+
+#[test]
+fn include_macro_resolves_generated_refs_against_including_scope() {
+    // `include!` pastes generated tokens into the including module's lexical scope,
+    // so a reference *from* generated code to a handwritten sibling or a name
+    // brought in by a parent-module `use` must resolve against the including
+    // module. Otherwise the handwritten item / dep looks unused — a false positive
+    // the generated-file drop can't catch (it's anchored on the handwritten file).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "use ext::Thing;\npub fn handwritten() {}\ninclude!(\"generated.rs\");\n",
+    )
+    .unwrap();
+    // Generated code references a handwritten sibling by bare name and a type
+    // brought into scope by the parent module's `use` — neither is qualified.
+    std::fs::write(
+        src.join("generated.rs"),
+        "pub fn gen_user() { handwritten(); let _: Thing; }\n",
+    )
+    .unwrap();
+
+    let root = build_crate_tree(dir.path(), "demo").expect("build");
+
+    let refs: Vec<String> = root.references().map(|p| p.segments().join("::")).collect();
+    assert!(
+        refs.iter().any(|r| r == "demo::handwritten"),
+        "generated bare ref to a handwritten sibling should resolve crate-local, got {refs:?}"
+    );
+    assert!(
+        refs.iter().any(|r| r == "ext::Thing"),
+        "generated ref via the parent module's `use ext::Thing` should resolve, got {refs:?}"
+    );
+}
+
+#[test]
+fn fan_out_cyclic_includes_terminate() {
+    // A *fan-out* cycle: lib → a; a → {b, c}; b → a and c → a. The depth cap
+    // bounds nesting but not the exponential re-splicing a branching cycle would
+    // otherwise drive (≈2^32 walks before depth 64). The `IncludeCtx::ancestry`
+    // chain set breaks it: a file already on the chain is skipped, so the walk
+    // terminates and each file is spliced at most once per chain. Reaching the
+    // assertions at all is the real signal (without the guard this hangs).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "include!(\"a.rs\");\n").unwrap();
+    std::fs::write(
+        src.join("a.rs"),
+        "include!(\"b.rs\");\ninclude!(\"c.rs\");\npub fn a() {}\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("b.rs"), "include!(\"a.rs\");\npub fn b() {}\n").unwrap();
+    std::fs::write(src.join("c.rs"), "include!(\"a.rs\");\npub fn c() {}\n").unwrap();
+
+    let root = build_crate_tree(dir.path(), "demo").expect("build");
+
+    let names: Vec<_> = root.items.iter().map(|i| i.name.as_str()).collect();
+    for want in ["a", "b", "c"] {
+        assert!(names.contains(&want), "missing {want} in {names:?}");
+    }
+    // The cycle back-edge (b/c → a) is skipped, so each item appears once.
+    assert_eq!(names.iter().filter(|n| **n == "a").count(), 1, "{names:?}");
+}
+
+#[test]
+fn duplicate_include_in_one_module_splices_once() {
+    // `include!("g.rs")` twice in one module must splice `g` once (rustc would
+    // reject the duplicate definition); the within-module dedup guards it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "include!(\"g.rs\");\ninclude!(\"g.rs\");\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("g.rs"), "pub fn g() {}\n").unwrap();
+
+    let root = build_crate_tree(dir.path(), "demo").expect("build");
+
+    let g_count = root.items.iter().filter(|i| i.name == "g").count();
+    assert_eq!(
+        g_count, 1,
+        "duplicate include! should splice g once, got {g_count}"
+    );
 }
 
 #[test]
@@ -58,6 +193,7 @@ fn target_root_resolves_sibling_submodule() {
         ResolvedPath::new(["it".to_string()]),
         Visibility::Public,
         &default_markers(),
+        IncludeCtx::none(),
     )
     .expect("build target root");
     let common = root
@@ -339,6 +475,8 @@ fn tier_h_assertions_record_local_fact_references() {
         &default_markers(),
         false,
         Vec::new(),
+        IncludeCtx::none(),
+        AmbientScope::empty(),
     )
     .expect("collect");
 
@@ -405,6 +543,8 @@ fn collect_refs(src: &str, crate_name: &str) -> Vec<String> {
         &markers,
         false,
         Vec::new(),
+        IncludeCtx::none(),
+        AmbientScope::empty(),
     )
     .expect("collect");
     let out: std::collections::BTreeSet<String> = contents
@@ -432,6 +572,8 @@ fn macro_call_names(src: &str) -> Vec<String> {
         &markers,
         false,
         Vec::new(),
+        IncludeCtx::none(),
+        AmbientScope::empty(),
     )
     .expect("collect");
     contents
@@ -600,6 +742,8 @@ fn occurrence_segments(src: &str, origin: Origin) -> Vec<String> {
         &markers,
         false,
         Vec::new(),
+        IncludeCtx::none(),
+        AmbientScope::empty(),
     )
     .expect("collect");
     contents

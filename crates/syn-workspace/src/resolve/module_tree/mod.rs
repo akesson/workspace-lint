@@ -24,30 +24,42 @@
 //! blocks become submodules backed by the same `file` as their parent, and
 //! own a deeper `foo/` directory for any file children declared inside them.
 //!
+//! `include!("…")` IS followed: the included file is spliced into the including
+//! module (see `include_resolve`), with its argument const-folded against a
+//! `CARGO_*`-seeded (and optionally build-script-harvested) env. Spliced files
+//! are recorded on [`Module::generated_files`].
+//!
 //! Documented limitations:
-//! - `#[cfg_attr(cond, path = "...")]` is not expanded, and `include!("…")` is
-//!   not followed — structural non-goals (no cfg-attr evaluation, no `include!`
-//!   expansion), the same class as proc-macro execution.
+//! - `#[cfg_attr(cond, path = "...")]` is not expanded — a structural non-goal
+//!   (no cfg-attr evaluation), the same class as proc-macro execution. An
+//!   `include!` whose argument can't be const-folded to an existing path (a
+//!   non-literal, an unharvested env var) is likewise left un-spliced.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::doc_fences;
 use super::use_tree::{self, UseBinding};
 use super::{
-    BrokenModDecl, Error, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
+    BrokenModDecl, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
     SignatureExposure, SourceSpan, Visibility,
 };
-use crate::macros::annotation::comment_expansion_uses_occurrences;
-use crate::macros::autodetect::extract_macro_paths;
 use crate::plugins;
 
+pub(crate) mod include_resolve;
 pub(crate) mod items;
+mod nested_macro;
 mod occurrences;
 pub(crate) mod signature;
+mod splice;
 #[cfg(test)]
 mod tests;
 mod uses;
+
+pub(crate) use include_resolve::IncludeCtx;
+use nested_macro::NestedMacroLowering;
+use splice::{AmbientScope, apply_lowered, read_parse_seed, resolve_include_site, splice_includes};
 
 // Occurrence helper consumed outside this directory (`macros::autodetect`).
 pub(crate) use occurrences::consume_path_run;
@@ -57,13 +69,14 @@ pub(crate) use occurrences::consume_path_run;
 use items::{decl_ident, extract_cfg_feature_names, item_attrs, item_from_syn, sibling_name};
 use occurrences::{extract_code_paths, resolve_occurrences_in_place, use_tree_has_glob};
 use signature::collect_signature_exposures;
-use uses::{
-    function_local_use_bindings, pub_glob_reexport_targets, rewrite_sibling_local, scope_from,
-};
+use uses::{function_local_use_bindings, pub_glob_reexport_targets, scope_from};
 
 /// Items, submodules, `use` bindings, broken `mod` declarations,
 /// `#[cfg(feature = "...")]` references, and all resolved reference
-/// occurrences collected while walking a module.
+/// occurrences collected while walking a module. The `include!` splice helpers
+/// in the child [`splice`] module merge into these fields (descendant modules can
+/// reach private fields), see [`ModuleContents::absorb`].
+#[derive(Default)]
 struct ModuleContents {
     items: Vec<Item>,
     submodules: Vec<Module>,
@@ -78,6 +91,9 @@ struct ModuleContents {
     /// `occurrences` so they stay out of the SCIP projection / `Module::references`.
     fact_references: Vec<ResolvedPath>,
     fact_provenance: Vec<plugins::ProvenancedFact>,
+    /// Files spliced in via `include!(...)` while collecting this module (and any
+    /// nested includes). Bubbled onto [`Module::generated_files`].
+    generated_files: Vec<PathBuf>,
 }
 
 /// Convert a `proc_macro2::Span` to a [`SourceSpan`] anchored at `file` — the
@@ -127,6 +143,7 @@ pub(crate) fn build_crate_tree(manifest_dir: &Path, crate_name: &str) -> Result<
         // semantically correct default for any external-reachability check.
         Visibility::Public,
         &default_markers,
+        IncludeCtx::none(),
     )
 }
 
@@ -147,6 +164,7 @@ fn empty_root(crate_name: &str) -> Module {
         fact_references: Vec::new(),
         fact_provenance: Vec::new(),
         file: None,
+        generated_files: Vec::new(),
         doctest_crate_refs: HashSet::new(),
     }
 }
@@ -165,22 +183,19 @@ pub(crate) fn build_module_from_file(
     canonical: ResolvedPath,
     visibility: Visibility,
     marker_crates: &[String],
+    inc: IncludeCtx<'_>,
 ) -> Result<Module> {
-    let source = std::fs::read_to_string(file_path)?;
-    let parsed = syn::parse_file(&source).map_err(|e| Error::Parse {
-        path: file_path.to_path_buf(),
-        source: e,
-    })?;
-
     // The dependency-free `// workspace-syn: expansion-uses(...)` comment form of
-    // an `expansion_uses!` annotation isn't in the `syn` AST, so recover it from
-    // the file text here (where `source` is in hand) and seed it into this file's
-    // top-level module — raw, so the Phase-B pass in `collect_module_contents`
-    // resolves it alongside every other occurrence.
-    let comment_occurrences = comment_expansion_uses_occurrences(&source, file_path);
+    // an `expansion_uses!` annotation isn't in the `syn` AST, so `read_parse_seed`
+    // recovers it from the file text and returns it as seed occurrences — raw, so
+    // the Phase-B pass in `collect_module_contents` resolves it alongside every
+    // other occurrence.
+    let (source, parsed, comment_occurrences) = read_parse_seed(file_path)?;
 
     // A file's own items are at its top level — not inside any inline block of
-    // *this* file, even when the file itself was reached via a `mod foo;`.
+    // *this* file, even when the file itself was reached via a `mod foo;`. A file
+    // module opens its own scope (it doesn't inherit a parent's siblings/imports),
+    // so it carries no ambient `include!` scope.
     let contents = collect_module_contents(
         &parsed.items,
         file_path,
@@ -189,6 +204,8 @@ pub(crate) fn build_module_from_file(
         marker_crates,
         false,
         comment_occurrences,
+        inc,
+        AmbientScope::empty(),
     )?;
 
     Ok(Module {
@@ -206,12 +223,17 @@ pub(crate) fn build_module_from_file(
         fact_references: contents.fact_references,
         fact_provenance: contents.fact_provenance,
         file: Some(file_path.to_path_buf()),
+        generated_files: contents.generated_files,
         // Scanned once per file (where `source` is in hand); inline submodules
         // share this file and carry an empty set.
         doctest_crate_refs: doc_fences::doc_fence_crate_refs(&source),
     })
 }
 
+// The walk threads several distinct, independently-varying inputs (position in
+// the tree, scope, marker crates, seed occurrences, include env); each is
+// clearer as a named parameter than hidden behind a context struct.
+#[allow(clippy::too_many_arguments)]
 fn collect_module_contents(
     syn_items: &[syn::Item],
     parent_file: &Path,
@@ -230,6 +252,17 @@ fn collect_module_contents(
     // receives any; inline-`mod` recursion and unit tests pass an empty Vec. They
     // flow through the Phase-B resolution loop below like any other occurrence.
     seed_occurrences: Vec<Occurrence>,
+    // Environment + nesting depth for `include!(...)` resolution. The env folds
+    // `env!(...)` (seeded `CARGO_*`, optionally a crate's harvested build-script
+    // env); the depth is the cyclic-include backstop. `IncludeCtx::none()` (empty
+    // env) disables all but literal/`CARGO_*`-free includes — the offline default.
+    inc: IncludeCtx<'_>,
+    // Lexical scope inherited from an enclosing `include!` site (siblings + `use`
+    // bindings + glob flag of the module that pasted this file in). Empty
+    // ([`AmbientScope::empty`]) for every non-`include!` entry point — a file root
+    // and an inline `mod { … }` open their own scope. Widens *resolution only*; it
+    // never enters this module's persisted `use_bindings`.
+    ambient: AmbientScope<'_>,
 ) -> Result<ModuleContents> {
     let scope = scope_from(parent_canonical);
     // Names declared at this module level. A `use foo::Bar;` whose first
@@ -237,17 +270,22 @@ fn collect_module_contents(
     // external crate — see Rust 2018+ path resolution rules. Order in source
     // doesn't matter, so we collect names in one pass before processing use
     // statements.
-    let sibling_names: HashSet<String> = syn_items.iter().filter_map(sibling_name).collect();
+    let mut sibling_names: HashSet<String> = syn_items.iter().filter_map(sibling_name).collect();
+    // Names from the enclosing `include!` scope are siblings here too (an included
+    // file's items live in the module that pasted it in). This is a local-only set
+    // — it is never persisted — so widening it just lets resolution see the parent.
+    sibling_names.extend(ambient.siblings.iter().cloned());
     // Whether any `use` in scope here carries a glob leaf (`use m::*;`). Gates
     // the bare-ident `GlobCandidate` capture in `extract_code_paths`: without a
     // glob in scope, an unmatched bare ident is always a local or prelude name.
     // Seeded from module-level `use`s; function-local globs are folded in after
     // the main loop (see `function_local_use_bindings` below), mirroring the
     // function-local glob recording there.
-    let mut has_glob_import = syn_items.iter().any(|it| match it {
-        syn::Item::Use(item_use) => use_tree_has_glob(&item_use.tree),
-        _ => false,
-    });
+    let mut has_glob_import = ambient.glob
+        || syn_items.iter().any(|it| match it {
+            syn::Item::Use(item_use) => use_tree_has_glob(&item_use.tree),
+            _ => false,
+        });
 
     let mut items = Vec::new();
     let mut submodules = Vec::new();
@@ -261,6 +299,11 @@ fn collect_module_contents(
     let mut occurrences: Vec<Occurrence> = seed_occurrences;
     // Targets of `pub use M::*;` glob re-exports declared in this module.
     let mut glob_reexports: Vec<ResolvedPath> = Vec::new();
+    // Files pulled in by `include!(...)` at this module level, resolved to real
+    // paths in the main loop and spliced in after Phase B (below) — the included
+    // file is then resolved against this module's combined scope (see the splice
+    // loop) so its references to handwritten siblings / parent imports resolve.
+    let mut include_sites: Vec<PathBuf> = Vec::new();
 
     // Built once and reused for item-position macro dispatch, the fn-body
     // dispatch, the code-path claim guard, and the per-item local-occurrence /
@@ -290,11 +333,13 @@ fn collect_module_contents(
         }
 
         if let syn::Item::Use(item_use) = syn_item {
-            let mut bindings = use_tree::bindings_from_use(item_use, &scope, parent_file);
-            for binding in &mut bindings {
-                rewrite_sibling_local(binding, parent_canonical, &sibling_names);
-            }
-            use_bindings.extend(bindings);
+            use_bindings.extend(uses::module_use_bindings(
+                item_use,
+                &scope,
+                parent_file,
+                parent_canonical,
+                &sibling_names,
+            ));
         }
 
         if let syn::Item::Macro(item_macro) = syn_item {
@@ -319,24 +364,18 @@ fn collect_module_contents(
                 let cx = plugins::LowerCtx {
                     macro_span: mac_span,
                 };
-                match plugin.lower_macro(&site, &cx) {
-                    plugins::Lowered::TokenScan => {
-                        extract_macro_paths(
-                            item_macro.mac.tokens.clone(),
-                            parent_file,
-                            &mut occurrences,
-                        );
-                    }
-                    plugins::Lowered::Exact(occs) => occurrences.extend(occs),
-                    plugins::Lowered::ScanPlus(occs) => {
-                        extract_macro_paths(
-                            item_macro.mac.tokens.clone(),
-                            parent_file,
-                            &mut occurrences,
-                        );
-                        occurrences.extend(occs);
-                    }
-                }
+                apply_lowered(
+                    plugin.lower_macro(&site, &cx),
+                    &item_macro.mac.tokens,
+                    parent_file,
+                    &mut occurrences,
+                );
+            } else if let Some(path) = resolve_include_site(item_macro, parent_file, inc) {
+                // No plugin claims `include!` — queue the resolved generated file
+                // for splicing after Phase B. An argument we can't const-fold to
+                // an existing path yields `None` and is left un-spliced, exactly
+                // as before this feature existed.
+                include_sites.push(path);
             }
         } else if !matches!(syn_item, syn::Item::Use(_) | syn::Item::Mod(_)) {
             // Dispatch `rsx!`-style macros nested *inside* this item (fn bodies,
@@ -386,6 +425,12 @@ fn collect_module_contents(
                     // top-level module (`build_module_from_file`), not per inline
                     // block.
                     Vec::new(),
+                    // An inline `mod { … }` doesn't deepen include nesting; pass
+                    // the same context (env + depth) straight through.
+                    inc,
+                    // An inline `mod { … }` opens its own scope (it does not inherit
+                    // the enclosing module's siblings/imports), so no ambient scope.
+                    AmbientScope::empty(),
                 )?;
                 // Inline `mod foo { ... }` shares the parent's `file`.
                 // Callers that need the AST re-parse the file via
@@ -405,6 +450,10 @@ fn collect_module_contents(
                     fact_references: inline.fact_references,
                     fact_provenance: inline.fact_provenance,
                     file: Some(parent_file.to_path_buf()),
+                    // An `include!` inside an inline `mod { … }` block splices its
+                    // file into that inline module, so carry the inline recursion's
+                    // generated files up.
+                    generated_files: inline.generated_files,
                     // Inline modules share the file; its doc fences are scanned
                     // once on the file-backed module.
                     doctest_crate_refs: HashSet::new(),
@@ -422,6 +471,7 @@ fn collect_module_contents(
                     child_canonical,
                     Visibility::from_syn(&item_mod.vis),
                     marker_crates,
+                    inc,
                 )?);
             } else {
                 // `mod foo;` with neither inline body nor backing file —
@@ -456,6 +506,19 @@ fn collect_module_contents(
     // over-approximation already applied to function-local named bindings.
     has_glob_import |= !function_local.glob_occurrences.is_empty();
     occurrences.extend(function_local.glob_occurrences);
+
+    // Bindings used to *resolve* this module's references: its own bindings plus
+    // any inherited from an enclosing `include!` site (generated code resolves
+    // against the module that pasted it in). Kept separate from `use_bindings` so
+    // ambient imports never leak into the persisted model; borrowed (no clone) in
+    // the overwhelmingly common no-ambient case.
+    let resolution_bindings: Cow<[UseBinding]> = if ambient.use_bindings.is_empty() {
+        Cow::Borrowed(&use_bindings)
+    } else {
+        let mut combined = use_bindings.clone();
+        combined.extend(ambient.use_bindings.iter().cloned());
+        Cow::Owned(combined)
+    };
 
     // Second pass: extract regular-code path references. Done after the main
     // loop so the use_bindings set is complete — references can resolve any
@@ -534,7 +597,7 @@ fn collect_module_contents(
         let tokens = quote::ToTokens::to_token_stream(syn_item);
         extract_code_paths(
             tokens,
-            &use_bindings,
+            resolution_bindings.as_ref(),
             &sibling_names,
             has_glob_import,
             parent_file,
@@ -560,7 +623,7 @@ fn collect_module_contents(
     resolve_occurrences_in_place(
         &mut occurrences,
         &scope,
-        &use_bindings,
+        resolution_bindings.as_ref(),
         &sibling_names,
         parent_canonical,
     );
@@ -572,14 +635,19 @@ fn collect_module_contents(
     let local_ctx = plugins::LocalFactCtx {
         scope: &scope,
         siblings: &sibling_names,
-        use_bindings: &use_bindings,
+        use_bindings: resolution_bindings.as_ref(),
         parent_canonical,
         file: parent_file,
     };
     let (signature_exposures, fact_references, fact_provenance) =
         collect_local_facts(syn_items, &resolver_plugins, &local_ctx);
 
-    Ok(ModuleContents {
+    // Owned snapshot of this module's resolution scope (its own bindings plus any
+    // inherited ambient ones), taken before `use_bindings` is moved into
+    // `contents` so each spliced file can resolve against the including scope.
+    let ambient_bindings: Vec<UseBinding> = resolution_bindings.into_owned();
+
+    let mut contents = ModuleContents {
         items,
         submodules,
         use_bindings,
@@ -590,7 +658,27 @@ fn collect_module_contents(
         signature_exposures,
         fact_references,
         fact_provenance,
-    })
+        generated_files: Vec::new(),
+    };
+
+    // Splice every resolved `include!`d file into this module (see
+    // `splice_includes`). Done last — after this module's own Phase-B resolution
+    // — so the included files merge in through the single `absorb` point.
+    if let Some(spliced) = splice_includes(
+        include_sites,
+        inc,
+        in_inline,
+        mod_dir,
+        parent_canonical,
+        marker_crates,
+        &sibling_names,
+        ambient_bindings,
+        has_glob_import,
+    ) {
+        contents.absorb(spliced);
+    }
+
+    Ok(contents)
 }
 
 /// Run the AST-aware signature-exposure walk and the per-item `local_facts` plugins
@@ -629,53 +717,6 @@ fn collect_local_facts(
         }
     }
     (signature_exposures, fact_references, fact_provenance)
-}
-
-/// Visits an item's nested bodies (fn bodies, expression position, …) and
-/// dispatches every claimed macro invocation to a structured lowerer, collecting
-/// the structured occurrences it emits. This is how fn-body `rsx!` (the realistic
-/// position) reaches the lowerer — the item-position branch in the main walk only
-/// sees `syn::Item::Macro`. Only [`plugins::Lowered::ScanPlus`] /
-/// [`plugins::Lowered::Exact`] contribute; the baseline token scan
-/// ([`extract_code_paths`]) already covers fn-body macro *tokens*, so a
-/// `TokenScan` lowerer would double-count and is skipped here.
-///
-/// A macro inside a fn-body-nested `mod`/`fn` is attributed to the enclosing
-/// module rather than the nested one — harmless for the same-crate lints this
-/// feeds, and a documented non-goal.
-struct NestedMacroLowering<'a> {
-    lowerers: &'a [Box<dyn plugins::ResolverPlugin>],
-    marker_crates: &'a [String],
-    file: &'a Path,
-    out: &'a mut Vec<Occurrence>,
-}
-
-impl<'ast, 'a> syn::visit::Visit<'ast> for NestedMacroLowering<'a> {
-    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-        let site = plugins::MacroSite {
-            is_macro_rules: false,
-            path: &mac.path,
-            tokens: &mac.tokens,
-            marker_crates: self.marker_crates,
-        };
-        if let Some(plugin) = self.lowerers.iter().find(|p| p.claims_macro(&site)) {
-            let mac_span = mac
-                .path
-                .segments
-                .first()
-                .map(|s| span_to_source_span(self.file, s.ident.span()));
-            let cx = plugins::LowerCtx {
-                macro_span: mac_span,
-            };
-            match plugin.lower_macro(&site, &cx) {
-                plugins::Lowered::ScanPlus(occs) | plugins::Lowered::Exact(occs) => {
-                    self.out.extend(occs);
-                }
-                plugins::Lowered::TokenScan => {}
-            }
-        }
-        syn::visit::visit_macro(self, mac);
-    }
 }
 
 /// The directory in which a file's `mod foo;` children are resolved.

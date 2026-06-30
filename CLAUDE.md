@@ -9,7 +9,10 @@ workspace via configurable lint checks. It emits clippy-style human output,
 rustc-compatible JSON (for rust-analyzer's `check.overrideCommand`), or GitHub
 Actions workflow commands. Its distinguishing trait: lints that need semantic
 information are backed by `syn-workspace`, a from-scratch resolver built on
-`syn` — **no rust-analyzer / SCIP subprocess required** for the default path.
+`syn` — **no rust-analyzer / SCIP subprocess required**. (One exception: to
+resolve `OUT_DIR`-based generated code the binary runs a scoped `cargo check`
+for crates that have both a `build.rs` and an `include!`; pass `--no-build-env`
+to skip it. See **Generated code** in `README.md`.)
 
 User-facing docs live in `README.md`; read it for the config surface and per-lint
 options. This file covers the internal architecture.

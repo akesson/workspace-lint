@@ -21,15 +21,16 @@
 //! `is_workspace_member` so external crates can be added later without an
 //! API change.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use cargo_metadata::{MetadataCommand, TargetKind as CargoTargetKind};
+use cargo_metadata::{Message, MetadataCommand, Package, PackageId, TargetKind as CargoTargetKind};
 
 use crate::manifest::Manifest;
 use crate::resolve::{
     Crate, Error, LoadWarning, ResolvedPath, Result, Target, TargetKind, module_tree,
 };
+use module_tree::IncludeCtx;
 
 /// Run `cargo metadata` on the workspace at `root` and return the root
 /// [`Manifest`] alongside one [`Crate`] per workspace member, plus any
@@ -41,6 +42,7 @@ use crate::resolve::{
 pub(crate) fn load_members(
     root: &Path,
     marker_crates: &[String],
+    harvest_build_env: bool,
 ) -> Result<(Manifest, Vec<Crate>, Vec<LoadWarning>)> {
     let root_manifest_path = root.join("Cargo.toml");
     // `--no-deps`: we materialize only workspace members (see the
@@ -56,8 +58,21 @@ pub(crate) fn load_members(
 
     let root_manifest = Manifest::load(&root_manifest_path)?;
 
-    let mut out = Vec::new();
     let mut warnings: Vec<LoadWarning> = Vec::new();
+    // Tier-2 generated-code support: harvest each relevant build-script crate's
+    // runtime env (OUT_DIR + `cargo::rustc-env=` exports) so an
+    // `include!(concat!(env!("OUT_DIR"), …))` resolves. Scoped to crates that
+    // have BOTH a `build.rs` and an `include!` (the only crates whose includes
+    // can need build env) and gated behind `harvest_build_env` — the offline
+    // default skips it entirely. Any cargo failure degrades to an empty map, so
+    // Tier-1 literal / `CARGO_*` includes still resolve.
+    let build_env = if harvest_build_env {
+        harvest_build_script_env(&root_manifest_path, &metadata, &mut warnings)
+    } else {
+        HashMap::new()
+    };
+
+    let mut out = Vec::new();
     for pkg in metadata.workspace_packages() {
         let manifest_path = pkg.manifest_path.as_std_path().to_path_buf();
         let manifest_dir = manifest_path
@@ -77,6 +92,24 @@ pub(crate) fn load_members(
         // diagnostics and `from`-pattern matching see the same string users
         // wrote in `Cargo.toml`.
         let code_name = pkg.name.replace('-', "_");
+
+        // Per-crate `include!` environment: `CARGO_*` vars seeded from metadata
+        // (offline, always present) overlaid with this crate's harvested
+        // build-script env (present only under Tier-2, for build.rs∩include!
+        // crates). Drives `env!(...)` const-folding during the module walk.
+        let mut include_env: HashMap<String, String> = HashMap::new();
+        include_env.insert(
+            "CARGO_MANIFEST_DIR".to_string(),
+            manifest_dir.to_string_lossy().into_owned(),
+        );
+        include_env.insert("CARGO_PKG_NAME".to_string(), pkg.name.to_string());
+        include_env.insert("CARGO_PKG_VERSION".to_string(), pkg.version.to_string());
+        if let Some(harvested) = build_env.get(&pkg.id) {
+            for (k, v) in harvested {
+                include_env.insert(k.clone(), v.clone());
+            }
+        }
+        let inc = IncludeCtx::root(&include_env);
 
         let mut targets = Vec::new();
         for cargo_target in &pkg.targets {
@@ -109,6 +142,7 @@ pub(crate) fn load_members(
                 // `mod foo;` declaration — Public by definition.
                 crate::resolve::Visibility::Public,
                 marker_crates,
+                inc,
             ) {
                 Ok(m) => m,
                 Err(e) => {
@@ -136,6 +170,13 @@ pub(crate) fn load_members(
         }
 
         let orphan_files = compute_orphans(&manifest_dir, &targets);
+        // Union of every target's spliced `include!` files (each module records
+        // its own in `Module::generated_files`).
+        let generated_files: Vec<PathBuf> = targets
+            .iter()
+            .flat_map(|t| t.all_modules())
+            .flat_map(|m| m.generated_files.iter().cloned())
+            .collect();
 
         let mut declared_features: Vec<String> = pkg.features.keys().cloned().collect();
         declared_features.sort();
@@ -158,6 +199,7 @@ pub(crate) fn load_members(
             is_workspace_member: true,
             targets,
             orphan_files,
+            generated_files,
             declared_features,
             feature_values,
             manifest,
@@ -165,6 +207,114 @@ pub(crate) fn load_members(
     }
 
     Ok((root_manifest, out, warnings))
+}
+
+/// Harvest the runtime environment of build-script crates so `include!`
+/// arguments that reference `OUT_DIR` (or a custom `cargo::rustc-env=` var) can
+/// be resolved. Runs `cargo check --message-format=json` scoped (`-p`) to the
+/// crates that have BOTH a `build.rs` and an `include!` in their sources — the
+/// only crates whose includes can need build-script env. Returns each such
+/// crate's env keyed by package id (the `cargo::rustc-env=` exports plus the
+/// synthesized `OUT_DIR`). Any failure (cargo missing, non-zero exit) is
+/// recorded as a non-fatal [`LoadWarning`] and yields whatever it could parse —
+/// Tier-1 literal / `CARGO_*` includes resolve without it regardless.
+fn harvest_build_script_env(
+    root_manifest_path: &Path,
+    metadata: &cargo_metadata::Metadata,
+    warnings: &mut Vec<LoadWarning>,
+) -> HashMap<PackageId, HashMap<String, String>> {
+    let pkgs: Vec<&Package> = metadata
+        .workspace_packages()
+        .into_iter()
+        .filter(|pkg| has_build_script(pkg) && crate_mentions_include(pkg))
+        .collect();
+    if pkgs.is_empty() {
+        return HashMap::new();
+    }
+
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("check")
+        .arg("--manifest-path")
+        .arg(root_manifest_path)
+        .arg("--message-format=json");
+    for pkg in &pkgs {
+        cmd.arg("-p").arg(pkg.name.to_string());
+    }
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            warnings.push(LoadWarning::BuildEnvHarvestFailed {
+                message: format!("`cargo check` could not be run: {e}"),
+            });
+            return HashMap::new();
+        }
+    };
+
+    let map = parse_build_script_env(&output.stdout);
+
+    // Warn only when the harvest recovered *no* build-script env at all. A
+    // non-zero exit is the normal state when the crate currently doesn't compile,
+    // but its build script runs (and reports `OUT_DIR`) before the compile error
+    // — so a non-empty map means the harvest succeeded despite the failure, and a
+    // warning there would be a false alarm on a routine incremental edit.
+    if map.is_empty() && !output.status.success() {
+        warnings.push(LoadWarning::BuildEnvHarvestFailed {
+            message: format!(
+                "`cargo check` exited with {} while harvesting build-script env",
+                output.status
+            ),
+        });
+    }
+    map
+}
+
+/// Parse cargo's `--message-format=json` stream for `build-script-executed`
+/// messages, returning each package's build-script env (its `cargo::rustc-env=`
+/// exports plus the synthesized `OUT_DIR`) keyed by package id. Non-build-script
+/// messages and unparsable lines are skipped. Pure over the captured stdout, so
+/// the parse can be unit-tested without spawning `cargo`.
+fn parse_build_script_env(stdout: &[u8]) -> HashMap<PackageId, HashMap<String, String>> {
+    let mut map: HashMap<PackageId, HashMap<String, String>> = HashMap::new();
+    for message in Message::parse_stream(stdout) {
+        let Ok(Message::BuildScriptExecuted(bs)) = message else {
+            continue;
+        };
+        let entry = map.entry(bs.package_id).or_default();
+        for (k, v) in bs.env {
+            entry.insert(k, v);
+        }
+        // `OUT_DIR` is reported as its own field, not inside `env`.
+        entry.insert("OUT_DIR".to_string(), bs.out_dir.as_str().to_string());
+    }
+    map
+}
+
+/// True iff the package has a `build.rs` (a custom-build cargo target).
+fn has_build_script(pkg: &Package) -> bool {
+    pkg.targets.iter().any(|t| {
+        t.kind
+            .iter()
+            .any(|k| matches!(k, CargoTargetKind::CustomBuild))
+    })
+}
+
+/// Cheap text pre-scan: does any `.rs` file in the crate mention `include!`?
+/// Lets the harvest skip a `cargo check` for a build-script crate that has no
+/// `include!` to resolve. A substring false positive only costs a spurious
+/// check; a parse-free match is robust enough since `std::include!` contains it.
+fn crate_mentions_include(pkg: &Package) -> bool {
+    let Some(dir) = pkg.manifest_path.as_std_path().parent() else {
+        return false;
+    };
+    // Scan raw bytes (no UTF-8 validation, no `String` allocation) for the literal
+    // `include!` token; `windows` is O(n) and short-circuits on the first hit.
+    const NEEDLE: &[u8] = b"include!";
+    rs_files_under(dir).iter().any(|f| {
+        std::fs::read(f).is_ok_and(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
+    })
 }
 
 /// Map cargo's per-target `kind: Vec<TargetKind>` (which may report
@@ -229,6 +379,15 @@ fn compute_orphans(manifest_dir: &Path, targets: &[Target]) -> Vec<PathBuf> {
                     reached.insert(file.clone());
                 }
             }
+            // A file spliced in via `include!(...)` is reached even though it is
+            // no module's own `file` (its items live in the including module).
+            for gen_file in &module.generated_files {
+                if let Ok(canon) = gen_file.canonicalize() {
+                    reached.insert(canon);
+                } else {
+                    reached.insert(gen_file.clone());
+                }
+            }
         }
     }
 
@@ -269,4 +428,54 @@ fn rs_files_under(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_build_script_env_extracts_out_dir_and_rustc_env() {
+        // A realistic message stream: a non-JSON line and a non-build-script
+        // message (both skipped) plus one `build-script-executed` line. `env`
+        // carries the `cargo::rustc-env=` exports; `out_dir` is its own field.
+        let stdout = concat!(
+            "not a json line, must be skipped\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
+            r#"{"reason":"build-script-executed","package_id":"demo 0.1.0 (path+file:///demo)","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[["MY_VAR","val"]],"out_dir":"/target/build/demo-abc/out"}"#,
+            "\n",
+        );
+
+        let map = parse_build_script_env(stdout.as_bytes());
+
+        assert_eq!(
+            map.len(),
+            1,
+            "only the build-script-executed message is kept"
+        );
+        let env = map.values().next().expect("one harvested package");
+        assert_eq!(
+            env.get("OUT_DIR").map(String::as_str),
+            Some("/target/build/demo-abc/out"),
+            "OUT_DIR is synthesized from the out_dir field"
+        );
+        assert_eq!(
+            env.get("MY_VAR").map(String::as_str),
+            Some("val"),
+            "cargo::rustc-env exports are captured"
+        );
+    }
+
+    #[test]
+    fn parse_build_script_env_empty_on_no_build_scripts() {
+        // No build-script-executed messages → empty map (the signal `harvest`
+        // uses to decide whether a non-zero `cargo check` exit is a real failure).
+        let stdout = concat!(
+            r#"{"reason":"build-finished","success":false}"#,
+            "\n",
+            "garbage\n",
+        );
+        assert!(parse_build_script_env(stdout.as_bytes()).is_empty());
+    }
 }
