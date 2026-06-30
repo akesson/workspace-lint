@@ -1,0 +1,11 @@
+[unused-pub]
+# `helper` is used only from within the crate (a bare call in generated code), so
+# once the include! reference is resolved it reads IntraCrate; suppress that nag,
+# leaving a clean pass. Without the combined-scope fix the generated bare call is
+# invisible and `helper` reads Unused → "appears unused" (the false positive this
+# fixture guards against).
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"

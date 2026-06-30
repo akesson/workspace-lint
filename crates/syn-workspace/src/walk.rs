@@ -298,9 +298,12 @@ fn crate_mentions_include(pkg: &Package) -> bool {
     let Some(dir) = pkg.manifest_path.as_std_path().parent() else {
         return false;
     };
-    rs_files_under(dir)
-        .iter()
-        .any(|f| std::fs::read_to_string(f).is_ok_and(|s| s.contains("include!")))
+    // Scan raw bytes (no UTF-8 validation, no `String` allocation) for the literal
+    // `include!` token; `windows` is O(n) and short-circuits on the first hit.
+    const NEEDLE: &[u8] = b"include!";
+    rs_files_under(dir).iter().any(|f| {
+        std::fs::read(f).is_ok_and(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
+    })
 }
 
 /// Map cargo's per-target `kind: Vec<TargetKind>` (which may report

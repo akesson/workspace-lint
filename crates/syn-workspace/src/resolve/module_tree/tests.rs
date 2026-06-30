@@ -1,5 +1,6 @@
 //! Module-tree assembly and occurrence-resolution tests, split out of `mod.rs`.
 
+use super::splice::AmbientScope;
 use super::*;
 
 fn manifest_dir(name: &str) -> PathBuf {
@@ -59,6 +60,42 @@ fn include_macro_splices_generated_items_and_marks_file() {
     assert!(
         refs.iter().any(|r| r.starts_with("external_dep")),
         "expected the generated file's external_dep reference, got {refs:?}"
+    );
+}
+
+#[test]
+fn include_macro_resolves_generated_refs_against_including_scope() {
+    // `include!` pastes generated tokens into the including module's lexical scope,
+    // so a reference *from* generated code to a handwritten sibling or a name
+    // brought in by a parent-module `use` must resolve against the including
+    // module. Otherwise the handwritten item / dep looks unused — a false positive
+    // the generated-file drop can't catch (it's anchored on the handwritten file).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "use ext::Thing;\npub fn handwritten() {}\ninclude!(\"generated.rs\");\n",
+    )
+    .unwrap();
+    // Generated code references a handwritten sibling by bare name and a type
+    // brought into scope by the parent module's `use` — neither is qualified.
+    std::fs::write(
+        src.join("generated.rs"),
+        "pub fn gen_user() { handwritten(); let _: Thing; }\n",
+    )
+    .unwrap();
+
+    let root = build_crate_tree(dir.path(), "demo").expect("build");
+
+    let refs: Vec<String> = root.references().map(|p| p.segments().join("::")).collect();
+    assert!(
+        refs.iter().any(|r| r == "demo::handwritten"),
+        "generated bare ref to a handwritten sibling should resolve crate-local, got {refs:?}"
+    );
+    assert!(
+        refs.iter().any(|r| r == "ext::Thing"),
+        "generated ref via the parent module's `use ext::Thing` should resolve, got {refs:?}"
     );
 }
 
@@ -386,6 +423,7 @@ fn tier_h_assertions_record_local_fact_references() {
         false,
         Vec::new(),
         IncludeCtx::none(),
+        AmbientScope::empty(),
     )
     .expect("collect");
 
@@ -453,6 +491,7 @@ fn collect_refs(src: &str, crate_name: &str) -> Vec<String> {
         false,
         Vec::new(),
         IncludeCtx::none(),
+        AmbientScope::empty(),
     )
     .expect("collect");
     let out: std::collections::BTreeSet<String> = contents
@@ -481,6 +520,7 @@ fn macro_call_names(src: &str) -> Vec<String> {
         false,
         Vec::new(),
         IncludeCtx::none(),
+        AmbientScope::empty(),
     )
     .expect("collect");
     contents
@@ -650,6 +690,7 @@ fn occurrence_segments(src: &str, origin: Origin) -> Vec<String> {
         false,
         Vec::new(),
         IncludeCtx::none(),
+        AmbientScope::empty(),
     )
     .expect("collect");
     contents

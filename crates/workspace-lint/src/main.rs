@@ -351,7 +351,10 @@ fn load_workspace(macros: Option<&MacrosConfig>, harvest_build_env: bool) -> Wor
         ))
     });
     for w in ws.warnings() {
-        eprintln!("workspace-lint: {w}");
+        // Label as a warning so a degraded load (e.g. a failed build-env harvest
+        // that silently falls back to literal-only include resolution) reads as
+        // something gone wrong rather than blending into normal output.
+        eprintln!("workspace-lint: warning: {w}");
     }
     if let Some(m) = macros {
         let paths = m.external.iter().flat_map(|m| {

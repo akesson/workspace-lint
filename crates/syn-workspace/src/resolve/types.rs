@@ -126,9 +126,13 @@ impl std::fmt::Display for LoadWarning {
                 "skipping target {target} ({}): {message}",
                 path.display()
             ),
-            Self::BuildEnvHarvestFailed { message } => {
-                write!(f, "build-script env harvest failed: {message}")
-            }
+            Self::BuildEnvHarvestFailed { message } => write!(
+                f,
+                "build-script env harvest failed: {message}; \
+                 falling back to literal/`CARGO_*` include resolution \
+                 (`OUT_DIR`-generated code may surface false positives — \
+                 re-run after a clean `cargo check`, or pass `--no-build-env`)"
+            ),
         }
     }
 }

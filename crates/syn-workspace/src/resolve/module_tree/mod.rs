@@ -35,16 +35,16 @@
 //!   `include!` whose argument can't be const-folded to an existing path (a
 //!   non-literal, an unharvested env var) is likewise left un-spliced.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::doc_fences;
 use super::use_tree::{self, UseBinding};
 use super::{
-    BrokenModDecl, Error, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
+    BrokenModDecl, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
     SignatureExposure, SourceSpan, Visibility,
 };
-use crate::macros::annotation::comment_expansion_uses_occurrences;
 use crate::macros::autodetect::extract_macro_paths;
 use crate::plugins;
 
@@ -53,12 +53,14 @@ pub(crate) mod items;
 mod nested_macro;
 mod occurrences;
 pub(crate) mod signature;
+mod splice;
 #[cfg(test)]
 mod tests;
 mod uses;
 
 pub(crate) use include_resolve::IncludeCtx;
 use nested_macro::NestedMacroLowering;
+use splice::{AmbientScope, read_parse_seed};
 
 // Occurrence helper consumed outside this directory (`macros::autodetect`).
 pub(crate) use occurrences::consume_path_run;
@@ -183,21 +185,17 @@ pub(crate) fn build_module_from_file(
     marker_crates: &[String],
     inc: IncludeCtx<'_>,
 ) -> Result<Module> {
-    let source = std::fs::read_to_string(file_path)?;
-    let parsed = syn::parse_file(&source).map_err(|e| Error::Parse {
-        path: file_path.to_path_buf(),
-        source: e,
-    })?;
-
     // The dependency-free `// workspace-syn: expansion-uses(...)` comment form of
-    // an `expansion_uses!` annotation isn't in the `syn` AST, so recover it from
-    // the file text here (where `source` is in hand) and seed it into this file's
-    // top-level module — raw, so the Phase-B pass in `collect_module_contents`
-    // resolves it alongside every other occurrence.
-    let comment_occurrences = comment_expansion_uses_occurrences(&source, file_path);
+    // an `expansion_uses!` annotation isn't in the `syn` AST, so `read_parse_seed`
+    // recovers it from the file text and returns it as seed occurrences — raw, so
+    // the Phase-B pass in `collect_module_contents` resolves it alongside every
+    // other occurrence.
+    let (source, parsed, comment_occurrences) = read_parse_seed(file_path)?;
 
     // A file's own items are at its top level — not inside any inline block of
-    // *this* file, even when the file itself was reached via a `mod foo;`.
+    // *this* file, even when the file itself was reached via a `mod foo;`. A file
+    // module opens its own scope (it doesn't inherit a parent's siblings/imports),
+    // so it carries no ambient `include!` scope.
     let contents = collect_module_contents(
         &parsed.items,
         file_path,
@@ -207,6 +205,7 @@ pub(crate) fn build_module_from_file(
         false,
         comment_occurrences,
         inc,
+        AmbientScope::empty(),
     )?;
 
     Ok(Module {
@@ -258,6 +257,12 @@ fn collect_module_contents(
     // env); the depth is the cyclic-include backstop. `IncludeCtx::none()` (empty
     // env) disables all but literal/`CARGO_*`-free includes — the offline default.
     inc: IncludeCtx<'_>,
+    // Lexical scope inherited from an enclosing `include!` site (siblings + `use`
+    // bindings + glob flag of the module that pasted this file in). Empty
+    // ([`AmbientScope::empty`]) for every non-`include!` entry point — a file root
+    // and an inline `mod { … }` open their own scope. Widens *resolution only*; it
+    // never enters this module's persisted `use_bindings`.
+    ambient: AmbientScope<'_>,
 ) -> Result<ModuleContents> {
     let scope = scope_from(parent_canonical);
     // Names declared at this module level. A `use foo::Bar;` whose first
@@ -265,17 +270,22 @@ fn collect_module_contents(
     // external crate — see Rust 2018+ path resolution rules. Order in source
     // doesn't matter, so we collect names in one pass before processing use
     // statements.
-    let sibling_names: HashSet<String> = syn_items.iter().filter_map(sibling_name).collect();
+    let mut sibling_names: HashSet<String> = syn_items.iter().filter_map(sibling_name).collect();
+    // Names from the enclosing `include!` scope are siblings here too (an included
+    // file's items live in the module that pasted it in). This is a local-only set
+    // — it is never persisted — so widening it just lets resolution see the parent.
+    sibling_names.extend(ambient.siblings.iter().cloned());
     // Whether any `use` in scope here carries a glob leaf (`use m::*;`). Gates
     // the bare-ident `GlobCandidate` capture in `extract_code_paths`: without a
     // glob in scope, an unmatched bare ident is always a local or prelude name.
     // Seeded from module-level `use`s; function-local globs are folded in after
     // the main loop (see `function_local_use_bindings` below), mirroring the
     // function-local glob recording there.
-    let mut has_glob_import = syn_items.iter().any(|it| match it {
-        syn::Item::Use(item_use) => use_tree_has_glob(&item_use.tree),
-        _ => false,
-    });
+    let mut has_glob_import = ambient.glob
+        || syn_items.iter().any(|it| match it {
+            syn::Item::Use(item_use) => use_tree_has_glob(&item_use.tree),
+            _ => false,
+        });
 
     let mut items = Vec::new();
     let mut submodules = Vec::new();
@@ -290,8 +300,9 @@ fn collect_module_contents(
     // Targets of `pub use M::*;` glob re-exports declared in this module.
     let mut glob_reexports: Vec<ResolvedPath> = Vec::new();
     // Files pulled in by `include!(...)` at this module level, resolved to real
-    // paths in the main loop and spliced in after Phase B (below) so the included
-    // file's own resolution isn't clobbered by this module's resolve pass.
+    // paths in the main loop and spliced in after Phase B (below) — the included
+    // file is then resolved against this module's combined scope (see the splice
+    // loop) so its references to handwritten siblings / parent imports resolve.
     let mut include_sites: Vec<PathBuf> = Vec::new();
     // Generated files spliced into this module (the `include_sites` that resolved,
     // plus any nested includes inside them). Bubbled onto `Module::generated_files`.
@@ -436,6 +447,9 @@ fn collect_module_contents(
                     // An inline `mod { … }` doesn't deepen include nesting; pass
                     // the same context (env + depth) straight through.
                     inc,
+                    // An inline `mod { … }` opens its own scope (it does not inherit
+                    // the enclosing module's siblings/imports), so no ambient scope.
+                    AmbientScope::empty(),
                 )?;
                 // Inline `mod foo { ... }` shares the parent's `file`.
                 // Callers that need the AST re-parse the file via
@@ -511,6 +525,19 @@ fn collect_module_contents(
     // over-approximation already applied to function-local named bindings.
     has_glob_import |= !function_local.glob_occurrences.is_empty();
     occurrences.extend(function_local.glob_occurrences);
+
+    // Bindings used to *resolve* this module's references: its own bindings plus
+    // any inherited from an enclosing `include!` site (generated code resolves
+    // against the module that pasted it in). Kept separate from `use_bindings` so
+    // ambient imports never leak into the persisted model; borrowed (no clone) in
+    // the overwhelmingly common no-ambient case.
+    let resolution_bindings: Cow<[UseBinding]> = if ambient.use_bindings.is_empty() {
+        Cow::Borrowed(&use_bindings)
+    } else {
+        let mut combined = use_bindings.clone();
+        combined.extend(ambient.use_bindings.iter().cloned());
+        Cow::Owned(combined)
+    };
 
     // Second pass: extract regular-code path references. Done after the main
     // loop so the use_bindings set is complete — references can resolve any
@@ -589,7 +616,7 @@ fn collect_module_contents(
         let tokens = quote::ToTokens::to_token_stream(syn_item);
         extract_code_paths(
             tokens,
-            &use_bindings,
+            resolution_bindings.as_ref(),
             &sibling_names,
             has_glob_import,
             parent_file,
@@ -615,7 +642,7 @@ fn collect_module_contents(
     resolve_occurrences_in_place(
         &mut occurrences,
         &scope,
-        &use_bindings,
+        resolution_bindings.as_ref(),
         &sibling_names,
         parent_canonical,
     );
@@ -627,7 +654,7 @@ fn collect_module_contents(
     let local_ctx = plugins::LocalFactCtx {
         scope: &scope,
         siblings: &sibling_names,
-        use_bindings: &use_bindings,
+        use_bindings: resolution_bindings.as_ref(),
         parent_canonical,
         file: parent_file,
     };
@@ -636,49 +663,61 @@ fn collect_module_contents(
 
     // Splice every resolved `include!`d file into this module. Done last — after
     // this module's own Phase-B resolution — so each generated file is resolved
-    // (recursively) against its own scope and merged whole, rather than having
-    // its already-resolved occurrences re-run through this module's resolve pass.
-    // The included items belong to *this* module (an `include!` is not a
-    // submodule), so they share `mod_dir`/`parent_canonical`; `parent_file` is the
-    // generated file itself, so every spliced span is stamped with it — the key
-    // the diagnostic pipeline uses to recognize generated code. Best-effort: an
-    // unreadable/unparseable generated file, or one nested past the depth cap, is
-    // skipped rather than failing the load (the pre-feature behavior for that site).
-    for included_path in include_sites {
-        let Some(deeper) = inc.deeper() else {
-            continue;
+    // (recursively) and merged whole, rather than having its already-resolved
+    // occurrences re-run through this module's resolve pass. Crucially the generated
+    // file resolves against the *combined* scope (this module's siblings + imports,
+    // passed as `ambient`), because an `include!` pastes into this module's lexical
+    // scope — so a reference from generated code to a handwritten sibling or a
+    // parent import resolves instead of leaking as an `unused-*` false positive.
+    // The included items belong to *this* module (an `include!` is not a submodule),
+    // so they share `mod_dir`/`parent_canonical`; `parent_file` is the generated
+    // file itself, so every spliced span is stamped with it — the key the diagnostic
+    // pipeline uses to recognize generated code. Best-effort: an unreadable/
+    // unparseable generated file is skipped rather than failing the load. The depth
+    // check is hoisted: at the cap (a cyclic include) the whole module's splicing is
+    // skipped, leaving `generated_files` empty — the pre-feature behavior.
+    if !include_sites.is_empty()
+        && let Some(deeper) = inc.deeper()
+    {
+        // Owned snapshot of this module's resolution scope handed to each spliced
+        // file: independent of `use_bindings` so the loop below can keep extending
+        // it. `siblings` is this module's combined set (not mutated by the loop).
+        let ambient_bindings: Vec<UseBinding> = resolution_bindings.into_owned();
+        let child_ambient = AmbientScope {
+            siblings: &sibling_names,
+            use_bindings: &ambient_bindings,
+            glob: has_glob_import,
         };
-        let Ok(source) = std::fs::read_to_string(&included_path) else {
-            continue;
-        };
-        let Ok(parsed) = syn::parse_file(&source) else {
-            continue;
-        };
-        let seed = comment_expansion_uses_occurrences(&source, &included_path);
-        let Ok(spliced) = collect_module_contents(
-            &parsed.items,
-            &included_path,
-            mod_dir,
-            parent_canonical,
-            marker_crates,
-            in_inline,
-            seed,
-            deeper,
-        ) else {
-            continue;
-        };
-        items.extend(spliced.items);
-        submodules.extend(spliced.submodules);
-        use_bindings.extend(spliced.use_bindings);
-        broken_mod_decls.extend(spliced.broken_mod_decls);
-        cfg_features.extend(spliced.cfg_features);
-        occurrences.extend(spliced.occurrences);
-        glob_reexports.extend(spliced.glob_reexports);
-        signature_exposures.extend(spliced.signature_exposures);
-        fact_references.extend(spliced.fact_references);
-        fact_provenance.extend(spliced.fact_provenance);
-        generated_files.push(included_path);
-        generated_files.extend(spliced.generated_files);
+        for included_path in include_sites {
+            let Ok((_, parsed, seed)) = read_parse_seed(&included_path) else {
+                continue;
+            };
+            let Ok(spliced) = collect_module_contents(
+                &parsed.items,
+                &included_path,
+                mod_dir,
+                parent_canonical,
+                marker_crates,
+                in_inline,
+                seed,
+                deeper,
+                child_ambient,
+            ) else {
+                continue;
+            };
+            items.extend(spliced.items);
+            submodules.extend(spliced.submodules);
+            use_bindings.extend(spliced.use_bindings);
+            broken_mod_decls.extend(spliced.broken_mod_decls);
+            cfg_features.extend(spliced.cfg_features);
+            occurrences.extend(spliced.occurrences);
+            glob_reexports.extend(spliced.glob_reexports);
+            signature_exposures.extend(spliced.signature_exposures);
+            fact_references.extend(spliced.fact_references);
+            fact_provenance.extend(spliced.fact_provenance);
+            generated_files.push(included_path);
+            generated_files.extend(spliced.generated_files);
+        }
     }
 
     Ok(ModuleContents {
