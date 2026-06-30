@@ -231,6 +231,7 @@ mod tests {
             fact_references: Vec::new(),
             fact_provenance: Vec::new(),
             file: None,
+            generated_files: Vec::new(),
             doctest_crate_refs: std::collections::HashSet::new(),
         }
     }
@@ -249,6 +250,7 @@ mod tests {
             is_workspace_member: true,
             targets: vec![target],
             orphan_files: Vec::new(),
+            generated_files: Vec::new(),
             declared_features: Vec::new(),
             feature_values: std::collections::BTreeMap::new(),
             manifest: crate::manifest::Manifest::empty(),

@@ -76,6 +76,14 @@ pub struct Module {
     /// File backing this module, if any. `None` for inline `mod foo { ... }`
     /// blocks whose file is the parent.
     pub file: Option<PathBuf>,
+    /// Absolute paths of files spliced into this module via `include!(...)`
+    /// (generated code — e.g. a build script's `OUT_DIR` output). The included
+    /// items live directly in this module (an `include!` is not a submodule), so
+    /// these files are *not* `Module::file` of any node; recording them here lets
+    /// the module-tree integrity check treat them as reached and the diagnostic
+    /// pipeline mark findings anchored in them as generated. Empty for the
+    /// overwhelmingly common no-`include!` module.
+    pub generated_files: Vec<PathBuf>,
     /// Crate names referenced inside rust-compiling code fences in this file's
     /// doc comments (`///` / `//!`). Populated only on the file-backed module
     /// (see [`module_tree::build_module_from_file`]); empty for inline
@@ -191,6 +199,13 @@ pub struct Crate {
     /// some other target. Useful for module-tree integrity analyses and
     /// for tools that scan source independently of the resolved tree.
     pub orphan_files: Vec<PathBuf>,
+    /// Absolute paths of files spliced into this crate via `include!(...)`
+    /// (generated code), unioned across every target's module tree (each
+    /// module records its own in [`Module::generated_files`]). Consumers treat
+    /// these files as generated: reachable for module-tree integrity, and
+    /// exempt from findings anchored within them. Empty for crates with no
+    /// resolved `include!`.
+    pub generated_files: Vec<PathBuf>,
     /// Cargo `[features]` declared in this crate's `Cargo.toml`. Includes
     /// `default` if defined. Activation lists are not retained — only the
     /// set of feature names.

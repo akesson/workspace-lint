@@ -20,7 +20,7 @@ use config::MacrosConfig;
 use diagnostic::Diagnostic;
 use diagnostic::render::{Format, render};
 use lints::{LintContext, LintId};
-use syn_workspace::Workspace;
+use syn_workspace::{LoadOptions, Workspace};
 
 fn main() {
     let cli = Cli::parse();
@@ -44,7 +44,7 @@ fn main() {
             {
                 expand::run(ec);
             }
-            let (mut diagnostics, workspace) = run_all(&config);
+            let (mut diagnostics, workspace) = run_all(&config, !cli.no_build_env);
             // Config-validation findings join the stream before suppression
             // (so a `# workspace-lint: allow(config)` directive can silence
             // them) and before leveling (so `[lints] config = …` applies).
@@ -56,6 +56,10 @@ fn main() {
             if let Some(ws) = workspace.as_ref() {
                 diagnostics.extend(config::audit_crate_membership(&config, ws));
             }
+            // Generated (`include!`d) code participates in analysis but is not a
+            // place users can act on; drop findings anchored in it before
+            // suppression so they never consume an `expect!` or skew stale-expect.
+            drop_generated_anchored(workspace.as_ref(), &mut diagnostics);
             // Suppression filters by directives and appends `stale-expect` /
             // `unknown-lint` findings; leveling runs last so the appended ones
             // are leveled too and `allow`-ed lints are dropped from the final
@@ -88,7 +92,8 @@ fn main() {
             // config file exists, so `workspace-lint check file-size` and the
             // default run agree on severity.
             let config_for_levels = config::try_load();
-            let (mut diagnostics, workspace) = run_single_check(rule);
+            let (mut diagnostics, workspace) = run_single_check(rule, !cli.no_build_env);
+            drop_generated_anchored(workspace.as_ref(), &mut diagnostics);
             apply_suppression(workspace.as_ref(), &mut diagnostics);
             if let Some(cfg) = &config_for_levels {
                 apply_lint_levels(cfg, workspace.as_ref(), &mut diagnostics);
@@ -251,6 +256,31 @@ fn parse_format(arg: Option<&str>) -> Format {
 /// itself stores only file *paths*, not ASTs — it re-parses on demand to stay
 /// `Send + Sync`). Without one (e.g. for lint subcommands that don't load a
 /// workspace), we fall back to the per-file on-demand parse path.
+/// Drop every diagnostic anchored inside a file that was spliced into the model
+/// via `include!(...)` (generated code). Generated code *participates* in
+/// analysis — its references count, so it clears `unused-deps` / `unused-pub` /
+/// `module-tree` false positives — but it is not a place a user can act on, so a
+/// finding *on* it (a generated `pub fn` reported unused, a long generated file,
+/// …) is noise. Runs **before** [`apply_suppression`] so a generated finding
+/// never consumes an `expect!` directive or pollutes the `stale-expect` tally.
+/// File comparison is path-base-insensitive ([`diagnostic::SilenceAnchor::same_file`])
+/// because generated paths are absolute while many lints anchor workspace-relative.
+fn drop_generated_anchored(workspace: Option<&Workspace>, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(ws) = workspace else {
+        return;
+    };
+    let generated: Vec<&std::path::Path> = ws.generated_files().collect();
+    if generated.is_empty() {
+        return;
+    }
+    diagnostics.retain(|d| match d.silence_anchor.file() {
+        Some(file) => !generated
+            .iter()
+            .any(|g| diagnostic::SilenceAnchor::same_file(file, g)),
+        None => true,
+    });
+}
+
 fn apply_suppression(
     workspace: Option<&syn_workspace::Workspace>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -271,7 +301,10 @@ fn apply_suppression(
     diagnostics.extend(unknown);
 }
 
-fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<Workspace>) {
+fn run_all(
+    config: &config::Config,
+    harvest_build_env: bool,
+) -> (Vec<Diagnostic>, Option<Workspace>) {
     let registry = lints::registry(config);
     // A loaded workspace is needed when some enabled lint asks for it, or when
     // a per-crate `[crates.*]` tier is present — the latter so per-crate levels
@@ -279,7 +312,7 @@ fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<Workspace>) {
     // validated against the membership, even if no lint itself needs the resolver.
     let needs_ws =
         registry.iter().any(|l| l.requirements().needs_workspace) || !config.crates.is_empty();
-    let workspace = needs_ws.then(|| load_workspace(config.macros.as_ref()));
+    let workspace = needs_ws.then(|| load_workspace(config.macros.as_ref(), harvest_build_env));
     let cx = LintContext {
         workspace: workspace.as_ref(),
     };
@@ -287,12 +320,15 @@ fn run_all(config: &config::Config) -> (Vec<Diagnostic>, Option<Workspace>) {
     (diagnostics, workspace)
 }
 
-fn run_single_check(rule: CheckRule) -> (Vec<Diagnostic>, Option<Workspace>) {
+fn run_single_check(
+    rule: CheckRule,
+    harvest_build_env: bool,
+) -> (Vec<Diagnostic>, Option<Workspace>) {
     let lint = rule.into_lint();
     let workspace = lint
         .requirements()
         .needs_workspace
-        .then(|| load_workspace(None));
+        .then(|| load_workspace(None, harvest_build_env));
     let cx = LintContext {
         workspace: workspace.as_ref(),
     };
@@ -304,8 +340,12 @@ fn run_single_check(rule: CheckRule) -> (Vec<Diagnostic>, Option<Workspace>) {
 /// `Vec::new()` would mask a broken state in CI. Non-fatal load warnings
 /// (auxiliary targets that failed to parse) are surfaced to stderr —
 /// `Workspace` no longer prints them itself.
-fn load_workspace(macros: Option<&MacrosConfig>) -> Workspace {
-    let mut ws = Workspace::load(".").unwrap_or_else(|e| {
+fn load_workspace(macros: Option<&MacrosConfig>, harvest_build_env: bool) -> Workspace {
+    let opts = LoadOptions {
+        harvest_build_env,
+        ..LoadOptions::default()
+    };
+    let mut ws = Workspace::load_with_options(".", opts).unwrap_or_else(|e| {
         util::fail(format!(
             "failed to load workspace for resolver-backed lints: {e}"
         ))

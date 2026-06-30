@@ -104,6 +104,14 @@ pub enum LoadWarning {
         /// Stringified error from the parse attempt.
         message: String,
     },
+    /// The optional `cargo check` pass that harvests build-script env (so
+    /// `include!(concat!(env!("OUT_DIR"), …))` can resolve) failed. Non-fatal:
+    /// the load proceeds with Tier-1 (literal / `CARGO_*`) include resolution
+    /// only. Only ever produced when build-env harvesting is enabled.
+    BuildEnvHarvestFailed {
+        /// Stringified cause (cargo missing, non-zero exit, …).
+        message: String,
+    },
 }
 
 impl std::fmt::Display for LoadWarning {
@@ -118,6 +126,9 @@ impl std::fmt::Display for LoadWarning {
                 "skipping target {target} ({}): {message}",
                 path.display()
             ),
+            Self::BuildEnvHarvestFailed { message } => {
+                write!(f, "build-script env harvest failed: {message}")
+            }
         }
     }
 }
@@ -138,12 +149,22 @@ pub struct LoadOptions {
     /// Default: `["workspace_syn", "syn_workspace_marker"]` — kept
     /// backward-compatible with the original hardcoded list.
     pub marker_crates: Vec<String>,
+    /// When `true`, run a scoped `cargo check` to harvest each `build.rs` ∩
+    /// `include!` crate's build-script environment (`OUT_DIR` + custom
+    /// `cargo::rustc-env=` exports) so `include!(concat!(env!("OUT_DIR"), …))`
+    /// generated code can be spliced into the model. **Off by default** — this
+    /// is the only path that spawns a build subprocess, so the offline default
+    /// stays subprocess-light (`include!` of literal / `CARGO_*` paths still
+    /// resolves either way). A harvest failure degrades gracefully to a
+    /// [`LoadWarning::BuildEnvHarvestFailed`]; it never fails the load.
+    pub harvest_build_env: bool,
 }
 
 impl Default for LoadOptions {
     fn default() -> Self {
         Self {
             marker_crates: vec!["workspace_syn".into(), "syn_workspace_marker".into()],
+            harvest_build_env: false,
         }
     }
 }

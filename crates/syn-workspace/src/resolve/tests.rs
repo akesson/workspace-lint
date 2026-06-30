@@ -31,6 +31,7 @@ fn module(name: &str, krate: &str, items: Vec<Item>, submodules: Vec<Module>) ->
         fact_references: Vec::new(),
         fact_provenance: Vec::new(),
         file: None,
+        generated_files: Vec::new(),
         doctest_crate_refs: std::collections::HashSet::new(),
     }
 }
@@ -75,6 +76,7 @@ fn crate_pub_items_filters_visibility() {
         is_workspace_member: true,
         targets: vec![lib_target],
         orphan_files: Vec::new(),
+        generated_files: Vec::new(),
         declared_features: Vec::new(),
         feature_values: std::collections::BTreeMap::new(),
         manifest: crate::manifest::Manifest::empty(),

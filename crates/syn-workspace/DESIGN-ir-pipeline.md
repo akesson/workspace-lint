@@ -459,7 +459,8 @@ limits, by design:
   structural non-goal: transitive architecture violations (need a call-graph /
   type-signature tier), `pub` methods in `impl` blocks (an item-enumeration gap; no
   lint can consume the def anyway, since method *calls* are `x.method()` receiver
-  syntax that needs type inference), `#[cfg_attr]` / `include!` path resolution,
+  syntax that needs type inference), `#[cfg_attr]` path resolution (`include!` is
+  now followed — see `module_tree::include_resolve`),
   external-crate glob exports (need rustdoc JSON), block doc comments (`/** … */`),
   trait dispatch via `dyn`/generics, and `#[derive(...)]`-driven uses.
 

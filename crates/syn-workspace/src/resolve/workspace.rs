@@ -108,7 +108,7 @@ impl Workspace {
     pub fn load_with_options(root: impl AsRef<Path>, opts: LoadOptions) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         let (root_manifest, crates, warnings) =
-            crate::walk::load_members(&root, &opts.marker_crates)?;
+            crate::walk::load_members(&root, &opts.marker_crates, opts.harvest_build_env)?;
         let re_exports = re_export::ReExportIndex::build(&crates);
         let mut macro_refs_by_crate: std::collections::HashMap<
             String,

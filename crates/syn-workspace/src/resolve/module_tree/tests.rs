@@ -18,6 +18,51 @@ fn flat_lib_collects_top_level_items() {
 }
 
 #[test]
+fn include_macro_splices_generated_items_and_marks_file() {
+    // A literal `include!("generated.rs")` (Tier 1 — no build script needed):
+    // the generated file's items must land in the including module's scope, and
+    // the file must be recorded as generated.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "include!(\"generated.rs\");\npub fn uses_gen() { helper(); }\n",
+    )
+    .unwrap();
+    // The generated code references an external crate by a multi-segment path —
+    // the kind of reference unused-deps relies on seeing.
+    std::fs::write(
+        src.join("generated.rs"),
+        "pub fn helper() { external_dep::do_thing(); }\n",
+    )
+    .unwrap();
+
+    let root = build_crate_tree(dir.path(), "demo").expect("build");
+
+    let names: Vec<_> = root.items.iter().map(|i| i.name.as_str()).collect();
+    assert!(
+        names.contains(&"helper"),
+        "spliced generated item missing from {names:?}"
+    );
+    assert!(names.contains(&"uses_gen"), "{names:?}");
+    assert!(
+        root.generated_files
+            .iter()
+            .any(|p| p.ends_with("generated.rs")),
+        "generated.rs not recorded: {:?}",
+        root.generated_files
+    );
+    // The generated code's outgoing reference is folded into the model, so a dep
+    // used only from generated code is visible (no unused-deps false positive).
+    let refs: Vec<String> = root.references().map(|p| p.segments().join("::")).collect();
+    assert!(
+        refs.iter().any(|r| r.starts_with("external_dep")),
+        "expected the generated file's external_dep reference, got {refs:?}"
+    );
+}
+
+#[test]
 fn mod_decl_walks_to_adjacent_file() {
     let root = build_crate_tree(&manifest_dir("nested_modules"), "nested_modules").expect("build");
     let sub = root
@@ -58,6 +103,7 @@ fn target_root_resolves_sibling_submodule() {
         ResolvedPath::new(["it".to_string()]),
         Visibility::Public,
         &default_markers(),
+        IncludeCtx::none(),
     )
     .expect("build target root");
     let common = root
@@ -339,6 +385,7 @@ fn tier_h_assertions_record_local_fact_references() {
         &default_markers(),
         false,
         Vec::new(),
+        IncludeCtx::none(),
     )
     .expect("collect");
 
@@ -405,6 +452,7 @@ fn collect_refs(src: &str, crate_name: &str) -> Vec<String> {
         &markers,
         false,
         Vec::new(),
+        IncludeCtx::none(),
     )
     .expect("collect");
     let out: std::collections::BTreeSet<String> = contents
@@ -432,6 +480,7 @@ fn macro_call_names(src: &str) -> Vec<String> {
         &markers,
         false,
         Vec::new(),
+        IncludeCtx::none(),
     )
     .expect("collect");
     contents
@@ -600,6 +649,7 @@ fn occurrence_segments(src: &str, origin: Origin) -> Vec<String> {
         &markers,
         false,
         Vec::new(),
+        IncludeCtx::none(),
     )
     .expect("collect");
     contents
