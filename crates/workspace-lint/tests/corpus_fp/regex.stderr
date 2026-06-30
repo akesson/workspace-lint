@@ -7,7 +7,7 @@ warning: 1 possibly unused dependency in Cargo.toml
   = note: if the build breaks, add the dep to [unused-deps] ignore in your config
 help: remove unused dependency `quickcheck`
   |
-208 - …
+208 - quickcheck = { version = "1.0.3", default-features = false }
   |
 help: if intentional, silence with:
   |
@@ -22,7 +22,7 @@ warning: pub const `BY_NAME` in crate `regex_syntax` appears unused — consider
   = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |
-9 - <existing>
+9 - pub
 9 + pub(crate)
   |
 help: if intentional, silence with:
@@ -35,16 +35,10 @@ warning: pub const `BY_NAME` in crate `regex_syntax` appears unused — consider
  --> <TMP>/regex-syntax/src/unicode_tables/perl_space.rs:9:1
   |
   = help: remove the item or its `pub` visibility
-  = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |
-9 - <existing>
+9 - pub
 9 + pub(crate)
   |
-help: if intentional, silence with:
-  |
-9 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[warn(workspace_lint::unused_pub)]` on by default
 
 workspace-lint: generated 3 warnings (run `workspace-lint --fix` to apply 1 suggestion)

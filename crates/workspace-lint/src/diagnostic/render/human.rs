@@ -19,21 +19,48 @@
 //! Followed by a final summary line: `warning: workspace-lint generated N
 //! warnings`.
 
+use std::collections::HashSet;
 use std::io::{self, Write};
 
 use super::display_path;
 use crate::diagnostic::{Diagnostic, Level, SilenceAnchor};
 
+/// Run-scoped dedup so a lint's explanatory boilerplate prints once instead of
+/// once per finding. The `= help:` lines and per-finding suggestions are real,
+/// per-finding signal and are never deduped; only the repeated `= note:`
+/// caveats and the "if intentional, silence with:" trailer collapse.
+#[derive(Default)]
+struct RenderState {
+    /// `(lint id, note text)` already emitted — a given caveat shows once per
+    /// lint, but a genuinely different note still prints.
+    seen_notes: HashSet<(String, String)>,
+    /// Lint ids whose silence hint + `on by default` trailer were already shown.
+    seen_silence: HashSet<String>,
+}
+
 pub(crate) fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
+    let mut state = RenderState::default();
     for d in diagnostics {
-        write_one(d, out)?;
+        write_one_stateful(d, &mut state, out)?;
         writeln!(out)?;
     }
     write_summary(diagnostics, out)?;
     Ok(())
 }
 
+/// Render a single diagnostic in isolation (no cross-diagnostic dedup). Used by
+/// the message-surface snapshots and unit tests; the multi-diagnostic path goes
+/// through [`write`], which shares one [`RenderState`] across the run.
+#[cfg(test)]
 pub(crate) fn write_one(d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
+    write_one_stateful(d, &mut RenderState::default(), out)
+}
+
+fn write_one_stateful(
+    d: &Diagnostic,
+    state: &mut RenderState,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     writeln!(out, "{}: {}", d.level.as_str(), d.message)?;
 
     if let Some(loc) = location_line(d) {
@@ -44,15 +71,20 @@ pub(crate) fn write_one(d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
     for help in &d.helps {
         writeln!(out, "  = help: {help}")?;
     }
+    let lint_id = d.lint.to_string();
     for note in &d.notes {
-        writeln!(out, "  = note: {note}")?;
+        if state.seen_notes.insert((lint_id.clone(), note.clone())) {
+            writeln!(out, "  = note: {note}")?;
+        }
     }
 
     for suggestion in &d.suggestions {
         write_suggestion_block(suggestion, out)?;
     }
 
-    if let Some(silence) = d.silence_suggestion() {
+    if let Some(silence) = d.silence_suggestion()
+        && state.seen_silence.insert(lint_id)
+    {
         write_suggestion_block(&silence, out)?;
         writeln!(
             out,
@@ -93,22 +125,39 @@ fn write_suggestion_block(
     writeln!(out, "help: {}", s.message)?;
     writeln!(out, "  |")?;
     if s.replacement.is_empty() {
-        // Pure deletion — show old line as -, nothing as +
-        writeln!(out, "{} - …", s.span.line_start)?;
+        // Pure deletion — show old line(s) as -, nothing as +
+        write_removed(s, out)?;
     } else if s.span.byte_start == s.span.byte_end {
         // Pure insertion — show inserted text only with `+`
         for line in s.replacement.lines() {
             writeln!(out, "{} + {line}", s.span.line_start)?;
         }
     } else {
-        // Replacement — old line shown as -, new as +
-        writeln!(out, "{} - <existing>", s.span.line_start)?;
+        // Replacement — old line(s) shown as -, new as +
+        write_removed(s, out)?;
         for line in s.replacement.lines() {
             writeln!(out, "{} + {line}", s.span.line_start)?;
         }
     }
     writeln!(out, "  |")?;
     Ok(())
+}
+
+/// Emit the `-` side of a deletion/replacement diff. With the captured source
+/// text (`s.original`) this is the real line — clippy-style. A single-line span
+/// prints in full; a multi-line span prints its first line plus a `…`
+/// continuation so a large item (e.g. an `unused-pub` deletion) doesn't dump
+/// dozens of lines. Without captured text we fall back to a bare `…`.
+fn write_removed(s: &crate::diagnostic::Suggestion, out: &mut dyn Write) -> io::Result<()> {
+    match s.original.as_deref() {
+        Some(text) if !text.contains('\n') => writeln!(out, "{} - {text}", s.span.line_start),
+        Some(text) => {
+            let first = text.lines().next().unwrap_or_default();
+            writeln!(out, "{} - {first}", s.span.line_start)?;
+            writeln!(out, "  …")
+        }
+        None => writeln!(out, "{} - …", s.span.line_start),
+    }
 }
 
 fn format_attr_lint(ident: &str) -> String {

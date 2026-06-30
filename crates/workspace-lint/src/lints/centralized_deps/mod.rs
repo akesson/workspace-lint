@@ -158,6 +158,7 @@ fn build_rewrite_suggestion(
         message: format!("use {{ workspace = true }} for `{dep_name}`"),
         replacement,
         applicability,
+        original: Some(original.to_string()),
         evidence: None,
     })
 }

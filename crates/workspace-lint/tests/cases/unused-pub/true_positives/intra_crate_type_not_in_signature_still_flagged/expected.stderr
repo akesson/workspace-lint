@@ -5,7 +5,7 @@ error: pub struct `BodyOnly` in crate `alpha` is only used inside the crate
   = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |
-8 - <existing>
+8 - pub
 8 + pub(crate)
   |
 help: if intentional, silence with:

@@ -50,6 +50,7 @@ pub(crate) fn build_expect_insert(
         message: format!("write `expect({lint})` (rust-analyzer disproved this finding)"),
         replacement,
         applicability: Applicability::MachineApplicable,
+        original: None,
         evidence: None,
     })
 }

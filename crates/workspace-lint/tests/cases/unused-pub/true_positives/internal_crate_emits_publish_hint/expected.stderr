@@ -16,13 +16,8 @@ error: pub fn `unused_one` in crate `alpha` appears unused — consider removing
   = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
 help: tighten to `pub(crate)`
   |
-3 - <existing>
+3 - pub
 3 + pub(crate)
   |
-help: if intentional, silence with:
-  |
-3 + workspace_lint::expect!(unused_pub);
-  |
-  = note: `#[deny(workspace_lint::unused_pub)]` on by default
 
 workspace-lint: generated 2 errors

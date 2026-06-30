@@ -4,7 +4,7 @@ error: 1 dependency in crates/alpha/Cargo.toml should use `workspace = true`
   = help: [dependencies] serde: has own version "1.0.200" — use { workspace = true } instead
 help: use { workspace = true } for `serde`
   |
-12 - <existing>
+12 - serde = "1.0.200"
 12 + serde = { workspace = true }
   |
 help: if intentional, silence with:
