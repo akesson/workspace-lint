@@ -263,22 +263,63 @@ fn parse_format(arg: Option<&str>) -> Format {
 /// finding *on* it (a generated `pub fn` reported unused, a long generated file,
 /// …) is noise. Runs **before** [`apply_suppression`] so a generated finding
 /// never consumes an `expect!` directive or pollutes the `stale-expect` tally.
-/// File comparison is path-base-insensitive ([`diagnostic::SilenceAnchor::same_file`])
-/// because generated paths are absolute while many lints anchor workspace-relative.
+///
+/// Generated paths are absolute; lints anchor workspace-relative. We normalize
+/// each generated path to that same workspace-relative form via
+/// [`Workspace::crate_relative_path`] (which also reconciles `/var`↔`/private/var`
+/// and Windows UNC prefixes) and match anchors by **exact** path equality. A loose
+/// suffix match would let a generated `crates/a/src/x.rs` drop a real finding on a
+/// *different* crate's handwritten `crates/b/src/x.rs` (or a bare `src/x.rs`).
 fn drop_generated_anchored(workspace: Option<&Workspace>, diagnostics: &mut Vec<Diagnostic>) {
-    let Some(ws) = workspace else {
-        return;
+    // Reuse an already-loaded workspace; otherwise load one just to learn the
+    // generated-file set, so structural-only runs (`check file-size`, or a config
+    // with no resolver lint — which don't otherwise load a workspace) still drop
+    // findings on checked-in (`include!`d) generated files. That lazy load is
+    // offline (no build-script harvest: only Tier-1 *checked-in* generated files
+    // can be flagged by such lints, since `OUT_DIR` output lives under `target/`
+    // and is never globbed) and non-fatal (a non-cargo directory degrades to no
+    // drop rather than failing the run). It feeds the drop only — suppression and
+    // leveling keep their workspace-free behavior on these runs.
+    let lazily_loaded;
+    let ws = match workspace {
+        Some(ws) => ws,
+        None => match try_load_workspace_for_drop() {
+            Some(w) => {
+                lazily_loaded = w;
+                &lazily_loaded
+            }
+            None => return,
+        },
     };
-    let generated: Vec<&std::path::Path> = ws.generated_files().collect();
+    let generated: std::collections::HashSet<std::path::PathBuf> = ws
+        .generated_files()
+        .map(|g| ws.crate_relative_path(g))
+        .collect();
     if generated.is_empty() {
         return;
     }
+    // Normalize the anchor with the *same* `crate_relative_path` so both sides are
+    // workspace-relative before the equality test — anchors arrive both relative
+    // and absolute across lints, and this also reconciles `/var`↔`/private/var`.
     diagnostics.retain(|d| match d.silence_anchor.file() {
-        Some(file) => !generated
-            .iter()
-            .any(|g| diagnostic::SilenceAnchor::same_file(file, g)),
+        Some(file) => !generated.contains(&ws.crate_relative_path(file)),
         None => true,
     });
+}
+
+/// Best-effort offline workspace load used only to populate the generated-file
+/// set for [`drop_generated_anchored`] when no lint otherwise loaded a workspace.
+/// Offline (no build-script harvest — only checked-in generated files are
+/// reachable by the structural lints this serves) and non-fatal: a directory that
+/// isn't a loadable cargo workspace yields `None`, so a structural-only run like
+/// `check file-size` still works outside a workspace. Resolver load warnings are
+/// dropped here — the user didn't invoke resolver-backed analysis.
+fn try_load_workspace_for_drop() -> Option<Workspace> {
+    let opts = LoadOptions {
+        harvest_build_env: false,
+        ..LoadOptions::default()
+    };
+    Workspace::load_with_options(".", opts).ok()
 }
 
 fn apply_suppression(

@@ -45,7 +45,6 @@ use super::{
     BrokenModDecl, Item, ItemKind, Module, Occurrence, Origin, ResolvedPath, Result,
     SignatureExposure, SourceSpan, Visibility,
 };
-use crate::macros::autodetect::extract_macro_paths;
 use crate::plugins;
 
 pub(crate) mod include_resolve;
@@ -60,7 +59,7 @@ mod uses;
 
 pub(crate) use include_resolve::IncludeCtx;
 use nested_macro::NestedMacroLowering;
-use splice::{AmbientScope, read_parse_seed};
+use splice::{AmbientScope, apply_lowered, read_parse_seed, resolve_include_site, splice_includes};
 
 // Occurrence helper consumed outside this directory (`macros::autodetect`).
 pub(crate) use occurrences::consume_path_run;
@@ -70,13 +69,14 @@ pub(crate) use occurrences::consume_path_run;
 use items::{decl_ident, extract_cfg_feature_names, item_attrs, item_from_syn, sibling_name};
 use occurrences::{extract_code_paths, resolve_occurrences_in_place, use_tree_has_glob};
 use signature::collect_signature_exposures;
-use uses::{
-    function_local_use_bindings, pub_glob_reexport_targets, rewrite_sibling_local, scope_from,
-};
+use uses::{function_local_use_bindings, pub_glob_reexport_targets, scope_from};
 
 /// Items, submodules, `use` bindings, broken `mod` declarations,
 /// `#[cfg(feature = "...")]` references, and all resolved reference
-/// occurrences collected while walking a module.
+/// occurrences collected while walking a module. The `include!` splice helpers
+/// in the child [`splice`] module merge into these fields (descendant modules can
+/// reach private fields), see [`ModuleContents::absorb`].
+#[derive(Default)]
 struct ModuleContents {
     items: Vec<Item>,
     submodules: Vec<Module>,
@@ -304,9 +304,6 @@ fn collect_module_contents(
     // file is then resolved against this module's combined scope (see the splice
     // loop) so its references to handwritten siblings / parent imports resolve.
     let mut include_sites: Vec<PathBuf> = Vec::new();
-    // Generated files spliced into this module (the `include_sites` that resolved,
-    // plus any nested includes inside them). Bubbled onto `Module::generated_files`.
-    let mut generated_files: Vec<PathBuf> = Vec::new();
 
     // Built once and reused for item-position macro dispatch, the fn-body
     // dispatch, the code-path claim guard, and the per-item local-occurrence /
@@ -336,11 +333,13 @@ fn collect_module_contents(
         }
 
         if let syn::Item::Use(item_use) = syn_item {
-            let mut bindings = use_tree::bindings_from_use(item_use, &scope, parent_file);
-            for binding in &mut bindings {
-                rewrite_sibling_local(binding, parent_canonical, &sibling_names);
-            }
-            use_bindings.extend(bindings);
+            use_bindings.extend(uses::module_use_bindings(
+                item_use,
+                &scope,
+                parent_file,
+                parent_canonical,
+                &sibling_names,
+            ));
         }
 
         if let syn::Item::Macro(item_macro) = syn_item {
@@ -365,36 +364,18 @@ fn collect_module_contents(
                 let cx = plugins::LowerCtx {
                     macro_span: mac_span,
                 };
-                match plugin.lower_macro(&site, &cx) {
-                    plugins::Lowered::TokenScan => {
-                        extract_macro_paths(
-                            item_macro.mac.tokens.clone(),
-                            parent_file,
-                            &mut occurrences,
-                        );
-                    }
-                    plugins::Lowered::Exact(occs) => occurrences.extend(occs),
-                    plugins::Lowered::ScanPlus(occs) => {
-                        extract_macro_paths(
-                            item_macro.mac.tokens.clone(),
-                            parent_file,
-                            &mut occurrences,
-                        );
-                        occurrences.extend(occs);
-                    }
-                }
-            } else if include_resolve::macro_is(&item_macro.mac.path, "include") {
-                // No plugin claims `include!` — resolve its argument to a real
-                // file and queue it for splicing after Phase B (a relative path
-                // is resolved against the directory of the including file). An
-                // argument we can't const-fold to an existing path is left
-                // un-spliced, exactly as before this feature existed.
-                let base_dir = parent_file.parent().unwrap_or(Path::new("."));
-                if let Some(path) =
-                    include_resolve::resolve_include_path(&item_macro.mac, base_dir, inc.env)
-                {
-                    include_sites.push(path);
-                }
+                apply_lowered(
+                    plugin.lower_macro(&site, &cx),
+                    &item_macro.mac.tokens,
+                    parent_file,
+                    &mut occurrences,
+                );
+            } else if let Some(path) = resolve_include_site(item_macro, parent_file, inc) {
+                // No plugin claims `include!` — queue the resolved generated file
+                // for splicing after Phase B. An argument we can't const-fold to
+                // an existing path yields `None` and is left un-spliced, exactly
+                // as before this feature existed.
+                include_sites.push(path);
             }
         } else if !matches!(syn_item, syn::Item::Use(_) | syn::Item::Mod(_)) {
             // Dispatch `rsx!`-style macros nested *inside* this item (fn bodies,
@@ -658,69 +639,15 @@ fn collect_module_contents(
         parent_canonical,
         file: parent_file,
     };
-    let (mut signature_exposures, mut fact_references, mut fact_provenance) =
+    let (signature_exposures, fact_references, fact_provenance) =
         collect_local_facts(syn_items, &resolver_plugins, &local_ctx);
 
-    // Splice every resolved `include!`d file into this module. Done last — after
-    // this module's own Phase-B resolution — so each generated file is resolved
-    // (recursively) and merged whole, rather than having its already-resolved
-    // occurrences re-run through this module's resolve pass. Crucially the generated
-    // file resolves against the *combined* scope (this module's siblings + imports,
-    // passed as `ambient`), because an `include!` pastes into this module's lexical
-    // scope — so a reference from generated code to a handwritten sibling or a
-    // parent import resolves instead of leaking as an `unused-*` false positive.
-    // The included items belong to *this* module (an `include!` is not a submodule),
-    // so they share `mod_dir`/`parent_canonical`; `parent_file` is the generated
-    // file itself, so every spliced span is stamped with it — the key the diagnostic
-    // pipeline uses to recognize generated code. Best-effort: an unreadable/
-    // unparseable generated file is skipped rather than failing the load. The depth
-    // check is hoisted: at the cap (a cyclic include) the whole module's splicing is
-    // skipped, leaving `generated_files` empty — the pre-feature behavior.
-    if !include_sites.is_empty()
-        && let Some(deeper) = inc.deeper()
-    {
-        // Owned snapshot of this module's resolution scope handed to each spliced
-        // file: independent of `use_bindings` so the loop below can keep extending
-        // it. `siblings` is this module's combined set (not mutated by the loop).
-        let ambient_bindings: Vec<UseBinding> = resolution_bindings.into_owned();
-        let child_ambient = AmbientScope {
-            siblings: &sibling_names,
-            use_bindings: &ambient_bindings,
-            glob: has_glob_import,
-        };
-        for included_path in include_sites {
-            let Ok((_, parsed, seed)) = read_parse_seed(&included_path) else {
-                continue;
-            };
-            let Ok(spliced) = collect_module_contents(
-                &parsed.items,
-                &included_path,
-                mod_dir,
-                parent_canonical,
-                marker_crates,
-                in_inline,
-                seed,
-                deeper,
-                child_ambient,
-            ) else {
-                continue;
-            };
-            items.extend(spliced.items);
-            submodules.extend(spliced.submodules);
-            use_bindings.extend(spliced.use_bindings);
-            broken_mod_decls.extend(spliced.broken_mod_decls);
-            cfg_features.extend(spliced.cfg_features);
-            occurrences.extend(spliced.occurrences);
-            glob_reexports.extend(spliced.glob_reexports);
-            signature_exposures.extend(spliced.signature_exposures);
-            fact_references.extend(spliced.fact_references);
-            fact_provenance.extend(spliced.fact_provenance);
-            generated_files.push(included_path);
-            generated_files.extend(spliced.generated_files);
-        }
-    }
+    // Owned snapshot of this module's resolution scope (its own bindings plus any
+    // inherited ambient ones), taken before `use_bindings` is moved into
+    // `contents` so each spliced file can resolve against the including scope.
+    let ambient_bindings: Vec<UseBinding> = resolution_bindings.into_owned();
 
-    Ok(ModuleContents {
+    let mut contents = ModuleContents {
         items,
         submodules,
         use_bindings,
@@ -731,8 +658,27 @@ fn collect_module_contents(
         signature_exposures,
         fact_references,
         fact_provenance,
-        generated_files,
-    })
+        generated_files: Vec::new(),
+    };
+
+    // Splice every resolved `include!`d file into this module (see
+    // `splice_includes`). Done last — after this module's own Phase-B resolution
+    // — so the included files merge in through the single `absorb` point.
+    if let Some(spliced) = splice_includes(
+        include_sites,
+        inc,
+        in_inline,
+        mod_dir,
+        parent_canonical,
+        marker_crates,
+        &sibling_names,
+        ambient_bindings,
+        has_glob_import,
+    ) {
+        contents.absorb(spliced);
+    }
+
+    Ok(contents)
 }
 
 /// Run the AST-aware signature-exposure walk and the per-item `local_facts` plugins

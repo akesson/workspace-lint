@@ -13,50 +13,76 @@
 //! is the pre-existing behavior — so an unresolvable include can only ever fail
 //! to *improve* on today, never regress it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use syn::punctuated::Punctuated;
 
-/// Hard cap on `include!` nesting depth. Real generated code nests one or two
-/// levels at most; the cap only exists so a (compile-invalid) cyclic
-/// `include!` can't drive the resolver into unbounded recursion.
+/// Hard cap on `include!` nesting depth. With the [`IncludeCtx::ancestry`] cycle
+/// set this is only a secondary backstop; it still bounds pathologically deep
+/// (but acyclic) generated include chains.
 pub(crate) const MAX_INCLUDE_DEPTH: usize = 64;
 
 /// Context threaded through the module-tree walk for `include!` resolution: the
 /// environment used to fold `env!(...)` (seeded with `CARGO_*` vars, optionally
-/// overlaid with a crate's harvested build-script env) and the current include
-/// nesting depth (the cycle backstop). `Copy` so it threads through the walk's
-/// recursion without ceremony.
+/// overlaid with a crate's harvested build-script env), the current include
+/// nesting depth, and the set of `include!`d files already on the current chain.
+/// `Copy` so it threads through the walk's recursion without ceremony.
 #[derive(Clone, Copy)]
 pub(crate) struct IncludeCtx<'a> {
     pub env: &'a HashMap<String, String>,
     pub depth: usize,
+    /// Canonicalized paths of the `include!`d files on the current include chain
+    /// (the ancestors of the file being walked). A path already in this set is
+    /// skipped rather than re-spliced, which breaks cyclic and *fan-out* cyclic
+    /// includes (the depth cap alone bounds depth but not the exponential
+    /// re-splicing a branching cycle would otherwise cause). Chain-scoped, not
+    /// global: two unrelated modules may each legitimately include the same
+    /// generated file.
+    pub ancestry: &'a HashSet<PathBuf>,
+}
+
+/// The empty `include!` ancestry, shared by every chain root (no ancestors yet).
+static EMPTY_ANCESTRY: std::sync::LazyLock<HashSet<PathBuf>> =
+    std::sync::LazyLock::new(HashSet::new);
+
+impl<'a> IncludeCtx<'a> {
+    /// A root context for a crate walk: the given `CARGO_*`-seeded env, zero
+    /// depth, and an empty include ancestry. Production loads build the env in
+    /// `walk.rs` and call this.
+    pub(crate) fn root(env: &'a HashMap<String, String>) -> Self {
+        IncludeCtx {
+            env,
+            depth: 0,
+            ancestry: &EMPTY_ANCESTRY,
+        }
+    }
+
+    /// The context for descending into an `include!`d file, with `child_ancestry`
+    /// = this chain plus the included file's canonical path. Returns `None` at
+    /// [`MAX_INCLUDE_DEPTH`]. The caller owns `child_ancestry` so the returned
+    /// borrow outlives the recursive walk into the included file.
+    pub(crate) fn descend<'b>(&self, child_ancestry: &'b HashSet<PathBuf>) -> Option<IncludeCtx<'b>>
+    where
+        'a: 'b,
+    {
+        (self.depth < MAX_INCLUDE_DEPTH).then_some(IncludeCtx {
+            env: self.env,
+            depth: self.depth + 1,
+            ancestry: child_ancestry,
+        })
+    }
 }
 
 #[cfg(test)]
 impl IncludeCtx<'static> {
-    /// A context with no environment and zero depth — used by tests and the
-    /// `#[cfg(test)]` `build_crate_tree` helper. Resolves only literal includes.
-    /// Production loads always build a real `CARGO_*`-seeded env in `walk.rs`.
+    /// A context with no environment, zero depth, and no ancestry — used by tests
+    /// and the `#[cfg(test)]` `build_crate_tree` helper. Resolves only literal
+    /// includes. Production loads use [`IncludeCtx::root`] with a real env.
     pub(crate) fn none() -> Self {
-        static EMPTY: std::sync::LazyLock<HashMap<String, String>> =
+        static EMPTY_ENV: std::sync::LazyLock<HashMap<String, String>> =
             std::sync::LazyLock::new(HashMap::new);
-        IncludeCtx {
-            env: &EMPTY,
-            depth: 0,
-        }
-    }
-}
-
-impl<'a> IncludeCtx<'a> {
-    /// The context one `include!` level deeper — used when recursing into an
-    /// included file. Returns `None` once [`MAX_INCLUDE_DEPTH`] is reached.
-    pub(crate) fn deeper(self) -> Option<Self> {
-        (self.depth < MAX_INCLUDE_DEPTH).then_some(IncludeCtx {
-            env: self.env,
-            depth: self.depth + 1,
-        })
+        IncludeCtx::root(&EMPTY_ENV)
     }
 }
 
@@ -297,7 +323,13 @@ mod tests {
         std::fs::write(&abs, "pub fn g() {}").unwrap();
         // A different base_dir must be ignored for an absolute include path.
         let other = tempfile::tempdir().unwrap();
-        let mac = include_macro(&format!(r#""{}""#, abs.display()));
+        // Build the macro from a `LitStr` *value*, not by formatting the path
+        // into source text: a Windows absolute path (`C:\…`) embedded in a string
+        // literal contains invalid Rust escapes and won't tokenize. Since
+        // `resolve_include_path` only reads `mac.tokens` (parsed as a `syn::Expr`),
+        // a macro whose tokens are a single `LitStr` is all this needs.
+        let lit = syn::LitStr::new(abs.to_str().unwrap(), proc_macro2::Span::call_site());
+        let mac: syn::Macro = syn::parse_quote!(include!(#lit));
         let got = resolve_include_path(&mac, other.path(), &env(&[]));
         assert_eq!(got.as_deref(), Some(abs.as_path()));
     }

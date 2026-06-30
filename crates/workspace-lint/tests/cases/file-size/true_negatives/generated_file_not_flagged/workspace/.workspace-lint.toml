@@ -1,0 +1,13 @@
+# Only file-size is enabled — a structural lint that does NOT load a workspace on
+# its own. `generated.rs` (8 code lines) exceeds the threshold, but it's pulled in
+# via `include!` (Tier-1, offline). The generated-code drop lazily loads a
+# workspace just to learn which files are generated, so the oversized generated
+# file is recognized and dropped rather than flagged. Without that lazy load the
+# generated file would surface a false file-size error (the gap this guards).
+[lints]
+default = "allow"
+file-size = "deny"
+
+[[file-size.rules]]
+glob = "**/*.rs"
+max-code-lines = 5

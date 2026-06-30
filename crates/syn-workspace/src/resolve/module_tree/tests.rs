@@ -100,6 +100,59 @@ fn include_macro_resolves_generated_refs_against_including_scope() {
 }
 
 #[test]
+fn fan_out_cyclic_includes_terminate() {
+    // A *fan-out* cycle: lib → a; a → {b, c}; b → a and c → a. The depth cap
+    // bounds nesting but not the exponential re-splicing a branching cycle would
+    // otherwise drive (≈2^32 walks before depth 64). The `IncludeCtx::ancestry`
+    // chain set breaks it: a file already on the chain is skipped, so the walk
+    // terminates and each file is spliced at most once per chain. Reaching the
+    // assertions at all is the real signal (without the guard this hangs).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "include!(\"a.rs\");\n").unwrap();
+    std::fs::write(
+        src.join("a.rs"),
+        "include!(\"b.rs\");\ninclude!(\"c.rs\");\npub fn a() {}\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("b.rs"), "include!(\"a.rs\");\npub fn b() {}\n").unwrap();
+    std::fs::write(src.join("c.rs"), "include!(\"a.rs\");\npub fn c() {}\n").unwrap();
+
+    let root = build_crate_tree(dir.path(), "demo").expect("build");
+
+    let names: Vec<_> = root.items.iter().map(|i| i.name.as_str()).collect();
+    for want in ["a", "b", "c"] {
+        assert!(names.contains(&want), "missing {want} in {names:?}");
+    }
+    // The cycle back-edge (b/c → a) is skipped, so each item appears once.
+    assert_eq!(names.iter().filter(|n| **n == "a").count(), 1, "{names:?}");
+}
+
+#[test]
+fn duplicate_include_in_one_module_splices_once() {
+    // `include!("g.rs")` twice in one module must splice `g` once (rustc would
+    // reject the duplicate definition); the within-module dedup guards it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "include!(\"g.rs\");\ninclude!(\"g.rs\");\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("g.rs"), "pub fn g() {}\n").unwrap();
+
+    let root = build_crate_tree(dir.path(), "demo").expect("build");
+
+    let g_count = root.items.iter().filter(|i| i.name == "g").count();
+    assert_eq!(
+        g_count, 1,
+        "duplicate include! should splice g once, got {g_count}"
+    );
+}
+
+#[test]
 fn mod_decl_walks_to_adjacent_file() {
     let root = build_crate_tree(&manifest_dir("nested_modules"), "nested_modules").expect("build");
     let sub = root

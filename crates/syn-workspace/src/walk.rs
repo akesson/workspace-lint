@@ -109,10 +109,7 @@ pub(crate) fn load_members(
                 include_env.insert(k.clone(), v.clone());
             }
         }
-        let inc = IncludeCtx {
-            env: &include_env,
-            depth: 0,
-        };
+        let inc = IncludeCtx::root(&include_env);
 
         let mut targets = Vec::new();
         for cargo_target in &pkg.targets {
@@ -255,19 +252,33 @@ fn harvest_build_script_env(
             return HashMap::new();
         }
     };
-    if !output.status.success() {
+
+    let map = parse_build_script_env(&output.stdout);
+
+    // Warn only when the harvest recovered *no* build-script env at all. A
+    // non-zero exit is the normal state when the crate currently doesn't compile,
+    // but its build script runs (and reports `OUT_DIR`) before the compile error
+    // — so a non-empty map means the harvest succeeded despite the failure, and a
+    // warning there would be a false alarm on a routine incremental edit.
+    if map.is_empty() && !output.status.success() {
         warnings.push(LoadWarning::BuildEnvHarvestFailed {
             message: format!(
                 "`cargo check` exited with {} while harvesting build-script env",
                 output.status
             ),
         });
-        // Fall through: a build-script-executed message that already arrived is
-        // still valid even if a later target's compile failed.
     }
+    map
+}
 
+/// Parse cargo's `--message-format=json` stream for `build-script-executed`
+/// messages, returning each package's build-script env (its `cargo::rustc-env=`
+/// exports plus the synthesized `OUT_DIR`) keyed by package id. Non-build-script
+/// messages and unparsable lines are skipped. Pure over the captured stdout, so
+/// the parse can be unit-tested without spawning `cargo`.
+fn parse_build_script_env(stdout: &[u8]) -> HashMap<PackageId, HashMap<String, String>> {
     let mut map: HashMap<PackageId, HashMap<String, String>> = HashMap::new();
-    for message in Message::parse_stream(output.stdout.as_slice()) {
+    for message in Message::parse_stream(stdout) {
         let Ok(Message::BuildScriptExecuted(bs)) = message else {
             continue;
         };
@@ -417,4 +428,54 @@ fn rs_files_under(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_build_script_env_extracts_out_dir_and_rustc_env() {
+        // A realistic message stream: a non-JSON line and a non-build-script
+        // message (both skipped) plus one `build-script-executed` line. `env`
+        // carries the `cargo::rustc-env=` exports; `out_dir` is its own field.
+        let stdout = concat!(
+            "not a json line, must be skipped\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
+            r#"{"reason":"build-script-executed","package_id":"demo 0.1.0 (path+file:///demo)","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[["MY_VAR","val"]],"out_dir":"/target/build/demo-abc/out"}"#,
+            "\n",
+        );
+
+        let map = parse_build_script_env(stdout.as_bytes());
+
+        assert_eq!(
+            map.len(),
+            1,
+            "only the build-script-executed message is kept"
+        );
+        let env = map.values().next().expect("one harvested package");
+        assert_eq!(
+            env.get("OUT_DIR").map(String::as_str),
+            Some("/target/build/demo-abc/out"),
+            "OUT_DIR is synthesized from the out_dir field"
+        );
+        assert_eq!(
+            env.get("MY_VAR").map(String::as_str),
+            Some("val"),
+            "cargo::rustc-env exports are captured"
+        );
+    }
+
+    #[test]
+    fn parse_build_script_env_empty_on_no_build_scripts() {
+        // No build-script-executed messages → empty map (the signal `harvest`
+        // uses to decide whether a non-zero `cargo check` exit is a real failure).
+        let stdout = concat!(
+            r#"{"reason":"build-finished","success":false}"#,
+            "\n",
+            "garbage\n",
+        );
+        assert!(parse_build_script_env(stdout.as_bytes()).is_empty());
+    }
 }

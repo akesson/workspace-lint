@@ -158,6 +158,25 @@ pub(super) fn rewrite_sibling_local(
     binding.canonical = ResolvedPath::new(new_segs);
 }
 
+/// Module-level `use` bindings for one `use` item: parse the tree, then rewrite
+/// any sibling-local prefix (see [`rewrite_sibling_local`]) so `use inner::Foo;`
+/// naming a sibling module resolves crate-local instead of as an external crate.
+/// Factored out of the module-tree walk so the per-binding rewrite loop doesn't
+/// add to that function's complexity.
+pub(super) fn module_use_bindings(
+    item_use: &syn::ItemUse,
+    scope: &use_tree::Scope,
+    parent_file: &Path,
+    parent_canonical: &ResolvedPath,
+    siblings: &HashSet<String>,
+) -> Vec<UseBinding> {
+    let mut bindings = use_tree::bindings_from_use(item_use, scope, parent_file);
+    for binding in &mut bindings {
+        rewrite_sibling_local(binding, parent_canonical, siblings);
+    }
+    bindings
+}
+
 pub(super) fn scope_from(canonical: &ResolvedPath) -> use_tree::Scope {
     let segs = canonical.segments();
     let crate_name = segs.first().cloned().unwrap_or_default();
