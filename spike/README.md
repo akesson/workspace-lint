@@ -36,10 +36,32 @@ so none of this touches the stable build or the dogfood lint.
                 extractor uses raw `rustc_middle`/`rustc_hir`).
 - `embed/`    — `wl-embed`: **stable** binary that calls `dylint::run(opts)`
                 directly (no `cargo-dylint` CLI) — the single-bin embed check.
+                Now also carries the **completeness guard** (WS5.1): after the run
+                it checks every expected fragment exists (from `cargo metadata`),
+                and on a miss bumps the dylib mtime + re-lints once — closing the
+                §11 caching gotcha in code.
+- `probe-check/` — `wl-probe-check`: asserts the WS1 span-fidelity policy over the
+                extractor's output for `probes/expansion` (21 assertions).
+- `probes/expansion/` — a purpose-built **lint target** (isolated workspace) whose
+                cross-file `macro_rules!` is the dangerous `--fix`-surface case.
+
+Hardening scripts (WS1/WS4/WS5.1):
+
+- `roundtrip-suggestion.sh` — captures a rustc-native `span_suggestion` through
+  `--message-format=json`, asserts byte-exact `MachineApplicable`, applies it,
+  and `cargo check`s the result.
+- `kfn-flip-demo.sh` — runs the extractor over the actual `unused-pub` known-false
+  fixtures: the impl-method KFN flips to a real finding; the `#[no_mangle]` KFP is
+  honestly reported as *not* fixed (needs attribute capture).
+- `test-completeness.sh` — the completeness-guard test (delete a fragment
+  out-of-band → guard regenerates it with no registry-dep recompile).
 
 The two nightly `[toolchain]` pins differ on purpose: `driver/` used the rolling
 nightly it was written against (2026-05-01); `wl-lint/` adopts dylint 6.0.1's pin
-(2026-04-16). Adopting dylint's pin is the production choice (see Status).
+(2026-04-16). Adopting dylint's pin is the production choice (see Status). The
+`--fix` span surface, the toolchain-bump cost, the cost envelope, real-crate
+fidelity breadth, the completeness guard, and a Linux CI smoke are all covered by
+the **WS1–5 hardening pass** — see `../SPIKE-rustc-fidelity-tree.md` §12a/§12b.
 
 ## Build & run
 

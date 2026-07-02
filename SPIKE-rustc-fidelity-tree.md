@@ -1,6 +1,6 @@
 # Pivot: workspace-lint → a rustc-fidelity engine (Dylint driver)
 
-**Status:** committed direction · step-0 + step-1 plumbing spikes verified (raw driver → Dylint `LateLintPass` → single-bin embed, all byte-identical) · app-layer pre-implementation · **Date:** 2026-07-01 · **Owner:** Henrik
+**Status:** committed direction · step-0/1 plumbing + cross-crate assembly + findings + unused-deps verified · **WS1–5 hardening pass done** (span-`--fix`, treadmill, cost, real-crate fidelity, completeness guard, Linux CI — §12b) · app-layer pre-implementation (backend swap next) · **Date:** 2026-07-01, hardening 2026-07-02 · **Owner:** Henrik
 
 `workspace-lint` is pivoting from the shallow, syn-based resolver to a
 **compiler-correct** workspace tree built by a real `rustc` driver, harnessed by
@@ -25,6 +25,18 @@ work.
    deprecated/yanked; the fast no-compile resolver is abandoned. Its *data model*
    (`Workspace`/`Module`/`Item`/`Occurrence`) may be salvaged as the driver-
    populated IR (§6), but the resolver, plugins, and SCIP-oracle machinery go.
+
+### Added 2026-07-02
+
+4. **IDE integration is dropped** (§12.1). No `check.overrideCommand` replacement —
+   a Dylint run compiles and executes build.rs/proc-macros, so the fast
+   side-effect-free IDE-check contract can't be honored; we stop offering it rather
+   than ship a slow or lying one.
+5. **One binary, two tiers** (§12.2). A `--fast-only`-style switch selects a
+   build-free **fast tier** (the syntactic/manifest lints, git-hook friendly) vs.
+   the **full tier** (fast + the three semantic lints on the rustc IR). Still one
+   user-facing binary; syn-workspace still retires (the fast tier uses only
+   `cargo metadata` + `toml_edit` + a small syntactic module walker).
 
 ## 0. Goal / non-goals
 
@@ -614,23 +626,76 @@ the fidelity oracle was re-run to re-baseline.
 
 ## 12. Open questions
 
-1. **New app shape.** What does the pipeline/CLI/output look like when every run
-   is a full build? What (if anything) replaces `check.overrideCommand`?
-2. **Cheap lints.** Do `file-size`/`freshness`/`centralized-deps`/config-audit
-   still ride the build, or get a build-free path? (They need no `TyCtxt`.)
+1. **New app shape.** ✅ **DECIDED (2026-07-02).** `check.overrideCommand`
+   (fast side-effect-free IDE check) is **dropped** — no replacement; a Dylint run
+   compiles and executes build.rs/proc-macros, so the IDE-check story doesn't
+   survive must-compile and we stop pretending it does. What remains open is the
+   CLI/output shape, folded into decision (2).
+2. **Cheap lints / tiering.** ✅ **DECIDED (2026-07-02).** **One binary, two
+   tiers**, selected by a `--fast-only`-style switch. The **fast tier** (default in
+   git hooks) runs the build-free lints — `file-size`, `freshness`,
+   `stale-git-index`, `cli-crate-version`, `shipped-source`, `centralized-deps`,
+   `feature-drift`, `crate-size`, `module-tree`, config audit — on `cargo metadata`
+   + `toml_edit` + a small **syntactic** module-tree walker (salvaged from
+   syn-workspace's syntactic layer, *not* its resolver). The **full tier** adds the
+   three semantic lints (`unused-pub`, `unused-deps`, `architecture`) on the rustc
+   IR. `syn-workspace` still retires — the fast tier needs none of its resolver /
+   plugins / re-export chains. WS3 showed a *warm* full run is ~1 s on this repo, so
+   the tier boundary is a **policy** choice (hooks must not execute build.rs /
+   proc-macros — arbitrary code, network) more than a speed wall.
 3. **Permanent correctness spine** (§10) — golden fixtures, RA spot-diff, or both?
-4. **Toolchain cadence in practice** — bump the pin once; measure breakage +
-   `clippy_utils` lockstep effort. Is "hold for months" realistic vs. the Rust
-   versions we must analyze?
+   Still open. WS4 gives a transitional widening (real-crate differential over the
+   corpus), but the *permanent* spine that outlives syn is undecided.
+4. **Toolchain cadence in practice** — ✅ **MEASURED (WS2, 2026-07-02).**
+   Deliberately bumped the pin `nightly-2026-04-16` → `nightly-2026-06-25`
+   (~10 weeks) under fixed dylint 6.0.1. **dylint_linting 6.0.1 + the whole dylint
+   stack compiled cleanly (0 breakage)** — so our cadence is *not* capped by
+   dylint's release cadence; we can advance the nightly under a fixed dylint. Our
+   extractor had exactly **one** breakage (2 call sites): `register_late_pass` went
+   from a bare `impl Fn` to a boxed `LateLintPassFactory` — a genuinely
+   toolchain-specific edit (no single spelling straddles both pins). Re-verification
+   on 06-25: item defs + spans + vis_spans + visibility **100 % identical** to
+   04-16; probe 21/21; vis-span differential 31/31. Only ~0.16 % of reference edges
+   drift (derive/comparison lowering, `PartialOrd::partial_cmp`↔`Ord::cmp`). Cost:
+   one-time full dylint-stack rebuild on a fresh nightly = a few minutes; the fix
+   itself ~5 min. **"Hold for months" is realistic**; a bump is a small, bounded
+   chore. (Note: the extractor dropped `clippy_utils`, so the `clippy_utils`
+   lockstep only bites the *findings* channel, not extraction.)
 5. **Engine-agnostic lint trait** — can lints be written once against the IR,
    independent of how it was produced? (Determines how clean the port is.)
 6. **Diagnostic capture** — mechanism/cost of routing Phase-1 lint findings into
-   the pipeline (custom `DiagCtxt`/emitter vs. emit-to-sink shim).
-7. **`--fix` span fidelity** — confirm `SourceMap` gives the exact `pub`-token
-   and item byte ranges; verify macro-callsite mapping for generated code.
+   the pipeline (custom `DiagCtxt`/emitter vs. emit-to-sink shim). Partly de-risked:
+   WS1-A4 round-tripped a rustc-native `span_suggestion` (`MachineApplicable`, byte-
+   exact) out through `--message-format=json` and applied it — the capture path
+   works; the open part is the in-process shim vs. JSON-parse tradeoff.
+7. **`--fix` span fidelity** — ✅ **RESOLVED (WS1, 2026-07-02).** `SourceMap` gives
+   the exact `pub`/`pub(crate)`/`pub(in …)` token byte range via `Item.vis_span`
+   (`ItemFact.vis_span`), verified **31/31 byte-exact** against syn's proven
+   `vis_byte_range` on syn-workspace (0 mismatches, text == `"pub"`), plus **66**
+   restricted-vis spans syn can't capture. Macro-callsite mapping handled: item
+   spans project through `source_callsite()` (a cross-file-macro item's span moves
+   from the macro *definition* file to the invocation site) and `vis_span` is
+   suppressed for expansion-derived tokens — 21/21 probe assertions. The production
+   `unused-pub` tighten fix (`pub` → `pub(crate)` over `vis_byte_range`) has an
+   exact rustc equivalent.
 8. **syn-workspace deprecation** — yank vs. leave with a deprecation notice;
-   downstream consumers, if any.
-9. **Cost envelope** — wall-clock, single config and a 2–3-config matrix.
+   downstream consumers, if any. Still open (low stakes).
+9. **Cost envelope** — ✅ **MEASURED (WS3, 2026-07-02).** `/usr/bin/time -p`, this
+   machine:
+
+   | target | cold | warm re-lint | warm no-change | assemble |
+   |---|---|---|---|---|
+   | this repo (4 crates), default | 6.77 s | 0.97 s | 0.22 s | 0.18 s |
+   | this repo, `--tests` (14 units) | — | 1.31 s | 0.21 s | — |
+   | regex (root crate) | 3.59 s | 0.35 s | 0.24 s | 0.05 s |
+   | regex-automata (3039 items) | 1.72 s | 0.66 s | — | — |
+   | dioxus-core (1061 items) | 4.47 s | — | — | — |
+
+   Load-bearing finding: **dylint keeps a separate target dir**, so the *first*
+   (cold) run pays full dependency compilation there even when the main `target/`
+   is warm; steady-state warm runs are sub-second to ~1 s, no-change ~0.2 s,
+   assembly ~0.05–0.2 s. The matrix cost is roughly additive per config (one
+   compile each). Feeds decision (2)'s tiering.
 10. **`dylint` embed API** — ✅ **RESOLVED (step-1 spike, 2026-07-01).** A stable
     binary (`spike/embed`) embeds `dylint = "6.0.1"` (feature `library_packages`)
     and calls `pub fn dylint::run(opts: &dylint::opts::Dylint) -> anyhow::Result<()>`.
@@ -641,6 +706,60 @@ the fidelity oracle was re-run to re-baseline.
     CWD; thread `WL_IR_OUT` → set on this process (the spawned driver inherits it,
     confirmed). The embed produced **byte-identical IR to the `cargo dylint` CLI
     and to the raw driver**. The proto-C fallback is unneeded.
+
+## 12a. Deferred extraction gaps (ledger)
+
+What the Phase-1 extractor does **not** emit yet, each a bounded increment to the
+`ItemFact`/`RefEdge` schema + the walk. Ordered roughly by consumer demand. None
+block the backend swap; each is "add a field, re-run the build."
+
+- **Item attributes** (`#[no_mangle]`/`#[export_name]`/`#[used]`, and by extension
+  `#[cfg]` provenance). *Consumer:* `unused-pub` export roots. **Load-bearing:** WS4
+  showed the `ffi_no_mangle_export` KFP is *not* fixed by the pivot until FFI
+  exports can be treated as reachability roots — the item currently looks like dead
+  pub API. Emit a small attribute set on `ItemFact`.
+- **Bound / `where`-clause-only associated projections.** `RefEdge` covers
+  type-position projections in signatures (`fn_sig`/`type_of`) but not those
+  appearing *only* in `predicates_of`. *Consumer:* `unused-pub`/architecture edge
+  completeness. Rare in practice (0 extra on syn-workspace).
+- **Opaque / `impl Trait` projection targets.** The alias walk skips opaque return
+  types. *Consumer:* same as above.
+- **Macro provenance beyond the callsite flag.** WS1 added `Span.from_expansion`
+  (item spans → callsite; no editable `vis_span`), which is enough for `--fix`
+  safety, but the IR doesn't record *which* macro produced an item. *Consumer:* an
+  `--explain`-style provenance view; `expansion_uses!` reconciliation.
+- **cfg provenance.** One run = one config (cfg-strip precedes the driver). The
+  cfg-matrix union (§7) covers *presence/use* across configs, but no item carries
+  its gating cfg. *Consumer:* reporting "used only under `--test`".
+- **Enum-variant constructors as items.** The 16/199 cross-crate non-joins and the
+  intra-crate `ctor` edges point at `DefKind::Ctor` defs we don't emit as
+  `ItemFact`s. *Consumer:* closing the last join gaps. Benign today (correctly
+  excluded), listed for completeness.
+
+## 12b. Verified by the WS1–5 hardening pass (2026-07-02)
+
+A pre-migration pass to close the untested corners before the backend swap. All
+green; see the `spike-rustc-fidelity-engine` commits and `spike/README.md`.
+
+- **WS1 — `--fix` span fidelity** (§12.7): `ItemFact.vis_span` +
+  `Span.from_expansion`, both extractor copies structurally byte-identical;
+  differential 31/31 byte-exact vs syn + 66 restricted spans syn can't capture;
+  `spike/probes/expansion` + `wl-probe-check` 21/21; suggestion round-trip
+  (`roundtrip-suggestion.sh`) applies and compiles.
+- **WS2 — toolchain-bump drill** (§12.4): +10-week pin bump; dylint_linting clean,
+  1 extractor edit, item/span/vis IR 100 % stable, ~0.16 % edge drift.
+- **WS3 — cost envelope** (§12.9): warm runs sub-second to ~1 s; cold pays dylint's
+  separate-target dep compile.
+- **WS4 — fidelity breadth**: 7 real crates (incl. macro-heavy dioxus-core), **no
+  extractor bugs**, visibility 100 % everywhere; precision deflation is all
+  cfg-gated code; the win is the assoc/fn-local/macro defs syn can't see (~80 % of
+  dioxus-core). KFN `pub_method_in_impl_block` flips to a true positive; KFP
+  `ffi_no_mangle_export` needs the attribute gap above. **58/65 (89 %)** semantic-
+  lint fixtures compile offline — the migration's fixture-rework cost is small, not
+  the wholesale rewrite first assumed.
+- **WS5 — completeness guard** (`wl-embed`, resolves the §11 caching gotcha in
+  code), **Linux CI smoke** (`.github/workflows/spike.yml`: `.so` + `dylint-link`),
+  and this ledger.
 
 ## 13. Decision record (one line)
 
