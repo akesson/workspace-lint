@@ -221,8 +221,7 @@ fn expand_workspace(tmp: &Path) {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let ok = std::process::Command::new("git")
-        .current_dir(dir)
+    let ok = common::git(dir)
         .args(args)
         .output()
         .expect("git available")
@@ -311,4 +310,90 @@ fn expand_subcommand_is_clean_tree_gated() {
         expanded.contains("cargo ") && !expanded.contains("edited"),
         "with --allow-dirty the subcommand should expand; got:\n{expanded}"
     );
+}
+
+// --- GIT_DIR leak hardening ---
+//
+// Git exports an absolute `GIT_DIR` to hook processes when the repository is
+// discovered via a `.git` file (linked worktrees, submodules), and child
+// processes inherit it. The binary's git spawns must scrub it, or they operate
+// on the invoker's repository with the lint target as its work tree: the
+// 2026-07 incident had the pre-push hook's GIT_DIR reach the suite's fixture
+// git commands, committing fixture trees onto the developer's real branch and
+// flipping `core.bare` in the shared config. These tests leak a GIT_DIR
+// pointing at a "victim" repo into the binary and assert repo discovery stays
+// cwd-based and the victim is untouched.
+
+/// A committed repo standing in for the developer repository a leaked
+/// `GIT_DIR` points at. Its `tracked.txt` deliberately doesn't exist in the
+/// lint-target workspaces below.
+fn victim_repo() -> tempfile::TempDir {
+    let victim = tempfile::tempdir().expect("create tempdir");
+    std::fs::write(victim.path().join("tracked.txt"), "v1\n").unwrap();
+    git(victim.path(), &["init", "-q"]);
+    git(victim.path(), &["config", "user.email", "t@t.test"]);
+    git(victim.path(), &["config", "user.name", "Test"]);
+    git(victim.path(), &["add", "-A"]);
+    git(victim.path(), &["commit", "-q", "-m", "init"]);
+    victim
+}
+
+/// Captured, trimmed stdout of a git command in `dir` (victim-state probes).
+fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    let out = common::git(dir).args(args).output().expect("git available");
+    assert!(out.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn leaked_git_dir_does_not_reach_lints() {
+    let victim = victim_repo();
+    let head_before = git_stdout(victim.path(), &["rev-parse", "HEAD"]);
+
+    // NOT `expand_workspace` — that config `allow`s every lint, which would
+    // silence the very finding this test watches for. Default levels keep
+    // stale-git-index enabled (warn).
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    TestWorkspace::new()
+        .config("# default lint levels\n")
+        .write(tmp.path());
+    // Unscrubbed, stale-git-index would resolve the victim repo (with the
+    // tempdir as its work tree) and warn that `tracked.txt` is deleted.
+    workspace_lint()
+        .current_dir(tmp.path())
+        .env("GIT_DIR", victim.path().join(".git"))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("stale-git-index").not());
+
+    // The victim must be untouched — both damage modes of the incident.
+    assert_eq!(
+        git_stdout(victim.path(), &["rev-parse", "HEAD"]),
+        head_before,
+        "leaked GIT_DIR must not let the run move the victim's HEAD"
+    );
+    assert_eq!(
+        git_stdout(victim.path(), &["config", "core.bare"]),
+        "false",
+        "leaked GIT_DIR must not flip the victim's core.bare"
+    );
+}
+
+#[test]
+fn leaked_git_dir_does_not_block_fix() {
+    let victim = victim_repo();
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    expand_workspace(tmp.path());
+    // Unscrubbed, the clean-tree gate would read the victim repo as Dirty
+    // (its tracked files are "missing" from the tempdir work tree) and exit 2
+    // without applying anything. The tempdir is not a repo, so the gate must
+    // take the warn-and-proceed path instead.
+    workspace_lint()
+        .current_dir(tmp.path())
+        .env("GIT_DIR", victim.path().join(".git"))
+        .args(["--fix", "--no-deep"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("not a git repository"));
 }

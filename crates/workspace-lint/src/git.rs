@@ -1,4 +1,4 @@
-//! Git working-tree gate for `--fix`.
+//! Git working-tree gate for `--fix`, and the one place git is ever spawned.
 //!
 //! `--fix` mutates source files in place — both structural rewrites and (when
 //! deep verification disproves a finding) written suppression directives. To
@@ -15,6 +15,45 @@
 
 use std::path::Path;
 use std::process::Command;
+
+/// Environment variables that pin git to a specific repository, mirroring
+/// git's own `local_repo_env` list (environment.c). Git exports an absolute
+/// `GIT_DIR` to hook processes when the repository is discovered via a `.git`
+/// *file* (linked worktrees, submodules); a child git inheriting it operates
+/// on the *invoker's* repository — with the child's cwd as its work tree —
+/// instead of the directory we point it at. Observed in the wild: running the
+/// test suite from a pre-push hook in a linked worktree committed fixture
+/// trees onto the developer's real branch. Every git spawn must scrub these.
+const GIT_REPO_ENV: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+];
+
+/// Build a `git` invocation rooted at `dir`, scrubbed of the repo-pinning
+/// environment (see [`GIT_REPO_ENV`]) so the repository is always discovered
+/// from `dir` itself. All git spawns in this crate must go through here —
+/// never `Command::new("git")` directly.
+pub(crate) fn command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir);
+    for var in GIT_REPO_ENV {
+        cmd.env_remove(var);
+    }
+    cmd
+}
 
 /// The relevant state of a git working tree for the `--fix` gate.
 #[derive(Debug, PartialEq, Eq)]
@@ -34,11 +73,7 @@ pub(crate) enum TreeState {
 /// [`TreeState::NotARepo`]. Porcelain lines starting with `??` are untracked
 /// and ignored; any other non-empty line is a tracked modification.
 pub(crate) fn tree_state(dir: &Path) -> TreeState {
-    let out = match Command::new("git")
-        .current_dir(dir)
-        .args(["status", "--porcelain"])
-        .output()
-    {
+    let out = match command(dir).args(["status", "--porcelain"]).output() {
         Ok(o) => o,
         Err(_) => return TreeState::NotARepo, // git binary unavailable
     };
@@ -91,15 +126,13 @@ pub(crate) fn ensure_clean_for_fix(dir: &Path, allow_dirty: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
     use tempfile::TempDir;
 
     /// Initialize a git repo in `dir` with a committed file, so the tree starts
     /// clean. Returns once the initial commit exists.
     fn init_repo(dir: &Path) {
         let run = |args: &[&str]| {
-            let ok = Command::new("git")
-                .current_dir(dir)
+            let ok = command(dir)
                 .args(args)
                 .output()
                 .expect("git available")
@@ -151,5 +184,25 @@ mod tests {
     fn non_repo_is_not_a_repo() {
         let tmp = TempDir::new().unwrap();
         assert_eq!(tree_state(tmp.path()), TreeState::NotARepo);
+    }
+
+    #[test]
+    fn command_scrubs_repo_env() {
+        let tmp = TempDir::new().unwrap();
+        let cmd = command(tmp.path());
+        // `env_remove` shows up in `get_envs()` as a `None` value. Every
+        // repo-pinning variable must be scheduled for removal, or an inherited
+        // GIT_DIR (exported by git to hooks in linked worktrees) redirects the
+        // spawn to the invoker's repository.
+        let removed: Vec<&std::ffi::OsStr> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| v.is_none().then_some(k))
+            .collect();
+        for var in GIT_REPO_ENV {
+            assert!(
+                removed.iter().any(|k| *k == *var),
+                "{var} must be scrubbed from git spawns"
+            );
+        }
     }
 }

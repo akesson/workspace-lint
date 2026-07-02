@@ -6,7 +6,6 @@
 //! about it.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_workspace;
@@ -51,11 +50,7 @@ pub(crate) fn check() -> Vec<Diagnostic> {
 /// it. `-z` gives NUL-separated paths with no quoting, so non-ASCII / spaced
 /// names are handled verbatim (git otherwise C-quotes them by default).
 fn check_in(base: &Path) -> Vec<Diagnostic> {
-    let Ok(output) = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(base)
-        .output()
-    else {
+    let Ok(output) = crate::git::command(base).args(["ls-files", "-z"]).output() else {
         return Vec::new();
     };
     if !output.status.success() {

@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
 
+# git exports an absolute GIT_DIR to hooks when run from a linked worktree;
+# child processes (the test suite's git spawns, cargo) must rediscover the
+# repository from their own cwd, not inherit ours — an inherited GIT_DIR once
+# let fixture git commands commit onto the developer's real branch.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+
 echo "Running pre-push checks..."
 
 echo "  cargo fmt --check"

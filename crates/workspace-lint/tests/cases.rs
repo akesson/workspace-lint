@@ -31,7 +31,6 @@
 //! ```
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
@@ -138,9 +137,8 @@ fn apply_setup(case_dir: &Path, tmp: &Path) -> Result<(), String> {
 }
 
 fn git_cmd(dir: &Path, args: &[&str]) -> Result<(), String> {
-    let out = Command::new("git")
+    let out = common::git(dir)
         .args(args)
-        .current_dir(dir)
         .output()
         .map_err(|e| format!("git {args:?}: {e}"))?;
     if !out.status.success() {
