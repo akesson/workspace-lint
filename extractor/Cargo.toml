@@ -1,0 +1,39 @@
+# The Phase-1 IR extractor: a Dylint `LateLintPass` compiled as a cdylib and
+# loaded into a nightly rustc driver per crate compilation. Lives OUTSIDE the
+# main (stable) workspace — its `rust-toolchain.toml` pins the nightly that
+# dylint 6.0.1 tracks, and `.cargo/config.toml` links via `dylint-link`.
+# The `workspace-lint` binary vendors this whole package and hands it to the
+# embedded dylint orchestrator at user sites (migration decision: vendored
+# source, not a registry package — lockstep with `wl-ir` is structural).
+[package]
+name = "wl-extractor"
+version = "0.1.0"
+authors = ["workspace-lint"]
+description = "Phase-1 rustc-fidelity IR extractor for workspace-lint, as a Dylint LateLintPass"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# NOTE: no clippy_utils — extract() uses raw rustc_middle/rustc_hir, so we skip
+# the clippy_utils<->nightly alignment entirely (SPIKE §12.4). We only need the
+# dylint macro/registration glue.
+dylint_linting = "6.0.1"
+wl-ir = { path = "../crates/wl-ir" }
+serde_json = "1"
+
+[dev-dependencies]
+# The golden-spine tier-1 test (`tests/probe.rs`) IS the embed flow: it drives
+# this dylib over `tests/probes/*` via `dylint::run` and asserts the emitted
+# fragments. `library_packages` pulls in the cargo-cli plumbing `run()` needs
+# to build the driver and invoke `cargo check`.
+dylint = { version = "6.0.1", features = ["library_packages"] }
+anyhow = "1"
+tempfile = "3"
+
+[workspace]
+
+[package.metadata.rust-analyzer]
+rustc_private = true

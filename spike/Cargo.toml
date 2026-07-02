@@ -4,7 +4,7 @@
 # the pinned nightly (rust-toolchain.toml) because the driver links rustc_private.
 [workspace]
 resolver = "2"
-members = ["driver", "assemble", "fidelity", "probe-check"]
+members = ["driver", "assemble", "fidelity"]
 
 [workspace.dependencies]
 # The IR contract graduated to the main workspace (migration PR 1); the spike

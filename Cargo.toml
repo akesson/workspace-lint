@@ -5,7 +5,9 @@ members = ["crates/*"]
 # `corpus/`, used as test fixtures (smoke / lint-FP audit / set-level SCIP
 # differential). Excluded so cargo treats each as its own standalone package —
 # otherwise cargo would try to fold them into this workspace and error.
-exclude = ["corpus", "spike"]
+# `extractor` is the nightly rustc_private lint dylib (its own toolchain pin,
+# own lockfile); `spike` is the pivot spike, retiring in migration PR 13.
+exclude = ["corpus", "spike", "extractor"]
 
 [workspace.package]
 rust-version = "1.88"

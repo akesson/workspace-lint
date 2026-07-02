@@ -9,21 +9,27 @@
 set -euo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
-LIB="$REPO/spike/wl-lint/target/debug/libwl_lint@nightly-2026-04-16-aarch64-apple-darwin.dylib"
+# The extractor dylib (migration PR 2: extractor/, package wl-extractor); the
+# filename embeds toolchain + host triple, so glob rather than hardcode.
+LIB="$(ls "$REPO"/extractor/target/debug/libwl_extractor@*.dylib "$REPO"/extractor/target/debug/libwl_extractor@*.so 2>/dev/null | head -1 || true)"
+test -n "$LIB" || { echo "build the extractor first: (cd extractor && cargo build)"; exit 1; }
 EMBED="$REPO/spike/embed/target/debug/wl-embed"
 OUT="$REPO/spike/ir-out-guard"
+# Member count = fragments a full default-config run must produce (5 since
+# wl-ir joined the workspace in migration PR 1).
+MEMBERS=5
 LOG="$(mktemp -d)"
 trap 'rm -rf "$LOG"' EXIT
 rm -rf "$OUT"
 
-echo "── run 1 (deterministic full lint): expect 4 fragments + 'completeness check OK' ──"
+echo "── run 1 (deterministic full lint): expect $MEMBERS fragments + 'completeness check OK' ──"
 # Bump the dylib so dylint re-lints every member regardless of the ambient cargo
-# cache state — this run writes all 4 fragments itself, so the guard sees no miss.
+# cache state — this run writes all fragments itself, so the guard sees no miss.
 touch "$LIB"
 "$EMBED" "$REPO" "$LIB" "$OUT" 2> "$LOG/run1.err" >/dev/null
 n1="$(ls "$OUT" | wc -l | tr -d ' ')"
-echo "  fragments: $n1"; test "$n1" -eq 4
-grep -q "completeness check OK" "$LOG/run1.err"; echo "  ✓ guard reported OK (dylint wrote all 4)"
+echo "  fragments: $n1"; test "$n1" -eq "$MEMBERS"
+grep -q "completeness check OK" "$LOG/run1.err"; echo "  ✓ guard reported OK (dylint wrote all $MEMBERS)"
 
 echo "── delete syn_workspace_marker.json out-of-band (cargo stays fresh) ──"
 rm "$OUT/syn_workspace_marker.json"

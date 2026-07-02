@@ -13,7 +13,10 @@
 set -euo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
-LIB="$REPO/spike/wl-lint/target/debug/libwl_lint@nightly-2026-04-16-aarch64-apple-darwin.dylib"
+# The extractor dylib (migration PR 2: extractor/, package wl-extractor); the
+# filename embeds toolchain + host triple, so glob rather than hardcode.
+LIB="$(ls "$REPO"/extractor/target/debug/libwl_extractor@*.dylib "$REPO"/extractor/target/debug/libwl_extractor@*.so 2>/dev/null | head -1 || true)"
+test -n "$LIB" || { echo "build the extractor first: (cd extractor && cargo build)"; exit 1; }
 EMBED="$REPO/spike/embed/target/debug/wl-embed"
 CASES="$REPO/crates/workspace-lint/tests/cases/unused-pub"
 

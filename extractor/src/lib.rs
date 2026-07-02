@@ -1,24 +1,24 @@
-//! Phase-1 rustc-fidelity IR extractor — the raw `rustc_driver` spike
-//! ([`../../driver`]) repackaged as a Dylint `LateLintPass`.
-//!
-//! This is SPIKE-rustc-fidelity-tree.md §11.2: prove the *same* `TyCtxt` walk
-//! runs inside Dylint's lint host, so we get standard/custom Dylint lints and
-//! our IR extraction in one pass. `check_crate` receives `cx.tcx` — the exact
-//! `TyCtxt` the raw driver's `after_analysis` had — so [`extract`] is lifted
-//! verbatim from `driver/src/main.rs`.
+//! Phase-1 rustc-fidelity IR extractor: a Dylint `LateLintPass` that walks the
+//! `TyCtxt` of the crate under compilation and emits a byte-precise
+//! [`IrFragment`] (SPIKE-rustc-fidelity-tree.md §4/§11).
 //!
 //! This "lint" never warns: it harvests facts into `$WL_IR_OUT/<crate>.json`
-//! (the IR channel). Real diagnostics (the findings channel) are exercised
-//! separately; the two never mix (SPIKE §4).
+//! (the IR channel). Real diagnostics (the findings channel) ride Dylint's
+//! native lint path separately; the two never mix (SPIKE §4). The
+//! findings-channel round-trip itself was proven by the spike (WS1-A4, SPIKE
+//! §12.6/§12b) with a demo lint that did not graduate with this package.
+//!
+//! The spike's raw `rustc_driver` twin (`spike/driver`) carries an identical
+//! copy of [`extract`] — the original proof that the walk is host-agnostic.
 #![feature(rustc_private)]
 
 // Compiler-crate imports are inherited from the `cargo dylint new` template:
 // this exact set is known to resolve on the pinned toolchain. We use rustc_hir /
-// _middle / _span / _lint / _errors directly; the rest are transitive needs.
-// This library now registers **two** lints (the silent IR extractor + a findings
-// demo), so it hand-writes `register_lints` instead of using `declare_late_lint!`
-// — which means `rustc_lint` / `rustc_session` are declared here explicitly (the
-// macro used to inject them), and `dylint_library!()` supplies the dylib glue.
+// _middle / _span / _lint directly; the rest are transitive needs. The library
+// hand-writes `register_lints` instead of using `declare_late_lint!` (the
+// production shape: findings lints join the same registration later) — which
+// means `rustc_lint` / `rustc_session` are declared here explicitly (the macro
+// used to inject them), and `dylint_library!()` supplies the dylib glue.
 extern crate rustc_arena;
 extern crate rustc_ast;
 extern crate rustc_ast_pretty;
@@ -38,12 +38,11 @@ extern crate rustc_span;
 extern crate rustc_target;
 extern crate rustc_trait_selection;
 
-use rustc_errors::{Applicability, DiagDecorator};
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
-use rustc_hir::intravisit::{self, FnKind, Visitor};
-use rustc_hir::{Body, Expr, ExprKind, FnDecl, HirId, Path, QPath, UsePath};
-use rustc_lint::{LateContext, LateLintPass, LintContext, LintStore};
+use rustc_hir::intravisit::{self, Visitor};
+use rustc_hir::{Expr, ExprKind, HirId, Path, QPath, UsePath};
+use rustc_lint::{LateContext, LateLintPass, LintStore};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitor};
 use rustc_session::Session;
@@ -77,36 +76,15 @@ rustc_session::declare_lint! {
     "harvests the rustc-fidelity IR fragment for the crate under compilation"
 }
 
-rustc_session::declare_lint! {
-    /// ### What it does
-    ///
-    /// A **findings-channel** demo (SPIKE §4/§8): a real per-crate diagnostic that
-    /// warns on a module-level `pub fn` with no doc comment. Unlike the extractor,
-    /// this pass *emits* — it proves diagnostics flow through Dylint's native lint
-    /// path (rustc-native `emit_span_lint`, no `clippy_utils`) and are captured by
-    /// the orchestrator via `--message-format=json` as the same rustc
-    /// `DiagnosticSpan` JSON the `workspace-lint` renderers already consume.
-    ///
-    /// ### Why is this bad?
-    ///
-    /// Undocumented public API is a real (if minor) smell — but the point here is
-    /// the *channel*, not the rule: this is the second, emitting half of the
-    /// two-channel design, coexisting with the silent extractor in one pass.
-    pub WL_UNDOCUMENTED_PUB,
-    Warn,
-    "a module-level pub fn with no doc comment (findings-channel demo)"
-}
-
-// Two lints ⇒ hand-written `register_lints` (dylint_linting's macros only wire a
-// single lint; the crate docs prescribe this for multi-lint libraries). Registers
-// both the silent extractor pass and the emitting findings pass — the SPIKE §8
-// claim ("standard Dylint lints run in the same pass; findings flow into our
-// pipeline") made concrete: one compilation, one `TyCtxt`, both channels.
+// Hand-written `register_lints` (not the single-lint `declare_late_lint!`
+// macro): this is the production registration shape — findings-channel lints
+// join the same `LintStore` later (SPIKE §8: standard Dylint lints run in the
+// same pass, one compilation, one `TyCtxt`, both channels).
 #[allow(clippy::no_mangle_with_rust_abi)]
 #[unsafe(no_mangle)]
 pub fn register_lints(sess: &Session, lint_store: &mut LintStore) {
     dylint_linting::init_config(sess);
-    lint_store.register_lints(&[WL_IR_EXTRACT, WL_UNDOCUMENTED_PUB]);
+    lint_store.register_lints(&[WL_IR_EXTRACT]);
     // NOTE (WS2 treadmill, SPIKE §12.4): on the 04-16 pin `register_late_pass` takes
     // a bare `impl Fn(TyCtxt) -> LateLintPassObject`, so the closure's `Box::new(..)`
     // return coerces to `Box<dyn LateLintPass>`. On nightly-2026-06-25 the param
@@ -117,11 +95,9 @@ pub fn register_lints(sess: &Session, lint_store: &mut LintStore) {
     // extractor breakage across the ~10-week jump; dylint_linting 6.0.1 itself
     // compiled unchanged. Keep the 04-16 form here (the production pin).
     lint_store.register_late_pass(|_| Box::new(WlIrExtract));
-    lint_store.register_late_pass(|_| Box::new(WlFindings));
 }
 
 rustc_session::declare_lint_pass!(WlIrExtract => [WL_IR_EXTRACT]);
-rustc_session::declare_lint_pass!(WlFindings => [WL_UNDOCUMENTED_PUB]);
 
 impl<'tcx> LateLintPass<'tcx> for WlIrExtract {
     // The lift point: `cx.tcx` is the same `TyCtxt` the raw driver walked in
@@ -133,69 +109,6 @@ impl<'tcx> LateLintPass<'tcx> for WlIrExtract {
         // the same crate, which would race on one filename — so key the output on
         // it. Lets the fidelity oracle compare config-matched IRs (SPIKE §7/§10).
         write_fragment(&fragment, cx.tcx.sess.opts.test);
-    }
-}
-
-/// The **findings channel** (SPIKE §4/§8): a per-crate `LateLintPass` that *emits*
-/// real diagnostics, running in the same compilation as the silent extractor. It
-/// proves diagnostics ride Dylint's native lint path — `LintContext::emit_span_lint`
-/// with a `DiagDecorator` closure (rustc-native, **no `clippy_utils`**) — and are
-/// captured by the orchestrator through `--message-format=json` as the exact rustc
-/// `DiagnosticSpan` JSON (`spans`/`level`/`code`/`rendered`, plus the
-/// `suggested_replacement` fields for `--fix`) that `workspace-lint`'s `Diagnostic`
-/// already mirrors. The rule (undocumented pub fn) is incidental; the channel is
-/// the point. `check_fn` is used so `#[allow(wl_undocumented_pub)]` on an item is
-/// honored (the level is looked up at the fn's node, not the crate root).
-impl<'tcx> LateLintPass<'tcx> for WlFindings {
-    fn check_fn(
-        &mut self,
-        cx: &LateContext<'tcx>,
-        kind: FnKind<'tcx>,
-        _decl: &'tcx FnDecl<'tcx>,
-        _body: &'tcx Body<'tcx>,
-        span: RustcSpan,
-        def_id: LocalDefId,
-    ) {
-        // Module-level free fns only (skip methods/closures for this demo).
-        let FnKind::ItemFn(ident, ..) = kind else {
-            return;
-        };
-        let did = def_id.to_def_id();
-        if !matches!(cx.tcx.visibility(did), ty::Visibility::Public) {
-            return;
-        }
-        let hir_id = cx.tcx.local_def_id_to_hir_id(def_id);
-        if cx.tcx.hir_attrs(hir_id).iter().any(|a| a.doc_str().is_some()) {
-            return; // has a doc comment
-        }
-        // The `--fix` write surface, guarded exactly like the extractor's
-        // `vis_span_to_ir`: only an editable, non-macro `pub` token gets a
-        // suggestion (the finding still emits either way). This is a deliberately
-        // artificial pairing — a docs lint suggesting a visibility tighten — whose
-        // only purpose is to round-trip the *production `unused-pub` fix shape*
-        // (vis_span → `pub(crate)`, `MachineApplicable`) out through Dylint and
-        // cargo's `--message-format=json` and confirm the byte offsets survive.
-        let vis_span = match cx.tcx.hir_node_by_def_id(def_id) {
-            rustc_hir::Node::Item(it) if !it.vis_span.is_empty() && !it.vis_span.from_expansion() => {
-                Some(it.vis_span)
-            }
-            _ => None,
-        };
-        cx.emit_span_lint(
-            WL_UNDOCUMENTED_PUB,
-            span,
-            DiagDecorator(move |diag| {
-                diag.primary_message(format!("public fn `{ident}` has no doc comment"));
-                if let Some(vs) = vis_span {
-                    diag.span_suggestion(
-                        vs,
-                        "round-trip probe: tighten to `pub(crate)`",
-                        "pub(crate)",
-                        Applicability::MachineApplicable,
-                    );
-                }
-            }),
-        );
     }
 }
 
