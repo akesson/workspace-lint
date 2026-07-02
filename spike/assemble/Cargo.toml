@@ -1,0 +1,17 @@
+[package]
+name = "wl-assemble"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Phase-2 stub: reads the per-crate IR fragments the driver emitted and reports
+# a summary. The real assembler builds the workspace tree + cross-crate reverse
+# indexes here; the diff-vs-syn fidelity check plugs in next.
+[[bin]]
+name = "wl-assemble"
+path = "src/main.rs"
+
+[dependencies]
+wl-ir = { workspace = true }
+serde_json = { workspace = true }
+cargo_metadata = { workspace = true }

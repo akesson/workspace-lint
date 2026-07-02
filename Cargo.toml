@@ -5,7 +5,7 @@ members = ["crates/*"]
 # `corpus/`, used as test fixtures (smoke / lint-FP audit / set-level SCIP
 # differential). Excluded so cargo treats each as its own standalone package —
 # otherwise cargo would try to fold them into this workspace and error.
-exclude = ["corpus"]
+exclude = ["corpus", "spike"]
 
 [workspace.package]
 rust-version = "1.88"

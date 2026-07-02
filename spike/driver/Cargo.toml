@@ -1,0 +1,16 @@
+[package]
+name = "wl-driver"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# A raw rustc_driver binary (step 0). Invoked as RUSTC_WORKSPACE_WRAPPER; links
+# rustc_private via the rustc-dev component. This is the plumbing precursor to a
+# Dylint LateLintPass — the extraction logic is written to lift unchanged.
+[[bin]]
+name = "wl-driver"
+path = "src/main.rs"
+
+[dependencies]
+wl-ir = { workspace = true }
+serde_json = { workspace = true }

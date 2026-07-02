@@ -1,0 +1,24 @@
+# The single-binary embed check (SPIKE-rustc-fidelity-tree.md §3, §12.10).
+#
+# This is an ISOLATED, STABLE crate — the `dylint` orchestrator library has no
+# rustc_private, so the user-facing binary stays on stable. It calls
+# `dylint::run(opts)` directly instead of shelling out to `cargo-dylint`,
+# proving the single-bin packaging. The nightly + rustc_private stay quarantined
+# in the spawned driver + the lint dylib (which this drives by path).
+[package]
+name = "wl-embed"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# `library_packages` pulls in the cargo-cli plumbing that `run()` needs to build
+# lint libs / drivers and invoke `cargo check`.
+dylint = { version = "6.0.1", features = ["library_packages"] }
+anyhow = "1"
+# The completeness guard reads the target workspace's member/target set to know
+# which IR fragments a full run must produce (cargo freshness can silently skip a
+# crate's lint pass — SPIKE §11 caching gotcha). No compile: `--no-deps`.
+cargo_metadata = "0.23"
+
+[workspace]
