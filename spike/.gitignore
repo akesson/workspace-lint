@@ -1,0 +1,7 @@
+/target
+/ir-out*
+Cargo.lock
+
+# step-1 sub-workspaces (isolated) build artifacts
+wl-lint/target
+embed/target
