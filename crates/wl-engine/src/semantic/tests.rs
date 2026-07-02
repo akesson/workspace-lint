@@ -14,6 +14,7 @@ fn span() -> Option<Span> {
         file: "src/lib.rs".into(),
         lo: 0,
         hi: 10,
+        line: 1,
         from_expansion: false,
     })
 }
@@ -28,6 +29,7 @@ fn item(path: &[&str], key: &str, kind: &str, parent: Option<&str>) -> ItemFact 
         visibility: Visibility::Public,
         span: span(),
         vis_span: None,
+        attrs: Vec::new(),
     }
 }
 
@@ -40,6 +42,7 @@ fn edge(from: &[&str], to: &[&str], to_key: &str, import: bool) -> RefEdge {
         to_kind: "fn".into(),
         external: from.first() != to.first(),
         import,
+        in_signature: false,
     }
 }
 
@@ -368,4 +371,85 @@ fn loader_is_strict() {
         super::load_fragments(tmp.path()),
         Err(SemanticError::BadFragment { .. })
     ));
+}
+
+/// (PR 9) An export-shaped attribute roots a def: the FFI export with no Rust
+/// referrer is NOT a lead — the `ffi_no_mangle_export` false positive retired.
+#[test]
+fn export_attrs_root_reachability() {
+    let mut ffi = item(&["alpha", "ffi_export"], "K1", "fn", Some("mod"));
+    ffi.attrs = vec!["no_mangle".into()];
+    let plain = item(&["alpha", "plain_dead"], "K2", "fn", Some("mod"));
+    let m = model(vec![(
+        "default",
+        vec![frag("alpha", vec![ffi, plain], vec![])],
+    )]);
+    assert_eq!(
+        lead_ids(&m.union_verdict()),
+        ["alpha::plain_dead"],
+        "the export-rooted fn must not be a lead; the plain one still is"
+    );
+}
+
+/// (PR 9) Signature exposure: a def named in a PUB item's signature is
+/// flagged; one named only in a private item's signature is not.
+#[test]
+fn signature_exposure_requires_pub_from() {
+    let exposed = item(&["alpha", "Exposed"], "K_EXPOSED", "struct", Some("mod"));
+    let hidden = item(&["alpha", "Hidden"], "K_HIDDEN", "struct", Some("mod"));
+    let pub_fn = item(&["alpha", "api"], "K_API", "fn", Some("mod"));
+    let mut priv_fn = item(&["alpha", "internal"], "K_INT", "fn", Some("mod"));
+    priv_fn.visibility = Visibility::Restricted("crate".into());
+
+    let mut sig_edge = edge(&["alpha", "api"], &["alpha", "Exposed"], "K_EXPOSED", false);
+    sig_edge.from_key = "K_API".into();
+    sig_edge.in_signature = true;
+    let mut priv_sig_edge = edge(
+        &["alpha", "internal"],
+        &["alpha", "Hidden"],
+        "K_HIDDEN",
+        false,
+    );
+    priv_sig_edge.from_key = "K_INT".into();
+    priv_sig_edge.in_signature = true;
+
+    let m = model(vec![(
+        "default",
+        vec![frag(
+            "alpha",
+            vec![exposed, hidden, pub_fn, priv_fn],
+            vec![sig_edge, priv_sig_edge],
+        )],
+    )]);
+    let asm = m.primary();
+    assert!(asm.exposed_in_public_signature("K_EXPOSED"));
+    assert!(!asm.exposed_in_public_signature("K_HIDDEN"));
+}
+
+/// (PR 9) Pub-module-hop reachability: pub def under pub modules is
+/// externally reachable; the same def under a private module is not; a
+/// non-module path segment (impl rendering) is transparent.
+#[test]
+fn external_reachability_walks_module_visibility() {
+    let mut pub_mod = item(&["alpha", "api"], "K_MOD_PUB", "mod", Some("mod"));
+    pub_mod.kind = "mod".into();
+    let mut priv_mod = item(&["alpha", "detail"], "K_MOD_PRIV", "mod", Some("mod"));
+    priv_mod.kind = "mod".into();
+    priv_mod.visibility = Visibility::Restricted("crate".into());
+
+    let reachable = item(&["alpha", "api", "f"], "K_R", "fn", Some("mod"));
+    let unreachable = item(&["alpha", "detail", "g"], "K_U", "fn", Some("mod"));
+
+    let m = model(vec![(
+        "default",
+        vec![frag(
+            "alpha",
+            vec![pub_mod, priv_mod, reachable, unreachable],
+            vec![],
+        )],
+    )]);
+    let asm = m.primary();
+    let def = |k: &str| asm.defs.get(k).unwrap();
+    assert!(asm.is_externally_reachable(def("K_R")));
+    assert!(!asm.is_externally_reachable(def("K_U")));
 }

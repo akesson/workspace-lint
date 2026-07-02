@@ -172,6 +172,7 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
             visibility,
             span: span_to_ir(sm, tcx.def_span(def_id)),
             vis_span: vis_span_to_ir(tcx, sm, local_id),
+            attrs: export_attrs(tcx, local_id),
         });
     }
 
@@ -221,14 +222,17 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
     /// `use`/re-export rather than a use-site (see [`RefEdge::import`]).
     fn record(&mut self, at: HirId, to: DefId, import: bool) {
         let from_id = self.tcx.hir_get_parent_item(at).to_def_id();
-        self.record_edge(from_id, to, import);
+        self.record_edge(from_id, to, import, false);
     }
 
     /// Record `from_id → to`, skipping self-edges. Two flavours of self-edge:
     /// same-`DefId` (an item's own def in its signature/body — noise, not usage),
     /// and path-level (`def_path_str` renders an `impl T` block by its self-type,
     /// so a ref to `T` from inside its own impl collapses to from==to).
-    fn record_edge(&mut self, from_id: DefId, to: DefId, import: bool) {
+    /// `in_signature` marks edges from the lowered-signature pass (the HIR walk
+    /// may emit the same reference unflagged; consumers of the flag are
+    /// boolean, so the near-duplicate is harmless and keeps both provenances).
+    fn record_edge(&mut self, from_id: DefId, to: DefId, import: bool, in_signature: bool) {
         if from_id == to {
             return;
         }
@@ -250,55 +254,66 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             to_kind: def_kind_str(self.tcx.def_kind(to)),
             external,
             import,
+            in_signature,
         });
     }
 
-    /// Second pass: associated-type projections in *type* position
-    /// (`<S as Tr>::Item`, `T::Item`, `Self::Out`) — the one reference class the
-    /// HIR walk can't resolve (their `PathSegment::res` is `Res::Err`; resolution
-    /// is deferred past name-resolution). Instead of driving astconv per HIR node,
-    /// walk each item's *lowered* signature (`fn_sig`/`type_of` — cached queries,
-    /// no empty-env ICE) and pull the `def_id` of every `Alias(Projection|Inherent)`.
+    /// Second pass over each item's *lowered* signature (`fn_sig`/`type_of` —
+    /// cached queries, no empty-env ICE), with two jobs:
+    ///
+    /// 1. Associated-type projections in *type* position (`<S as Tr>::Item`,
+    ///    `T::Item`, `Self::Out`) — the one reference class the HIR walk can't
+    ///    resolve (their `PathSegment::res` is `Res::Err`; resolution is
+    ///    deferred past name-resolution).
+    /// 2. Every *named type* (ADTs, foreign types) in the signature, flagged
+    ///    [`RefEdge::in_signature`] — the substrate of
+    ///    `exposed_in_public_signature` (a type named in a pub signature must
+    ///    not be visibility-tightened: E0446 / `private_interfaces`).
     fn collect_signature_projections(&mut self) {
         for local in self.tcx.hir_crate_items(()).definitions() {
             let did = local.to_def_id();
-            let mut proj = ProjVisitor { out: Vec::new() };
+            let mut sig = SigVisitor { out: Vec::new() };
             // `skip_binder` (not `instantiate_identity`) keeps aliases *un-normalized*
-            // — we want the projection, not what it resolves to. `fn_sig`/`type_of`
-            // are total, cached queries: no empty-env ICE.
+            // — we want the projection, not what it resolves to.
             match self.tcx.def_kind(did) {
                 DefKind::Fn | DefKind::AssocFn => {
-                    self.tcx.fn_sig(did).skip_binder().visit_with(&mut proj);
+                    self.tcx.fn_sig(did).skip_binder().visit_with(&mut sig);
                 }
                 DefKind::TyAlias
                 | DefKind::Const { .. }
                 | DefKind::AssocConst { .. }
                 | DefKind::Static { .. } => {
-                    self.tcx.type_of(did).skip_binder().visit_with(&mut proj);
+                    self.tcx.type_of(did).skip_binder().visit_with(&mut sig);
                 }
                 _ => continue,
             }
-            for to in proj.out {
-                self.record_edge(did, to, false);
+            for to in sig.out {
+                self.record_edge(did, to, false, true);
             }
         }
     }
 }
 
-/// Collects the assoc-type `def_id` of every projection in a `ty::Ty` — the
-/// `def_id` lives in the `AliasTyKind` variant, not the `AliasTy` itself.
-struct ProjVisitor {
+/// Collects the `def_id` of every type *named* in a `ty::Ty` tree: assoc-type
+/// projections (whose `def_id` lives in the `AliasTyKind` variant) and plain
+/// ADTs. Both feed the same edge stream; the ADTs additionally carry the
+/// signature-position flag's meaning for `exposed_in_public_signature`.
+struct SigVisitor {
     out: Vec<DefId>,
 }
 
-impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ProjVisitor {
+impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for SigVisitor {
     fn visit_ty(&mut self, t: Ty<'tcx>) {
-        if let ty::Alias(alias) = t.kind() {
-            if let ty::AliasTyKind::Projection { def_id } | ty::AliasTyKind::Inherent { def_id } =
-                alias.kind
-            {
-                self.out.push(def_id);
+        match t.kind() {
+            ty::Alias(alias) => {
+                if let ty::AliasTyKind::Projection { def_id }
+                | ty::AliasTyKind::Inherent { def_id } = alias.kind
+                {
+                    self.out.push(def_id);
+                }
             }
+            ty::Adt(adt, _) => self.out.push(adt.did()),
+            _ => {}
         }
         t.super_visit_with(self);
     }
@@ -469,6 +484,29 @@ fn parent_def_kind(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
 /// points into the macro *definition*, a wrong `--fix` write surface, but the
 /// callsite is a real user-file position worth keeping for display/identity.
 /// See [`Span`] for the policy. Kept verbatim in sync with the driver copy.
+/// The export-shaped attributes on a def, from the closed set reachability
+/// roots on (`ItemFact::attrs`): an FFI-exported item has no Rust referrer, so
+/// these are the only evidence it isn't dead. Name-only — values don't matter.
+/// These are *parsed* attributes on this toolchain (`Attribute::Parsed(
+/// AttributeKind::…)`), so `has_name` never sees them — `find_attr!` is the
+/// prescribed accessor.
+fn export_attrs(tcx: TyCtxt<'_>, local_id: LocalDefId) -> Vec<String> {
+    use rustc_hir::attrs::AttributeKind;
+    use rustc_hir::find_attr;
+    let attrs = tcx.hir_attrs(tcx.local_def_id_to_hir_id(local_id));
+    let mut out = Vec::new();
+    if find_attr!(attrs, AttributeKind::NoMangle(_)) {
+        out.push("no_mangle".to_string());
+    }
+    if find_attr!(attrs, AttributeKind::ExportName { .. }) {
+        out.push("export_name".to_string());
+    }
+    if find_attr!(attrs, AttributeKind::Used { .. }) {
+        out.push("used".to_string());
+    }
+    out
+}
+
 fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option<Span> {
     if span.is_dummy() {
         return None;
@@ -492,10 +530,15 @@ fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option
         _ => return None,
     };
     let start = sf.start_pos.0;
+    // 1-based line of `lo`, from the file's own line table (computed on the
+    // callsite-projected span, matching `lo`/`hi`). Diagnostic anchors need
+    // it, and the extractor is the only place that has the SourceMap.
+    let line = sf.lookup_line(sf.relative_position(lo)).map_or(0, |l| l + 1) as u32;
     Some(Span {
         file,
         lo: lo.0.saturating_sub(start),
         hi: hi.0.saturating_sub(start),
+        line,
         from_expansion,
     })
 }

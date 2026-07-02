@@ -161,7 +161,63 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         c.expect(it.vis_span.is_none(), it, "private vis_span must be None");
     });
 
-    // 7. Global invariant (load-bearing): nothing in the fragment references
+    // 7. (PR 9) Export attrs: `#[no_mangle]` lands in `ItemFact::attrs` — the
+    //    reachability root evidence for FFI exports.
+    ck.check("ffi_export", &frag, |c, it| {
+        c.expect(
+            it.attrs.iter().any(|a| a == "no_mangle"),
+            it,
+            "attrs must carry no_mangle",
+        );
+    });
+    ck.check("plain", &frag, |c, it| {
+        c.expect(it.attrs.is_empty(), it, "no export attrs on a plain fn");
+    });
+
+    // 8. (PR 9) Span lines: 1-based, computed by the extractor. Expected
+    //    values come from the fixture source itself (self-maintaining), and
+    //    the cross-file macro's line must be the INVOCATION line.
+    let src = std::fs::read_to_string(ck.root.join("src/lib.rs"))?;
+    let line_of = |needle: &str| -> u32 {
+        (src.lines().position(|l| l.contains(needle)).unwrap() + 1) as u32
+    };
+    ck.check("plain", &frag, |c, it| {
+        let expected = line_of("pub fn plain()");
+        let got = it.span.as_ref().map_or(0, |s| s.line);
+        c.expect(
+            got == expected,
+            it,
+            &format!("span.line == {expected} (got {got})"),
+        );
+    });
+    ck.check("from_cross_file_macro", &frag, |c, it| {
+        let expected = line_of("make_pub_fn!(from_cross_file_macro)");
+        let got = it.span.as_ref().map_or(0, |s| s.line);
+        c.expect(
+            got == expected,
+            it,
+            &format!("span.line == invocation line {expected} (got {got})"),
+        );
+    });
+
+    // 9. (PR 9) Signature exposure: `Probed` is named in `exposes_probed`'s
+    //    signature — the lowered-signature pass must emit an in_signature edge.
+    {
+        let hit = frag.references.iter().any(|e| {
+            e.in_signature
+                && e.from.last().map(String::as_str) == Some("exposes_probed")
+                && e.to.last().map(String::as_str) == Some("Probed")
+        });
+        if hit {
+            ck.passes += 1;
+            println!("PASS  exposes_probed: in_signature edge to Probed");
+        } else {
+            ck.failures
+                .push("[exposes_probed] missing in_signature edge to Probed".into());
+        }
+    }
+
+    // 10. Global invariant (load-bearing): nothing in the fragment references
     //    gen.rs except the `make_pub_fn` macro definition itself (which genuinely
     //    lives there, is a `macro`, and is not from an expansion).
     for it in &frag.items {

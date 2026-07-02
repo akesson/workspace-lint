@@ -49,3 +49,16 @@ fn private() -> u32 {
 pub fn undocumented_roundtrip() -> u32 {
     4
 }
+
+// FFI export (PR 9): carries `#[no_mangle]` — no Rust referrer will ever
+// exist, so `ItemFact::attrs` is the only evidence it isn't dead pub API.
+#[unsafe(no_mangle)]
+pub extern "C" fn ffi_export() -> u32 {
+    5
+}
+
+// Signature exposure (PR 9): `Probed` is named in this pub fn's signature, so
+// the lowered-signature pass must emit an `in_signature` edge to it.
+pub fn exposes_probed() -> Probed {
+    Probed { field: 6 }
+}

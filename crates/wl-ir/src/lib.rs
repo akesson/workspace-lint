@@ -106,6 +106,13 @@ pub struct RefEdge {
     /// does this module re-export" — legitimately want import edges.
     #[serde(default)]
     pub import: bool,
+    /// `true` iff this edge came from the *signature-position* walk
+    /// (`fn_sig`/`type_of` type projections) rather than a body/path use-site.
+    /// Backs `exposed_in_public_signature`: tightening an item that appears in
+    /// a pub item's signature would break compilation (E0446 /
+    /// `private_interfaces`), so the unused-pub `--fix` must not propose it.
+    #[serde(default)]
+    pub in_signature: bool,
 }
 
 /// A single resolved definition.
@@ -159,6 +166,14 @@ pub struct ItemFact {
     /// pre-`vis_span` fragments loadable.
     #[serde(default)]
     pub vis_span: Option<Span>,
+    /// The export-shaped attributes on this def, from the small closed set the
+    /// reachability analysis roots on: `no_mangle`, `export_name`, `used`. An
+    /// FFI-exported item has no Rust referrer, so without these it reads as
+    /// dead pub API (the `ffi_no_mangle_export` known false positive this
+    /// field exists to fix). Emitted names only — values (`export_name = "…"`)
+    /// don't affect reachability.
+    #[serde(default)]
+    pub attrs: Vec<String>,
 }
 
 /// Normalized visibility. `Restricted` carries the rendered restriction
@@ -171,7 +186,10 @@ pub enum Visibility {
 }
 
 /// A byte range within a workspace-relative source file. Byte offsets are
-/// relative to the start of `file` (not the global `SourceMap` coordinate).
+/// relative to the start of `file` (not the global `SourceMap` coordinate),
+/// and `line` is the 1-based line of `lo` — emitted by the extractor (it has
+/// the `SourceMap`; re-deriving lines downstream would duplicate file I/O and
+/// can drift from the compiler's own accounting).
 ///
 /// When `from_expansion` is `true` the original rustc span was inside a macro
 /// expansion, and `lo`/`hi` have been projected to the **callsite**
@@ -186,6 +204,10 @@ pub struct Span {
     pub file: String,
     pub lo: u32,
     pub hi: u32,
+    /// 1-based line of `lo` (`0` only in pre-`line` fragments, which the
+    /// vendored-lockstep shipping makes unobservable in practice).
+    #[serde(default)]
+    pub line: u32,
     #[serde(default)]
     pub from_expansion: bool,
 }

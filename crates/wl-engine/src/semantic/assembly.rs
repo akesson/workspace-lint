@@ -68,6 +68,11 @@ pub enum Reach {
     /// whose trait method is dispatched somewhere (via generic/`dyn`), which
     /// reaches every impl of it.
     InternalDispatch,
+    /// Carries an export-shaped attribute (`#[no_mangle]`/`#[export_name]`/
+    /// `#[used]`): exported to the linker, no Rust referrer will ever exist —
+    /// a sound root, never a lead (the `ffi_no_mangle_export` false positive
+    /// this variant retires).
+    ExportRoot,
     /// A judged candidate with no reaching edge under this config — a lead.
     Unreached,
 }
@@ -88,6 +93,9 @@ pub struct DefInfo {
     /// No source span ⇒ a compiler-synthesized def (the `--test` harness's
     /// generated `fn main`, …). Never an unused-pub candidate.
     pub synthetic: bool,
+    /// Carries an export-shaped attribute (`ItemFact::attrs` non-empty) — a
+    /// linker-visible root; see [`Reach::ExportRoot`].
+    pub export_root: bool,
 }
 
 /// One candidate def as the cfg-matrix union sees it: reduced to its
@@ -133,6 +141,12 @@ pub struct Assembly {
     /// Trait-item key → the impl-item keys implementing it (the dispatch
     /// linkage: a dispatched trait method reaches every impl of it).
     impls_of: BTreeMap<String, Vec<String>>,
+    /// Keys named in some PUB item's signature (`in_signature` edges whose
+    /// `from` def is public) — the `exposed_in_public_signature` substrate.
+    signature_exposed: BTreeSet<String>,
+    /// `mod` def path (joined) → is-public, for the pub-module-hop
+    /// reachability judgement.
+    module_vis: BTreeMap<String, bool>,
 }
 
 impl Assembly {
@@ -140,14 +154,19 @@ impl Assembly {
         let crates: BTreeSet<String> = fragments.iter().map(|f| f.crate_name.clone()).collect();
 
         // 1) Global def index (keyed by the cross-crate-stable DefPathHash) +
-        //    the trait→impls linkage.
+        //    the trait→impls linkage + the module-visibility table (the
+        //    pub-module-hop substrate).
         let mut defs = BTreeMap::new();
         let mut impls_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut module_vis = BTreeMap::new();
         for frag in &fragments {
             for it in &frag.items {
                 let category = Category::of(it.parent_kind.as_deref(), &it.trait_item);
                 if let Some(ti) = &it.trait_item {
                     impls_of.entry(ti.clone()).or_default().push(it.key.clone());
+                }
+                if it.kind == "mod" {
+                    module_vis.insert(it.path.join("::"), it.visibility == Visibility::Public);
                 }
                 defs.insert(
                     it.key.clone(),
@@ -159,6 +178,7 @@ impl Assembly {
                         category,
                         trait_item: it.trait_item.clone(),
                         synthetic: it.span.is_none(),
+                        export_root: !it.attrs.is_empty(),
                     },
                 );
             }
@@ -177,11 +197,19 @@ impl Assembly {
         let mut dep_matrix = BTreeMap::new();
         let mut referenced = BTreeSet::new();
         let mut import_edges = 0usize;
+        let mut signature_exposed = BTreeSet::new();
         for frag in &fragments {
             for e in &frag.references {
                 let Some(def) = defs.get(&e.to_key) else {
                     continue; // target outside the workspace, or not a tree item
                 };
+                // Signature exposure: the target is named in a PUB item's
+                // signature (from-pub looked up via the def index; an unknown
+                // `from` — e.g. a body-nested def we don't emit — can't be a
+                // pub API surface, so it doesn't count).
+                if e.in_signature && defs.get(&e.from_key).is_some_and(|f| f.public) {
+                    signature_exposed.insert(e.to_key.clone());
+                }
                 let from_crate = e.from.first().cloned().unwrap_or_default();
                 let cross = from_crate != def.krate;
                 if cross {
@@ -211,6 +239,8 @@ impl Assembly {
             referenced,
             import_edges,
             impls_of,
+            signature_exposed,
+            module_vis,
         }
     }
 
@@ -222,11 +252,15 @@ impl Assembly {
     /// Direct use-site first; then, for a trait-impl item, dispatch expansion
     /// off its `trait_item`: an external trait is a root (invisible dispatch),
     /// an internal one is reached iff its method is dispatched anywhere.
-    /// Module-level and inherent-impl items carry no `trait_item`, so they
-    /// fall straight through to Direct-or-Unreached.
+    /// Export-shaped attributes root a def unconditionally (linker-visible,
+    /// no Rust referrer possible). Module-level and inherent-impl items carry
+    /// no `trait_item`, so they fall through to Direct-or-Unreached.
     pub fn reach_of(&self, key: &str, def: &DefInfo) -> Reach {
         if self.in_degree.contains_key(key) {
             return Reach::Direct;
+        }
+        if def.export_root {
+            return Reach::ExportRoot;
         }
         if let Some(ti) = &def.trait_item {
             if !self.defs.contains_key(ti) {
@@ -237,6 +271,39 @@ impl Assembly {
             }
         }
         Reach::Unreached
+    }
+
+    /// Is `key`'s def named in some **pub** item's signature (an
+    /// `in_signature` edge whose `from` is public)? Tightening such a def
+    /// breaks compilation (E0446 / `private_interfaces`), so the unused-pub
+    /// `--fix` must not propose it.
+    pub fn exposed_in_public_signature(&self, key: &str) -> bool {
+        self.signature_exposed.contains(key)
+    }
+
+    /// Pub-module-hop external reachability: the def is `pub` and every
+    /// ancestor module on its definition path is `pub` too, so an external
+    /// consumer can name it. Judged from the emitted `mod` ItemFacts (path →
+    /// visibility); path segments without a matching `mod` fact — impl-block
+    /// renderings, trait names — are treated as transparent (they don't gate
+    /// module reachability). A def reachable only through a `pub use` chain
+    /// from a private module reads NOT reachable here — the re-export index
+    /// refinement belongs to the unused-pub port if fixtures demand it.
+    pub fn is_externally_reachable(&self, def: &DefInfo) -> bool {
+        if !def.public {
+            return false;
+        }
+        let segments: Vec<&str> = def.path.split("::").collect();
+        // Ancestors: every proper prefix longer than the crate root.
+        for end in 2..segments.len() {
+            let prefix = segments[..end].join("::");
+            if let Some(vis) = self.module_vis.get(prefix.as_str())
+                && !vis
+            {
+                return false;
+            }
+        }
+        true
     }
 
     /// Is `krate`'s pub API an **external reachability boundary** — could an
