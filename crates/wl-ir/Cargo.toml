@@ -1,0 +1,15 @@
+[package]
+name = "wl-ir"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+# Publishable-intent flag: this schema is the engine's public extension surface,
+# and the flag marks its API external for workspace-lint's publish-aware
+# `unused-pub` (same convention as the marker crates).
+publish = true
+repository = "https://github.com/akesson/workspace-lint"
+description = "The serde IR contract between workspace-lint's per-crate rustc extractor (Phase 1) and its workspace assembler (Phase 2)."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { workspace = true }

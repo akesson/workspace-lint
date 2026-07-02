@@ -208,8 +208,9 @@ Emit-time rules:
   code today).
 - **Two streams:** `IrFragment` (per crate) + `Finding` (per crate).
 
-**Built so far (step-0/1/2 + cross-crate assembly, `spike/ir/`):** `IrFragment {
-crate_name, items: Vec<ItemFact>, references: Vec<RefEdge> }`. `ItemFact` carries
+**Built so far (step-0/1/2 + cross-crate assembly; graduated to `crates/wl-ir/`
+in migration PR 1):** `IrFragment { schema_version, crate_name, items:
+Vec<ItemFact>, references: Vec<RefEdge> }`. `ItemFact` carries
 path, **`key`** (stable `DefPathHash`, hex), kind, `parent_kind` (parent `DefKind`
 → module-level vs assoc vs fn-local), **`trait_item`** (the trait item a trait-impl
 assoc item implements — `Some` only for trait impls, so `parent_kind==impl` +

@@ -1,6 +1,5 @@
 /target
-# generated IR output dirs (ir-out*, ir-cost*, ir-fid*, ir-ci*, …); `/ir/` (the
-# wl-ir crate source) is not matched — no trailing dash.
+# generated IR output dirs (ir-out*, ir-cost*, ir-fid*, ir-ci*, …).
 /ir-*
 Cargo.lock
 

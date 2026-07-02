@@ -257,6 +257,7 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
     let references = collect_references(tcx, &crate_code);
 
     IrFragment {
+        schema_version: wl_ir::SCHEMA_VERSION,
         crate_name: crate_code,
         items,
         references,

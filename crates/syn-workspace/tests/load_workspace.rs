@@ -40,10 +40,11 @@ fn load_discovers_all_workspace_members() {
         vec![
             "syn-workspace",
             "syn-workspace-marker",
+            "wl-ir",
             "workspace-lint",
             "workspace-lint-marker",
         ],
-        "discovered crate names should match the four current workspace members"
+        "discovered crate names should match the current workspace members"
     );
 
     for krate in ws.crates() {

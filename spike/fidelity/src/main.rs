@@ -47,6 +47,7 @@ fn main() {
     let frag: IrFragment =
         serde_json::from_str(&std::fs::read_to_string(&ir_json).expect("read IR json"))
             .expect("parse IR json");
+    frag.check_schema().expect("IR schema version");
 
     // Pre-scan: every path that has a `fn` def. Used to strip `--test` harness
     // descriptor consts — the `#[test]` desugar emits a `TestDescAndFn` *const* at

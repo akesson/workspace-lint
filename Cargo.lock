@@ -2076,6 +2076,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wl-ir"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "workspace-lint"
 version = "0.1.0"
 dependencies = [

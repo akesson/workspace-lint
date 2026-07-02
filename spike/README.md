@@ -18,7 +18,9 @@ so none of this touches the stable build or the dogfood lint.
 
 ## Layout
 
-- `ir/`       — `wl-ir`: the cross-phase serialization contract (plain serde). §6.
+- `../crates/wl-ir/` — the cross-phase serialization contract (plain serde). §6.
+                Graduated to the main workspace in migration PR 1; the spike
+                crates keep path-depping on it until they retire.
 - `driver/`   — `wl-driver`: raw `rustc_driver` wrapper (step 0). Emits an
                 `IrFragment` per primary crate → `$WL_IR_OUT/<crate>.json`.
 - `assemble/` — `wl-assemble`: Phase-2 assembler. Reads *all* fragments and

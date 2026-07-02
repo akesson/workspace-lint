@@ -24,6 +24,7 @@ fn main() -> ExitCode {
     let frag: IrFragment = match std::fs::read_to_string(&ir_json)
         .map_err(|e| e.to_string())
         .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+        .and_then(|f: IrFragment| f.check_schema().map(|()| f))
     {
         Ok(f) => f,
         Err(e) => {

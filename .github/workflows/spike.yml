@@ -9,10 +9,13 @@
 # manual dispatch.
 name: Spike (rustc-fidelity)
 
+# Also runs on migrate/* branches: the backend-swap migration keeps editing the
+# spike crates (they host the extractor + assembler until PRs 2–4 promote them),
+# so every migration PR gets this Linux plumbing check until PR 13 retires spike/.
 on:
   workflow_dispatch:
   push:
-    branches: ["spike-*"]
+    branches: ["spike-*", "migrate/*"]
 
 env:
   CARGO_TERM_COLOR: always

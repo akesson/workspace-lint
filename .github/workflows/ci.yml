@@ -49,6 +49,7 @@ jobs:
           cargo publish --dry-run -p syn-workspace-marker --allow-dirty
           cargo publish --dry-run -p workspace-lint-marker --allow-dirty
           cargo publish --dry-run -p syn-workspace --allow-dirty
+          cargo publish --dry-run -p wl-ir --allow-dirty
 
   test:
     name: Test (${{ matrix.os }})

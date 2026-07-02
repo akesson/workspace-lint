@@ -1,19 +1,38 @@
-//! The minimal cross-phase IR for the step-0 spike.
+//! The cross-phase IR contract of workspace-lint's rustc-fidelity engine.
 //!
-//! This is the serialization contract between Phase 1 (the per-crate driver,
-//! which has `TyCtxt`) and Phase 2 (the assembler, which does not). Per
+//! This is the serialization contract between Phase 1 (the per-crate extractor
+//! dylib, which has `TyCtxt`) and Phase 2 (the assembler, which does not). Per
 //! `SPIKE-rustc-fidelity-tree.md` §6 this schema is *both* the internal IR and
 //! the public extension surface, so it is intentionally plain data. It carries
-//! what's needed to diff definitions against the syn resolver (path, kind,
-//! visibility, byte-span) plus the **reference graph** (who-uses-whom) that will
-//! back the usage lints. Macros/cfg come later.
+//! resolved definitions (path, kind, visibility, byte-span) plus the
+//! **reference graph** (who-uses-whom) that backs the usage lints.
+//!
+//! Compatibility model: *additive* growth uses `#[serde(default)]` fields (old
+//! fragments stay loadable); a change that would make old fragments
+//! **misleading** — a field's meaning shifts, an emit rule changes what a value
+//! covers — bumps [`SCHEMA_VERSION`] instead, and loaders reject the mismatch
+//! loudly rather than silently assembling skewed data.
 
 use serde::{Deserialize, Serialize};
+
+/// The schema version the extractor stamps into every [`IrFragment`] and
+/// loaders assert with [`IrFragment::check_schema`]. The extractor and the
+/// assembler ship in lockstep (the binary vendors the extractor source), so a
+/// mismatch always means a stale cache or a hand-mixed fragment dir — never a
+/// supported configuration. Pre-versioning fragments deserialize as `0` and
+/// are rejected the same way.
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.json`. Phase 2 assembles these.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrFragment {
+    /// The [`SCHEMA_VERSION`] of the extractor that wrote this fragment.
+    /// `#[serde(default)]` so pre-versioning fragments deserialize (as `0`)
+    /// and get rejected by [`IrFragment::check_schema`] with a real message
+    /// instead of a serde error.
+    #[serde(default)]
+    pub schema_version: u32,
     /// Code-form crate name (hyphens → underscores) — the leading segment of
     /// every canonical path, matching the syn resolver's `ResolvedPath[0]`.
     pub crate_name: String,
@@ -26,6 +45,24 @@ pub struct IrFragment {
     /// driver/dylib). `#[serde(default)]` keeps pre-references fragments loadable.
     #[serde(default)]
     pub references: Vec<RefEdge>,
+}
+
+impl IrFragment {
+    /// Rejects a fragment written under a different [`SCHEMA_VERSION`].
+    /// Call this on every loaded fragment before assembling — skew detection
+    /// is the loader's job, and silent acceptance of a stale fragment would
+    /// assemble a tree that mixes two schema generations.
+    pub fn check_schema(&self) -> Result<(), String> {
+        if self.schema_version == SCHEMA_VERSION {
+            return Ok(());
+        }
+        Err(format!(
+            "IR fragment for `{}` has schema version {} but this build expects {}; \
+             the fragment dir is stale or was written by a different extractor build \
+             — delete it and re-extract",
+            self.crate_name, self.schema_version, SCHEMA_VERSION
+        ))
+    }
 }
 
 /// One resolved reference: local item `from` mentions def `to`. Both carry a
