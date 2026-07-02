@@ -1,6 +1,11 @@
 #!/bin/sh
 set -e
 
+# git exports an absolute GIT_DIR to hooks when run from a linked worktree;
+# child processes must rediscover the repository from their own cwd, not
+# inherit ours (see the matching comment in pre-push).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+
 echo "Running pre-commit checks..."
 
 echo "  cargo fmt --check"

@@ -3,6 +3,7 @@
 //! Reach for these instead of re-rolling the primitives in a new harness:
 //!
 //! - [`workspace_lint`] — the binary under test.
+//! - [`git`] — spawn git in a fixture dir; the ONLY way tests may run git.
 //! - [`copy_tree`] / [`walk_files`] — stage a workspace tree into a tempdir, and
 //!   walk a tree for equality comparison.
 //! - [`TestWorkspace`] — build a minimal cargo workspace + `.workspace-lint.toml`
@@ -22,6 +23,50 @@ use std::path::{Path, PathBuf};
 
 pub fn workspace_lint() -> assert_cmd::Command {
     cargo_bin_cmd!("workspace-lint")
+}
+
+/// Environment variables that pin git to a specific repository, mirroring
+/// git's own `local_repo_env` (kept in sync with `GIT_REPO_ENV` in
+/// `src/git.rs` — duplicated because the binary crate has no lib target to
+/// import from). Git exports an absolute `GIT_DIR` to hook processes when the
+/// repo is discovered via a `.git` *file* (linked worktrees, submodules); a
+/// test-spawned git inheriting it operates on the *developer's* repository
+/// with the fixture tempdir as its work tree. That exact leak — the suite run
+/// by the pre-push hook from a linked worktree — once committed fixture trees
+/// onto the real branch and flipped the shared config to `core.bare = true`.
+const GIT_REPO_ENV: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+];
+
+/// Build a `git` invocation rooted at `dir`, scrubbed of the repo-pinning
+/// environment (see [`GIT_REPO_ENV`]) and isolated from the developer's
+/// global/system git config (`commit.gpgsign`, `core.hooksPath`,
+/// `init.templateDir`, … would otherwise leak into fixture repos). All git
+/// spawns in tests must go through here — never `Command::new("git")`
+/// directly.
+pub fn git(dir: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(dir);
+    for var in GIT_REPO_ENV {
+        cmd.env_remove(var);
+    }
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd
 }
 
 pub fn bless_enabled() -> bool {

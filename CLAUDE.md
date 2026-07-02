@@ -174,6 +174,12 @@ root `.workspace-lint.toml` carries explanatory comments for every `ignore` /
   `plugins/dioxus_rsx` AST walker.
 - All workspace crates use `workspace = true` deps (enforced by the
   `centralized-deps` lint, on for this repo).
+- **Never `Command::new("git")` directly** — spawn git via `git::command` (src)
+  or `common::git` (tests). Both scrub the repo-pinning `GIT_*` environment:
+  git exports an absolute `GIT_DIR` to hooks in linked worktrees, and an
+  unscrubbed child git operates on the *invoker's* repository (this once let
+  the test suite, run by the pre-push hook, commit fixture trees onto the
+  developer's real branch).
 - Edition 2024, MSRV 1.88 (`[workspace.package] rust-version`).
 
 # Approach

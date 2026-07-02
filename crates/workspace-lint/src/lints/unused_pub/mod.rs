@@ -606,8 +606,9 @@ fn delete_suggestion(span: &syn_workspace::SourceSpan) -> DeleteOutcome {
 /// repo, path outside the repo, command failure. The safer default is to
 /// downgrade the suggestion's applicability so `--fix` skips it.
 fn is_file_clean_in_git(path: &std::path::Path) -> bool {
-    use std::process::Command;
-    let ls = Command::new("git")
+    // `Path::new(".")` preserves this site's historical cwd-relative repo
+    // discovery; the scrub in `git::command` is what matters here.
+    let ls = crate::git::command(std::path::Path::new("."))
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(path)
         .output();
@@ -615,7 +616,7 @@ fn is_file_clean_in_git(path: &std::path::Path) -> bool {
     if !out.status.success() {
         return false;
     }
-    let st = Command::new("git")
+    let st = crate::git::command(std::path::Path::new("."))
         .args(["status", "--porcelain", "--"])
         .arg(path)
         .output();

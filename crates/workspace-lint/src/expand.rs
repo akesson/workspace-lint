@@ -85,7 +85,9 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
             );
 
             if rule.auto_stage {
-                let status = Command::new("git")
+                // `Path::new(".")` preserves this site's historical cwd-relative
+                // staging; the scrub in `git::command` is what matters here.
+                let status = crate::git::command(Path::new("."))
                     .args(["add", &file.to_string_lossy()])
                     .status()
                     .expect("failed to run `git add`");
