@@ -1,7 +1,11 @@
 /target
-/ir-out*
+# generated IR output dirs (ir-out*, ir-cost*, ir-fid*, ir-ci*, …); `/ir/` (the
+# wl-ir crate source) is not matched — no trailing dash.
+/ir-*
 Cargo.lock
 
 # step-1 sub-workspaces (isolated) build artifacts
 wl-lint/target
 embed/target
+# probes/expansion is an isolated workspace → its own target dir
+probes/expansion/target

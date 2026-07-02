@@ -1,0 +1,81 @@
+# Spike-only CI (the rustc-fidelity pivot). Proves the Dylint plumbing builds and
+# runs on LINUX before the migration bakes it into the main `ci.yml`: the lint
+# dylib links via `dylint-link` and loads as a `.so` (not the macOS `.dylib` the
+# spike was developed against), the stable `wl-embed` binary drives it, and the
+# WS1 span-fidelity policy holds cross-platform.
+#
+# Deliberately isolated: the spike is `exclude`d from the main workspace, so the
+# real `ci.yml` never touches it. This runs only on the spike branches and on
+# manual dispatch.
+name: Spike (rustc-fidelity)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["spike-*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  linux-smoke:
+    name: Linux plumbing smoke (.so + dylint-link + extract + probe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The lint dylib links rustc_private, so it needs the PINNED nightly (the
+      # one dylint 6.0.1 tracks) plus rustc-dev. wl-lint/rust-toolchain selects it,
+      # but install the components explicitly so the runner has them.
+      - name: Install pinned nightly (+ rustc-dev)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-04-16
+          components: rustc-dev, llvm-tools-preview
+      - name: Install stable (for the wl-embed orchestrator)
+        uses: dtolnay/rust-toolchain@stable
+
+      # The custom linker the lint dylib needs (wl-lint/.cargo/config.toml).
+      - name: Install dylint-link
+        run: cargo install dylint-link --locked
+
+      - name: Build lint dylib (pinned nightly → .so on Linux)
+        working-directory: spike/wl-lint
+        run: cargo build
+
+      - name: Build wl-embed (stable orchestrator)
+        working-directory: spike/embed
+        run: cargo +stable build
+
+      # Plain-data crates (no rustc_private): build them with the already-installed
+      # pinned nightly, overriding the spike workspace's rolling-nightly pin, so the
+      # runner needs no third toolchain.
+      - name: Build wl-assemble + wl-probe-check
+        working-directory: spike
+        run: cargo +nightly-2026-04-16 build -p wl-assemble -p wl-probe-check
+
+      # Locate the dylib generically — the filename embeds the toolchain + host
+      # triple and the extension is .so here, .dylib on macOS.
+      - name: Locate lint dylib
+        id: lib
+        run: echo "path=$(ls spike/wl-lint/target/debug/libwl_lint@*.so)" >> "$GITHUB_OUTPUT"
+
+      # Fast, isolated end-to-end: extract the expansion probe and assert the WS1
+      # span-fidelity policy (macro spans → callsite, no editable vis_span, etc.).
+      - name: Extract + check the span-fidelity probe
+        run: |
+          set -euo pipefail
+          ./spike/embed/target/debug/wl-embed \
+            "$PWD/spike/probes/expansion" "${{ steps.lib.outputs.path }}" "$PWD/spike/ir-ci-probe"
+          ./spike/target/debug/wl-probe-check \
+            "$PWD/spike/ir-ci-probe/probe_expansion.json" "$PWD/spike/probes/expansion"
+
+      # Broader smoke: whole-workspace extraction (dylint fans out over members) +
+      # Phase-2 assembly renders its report without error.
+      - name: Extract this workspace + assemble
+        run: |
+          set -euo pipefail
+          ./spike/embed/target/debug/wl-embed "$PWD" "${{ steps.lib.outputs.path }}" "$PWD/spike/ir-ci-ws"
+          test "$(ls spike/ir-ci-ws | wc -l)" -ge 4
+          ./spike/target/debug/wl-assemble "$PWD/spike/ir-ci-ws" --ws "$PWD"
