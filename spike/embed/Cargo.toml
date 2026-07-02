@@ -16,5 +16,9 @@ publish = false
 # lint libs / drivers and invoke `cargo check`.
 dylint = { version = "6.0.1", features = ["library_packages"] }
 anyhow = "1"
+# The completeness guard reads the target workspace's member/target set to know
+# which IR fragments a full run must produce (cargo freshness can silently skip a
+# crate's lint pass — SPIKE §11 caching gotcha). No compile: `--no-deps`.
+cargo_metadata = "0.23"
 
 [workspace]

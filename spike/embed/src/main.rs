@@ -31,6 +31,9 @@
 //!   (c) pass cargo args/features→ Check.args (unused here; wired + documented)
 //!   (d) thread env (WL_IR_OUT)  → set on this process; the driver inherits it
 
+use std::collections::BTreeSet;
+use std::path::Path;
+
 use dylint::opts::{Check, Dylint, LibrarySelection, Operation};
 
 fn main() -> anyhow::Result<()> {
@@ -54,6 +57,12 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Which fragments a *complete* run must produce — computed from cargo
+    // metadata BEFORE the chdir (it takes an explicit manifest path). `None`
+    // means "guard skipped" (an unmodeled target-selection flag); the run still
+    // proceeds, just without the completeness check.
+    let expected = expected_fragments(&target, &packages, &cargo_args)?;
+
     // (d) env the spawned driver inherits — same mechanism the CLI run used.
     unsafe { std::env::set_var("WL_IR_OUT", &ir_out) };
     // (a) dylint checks the workspace in the current directory.
@@ -76,12 +85,13 @@ fn main() -> anyhow::Result<()> {
         quiet: false,
         operation: Operation::Check(Check {
             lib_sel: LibrarySelection {
-                // (b) load exactly our lint dylib by path.
-                lib_paths: vec![lib_path],
+                // (b) load exactly our lint dylib by path. Cloned so the
+                // completeness guard can bump its mtime on a re-lint.
+                lib_paths: vec![lib_path.clone()],
                 ..Default::default()
             },
-            no_deps: true,     // --no-deps: workspace members only, never deps
-            packages,          // empty ⇒ all default members (cargo fans out)
+            no_deps: true, // --no-deps: workspace members only, never deps
+            packages,      // empty ⇒ all default members (cargo fans out)
             // (c) cargo check args forwarded from after `--` — the cfg selector
             //     (`--tests` / `--all-features` / `--no-default-features …`). One
             //     compile per config; the assembler unions the per-config IR dirs.
@@ -93,5 +103,144 @@ fn main() -> anyhow::Result<()> {
     eprintln!("wl-embed: calling dylint::run() over {scope} [{cfg}] (no cargo-dylint CLI)…");
     dylint::run(&opts)?;
     eprintln!("wl-embed: dylint::run() returned Ok");
+
+    // Completeness guard (SPIKE §11 caching gotcha). `WL_IR_OUT` is not in cargo's
+    // fingerprint, so a crate that's up-to-date is *not* recompiled and its lint
+    // pass never runs — no fragment is (re)written and `dylint::run` still returns
+    // Ok. A fresh crate's *existing* fragment is still valid (its inputs are
+    // unchanged), so this is a pure existence check. On a miss we force a re-lint
+    // by bumping the lint dylib's mtime — dylint fingerprints the dylib into every
+    // workspace-member unit's dep-info, so cargo re-checks members (not registry
+    // deps) — and run exactly once more.
+    if let Some(expected) = expected {
+        let ir_dir = Path::new(&ir_out);
+        let missing = missing_fragments(ir_dir, &expected);
+        if missing.is_empty() {
+            eprintln!(
+                "wl-embed: completeness check OK ({} fragment(s))",
+                expected.len()
+            );
+        } else {
+            eprintln!(
+                "wl-embed: {} expected fragment(s) missing (cargo freshness skipped their lint \
+                 pass): {missing:?} — bumping lint-dylib mtime and re-running once",
+                missing.len()
+            );
+            force_relint(&lib_path)?;
+            dylint::run(&opts)?;
+            let still = missing_fragments(ir_dir, &expected);
+            anyhow::ensure!(
+                still.is_empty(),
+                "fragments still missing after forced re-lint: {still:?} (expected {expected:?} in {ir_out})"
+            );
+            eprintln!(
+                "wl-embed: completeness restored ({} fragment(s) regenerated)",
+                missing.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The set of IR fragment filenames a complete run must produce, keyed exactly
+/// as the extractor's `write_fragment` names them (`<crate>.json`, or
+/// `<crate>+test.json` when compiled with `--tests` — `sess.opts.test`). Crate
+/// name = the cargo *target* name with `-` → `_`. Returns `Ok(None)` (guard
+/// skipped, with a warning) when `cargo_args` carries a target-selection flag we
+/// don't model, so the guard never fires spuriously.
+fn expected_fragments(
+    manifest_dir: &str,
+    packages: &[String],
+    cargo_args: &[String],
+) -> anyhow::Result<Option<BTreeSet<String>>> {
+    // Flags that change which *targets* compile, beyond the `--tests` we model.
+    // (Feature flags — `--features`, `--all-features`, `--no-default-features` —
+    // change cfg/content, not the target set, so they're fine.)
+    const UNMODELED: &[&str] = &[
+        "--lib",
+        "--bins",
+        "--bin",
+        "--examples",
+        "--example",
+        "--benches",
+        "--bench",
+        "--test",
+        "--all-targets",
+        "--doc",
+        "-p",
+        "--package",
+        "--workspace",
+        "--exclude",
+    ];
+    if let Some(flag) = cargo_args.iter().find(|a| UNMODELED.contains(&a.as_str())) {
+        eprintln!(
+            "wl-embed: completeness guard skipped — unmodeled target-selection flag `{flag}`"
+        );
+        return Ok(None);
+    }
+    let tests = cargo_args.iter().any(|a| a == "--tests");
+
+    let md = cargo_metadata::MetadataCommand::new()
+        .manifest_path(format!("{}/Cargo.toml", manifest_dir.trim_end_matches('/')))
+        .no_deps()
+        .exec()?;
+    let member_ids: BTreeSet<String> = md
+        .workspace_members
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    let want_pkg = |name: &str| packages.is_empty() || packages.iter().any(|p| p == name);
+
+    let mut expected = BTreeSet::new();
+    for p in &md.packages {
+        if !member_ids.contains(&p.id.to_string()) || !want_pkg(p.name.as_str()) {
+            continue;
+        }
+        for t in &p.targets {
+            let name = t.name.replace('-', "_");
+            // Compare kinds via Display (as wl-assemble does) so we don't couple
+            // to cargo_metadata's enum representation.
+            let mut is_compile_unit = false; // lib/bin/proc-macro (linted primary)
+            let mut is_test_target = false; // integration test (only under --tests)
+            for k in &t.kind {
+                match k.to_string().as_str() {
+                    "lib" | "rlib" | "dylib" | "cdylib" | "staticlib" | "proc-macro" | "bin" => {
+                        is_compile_unit = true
+                    }
+                    "test" => is_test_target = true,
+                    _ => {} // example/bench/custom-build — not compiled by check/--tests here
+                }
+            }
+            if tests {
+                // `--tests` builds unit-test harnesses for lib/bin/proc-macro AND
+                // integration tests, all with `sess.opts.test` ⇒ `+test` suffix.
+                if is_compile_unit || is_test_target {
+                    expected.insert(format!("{name}+test.json"));
+                }
+            } else if is_compile_unit {
+                // Default `check`: lib/bin/proc-macro only (no test/example/bench).
+                expected.insert(format!("{name}.json"));
+            }
+        }
+    }
+    Ok(Some(expected))
+}
+
+/// Expected fragment filenames not present in `ir_out`.
+fn missing_fragments(ir_out: &Path, expected: &BTreeSet<String>) -> Vec<String> {
+    expected
+        .iter()
+        .filter(|name| !ir_out.join(name).exists())
+        .cloned()
+        .collect()
+}
+
+/// Force the next `dylint::run` to re-lint every workspace member by bumping the
+/// lint dylib's mtime. Verified mechanism (SPIKE §11): dylint's driver inserts
+/// the dylib path into each primary-package unit's dep-info, so cargo treats a
+/// newer dylib as a changed input for members only — deps stay fresh.
+fn force_relint(lib_path: &str) -> anyhow::Result<()> {
+    let f = std::fs::OpenOptions::new().append(true).open(lib_path)?;
+    f.set_modified(std::time::SystemTime::now())?;
     Ok(())
 }
