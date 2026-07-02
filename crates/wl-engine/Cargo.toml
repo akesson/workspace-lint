@@ -19,6 +19,11 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 # fast tier: the parsed-Cargo.toml layer (re-exported as `fast::toml_edit`).
 toml_edit = { workspace = true }
+# fast tier: the syntactic module-tree walker parses member sources with syn;
+# proc-macro2's `span-locations` feature supplies the line numbers on
+# broken-`mod`-declaration records.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
 # dylint::run's error type — wrapped, not exposed in our API shapes.
 anyhow = { workspace = true }
 

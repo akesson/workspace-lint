@@ -11,13 +11,13 @@
 //!   `name` is not declared in `[features]`. Indicates a typo or a removed
 //!   feature that left source references behind.
 //!
-//! v1 only scans outer attributes on items (the level the resolver visits).
+//! v1 only scans outer attributes on items (the level the walker visits).
 //! Feature gates inside function bodies and macro bodies are tracked as
 //! `known_false_negatives`.
 
 use std::collections::BTreeSet;
 
-use syn_workspace::Workspace;
+use wl_engine::fast::FastModel;
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
@@ -44,24 +44,28 @@ impl Lint for FeatureDrift {
 
     fn requirements(&self) -> Requirements {
         Requirements {
-            needs_workspace: true,
+            needs_fast: true,
             ..Requirements::default()
         }
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let workspace = cx
-            .workspace
-            .expect("feature-drift lint requires Workspace (Requirements::needs_workspace)");
-        check(workspace)
+        let fast = cx
+            .fast
+            .expect("feature-drift lint requires FastModel (Requirements::needs_fast)");
+        check(fast)
     }
 }
 
-pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(fast: &FastModel) -> Vec<Diagnostic> {
     let lint_id = LintId::FeatureDrift.id();
     let mut diagnostics = Vec::new();
-    for krate in workspace.members() {
-        let declared: BTreeSet<&str> = krate.declared_features.iter().map(String::as_str).collect();
+    for krate in fast.members() {
+        let declared: BTreeSet<&str> = krate
+            .declared_features()
+            .iter()
+            .map(String::as_str)
+            .collect();
         let used: BTreeSet<String> = krate
             .all_modules()
             .flat_map(|m| m.cfg_features.iter().cloned())
@@ -71,7 +75,7 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
         for &feat in &declared {
             if !should_flag_declared(
                 feat,
-                krate.feature_values.get(feat).map(Vec::as_slice),
+                krate.feature_values().get(feat).map(Vec::as_slice),
                 &used_refs,
             ) {
                 continue;
@@ -79,11 +83,7 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             let msg =
                 format!("feature `{feat}` is declared in `[features]` but never gated in source");
             diagnostics.push(
-                at_crate(
-                    lint_id,
-                    msg,
-                    workspace.crate_relative_path(&krate.manifest_dir),
-                )
+                at_crate(lint_id, msg, fast.crate_relative_path(&krate.manifest_dir))
                     .help(format!(
                         "either gate code with `#[cfg(feature = \"{feat}\")]` or remove `{feat}` from `[features]`",
                     ))
@@ -99,11 +99,7 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             let msg =
                 format!("feature `{feat}` is gated in source but not declared in `[features]`");
             diagnostics.push(
-                at_crate(
-                    lint_id,
-                    msg,
-                    workspace.crate_relative_path(&krate.manifest_dir),
-                )
+                at_crate(lint_id, msg, fast.crate_relative_path(&krate.manifest_dir))
                     .help(format!(
                         "add `{feat} = []` to the `[features]` table of `{}/Cargo.toml`, or remove the `cfg(feature = \"{feat}\")` references",
                         krate.name,

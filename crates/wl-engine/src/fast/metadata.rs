@@ -1,14 +1,19 @@
 //! The lean workspace loader behind [`FastModel`]: one `cargo metadata
-//! --no-deps` call plus a parsed [`Manifest`] per member. No source file is
-//! read or parsed — this tier is deliberately just metadata + manifests.
+//! --no-deps` call, a parsed [`Manifest`] per member, and each member's lean
+//! syntactic module trees (built by the sibling `module_tree` walker). No
+//! compilation, no name resolution — parsing member sources is the ceiling of
+//! this tier.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::MetadataCommand;
 
-use super::{Manifest, Result};
+use super::types::{Module, Target};
+use super::{FastError, Manifest, Result, module_tree};
 
-/// The build-free workspace model: root, members, and their parsed manifests.
+/// The build-free workspace model: root, members, and their parsed manifests
+/// plus lean syntactic module trees.
 pub struct FastModel {
     /// `cargo metadata`'s `workspace_root` (absolute) — the same base the
     /// member `manifest_dir`s carry, so [`FastModel::crate_relative_path`]'s
@@ -19,13 +24,20 @@ pub struct FastModel {
     members: Vec<CrateInfo>,
 }
 
-/// One workspace member: identity, location, and its parsed `Cargo.toml`.
+/// One workspace member: identity, location, its parsed `Cargo.toml`, its
+/// `[features]` tables (from `cargo metadata`), and its syntactic module
+/// trees.
 pub struct CrateInfo {
     /// Cargo package name (hyphens preserved).
     pub name: String,
     /// Absolute directory containing the member's `Cargo.toml`.
     pub manifest_dir: PathBuf,
     manifest: Manifest,
+    declared_features: Vec<String>,
+    feature_values: BTreeMap<String, Vec<String>>,
+    targets: Vec<Target>,
+    orphan_files: Vec<PathBuf>,
+    generated_files: Vec<PathBuf>,
 }
 
 impl FastModel {
@@ -55,10 +67,35 @@ impl FastModel {
                     .parent()
                     .expect("a Cargo.toml path always has a parent directory")
                     .to_path_buf();
+                let mut declared_features: Vec<String> = pkg.features.keys().cloned().collect();
+                declared_features.sort();
+                // Full activation lists (cargo synthesizes `foo = ["dep:foo"]`
+                // for an implicit optional-dependency feature) so consumers can
+                // tell a code-gating "leaf" feature (empty list) from a
+                // dependency/feature "plumbing" one.
+                let feature_values: BTreeMap<String, Vec<String>> = pkg
+                    .features
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let targets = module_tree::build_targets(pkg, &manifest_dir)?;
+                let orphan_files = module_tree::compute_orphans(&manifest_dir, &targets);
+                // Union of every target's spliced `include!` files (each module
+                // records its own in [`Module::generated_files`]).
+                let generated_files: Vec<PathBuf> = targets
+                    .iter()
+                    .flat_map(|t| t.all_modules())
+                    .flat_map(|m| m.generated_files.iter().cloned())
+                    .collect();
                 Ok(CrateInfo {
                     name: pkg.name.to_string(),
                     manifest_dir,
                     manifest: Manifest::load(manifest_path)?,
+                    declared_features,
+                    feature_values,
+                    targets,
+                    orphan_files,
+                    generated_files,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -91,6 +128,34 @@ impl FastModel {
     /// write in `Cargo.toml`, hyphens preserved).
     pub fn member_by_name(&self, name: &str) -> Option<&CrateInfo> {
         self.members.iter().find(|c| c.name == name)
+    }
+
+    /// Absolute paths of every file spliced into the workspace via
+    /// `include!(...)` (generated code), across all members. The diagnostic
+    /// pipeline uses this set to drop findings anchored within generated files:
+    /// generated code participates in analysis but is not a place users can
+    /// act on. Only literal / `CARGO_*`-resolvable includes are in the set —
+    /// the fast tier runs no build scripts, so `OUT_DIR` output never appears.
+    pub fn generated_files(&self) -> impl Iterator<Item = &Path> {
+        self.members
+            .iter()
+            .flat_map(|c| c.generated_files.iter().map(PathBuf::as_path))
+    }
+
+    /// Read and parse the given source file with `syn::parse_file`.
+    ///
+    /// [`Module`] only stores the file *path*, not the parsed AST — that
+    /// keeps the whole model `Send + Sync` (a `syn::File` is `Send` but not
+    /// `Sync` because `proc-macro2::Span` contains `PhantomData<Rc<()>>`).
+    /// Callers that need the AST call this helper on demand and cache as they
+    /// see fit (typically a `HashMap<PathBuf, syn::File>` keyed by
+    /// `module.file`).
+    pub fn parse_file(&self, path: &Path) -> Result<syn::File> {
+        let source = std::fs::read_to_string(path)?;
+        syn::parse_file(&source).map_err(|e| FastError::Parse {
+            path: path.to_path_buf(),
+            source: e,
+        })
     }
 
     /// Strip the workspace root prefix from `path` and return a path
@@ -144,6 +209,42 @@ impl CrateInfo {
     /// re-parsing the file from disk.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// Cargo `[features]` declared in this crate's `Cargo.toml`, sorted.
+    /// Includes `default` if defined.
+    pub fn declared_features(&self) -> &[String] {
+        &self.declared_features
+    }
+
+    /// Each declared feature mapped to its activation list, as reported by
+    /// `cargo metadata` — so the synthesized `foo = ["dep:foo"]` entry for an
+    /// implicit optional-dependency feature is included. A feature with an
+    /// empty list is a "leaf" (gates code directly); a non-empty list means
+    /// the feature forwards to a dependency or another feature ("plumbing" /
+    /// "umbrella"), which legitimately never appears in a `#[cfg(feature)]`
+    /// gate. Keyed identically to [`Self::declared_features`].
+    pub fn feature_values(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.feature_values
+    }
+
+    /// One [`Target`] per Cargo target (`[lib]`, `[[bin]]`, `[[example]]`,
+    /// `[[test]]`, `[[bench]]`, proc-macro lib, `build.rs`), each with its
+    /// lean module tree.
+    pub fn targets(&self) -> &[Target] {
+        &self.targets
+    }
+
+    /// `.rs` files under `<manifest_dir>/src/` that aren't reached by any
+    /// of this crate's targets' module trees and aren't the `src_path` of
+    /// some other target. Useful for module-tree integrity analyses.
+    pub fn orphan_files(&self) -> &[PathBuf] {
+        &self.orphan_files
+    }
+
+    /// Iterate every module in every target, root-first within each target.
+    pub fn all_modules(&self) -> impl Iterator<Item = &Module> + '_ {
+        self.targets.iter().flat_map(|t| t.root.walk())
     }
 }
 
@@ -199,5 +300,21 @@ mod tests {
         let model = load_this_workspace();
         let member = model.member_by_name("wl-ir").expect("wl-ir is a member");
         assert_eq!(member.code_name(), "wl_ir");
+    }
+
+    #[test]
+    fn syntactic_layer_reaches_this_file_and_finds_no_orphans() {
+        let model = load_this_workspace();
+        let member = model.member_by_name("wl-engine").unwrap();
+        // `lib.rs → mod fast → mod metadata` resolves to this very file.
+        assert!(
+            member
+                .all_modules()
+                .any(|m| m.file.ends_with("fast/metadata.rs")),
+            "the module walk should reach fast/metadata.rs"
+        );
+        // A clean crate has no unreachable `src/**.rs` files (the dogfooded
+        // module-tree lint denies them).
+        assert_eq!(member.orphan_files(), &[] as &[std::path::PathBuf]);
     }
 }

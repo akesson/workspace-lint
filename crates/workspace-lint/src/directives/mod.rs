@@ -17,7 +17,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use syn_workspace::Workspace;
+use wl_engine::fast::FastModel;
 
 /// One parsed suppression directive.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,19 +61,19 @@ pub(crate) struct DirectiveOrigin {
 /// - Other TOML/MD: [`SilenceAnchor::File`].
 ///
 /// Workspace-wide directive scan, parsing every `.rs` file on demand. Use
-/// [`scan_with_workspace`] in production code paths — it parses each file
-/// known to the resolver once, up-front, and reuses the cache.
+/// [`scan_with_model`] in production code paths — it parses each file
+/// known to the fast tier's module walk once, up-front, and reuses the cache.
 pub(crate) fn scan(root: &Path) -> Vec<Directive> {
     scan_inner(root, &HashMap::new())
 }
 
-/// Same as [`scan`], but pre-parses every `.rs` file the resolver reached
-/// (deduped by canonical path) so the directive walk doesn't pay a second
-/// parse per file. Files outside the resolver's reach fall back to
+/// Same as [`scan`], but pre-parses every `.rs` file the fast tier's module
+/// walk reached (deduped by canonical path) so the directive walk doesn't pay
+/// a second parse per file. Files outside the walk's reach fall back to
 /// on-demand parsing inside [`scan_inner`].
-pub(crate) fn scan_with_workspace(workspace: &Workspace) -> Vec<Directive> {
-    let lookup = build_parsed_lookup(workspace);
-    scan_inner(workspace.root(), &lookup)
+pub(crate) fn scan_with_model(fast: &FastModel) -> Vec<Directive> {
+    let lookup = build_parsed_lookup(fast);
+    scan_inner(fast.root(), &lookup)
 }
 
 fn scan_inner(root: &Path, parsed_lookup: &HashMap<PathBuf, syn::File>) -> Vec<Directive> {
@@ -98,21 +98,21 @@ fn scan_inner(root: &Path, parsed_lookup: &HashMap<PathBuf, syn::File>) -> Vec<D
 
 /// Build a map from canonical absolute file path → `syn::File` by walking
 /// every workspace member's modules and parsing each unique backing file
-/// once via `Workspace::parse_file`. Inline `mod foo { ... }` submodules
-/// don't contribute (their content lives in the parent's file). Files
-/// that fail to parse are silently skipped — the directive scan will hit
-/// them via the on-demand fallback path and surface the same failure
-/// shape it always did.
-fn build_parsed_lookup(workspace: &Workspace) -> HashMap<PathBuf, syn::File> {
+/// once via `FastModel::parse_file`. Inline `mod foo { ... }` submodules
+/// don't contribute a new file (they carry their parent's, deduped by the
+/// canonical-path key). Files that fail to parse are silently skipped — the
+/// directive scan will hit them via the on-demand fallback path and surface
+/// the same failure shape it always did.
+fn build_parsed_lookup(fast: &FastModel) -> HashMap<PathBuf, syn::File> {
     let mut map = HashMap::new();
-    for krate in workspace.members() {
+    for krate in fast.members() {
         for module in krate.all_modules() {
-            let Some(file) = &module.file else { continue };
+            let file = &module.file;
             let key = file.canonicalize().unwrap_or_else(|_| file.clone());
             if map.contains_key(&key) {
                 continue;
             }
-            if let Ok(parsed) = workspace.parse_file(file) {
+            if let Ok(parsed) = fast.parse_file(file) {
                 map.insert(key, parsed);
             }
         }

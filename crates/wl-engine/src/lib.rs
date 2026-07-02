@@ -9,8 +9,9 @@
 //! This crate is the stable data layer for both of the binary's tiers:
 //!
 //! - [`fast`] — the build-free fast tier's data layer: the workspace shape
-//!   from `cargo metadata --no-deps` plus each member's parsed manifest (the
-//!   syntactic module-tree walker joins it in a later migration PR).
+//!   from `cargo metadata --no-deps`, each member's parsed manifest, and the
+//!   lean syntactic module trees (module-file resolution, cfg-feature and
+//!   broken-`mod` records, orphan files, literal-`include!` splicing).
 //! - [`orchestrate`] — Phase-1 orchestration: vendored-source materialization,
 //!   toolchain preflight, the per-config extraction loop (embedded
 //!   `dylint::run`), and the completeness guard.
