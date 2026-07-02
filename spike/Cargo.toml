@@ -4,7 +4,7 @@
 # the pinned nightly (rust-toolchain.toml) because the driver links rustc_private.
 [workspace]
 resolver = "2"
-members = ["ir", "driver", "assemble", "fidelity"]
+members = ["ir", "driver", "assemble", "fidelity", "probe-check"]
 
 [workspace.dependencies]
 wl-ir = { path = "ir" }

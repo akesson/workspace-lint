@@ -106,8 +106,22 @@ pub struct ItemFact {
     #[serde(default)]
     pub trait_item: Option<String>,
     pub visibility: Visibility,
-    /// Byte span in the original source, or `None` for synthetic defs.
+    /// Byte span of the whole definition in the original source, or `None` for
+    /// synthetic defs (the `--test` harness `main`, etc.). For a macro-generated
+    /// item this is the *invocation site* (`Span::from_expansion` set) — good for
+    /// "generated here" display, **not** an editable surface. See [`Span`].
     pub span: Option<Span>,
+    /// Byte range of the visibility token (`pub` / `pub(crate)` / `pub(in path)`)
+    /// — the `--fix` *tighten* write surface, mirroring syn's `vis_byte_range`
+    /// but also present for the restricted forms syn can't capture. `None` when
+    /// there is no editable token: private items (rustc lowers inherited
+    /// visibility to an empty span at the item's first token), trait-declaration
+    /// and trait-impl items (visibility isn't independently controllable — no
+    /// token), the crate root, and any macro-generated item (the token lives in
+    /// the macro definition, never a write surface). `#[serde(default)]` keeps
+    /// pre-`vis_span` fragments loadable.
+    #[serde(default)]
+    pub vis_span: Option<Span>,
 }
 
 /// Normalized visibility. `Restricted` carries the rendered restriction
@@ -119,12 +133,22 @@ pub enum Visibility {
     Restricted(String),
 }
 
-/// A byte range within a workspace-relative source file — the `--fix` write
-/// surface. Byte offsets are relative to the start of `file` (not the global
-/// `SourceMap` coordinate).
+/// A byte range within a workspace-relative source file. Byte offsets are
+/// relative to the start of `file` (not the global `SourceMap` coordinate).
+///
+/// When `from_expansion` is `true` the original rustc span was inside a macro
+/// expansion, and `lo`/`hi` have been projected to the **callsite**
+/// (`Span::source_callsite`) — a real user-file position that is good for
+/// display ("generated here") but is **not** an editable `--fix` write surface
+/// (the tokens actually live in the macro definition). The production rule is
+/// that findings on generated code get no editable span; consumers key that off
+/// this flag (for whole-item spans) and off [`ItemFact::vis_span`] being `None`
+/// (for the tighten surface). `#[serde(default)]` keeps old fragments loadable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub file: String,
     pub lo: u32,
     pub hi: u32,
+    #[serde(default)]
+    pub from_expansion: bool,
 }

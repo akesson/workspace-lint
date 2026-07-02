@@ -38,7 +38,7 @@ extern crate rustc_span;
 extern crate rustc_target;
 extern crate rustc_trait_selection;
 
-use rustc_errors::DiagDecorator;
+use rustc_errors::{Applicability, DiagDecorator};
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
 use rustc_hir::intravisit::{self, FnKind, Visitor};
@@ -159,11 +159,32 @@ impl<'tcx> LateLintPass<'tcx> for WlFindings {
         if cx.tcx.hir_attrs(hir_id).iter().any(|a| a.doc_str().is_some()) {
             return; // has a doc comment
         }
+        // The `--fix` write surface, guarded exactly like the extractor's
+        // `vis_span_to_ir`: only an editable, non-macro `pub` token gets a
+        // suggestion (the finding still emits either way). This is a deliberately
+        // artificial pairing — a docs lint suggesting a visibility tighten — whose
+        // only purpose is to round-trip the *production `unused-pub` fix shape*
+        // (vis_span → `pub(crate)`, `MachineApplicable`) out through Dylint and
+        // cargo's `--message-format=json` and confirm the byte offsets survive.
+        let vis_span = match cx.tcx.hir_node_by_def_id(def_id) {
+            rustc_hir::Node::Item(it) if !it.vis_span.is_empty() && !it.vis_span.from_expansion() => {
+                Some(it.vis_span)
+            }
+            _ => None,
+        };
         cx.emit_span_lint(
             WL_UNDOCUMENTED_PUB,
             span,
             DiagDecorator(move |diag| {
                 diag.primary_message(format!("public fn `{ident}` has no doc comment"));
+                if let Some(vs) = vis_span {
+                    diag.span_suggestion(
+                        vs,
+                        "round-trip probe: tighten to `pub(crate)`",
+                        "pub(crate)",
+                        Applicability::MachineApplicable,
+                    );
+                }
             }),
         );
     }
@@ -220,6 +241,7 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
             trait_item: trait_item_key(tcx, def_id),
             visibility,
             span: span_to_ir(sm, tcx.def_span(def_id)),
+            vis_span: vis_span_to_ir(tcx, sm, local_id),
         });
     }
 
@@ -510,7 +532,22 @@ fn parent_def_kind(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
 
 /// Project a rustc `Span` into a file-relative byte range. `None` for dummy /
 /// non-real-file spans.
+///
+/// Macro-generated spans are projected to their **callsite**
+/// (`source_callsite()`) and flagged `from_expansion`: the raw expansion span
+/// points into the macro *definition*, a wrong `--fix` write surface, but the
+/// callsite is a real user-file position worth keeping for display/identity.
+/// See [`Span`] for the policy. Kept verbatim in sync with the driver copy.
 fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option<Span> {
+    if span.is_dummy() {
+        return None;
+    }
+    let from_expansion = span.from_expansion();
+    let span = if from_expansion {
+        span.source_callsite()
+    } else {
+        span
+    };
     if span.is_dummy() {
         return None;
     }
@@ -528,7 +565,36 @@ fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option
         file,
         lo: lo.0.saturating_sub(start),
         hi: hi.0.saturating_sub(start),
+        from_expansion,
     })
+}
+
+/// Byte range of a def's **visibility token** (`pub` / `pub(crate)` /
+/// `pub(in path)`), or `None` when there is no editable token — the `--fix`
+/// tighten write surface. `Node::Item` covers module-level *and* fn-body-nested
+/// items; `ImplItem::vis_span()` is `Some` only for inherent-impl items (rustc
+/// models trait-impl items as having no independent visibility, so it returns
+/// `None`); `ForeignItem` carries a vis token too. Everything else (trait-decl
+/// items, the crate root, ctors, …) has none. An **empty** span is rustc's
+/// lowering of inherited/private visibility (`shrink_to_lo` at the first token),
+/// and an expansion span is a macro-defined token — both are non-surfaces → `None`.
+/// Kept verbatim in sync with the driver copy.
+fn vis_span_to_ir(
+    tcx: TyCtxt<'_>,
+    sm: &rustc_span::source_map::SourceMap,
+    local_id: LocalDefId,
+) -> Option<Span> {
+    use rustc_hir::Node;
+    let vs = match tcx.hir_node_by_def_id(local_id) {
+        Node::Item(it) => it.vis_span,
+        Node::ImplItem(ii) => ii.vis_span()?,
+        Node::ForeignItem(fi) => fi.vis_span,
+        _ => return None,
+    };
+    if vs.is_empty() || vs.from_expansion() {
+        return None;
+    }
+    span_to_ir(sm, vs)
 }
 
 fn write_fragment(fragment: &IrFragment, test_mode: bool) {

@@ -18,13 +18,24 @@
 //! Usage: wl-fidelity <REPO_ROOT> <RUSTC_IR_JSON> [CRATE_CODE_NAME=syn_workspace]
 
 use std::collections::BTreeMap;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 use syn_workspace::{ItemKind, TargetKind, Visibility as SynVis, Workspace};
-use wl_ir::{IrFragment, Visibility as IrVis};
+use wl_ir::{IrFragment, Span as IrSpan, Visibility as IrVis};
 
 /// Normalized definition set. Key = (canonical path, shared-vocab kind);
 /// value = is-public (the coarse visibility axis we score).
 type DefSet = BTreeMap<(String, &'static str), bool>;
+
+/// rustc-side visibility detail for the vis-span differential: the emitted
+/// visibility + the `pub`-token byte range (`None` when there's no editable
+/// token). Keyed like [`DefSet`].
+type RustcVis = BTreeMap<(String, &'static str), (IrVis, Option<IrSpan>)>;
+
+/// syn-side visibility detail: syn's visibility + its `vis_byte_range` (only
+/// `Some` for plain `pub`) + the absolute source file it lives in.
+type SynVisMap = BTreeMap<(String, &'static str), (SynVis, Option<Range<u32>>, PathBuf)>;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -49,6 +60,7 @@ fn main() {
         .collect();
 
     let mut rustc_defs: DefSet = BTreeMap::new();
+    let mut rustc_vis: RustcVis = BTreeMap::new();
     let (mut rustc_assoc, mut rustc_local, mut rustc_mods, mut rustc_synth, rustc_total) =
         (0usize, 0usize, 0usize, 0usize, frag.items.len());
     for it in &frag.items {
@@ -83,6 +95,10 @@ fn main() {
             }
         }
         let is_pub = matches!(it.visibility, IrVis::Public);
+        rustc_vis.insert(
+            (path.clone(), kind),
+            (it.visibility.clone(), it.vis_span.clone()),
+        );
         rustc_defs.insert((path, kind), is_pub);
     }
 
@@ -93,6 +109,7 @@ fn main() {
         .unwrap_or_else(|| panic!("`{crate_code}` is not a workspace member"));
 
     let mut syn_defs: DefSet = BTreeMap::new();
+    let mut syn_vis: SynVisMap = BTreeMap::new();
     for target in krate.targets.iter().filter(|t| t.kind == TargetKind::Lib) {
         for (_m, item) in target.root.walk_items() {
             if !item.kind.is_definition() {
@@ -102,7 +119,14 @@ fn main() {
                 continue;
             };
             let is_pub = matches!(item.visibility, SynVis::Public);
-            syn_defs.insert((item.canonical.display(), kind), is_pub);
+            let key = (item.canonical.display(), kind);
+            if let Some(src) = &item.source {
+                syn_vis.insert(
+                    key.clone(),
+                    (item.visibility.clone(), item.vis_byte_range.clone(), src.file.clone()),
+                );
+            }
+            syn_defs.insert(key, is_pub);
         }
     }
 
@@ -188,6 +212,154 @@ fn main() {
         "syn-only NOT under a `tests` module (triage: bare #[cfg(test)] fn or real FP)",
         &mut real_over,
     );
+
+    compare_vis_spans(&repo, &rustc_vis, &syn_vis);
+}
+
+/// The WS1 `--fix` span-fidelity differential (SPIKE §12.7): for every def both
+/// engines see, check that rustc's emitted `vis_span` (the tighten write
+/// surface) byte-exactly matches syn's proven `vis_byte_range`, and that the
+/// bytes under it are literally `pub`. Restricted-visibility spans
+/// (`pub(crate)`/`pub(in …)`) are rustc-only — syn captures only plain `pub` —
+/// so they're reported as *added* fidelity, not a mismatch.
+fn compare_vis_spans(repo: &str, rustc: &RustcVis, syn: &SynVisMap) {
+    let mut src = SrcCache::new(repo);
+    let (mut both_present, mut byte_exact, mut text_pub) = (0usize, 0usize, 0usize);
+    let (mut pub_crate, mut pub_in) = (0usize, 0usize);
+    let mut mismatches: Vec<String> = Vec::new();
+
+    for (key, (r_vis, r_span)) in rustc {
+        let Some((s_vis, s_range, s_file)) = syn.get(key) else {
+            continue; // only compare defs both engines see
+        };
+
+        // Plain `pub` on both sides: syn has a byte range here, rustc must too,
+        // and they must agree to the byte.
+        let syn_plain_pub = matches!(s_vis, SynVis::Public) && s_range.is_some();
+        if syn_plain_pub {
+            both_present += 1;
+            let s_range = s_range.as_ref().unwrap();
+            match r_span {
+                None => mismatches.push(format!(
+                    "{} [{}]: syn has vis range {}..{}, rustc vis_span = None",
+                    key.0, key.1, s_range.start, s_range.end
+                )),
+                Some(rs) => {
+                    // syn stores an absolute path; rustc a repo-relative one.
+                    let files_ok = same_file(repo, s_file, &rs.file);
+                    let bytes_ok = rs.lo == s_range.start && rs.hi == s_range.end;
+                    if files_ok && bytes_ok {
+                        byte_exact += 1;
+                        let s_text = src.slice(&rs.file, rs.lo, rs.hi);
+                        let syn_text = src.slice_abs(s_file, s_range.start, s_range.end);
+                        if s_text.as_deref() == Some("pub") && syn_text.as_deref() == Some("pub") {
+                            text_pub += 1;
+                        } else {
+                            mismatches.push(format!(
+                                "{} [{}]: byte-exact but text rustc={:?} syn={:?} (expected \"pub\")",
+                                key.0, key.1, s_text, syn_text
+                            ));
+                        }
+                    } else {
+                        mismatches.push(format!(
+                            "{} [{}]: syn={}..{} @ {}  rustc={}..{} @ {}  (files_ok={files_ok})",
+                            key.0,
+                            key.1,
+                            s_range.start,
+                            s_range.end,
+                            s_file.display(),
+                            rs.lo,
+                            rs.hi,
+                            rs.file
+                        ));
+                    }
+                }
+            }
+        } else if matches!(r_vis, IrVis::Restricted(_)) {
+            // rustc-only restricted vis span — the fidelity syn can't capture.
+            if let Some(rs) = r_span {
+                match src.slice(&rs.file, rs.lo, rs.hi) {
+                    Some(t) if t.starts_with("pub(crate)") => pub_crate += 1,
+                    Some(t) if t.starts_with("pub(") => pub_in += 1,
+                    other => mismatches.push(format!(
+                        "{} [{}]: restricted vis_span text unexpected: {:?}",
+                        key.0, key.1, other
+                    )),
+                }
+            }
+        }
+    }
+
+    println!("── vis-span differential: rustc vis_span vs syn vis_byte_range ──\n");
+    println!("module-level defs both engines see (plain pub): {both_present}");
+    println!(
+        "  byte-exact (file, lo, hi):                    {byte_exact} / {both_present}   ← must be 100%"
+    );
+    println!(
+        "  text == \"pub\" at range (both sides):          {text_pub} / {both_present}"
+    );
+    println!(
+        "rustc-only restricted vis spans (syn can't):    {}   (pub(crate): {pub_crate}, pub(in …): {pub_in})",
+        pub_crate + pub_in
+    );
+    println!("mismatches:                                     {}", mismatches.len());
+    for m in mismatches.iter().take(20) {
+        println!("    ✗ {m}");
+    }
+    if mismatches.is_empty() && byte_exact == both_present && text_pub == both_present {
+        println!("\n✓ every shared plain-pub def has a byte-exact, `pub`-covering vis_span");
+    }
+}
+
+/// Compare syn's absolute path against rustc's repo-relative one.
+fn same_file(repo: &str, syn_abs: &Path, rustc_rel: &str) -> bool {
+    let rustc_norm = rustc_rel.replace('\\', "/");
+    if let Ok(stripped) = syn_abs.strip_prefix(repo) {
+        if stripped.to_string_lossy().replace('\\', "/") == rustc_norm {
+            return true;
+        }
+    }
+    // Fall back to basename equality (robust to repo-prefix quirks).
+    syn_abs.file_name().map(|n| n.to_string_lossy().into_owned())
+        == Path::new(&rustc_norm).file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
+/// Reads source files once and slices byte ranges out of them.
+struct SrcCache<'a> {
+    repo: &'a str,
+    files: BTreeMap<String, Option<Vec<u8>>>,
+}
+
+impl<'a> SrcCache<'a> {
+    fn new(repo: &'a str) -> Self {
+        Self { repo, files: BTreeMap::new() }
+    }
+
+    /// Slice a repo-relative file.
+    fn slice(&mut self, rel: &str, lo: u32, hi: u32) -> Option<String> {
+        let abs = if Path::new(rel).is_absolute() {
+            PathBuf::from(rel)
+        } else {
+            Path::new(self.repo).join(rel)
+        };
+        self.slice_path(&abs, lo, hi)
+    }
+
+    /// Slice an absolute path.
+    fn slice_abs(&mut self, abs: &Path, lo: u32, hi: u32) -> Option<String> {
+        self.slice_path(abs, lo, hi)
+    }
+
+    fn slice_path(&mut self, abs: &Path, lo: u32, hi: u32) -> Option<String> {
+        let key = abs.to_string_lossy().into_owned();
+        let bytes = self
+            .files
+            .entry(key)
+            .or_insert_with(|| std::fs::read(abs).ok());
+        let bytes = bytes.as_ref()?;
+        let (lo, hi) = (lo as usize, hi as usize);
+        bytes.get(lo..hi).map(|b| String::from_utf8_lossy(b).into_owned())
+    }
 }
 
 /// A path in a `tests`/`test` module — a proxy for `#[cfg(test)]` code the
