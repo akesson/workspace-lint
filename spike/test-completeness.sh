@@ -15,9 +15,9 @@ LIB="$(ls "$REPO"/extractor/target/debug/libwl_extractor@*.dylib "$REPO"/extract
 test -n "$LIB" || { echo "build the extractor first: (cd extractor && cargo build)"; exit 1; }
 EMBED="$REPO/spike/embed/target/debug/wl-embed"
 OUT="$REPO/spike/ir-out-guard"
-# Member count = fragments a full default-config run must produce (5 since
-# wl-ir joined the workspace in migration PR 1).
-MEMBERS=5
+# Member count = fragments a full default-config run must produce (6 since
+# wl-ir and wl-engine joined the workspace in migration PRs 1/3).
+MEMBERS=6
 LOG="$(mktemp -d)"
 trap 'rm -rf "$LOG"' EXIT
 rm -rf "$OUT"

@@ -62,3 +62,11 @@ jobs:
       - name: Probe test (golden spine tier 1)
         working-directory: extractor
         run: cargo test --locked -- --nocapture
+
+      # The wl-engine orchestrator end-to-end (stable side): vendored source →
+      # materialize → build the dylib → dylint::run → completeness guard.
+      # Gated behind WL_ENGINE_E2E because it needs the pin + dylint-link —
+      # which this job has already installed.
+      - name: wl-engine e2e (vendored extract)
+        run: WL_ENGINE_E2E=1 cargo +stable test -p wl-engine --test e2e --locked -- --nocapture
+        shell: bash

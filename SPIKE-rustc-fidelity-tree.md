@@ -736,6 +736,12 @@ block the backend swap; each is "add a field, re-run the build."
   intra-crate `ctor` edges point at `DefKind::Ctor` defs we don't emit as
   `ItemFact`s. *Consumer:* closing the last join gaps. Benign today (correctly
   excluded), listed for completeness.
+- **Build-script fragments** (found in migration PR 3 when `wl-engine`'s
+  `build.rs` joined the workspace). Cargo names *every* build-script crate
+  `build_script_build`, so their fragments collide on one filename; the
+  extractor now skips them. *Consumer:* a future build-dependency-usage
+  analysis for `unused-deps` (today: build-deps are never judged) — would key
+  fragments on `CARGO_PKG_NAME` instead.
 
 ## 12b. Verified by the WS1–5 hardening pass (2026-07-02)
 

@@ -45,6 +45,13 @@ impl Callbacks for ExtractCallbacks {
         _compiler: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> Compilation {
+        // A member's build script compiles as its own crate, and cargo names
+        // EVERY one `build_script_build` — all of a workspace's build scripts
+        // would collide on one fragment filename, and none is a lintable
+        // target. Skip them (same guard as the extractor dylib).
+        if tcx.crate_name(LOCAL_CRATE).as_str() == "build_script_build" {
+            return Compilation::Continue;
+        }
         let fragment = extract(tcx);
         write_fragment(&fragment);
         Compilation::Continue

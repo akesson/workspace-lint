@@ -103,6 +103,14 @@ impl<'tcx> LateLintPass<'tcx> for WlIrExtract {
     // The lift point: `cx.tcx` is the same `TyCtxt` the raw driver walked in
     // `after_analysis`. Everything below is `extract()` moved verbatim.
     fn check_crate(&mut self, cx: &LateContext<'tcx>) {
+        // A member's build script compiles as its own crate, and cargo names
+        // EVERY one `build_script_build` — so a workspace's build scripts would
+        // all collide on one fragment filename, and none is a lintable target.
+        // Skip them (deferred-gap ledger: keying on CARGO_PKG_NAME would let a
+        // future build-dep-usage analysis keep these).
+        if cx.tcx.crate_name(LOCAL_CRATE).as_str() == "build_script_build" {
+            return;
+        }
         let fragment = extract(cx.tcx);
         // `--test` mode compiles a distinct crate variant (cfg(test) on, #[test]
         // fns kept for the harness). It can coexist with the plain-lib build of
