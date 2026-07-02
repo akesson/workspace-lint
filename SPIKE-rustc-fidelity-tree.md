@@ -573,17 +573,44 @@ the fidelity oracle was re-run to re-baseline.
   The step-3 *findings channel* (proven: native `emit_span_lint` + `--message-format=json`
   capture) is therefore a **fallback / for genuinely HIR-shaped lints**, not the
   default production path.
-- **Caching gotcha — a must-solve migration blocker (new).** `WL_IR_OUT` is **not**
-  in cargo's fingerprint, so changing it alone never re-runs the extract pass: cargo
-  reports the crate up-to-date, **replays cached compiler stderr** (so a "wrote IR"
-  line prints from a *prior* invocation's env), and the `LateLintPass` never
-  executes — the fresh IR silently isn't written. Observed directly this session
-  (a stale scratchpad path re-appeared; "Finished in 0.06s"). Production must not
-  depend on a side-channel file keyed on a non-fingerprinted env var. Options to
-  decide during app re-architecture: (a) force a clean/again check for the extract
-  unit, (b) fold the extraction key into `RUSTFLAGS` (fingerprinted), or (c) read
-  the IR from cargo's own `--message-format=json` stream instead of a file. Refines
-  §12.1/§12.6.
+- **Caching gotcha — RESOLVED (2026-07-02), design chosen and verified.**
+  Symptom: `WL_IR_OUT` is **not** in cargo's fingerprint, so changing it alone never
+  re-runs the extract pass — cargo reports the crate up-to-date, **replays cached
+  compiler stderr** (a "wrote IR" line prints from a *prior* invocation's env, even
+  pointing at a stale dir), and the `LateLintPass` never executes. My original bug
+  was **redirecting the output dir** per run, so a warm-cache crate's IR never landed
+  in the new dir.
+
+  Rather than fight cargo, I characterized its actual behavior end-to-end on
+  `syn-workspace` via `spike/embed` (each row verified, not assumed):
+  - **code change → recompile → fresh IR** (pass re-runs, file rewritten);
+  - **dylib/schema change → re-lint → fresh IR** — dylint **fingerprints the lint
+    dylib** (touching the `.dylib` alone forces a re-lint, 0.02 s → 0.17 s), so a new
+    extractor schema auto-re-extracts even against unchanged target code;
+  - **no change → cache hit → the prior IR at its canonical path persists and is
+    valid**, and the replayed message even reports where it lives;
+  - **sole residual failure:** the IR file removed *out-of-band* while dylint's cache
+    stays warm — the cache hit won't recreate it.
+
+  **The IR is a deterministic output of compilation, so let cargo own its lifecycle.**
+  The three brainstormed options resolve as: (a) force-clean and (b) `RUSTFLAGS`
+  nonce are both **rejected** — they discard incrementality by forcing a recompile
+  every run; (c) "IR lifecycle = compilation lifecycle" is **right in principle** and
+  is realized simply *without* piping IR through the message stream:
+  1. write each fragment to a **canonical, stable path** keyed on crate (`+test`
+     suffix for the test cfg), **never a per-run dir** — this alone kills the
+     original bug;
+  2. rely on cargo's fingerprint (code + dylib, both verified) to keep fragments
+     fresh-or-valid;
+  3. a **completeness guard** for the sole residual failure: the orchestrator knows
+     the expected member set from `cargo metadata`; after `dylint::run`, if any
+     fragment is missing, force a re-lint — **bump the dylib mtime** (verified to
+     force re-lint globally) or surgically clean the unit in **`target/dylint`**
+     (dylint keeps its *own* target dir — a plain `cargo clean -p` on the main
+     `target/` is a no-op for it, verified). In steady state the guard never fires.
+
+  This is cargo-cooperative, needs **no extractor change**, and keeps incremental
+  builds. Resolves the blocker; refines §12.1/§12.6.
 
 ## 12. Open questions
 
