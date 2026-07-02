@@ -11,14 +11,19 @@
 //! - [`orchestrate`] — Phase-1 orchestration: vendored-source materialization,
 //!   toolchain preflight, the per-config extraction loop (embedded
 //!   `dylint::run`), and the completeness guard.
+//! - [`semantic`] — the Phase-2 assembler: fragments → per-config cross-crate
+//!   join (`DefPathHash`) → cfg-matrix union (`(crate, def_path)`) → the
+//!   verdict-producing queries the semantic lints consume.
 //!
-//! The Phase-2 assembler (`semantic`) and the build-free fast-tier model
-//! (`fast`) land in the next migration PRs; keeping all three in one crate
-//! enforces the "Phase 2 is plain data" boundary structurally — wl-engine
-//! never depends on the app layer (diagnostics, config, rendering).
+//! The build-free fast-tier model (`fast`) lands in the next migration PR;
+//! keeping all tiers in one crate enforces the "Phase 2 is plain data"
+//! boundary structurally — wl-engine never depends on the app layer
+//! (diagnostics, config, rendering).
 
 pub mod orchestrate;
+pub mod semantic;
 
 pub use orchestrate::{
     CfgSelector, ConfigRun, Engine, EngineConfig, EngineError, ExtractionRuns, ExtractorSource,
 };
+pub use semantic::{SemanticError, SemanticModel};

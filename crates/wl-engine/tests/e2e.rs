@@ -13,7 +13,7 @@
 //! One `#[test]` only: `Engine::extract` documents process-global effects
 //! (WL_IR_OUT + a scoped chdir), so it must not race a sibling test.
 
-use wl_engine::{CfgSelector, Engine, EngineConfig, ExtractorSource};
+use wl_engine::{CfgSelector, Engine, EngineConfig, ExtractorSource, SemanticModel};
 
 #[test]
 fn vendored_extract_this_repo() {
@@ -56,5 +56,17 @@ fn vendored_extract_this_repo() {
             .iter()
             .any(|i| i.path.last().map(String::as_str) == Some("IrFragment")),
         "extracted fragment should contain wl-ir's own IrFragment def"
+    );
+
+    // Phase 2 over the real extraction (the orchestrate→semantic seam):
+    // assembly succeeds, and wl-ir's schema types read as published API
+    // surface (its crate declares publish intent), never as hard-dead.
+    let model = SemanticModel::load(&runs, &repo_root).expect("assemble");
+    assert_eq!(model.config_ids().collect::<Vec<_>>(), ["default"]);
+    let verdict = model.union_verdict();
+    assert!(
+        verdict.leads.iter().all(|l| !l.dead),
+        "wl-ir is a publishable lib — unused pub API must classify as surface, not dead: {:?}",
+        verdict.leads
     );
 }

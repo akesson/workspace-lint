@@ -15,10 +15,10 @@ license = "MIT OR Apache-2.0"
 wl-ir = { path = "../wl-ir" }
 dylint = { workspace = true }
 cargo_metadata = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 # dylint::run's error type — wrapped, not exposed in our API shapes.
 anyhow = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-serde_json = { workspace = true }
