@@ -107,6 +107,15 @@ rustc_session::declare_lint! {
 pub fn register_lints(sess: &Session, lint_store: &mut LintStore) {
     dylint_linting::init_config(sess);
     lint_store.register_lints(&[WL_IR_EXTRACT, WL_UNDOCUMENTED_PUB]);
+    // NOTE (WS2 treadmill, SPIKE §12.4): on the 04-16 pin `register_late_pass` takes
+    // a bare `impl Fn(TyCtxt) -> LateLintPassObject`, so the closure's `Box::new(..)`
+    // return coerces to `Box<dyn LateLintPass>`. On nightly-2026-06-25 the param
+    // became a boxed `LateLintPassFactory`, needing `register_late_pass(Box::new(|_|
+    // Box::new(WlIrExtract) as _))` — a real, toolchain-specific edit (no single
+    // spelling straddles both pins: the plain closure fails to box on 06-25; the
+    // boxed form's concrete return type fails to coerce on 04-16). This was the ONLY
+    // extractor breakage across the ~10-week jump; dylint_linting 6.0.1 itself
+    // compiled unchanged. Keep the 04-16 form here (the production pin).
     lint_store.register_late_pass(|_| Box::new(WlIrExtract));
     lint_store.register_late_pass(|_| Box::new(WlFindings));
 }
