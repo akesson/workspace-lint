@@ -1,0 +1,11 @@
+# Fixture-local stub for the real `wasm-bindgen-test` crate (not in the root
+# workspace's dependency tree, so an offline CI cache can't provide it). The
+# attribute is an identity pass-through — the assertion under test keys on the
+# attribute's NAME in source, never on the expansion.
+[package]
+name = "wasm-bindgen-test"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true

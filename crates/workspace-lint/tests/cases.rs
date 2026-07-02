@@ -35,7 +35,10 @@ use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
 mod common;
-use common::{SnapshotResult, bless_enabled, copy_tree, snapshot_stderr, workspace_lint};
+use common::{
+    Kind, SnapshotResult, bless_enabled, cases_root, copy_tree, snapshot_stderr, walk_cases,
+    workspace_lint,
+};
 
 /// Apply an optional `setup.toml` (sibling of `workspace/`) to the copied
 /// tempdir before the binary runs. Lets cases that need state which can't be
@@ -150,45 +153,6 @@ fn git_cmd(dir: &Path, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Kind {
-    TruePositive,
-    TrueNegative,
-    KnownFalsePositive,
-    KnownFalseNegative,
-}
-
-impl Kind {
-    fn from_dir_name(name: &str) -> Option<Self> {
-        match name {
-            "true_positives" => Some(Self::TruePositive),
-            "true_negatives" => Some(Self::TrueNegative),
-            "known_false_positives" => Some(Self::KnownFalsePositive),
-            "known_false_negatives" => Some(Self::KnownFalseNegative),
-            _ => None,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::TruePositive => "TP",
-            Self::TrueNegative => "TN",
-            Self::KnownFalsePositive => "KFP",
-            Self::KnownFalseNegative => "KFN",
-        }
-    }
-
-    fn expects_failure_exit(self) -> bool {
-        matches!(self, Self::TruePositive | Self::KnownFalsePositive)
-    }
-}
-
-fn cases_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("cases")
-}
-
 struct Failure {
     case_path: PathBuf,
     kind: Kind,
@@ -295,35 +259,6 @@ fn run_case(kind: Kind, case_dir: &Path, bless: bool) -> Result<(), Failure> {
     }
 }
 
-fn walk_cases(mut visit: impl FnMut(&str, Kind, &Path)) {
-    let root = cases_root();
-    if !root.exists() {
-        return;
-    }
-    for lint_entry in std::fs::read_dir(&root).expect("read cases/").flatten() {
-        let lint_dir = lint_entry.path();
-        if !lint_dir.is_dir() {
-            continue;
-        }
-        let lint = lint_dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        for kind_entry in std::fs::read_dir(&lint_dir).expect("read kind/").flatten() {
-            let kind_dir = kind_entry.path();
-            let Some(kind_name) = kind_dir.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Some(kind) = Kind::from_dir_name(kind_name) else {
-                continue;
-            };
-            for case_entry in std::fs::read_dir(&kind_dir).expect("read case/").flatten() {
-                let case_dir = case_entry.path();
-                if case_dir.is_dir() {
-                    visit(lint, kind, &case_dir);
-                }
-            }
-        }
-    }
-}
-
 #[test]
 fn cases_pass_or_track_known_limitations() {
     let bless = bless_enabled();
@@ -394,4 +329,29 @@ fn every_builtin_assertion_has_a_true_negative_fixture() {
         "every Tier-H assertion needs a guarding fixture at \
          tests/cases/unused-deps/true_negatives/asserted_<id>/workspace/; missing: {missing:?}",
     );
+}
+
+/// Drift guard for the semantic-lint routing list (`common::SEMANTIC_LINTS`,
+/// consumed today by `fixture_compile.rs`'s offline-compile sweep and by this
+/// harness's fast-vs-semantic routing once the rustc-backed ports land).
+/// `LintId` lives in the binary crate (no lib target) and can't be imported
+/// here, so the tie is transitive: each entry is pinned to its
+/// `tests/cases/<lint>/` directory, and lints_id.rs's
+/// `every_lint_has_case_fixtures` unit test pins those directory names to
+/// `LintId::short()` — a renamed or removed lint breaks this chain instead of
+/// silently orphaning the routing list.
+#[test]
+fn semantic_lint_routing_matches_case_dirs() {
+    for lint in common::SEMANTIC_LINTS {
+        assert!(
+            common::lint_needs_build(lint),
+            "lint_needs_build must return true for its own list entry `{lint}`"
+        );
+        assert!(
+            cases_root().join(lint).is_dir(),
+            "common::SEMANTIC_LINTS entry `{lint}` has no tests/cases/{lint}/ directory — \
+             stale after a lint rename/removal? (directory names are pinned to \
+             LintId::short() by lints_id.rs::every_lint_has_case_fixtures)"
+        );
+    }
 }

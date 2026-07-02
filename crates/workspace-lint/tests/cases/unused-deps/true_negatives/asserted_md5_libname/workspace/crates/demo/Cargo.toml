@@ -7,4 +7,6 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-md-5 = "0.10"
+# Path stub (see stubs/): the md5-libname fallback under test keys on the dep
+# NAME `md-5` vs the referenced lib `md5` — registry vs path is invisible to it.
+md-5 = { path = "../../stubs/md-5" }

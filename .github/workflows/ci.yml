@@ -70,6 +70,15 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
       - run: cargo nextest run --workspace --locked
+      # Semantic-lint fixtures (architecture / unused-deps / unused-pub) must
+      # `cargo check` offline: the rustc-driver engine those lints are being
+      # ported onto compiles the analyzed workspace. Ubuntu-only — the gate is
+      # about the fixtures' Rust source, not platform behavior — and after
+      # nextest so the cargo cache already holds the root dependency tree the
+      # fixtures draw their registry deps from.
+      - name: Semantic fixture compile sweep
+        if: matrix.os == 'ubuntu-latest'
+        run: WL_FIXTURE_COMPILE=1 cargo test -p workspace-lint --test fixture_compile --locked -- --nocapture
       # nextest does not run doctests — exercise them (incl. the published
       # syn-workspace lib.rs example) so a broken doc example can't ship.
       - name: Doctests

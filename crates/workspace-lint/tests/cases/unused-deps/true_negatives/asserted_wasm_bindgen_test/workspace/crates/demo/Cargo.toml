@@ -7,7 +7,9 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-wasm-bindgen = "0.2"
+# Path stubs (see stubs/): the wasm-bindgen-test assertion under test keys on
+# dep NAMES — registry vs path is invisible to it.
+wasm-bindgen = { path = "../../stubs/wasm-bindgen" }
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3"
+wasm-bindgen-test = { path = "../../stubs/wasm-bindgen-test" }

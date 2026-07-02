@@ -1,0 +1,11 @@
+# Fixture-local stub for the real `md-5` crate (not in the root workspace's
+# dependency tree, so an offline CI cache can't provide it). It preserves the
+# property the case is about: package `md-5` shipping a lib target named
+# `md5`, so source references `md5` while the manifest declares `md-5`.
+[package]
+name = "md-5"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "md5"

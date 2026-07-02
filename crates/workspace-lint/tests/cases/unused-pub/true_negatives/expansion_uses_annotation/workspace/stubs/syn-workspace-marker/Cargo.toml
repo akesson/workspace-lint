@@ -1,0 +1,8 @@
+# Fixture-local stub for the published `syn-workspace-marker` crate (the
+# registry release is not in the root workspace's dependency tree, so an
+# offline CI cache can't provide it). Mirrors the real crate's macro exactly
+# so the fixture `cargo check`s offline.
+[package]
+name = "syn-workspace-marker"
+version = "0.1.0"
+edition = "2024"

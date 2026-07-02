@@ -1,0 +1,12 @@
+# Fixture-local stub for the real `serde_with` crate (not in the root
+# workspace's dependency tree, so an offline CI cache can't provide it). It
+# provides exactly the module path the fixture's `with = "…"` string names —
+# `rust::display_fromstr` — so the serde expansion compiles offline. (serde
+# itself IS in the root tree, so it stays a registry dep.)
+[package]
+name = "serde_with"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = "1"

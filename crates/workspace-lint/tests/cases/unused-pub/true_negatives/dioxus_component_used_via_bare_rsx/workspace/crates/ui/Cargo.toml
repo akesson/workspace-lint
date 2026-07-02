@@ -1,9 +1,13 @@
 # No `publish` field → treated as workspace-internal, so unused `pub` items are
 # flagged (not exempted as external API surface). This is what makes the bare
 # component a candidate for the false positive. No real Dioxus dependency is
-# needed: the resolver recognizes `rsx!` by macro name and `#[component]` by
-# attribute name; nothing compiles.
+# needed by the *resolver* — it recognizes `rsx!` by macro name and
+# `#[component]` by attribute name; the stub dep below exists only so the
+# fixture `cargo check`s offline.
 [package]
 name = "ui"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+dioxus = { path = "../../stubs/dioxus" }
