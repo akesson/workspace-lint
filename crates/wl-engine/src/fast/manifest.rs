@@ -91,6 +91,12 @@ pub struct DeclaredDep {
     /// Cargo-form name with hyphens replaced by underscores. Matches the
     /// crate-name segment in `ResolvedPath`.
     pub normalized_name: String,
+    /// Declared under a `[target.<cfg>.<section>]` table. A platform-gated dep
+    /// only compiles when its cfg matches the build host, so a compiler-backed
+    /// usage analysis running on one host cannot observe (and must not judge)
+    /// deps gated to other platforms. Diverges from the syn-workspace original
+    /// (which had no flag — its cfg-blind parse saw every branch).
+    pub target_gated: bool,
 }
 
 /// A parsed Cargo manifest. Pure read-only data on the model side.
@@ -226,6 +232,14 @@ impl Manifest {
         if let Some(t) = self.section_table(section) {
             tables.push(t);
         }
+        tables.extend(self.target_section_tables(section));
+        tables
+    }
+
+    /// Only the `[target.<cfg>.<section>]` tables for `section` — the
+    /// platform-gated declarations [`Manifest::declared_deps`] flags.
+    fn target_section_tables(&self, section: DepSection) -> Vec<&dyn TableLike> {
+        let mut tables: Vec<&dyn TableLike> = Vec::new();
         if section != DepSection::WorkspaceDependencies
             && let Some(target) = self
                 .doc
@@ -341,14 +355,27 @@ impl Manifest {
     /// Enumerate declared deps across `[dependencies]`, `[dev-dependencies]`,
     /// and `[build-dependencies]`. Excludes the workspace.dependencies
     /// section (that's the root-only sink, not a "the crate depends on X"
-    /// signal).
+    /// signal). Deps from `[target.<cfg>.…]` tables carry
+    /// [`DeclaredDep::target_gated`].
     pub fn declared_deps(&self) -> impl Iterator<Item = DeclaredDep> + '_ {
         DepSection::member_sections().into_iter().flat_map(|s| {
-            self.deps(s).map(move |(name, _)| DeclaredDep {
+            let dep = move |name: &str, target_gated: bool| DeclaredDep {
                 section: s,
                 original_name: name.to_string(),
                 normalized_name: name.replace('-', "_"),
-            })
+                target_gated,
+            };
+            let top = self
+                .section_table(s)
+                .into_iter()
+                .flat_map(|t| t.iter())
+                .map(move |(name, _)| dep(name, false));
+            let gated = self
+                .target_section_tables(s)
+                .into_iter()
+                .flat_map(|t| t.iter())
+                .map(move |(name, _)| dep(name, true));
+            top.chain(gated)
         })
     }
 

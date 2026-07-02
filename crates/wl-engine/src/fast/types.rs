@@ -37,6 +37,12 @@ pub struct Module {
     /// anchored in them as generated. Empty for the overwhelmingly common
     /// no-`include!` module.
     pub generated_files: Vec<PathBuf>,
+    /// Crate names referenced inside this module's rust-compiling doc-test
+    /// fences (see `doc_fences`). A dep used only in a doc example is
+    /// genuinely used — the doc-test won't compile without it — but doc-test
+    /// code is a separate compilation unit the rustc IR never sees, so the
+    /// dependency lint reads this syntactic signal instead.
+    pub doctest_crate_refs: std::collections::HashSet<String>,
     pub submodules: Vec<Module>,
 }
 

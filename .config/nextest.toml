@@ -1,0 +1,11 @@
+# Tests that run the extraction engine against THIS repository share its
+# fragment dirs (target/workspace-lint/ir/*) and dylint's per-workspace state.
+# Fragment writes are atomic (write-then-rename in the extractor), but two
+# concurrent repo extractions still interleave guard re-lints and duplicate
+# work — serialize them instead.
+[test-groups]
+repo-engine = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "test(workspace_lint_runs_clean_on_itself) | binary(engine_dump)"
+test-group = "repo-engine"

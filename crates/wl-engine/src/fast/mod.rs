@@ -14,6 +14,7 @@
 //! (copied, not moved — the duplication is deliberate and disappears when
 //! syn-workspace retires).
 
+mod doc_fences;
 mod include_resolve;
 mod manifest;
 mod metadata;

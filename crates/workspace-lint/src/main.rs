@@ -384,12 +384,18 @@ fn run_all(
     let needs_fast =
         registry.iter().any(|l| l.requirements().needs_fast) || !config.crates.is_empty();
     // The rustc-backed tier runs only when some enabled lint asks for it and
-    // `--fast-only` doesn't veto it. No lint sets `needs_semantic` yet, so
-    // this stays dark: a plain run executes nothing engine-related.
+    // `--fast-only` doesn't veto it.
     let needs_semantic = registry.iter().any(|l| l.requirements().needs_semantic) && !fast_only;
     let workspace = needs_ws.then(|| load_workspace(config.macros.as_ref(), harvest_build_env));
     let fast = needs_fast.then(load_fast_model);
-    let semantic = needs_semantic.then(|| load_semantic_model(config.engine.selectors()));
+    // A memberless workspace (a bare virtual manifest) has nothing to extract
+    // or judge — cargo would just error "the workspace has no members" — so
+    // the tier is skipped; semantic lints see zero members and emit nothing.
+    // `needs_semantic ⇒ needs_fast` (every semantic lint declares both), so
+    // `fast` is loaded whenever this check runs.
+    let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
+    let semantic =
+        (needs_semantic && has_members).then(|| load_semantic_model(config.engine.selectors()));
     let cx = LintContext {
         workspace: workspace.as_ref(),
         fast: fast.as_ref(),
@@ -420,8 +426,10 @@ fn run_single_check(
         .then(|| load_workspace(None, harvest_build_env));
     let fast = requirements.needs_fast.then(load_fast_model);
     // Outside a configured workspace (`config::try_load` → None) the engine
-    // falls back to its default single-config matrix.
-    let semantic = requirements.needs_semantic.then(|| {
+    // falls back to its default single-config matrix. A memberless workspace
+    // skips the tier entirely (see run_all).
+    let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
+    let semantic = (requirements.needs_semantic && has_members).then(|| {
         let engine = config.map(|c| c.engine.clone()).unwrap_or_default();
         load_semantic_model(engine.selectors())
     });

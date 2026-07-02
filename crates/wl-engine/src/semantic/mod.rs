@@ -12,7 +12,7 @@ mod meta;
 mod union;
 
 pub use assembly::{Assembly, Category, DefInfo, Reach};
-pub use deps::{CrateDeps, DepsVerdict, NotJudged, UnusedDep};
+pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use union::{Lead, Retired, UnionVerdict};
 
@@ -107,6 +107,12 @@ impl SemanticModel {
     /// The unused-deps verdict (declared deps vs the reference graph).
     pub fn deps_verdict(&self) -> DepsVerdict {
         DepsVerdict::compute(&self.configs, &self.meta)
+    }
+
+    /// The per-package exercised-crate sets — the primitive the ported
+    /// `unused-deps` lint layers its manifest-driven judgement on.
+    pub fn dep_usage(&self) -> DepUsage {
+        DepUsage::compute(&self.configs, &self.meta)
     }
 }
 

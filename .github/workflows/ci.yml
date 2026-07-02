@@ -67,6 +67,28 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+      # The full tier is live: `unused-deps` runs on the rustc engine, so the
+      # dogfood test and the unused-deps case fixtures extract IR during the
+      # suite. That needs the pinned nightly (+ rustc-dev), dylint-link, and —
+      # cached, because it's the slowest cold step — dylint's per-toolchain
+      # driver. Keep the pin in lockstep with extractor/rust-toolchain.toml.
+      - name: Install pinned nightly (+ rustc-dev) for the extraction engine
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-04-16
+          components: rustc-dev, llvm-tools-preview
+      # dtolnay/rust-toolchain sets the LAST installed toolchain as default;
+      # the workspace builds on stable, so restore it explicitly.
+      - name: Restore stable as default
+        run: rustup default stable
+        shell: bash
+      - name: Install dylint-link
+        run: cargo install dylint-link --locked
+      - name: Cache dylint driver
+        uses: actions/cache@v4
+        with:
+          path: ~/.dylint_drivers
+          key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
       - run: cargo nextest run --workspace --locked

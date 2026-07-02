@@ -64,17 +64,28 @@ pub struct DepsVerdict {
     pub dev_deps_judged: bool,
 }
 
-impl DepsVerdict {
-    pub(super) fn compute(configs: &[(String, Assembly)], meta: &WorkspaceMeta) -> DepsVerdict {
-        // exercised[pkg] = union, over every config and every target the
-        // package owns, of the crate-names that target references. A dep is
-        // declared once per package but may be used by any of its targets.
+/// The per-package exercised-crate sets — the reusable primitive under both
+/// [`DepsVerdict`] and the ported `unused-deps` lint (which layers its own
+/// manifest-driven judgement — ignore config, doctest refs, feature plumbing —
+/// on top of this semantic signal).
+pub struct DepUsage {
+    /// pkg → union, over every config and every target the package owns, of
+    /// the crate-names that target references. A dep is declared once per
+    /// package but may be used by any of its targets.
+    exercised: BTreeMap<String, BTreeSet<String>>,
+    /// Whether any test/example/bench target was compiled — dev deps are
+    /// judgeable only then.
+    dev_deps_judged: bool,
+}
+
+impl DepUsage {
+    pub(super) fn compute(configs: &[(String, Assembly)], meta: &WorkspaceMeta) -> DepUsage {
         let mut exercised: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut compiled_test_target = false;
+        let mut dev_deps_judged = false;
         for (_, asm) in configs {
             for frag in asm.fragments() {
                 if meta.test_targets.contains(&frag.crate_name) {
-                    compiled_test_target = true;
+                    dev_deps_judged = true;
                 }
                 let Some(owner) = meta.target_owner.get(&frag.crate_name) else {
                     continue; // no matching manifest target — don't guess
@@ -89,13 +100,38 @@ impl DepsVerdict {
                 }
             }
         }
+        DepUsage {
+            exercised,
+            dev_deps_judged,
+        }
+    }
+
+    /// Is the declared dep `dep_pkg` (package code-name) exercised by any of
+    /// `owner`'s targets under any config? Facade- and lib-rename-aware: true
+    /// iff the owner's referenced-crate set meets the dep's resolved closure
+    /// (which carries both package and lib-target names).
+    pub fn dep_used(&self, meta: &WorkspaceMeta, owner: &str, dep_pkg: &str) -> bool {
+        let Some(used) = self.exercised.get(owner) else {
+            return false;
+        };
+        meta.dep_closure(dep_pkg).iter().any(|c| used.contains(c))
+    }
+
+    pub fn dev_deps_judged(&self) -> bool {
+        self.dev_deps_judged
+    }
+}
+
+impl DepsVerdict {
+    pub(super) fn compute(configs: &[(String, Assembly)], meta: &WorkspaceMeta) -> DepsVerdict {
+        let usage = DepUsage::compute(configs, meta);
+        let compiled_test_target = usage.dev_deps_judged;
 
         let mut crates = Vec::new();
         for member in &meta.members {
             let Some(decls) = meta.declared.get(member).filter(|d| !d.is_empty()) else {
                 continue; // no declared deps — nothing to say
             };
-            let used = exercised.get(member).cloned().unwrap_or_default();
 
             let mut unused = Vec::new();
             let mut not_judged = Vec::new();
@@ -117,8 +153,7 @@ impl DepsVerdict {
                 }
                 // Exercised iff the referenced-crate set meets the dep's
                 // resolved closure — clears facade crates soundly.
-                let hit = meta.dep_closure(&d.name).iter().any(|c| used.contains(c));
-                if !hit {
+                if !usage.dep_used(meta, member, &d.name) {
                     unused.push(UnusedDep {
                         name: d.name.clone(),
                         kind: d.kind,

@@ -536,8 +536,14 @@ fn write_fragment(fragment: &IrFragment, test_mode: bool) {
     }
     let suffix = if test_mode { "+test" } else { "" };
     let path = format!("{out_dir}/{}{suffix}.json", fragment.crate_name);
+    // Write-then-rename so a fragment is only ever observed complete: two
+    // workspace-lint processes may extract the same workspace concurrently
+    // (their compiles serialize on cargo's lock, but a reader in one can
+    // otherwise catch the other's half-written JSON). The temp name carries
+    // the pid so concurrent writers can't collide on it either.
+    let tmp = format!("{path}.{}.tmp", std::process::id());
     match serde_json::to_string_pretty(fragment) {
-        Ok(json) => match std::fs::write(&path, json) {
+        Ok(json) => match std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path)) {
             Ok(()) => eprintln!("WL-IR: wrote {} ({} items)", path, fragment.items.len()),
             Err(e) => eprintln!("WL-IR: write({path}) failed: {e}"),
         },

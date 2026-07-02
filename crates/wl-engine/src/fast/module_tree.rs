@@ -46,6 +46,7 @@ use std::path::{Path, PathBuf};
 
 use cargo_metadata::TargetKind as CargoTargetKind;
 
+use super::doc_fences;
 use super::include_resolve::{self, IncludeCtx};
 use super::types::{BrokenModDecl, Module, Target, TargetKind};
 use super::{FastError, Result};
@@ -88,13 +89,15 @@ impl ModuleContents {
 
 /// Read and parse one source file — the shared prelude of both
 /// [`build_module_from_file`] and the `include!` splice (so the two paths can't
-/// drift in how they read / parse a file).
-fn read_parse(path: &Path) -> Result<syn::File> {
+/// drift in how they read / parse a file). Returns the raw source too: the
+/// doc-fence scan reads it (fences live in comments, invisible post-parse).
+fn read_parse(path: &Path) -> Result<(String, syn::File)> {
     let source = std::fs::read_to_string(path)?;
-    syn::parse_file(&source).map_err(|e| FastError::Parse {
+    let parsed = syn::parse_file(&source).map_err(|e| FastError::Parse {
         path: path.to_path_buf(),
         source: e,
-    })
+    })?;
+    Ok((source, parsed))
 }
 
 /// Build the module tree rooted at one file.
@@ -107,7 +110,7 @@ fn read_parse(path: &Path) -> Result<syn::File> {
 /// `foo.rs`-owns-`foo/` convention). Computing it from the file stem here
 /// would be wrong for target roots like `tests/integration.rs`.
 fn build_module_from_file(file_path: &Path, mod_dir: &Path, inc: IncludeCtx<'_>) -> Result<Module> {
-    let parsed = read_parse(file_path)?;
+    let (source, parsed) = read_parse(file_path)?;
 
     // A file's own items are at its top level — not inside any inline block of
     // *this* file, even when the file itself was reached via a `mod foo;`.
@@ -118,6 +121,9 @@ fn build_module_from_file(file_path: &Path, mod_dir: &Path, inc: IncludeCtx<'_>)
         cfg_features: contents.cfg_features,
         broken_mod_decls: contents.broken_mod_decls,
         generated_files: contents.generated_files,
+        // Scanned once per backing file; inline `mod {}` blocks share the
+        // parent's source, so their fences are already covered here.
+        doctest_crate_refs: doc_fences::doc_fence_crate_refs(&source),
         submodules: contents.submodules,
     })
 }
@@ -184,6 +190,9 @@ fn collect_module_contents(
                     // file into that inline module, so carry the inline recursion's
                     // generated files up.
                     generated_files: inline.generated_files,
+                    // The parent's file-level scan already covered this block's
+                    // doc fences (same source text).
+                    doctest_crate_refs: std::collections::HashSet::new(),
                     submodules: inline.submodules,
                 });
             } else if let Some(child_file) =
@@ -278,7 +287,7 @@ fn splice_includes(
         let Some(child) = inc.descend(&child_ancestry) else {
             continue;
         };
-        let Ok(parsed) = read_parse(&included_path) else {
+        let Ok((_, parsed)) = read_parse(&included_path) else {
             continue;
         };
         let Ok(spliced) =

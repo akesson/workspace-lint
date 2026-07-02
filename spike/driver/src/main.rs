@@ -452,8 +452,11 @@ fn write_fragment(fragment: &IrFragment) {
         return;
     }
     let path = format!("{out_dir}/{}.json", fragment.crate_name);
+    // Write-then-rename so a fragment is only ever observed complete (same
+    // torn-read guard as the extractor dylib's copy).
+    let tmp = format!("{path}.{}.tmp", std::process::id());
     if let Ok(json) = serde_json::to_string_pretty(fragment) {
-        let _ = std::fs::write(path, json);
+        let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path));
     }
 }
 

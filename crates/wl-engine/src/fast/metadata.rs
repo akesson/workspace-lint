@@ -246,6 +246,18 @@ impl CrateInfo {
     pub fn all_modules(&self) -> impl Iterator<Item = &Module> + '_ {
         self.targets.iter().flat_map(|t| t.root.walk())
     }
+
+    /// Crate names referenced inside this crate's rust-compiling doc-test
+    /// fences, unioned over every target's modules. A dep used only in a doc
+    /// example is genuinely used (the doc-test won't compile without it), but
+    /// doc-test code is a separate compilation unit the rustc IR never sees —
+    /// so the dependency lint reads this syntactic signal alongside the
+    /// semantic reference graph.
+    pub fn doctest_dep_refs(&self) -> std::collections::HashSet<&str> {
+        self.all_modules()
+            .flat_map(|m| m.doctest_crate_refs.iter().map(String::as_str))
+            .collect()
+    }
 }
 
 #[cfg(test)]

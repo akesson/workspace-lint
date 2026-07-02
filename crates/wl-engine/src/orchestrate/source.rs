@@ -72,7 +72,10 @@ impl ExtractorSource {
 /// `RUSTUP_TOOLCHAIN`/`CARGO`/`RUSTC` would pin the child to the *caller's*
 /// toolchain and the `rustc_private` build would fail on stable.
 pub(super) fn build_dylib(package_dir: &Path) -> Result<PathBuf, EngineError> {
-    let status = Command::new("cargo")
+    // Output is captured, not inherited: a warm no-op build must leave the
+    // caller's stderr byte-deterministic (snapshot consumers), and on failure
+    // the compile errors are replayed verbatim — they ARE the diagnosis.
+    let output = Command::new("cargo")
         .args(["build", "--locked"])
         .current_dir(package_dir)
         .env_remove("RUSTUP_TOOLCHAIN")
@@ -82,12 +85,13 @@ pub(super) fn build_dylib(package_dir: &Path) -> Result<PathBuf, EngineError> {
         // its own builds — find_dylib below and dylint's dep-info fingerprint
         // both key on this path.
         .env_remove("CARGO_TARGET_DIR")
-        .status()
+        .output()
         .map_err(|source| EngineError::Io {
             context: format!("spawning cargo build in {}", package_dir.display()),
             source,
         })?;
-    if !status.success() {
+    if !output.status.success() {
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
         return Err(EngineError::ExtractorBuild {
             dir: package_dir.to_path_buf(),
         });

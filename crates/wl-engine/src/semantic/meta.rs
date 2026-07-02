@@ -66,6 +66,12 @@ pub struct WorkspaceMeta {
     /// closure is referenced clears that false positive. Empty if `resolve` is
     /// absent (degrades to exact-name matching).
     pub(super) pkg_deps: BTreeMap<String, BTreeSet<String>>,
+    /// Package code-name → its lib target's code-name, for every package in
+    /// the resolve graph whose lib target is named differently (`md-5`'s lib
+    /// is `md5`). Reference edges carry the *lib crate* name (`tcx.crate_name`),
+    /// while declared deps and the resolve graph speak *package* names — this
+    /// map bridges the two in [`WorkspaceMeta::dep_closure`].
+    pub(super) lib_name_of: BTreeMap<String, String>,
 }
 
 impl WorkspaceMeta {
@@ -109,6 +115,27 @@ impl WorkspaceMeta {
             }
         }
 
+        // Lib-target names, over ALL packages (deps included): reference edges
+        // carry `tcx.crate_name` — the lib target's name — which differs from
+        // the package name for crates like `md-5` (lib `md5`).
+        let mut lib_name_of = BTreeMap::new();
+        for p in &md.packages {
+            let pkg = p.name.to_string().replace('-', "_");
+            for t in &p.targets {
+                if t.kind.iter().any(|k| {
+                    matches!(
+                        k.to_string().as_str(),
+                        "lib" | "rlib" | "dylib" | "cdylib" | "staticlib" | "proc-macro"
+                    )
+                }) {
+                    let lib = t.name.replace('-', "_");
+                    if lib != pkg {
+                        lib_name_of.insert(pkg.clone(), lib);
+                    }
+                }
+            }
+        }
+
         let mut meta = Self {
             members: BTreeSet::new(),
             published_libs: BTreeSet::new(),
@@ -116,6 +143,7 @@ impl WorkspaceMeta {
             test_targets: BTreeSet::new(),
             declared: BTreeMap::new(),
             pkg_deps,
+            lib_name_of,
         };
         for p in &md.packages {
             if !member_ids.contains(&p.id.to_string()) {
@@ -176,16 +204,22 @@ impl WorkspaceMeta {
     }
 
     /// The resolved dependency **closure** of a crate — the crate itself plus
-    /// every crate reachable from it in the resolve graph. A declared dep is
-    /// "exercised" if the referenced-crate set intersects this: a reference to
-    /// `clap_builder` counts as using the declared facade `clap`, because
-    /// `clap_builder ∈ closure(clap)`.
+    /// every crate reachable from it in the resolve graph, each contributed
+    /// under BOTH its package name and its lib-target name (edges carry the
+    /// lib name; see [`Self::lib_name_of`]). A declared dep is "exercised" if
+    /// the referenced-crate set intersects this: a reference to `clap_builder`
+    /// counts as using the declared facade `clap`, because
+    /// `clap_builder ∈ closure(clap)`; a reference to `md5` counts as using
+    /// the declared `md-5`, its owning package.
     pub(super) fn dep_closure(&self, name: &str) -> BTreeSet<String> {
         let mut seen = BTreeSet::new();
         let mut stack = vec![name.to_string()];
         while let Some(n) = stack.pop() {
             if !seen.insert(n.clone()) {
                 continue;
+            }
+            if let Some(lib) = self.lib_name_of.get(&n) {
+                seen.insert(lib.clone());
             }
             if let Some(deps) = self.pkg_deps.get(&n) {
                 stack.extend(deps.iter().cloned());
@@ -242,12 +276,19 @@ pub(super) mod test_support {
                             kind: DepKind::Normal,
                             optional: true,
                         },
+                        DepDecl {
+                            name: "md_5".into(),
+                            kind: DepKind::Normal,
+                            optional: false,
+                        },
                     ],
                 ),
                 ("beta".into(), Vec::new()),
             ]
             .into(),
             pkg_deps: [("facade".into(), ["facade_core".into()].into())].into(),
+            // Package `md-5` exposes lib `md5` — edges carry the lib name.
+            lib_name_of: [("md_5".into(), "md5".into())].into(),
         }
     }
 }

@@ -1,0 +1,18 @@
+[package]
+name = "consumer"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+# KNOWN FALSE NEGATIVE (rustc backend): a platform-gated dependency that is
+# never referenced anywhere IS unused, and the cfg-blind syn resolver could
+# prove it (no branch of any source references `provider`). The compiler
+# backend only observes deps whose cfg matches the build host, so a foreign
+# platform's dep is structurally unjudgeable — flagging it would false-positive
+# on every genuinely-used windows-only dep when linting from another host.
+# The lint therefore skips target-gated deps entirely; this case pins that
+# deliberate miss (if it ever starts firing, the policy changed — re-triage).
+[target.'cfg(windows)'.dependencies]
+provider = { path = "../provider" }

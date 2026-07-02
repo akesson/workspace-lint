@@ -75,9 +75,8 @@ pub(crate) struct Requirements {
     /// The build-free [`FastModel`] (`cargo metadata` + manifests only).
     pub needs_fast: bool,
     /// The rustc-extracted [`wl_engine::SemanticModel`] (runs the full tier:
-    /// embedded dylint extraction on the pinned toolchain + Phase-2 assembly). Skipped
-    /// under `--fast-only`. No lint sets this yet — the tier plumbing is dark
-    /// until the first semantic-lint port.
+    /// embedded dylint extraction on the pinned toolchain + Phase-2 assembly).
+    /// Skipped under `--fast-only`.
     pub needs_semantic: bool,
 }
 
@@ -85,10 +84,26 @@ pub(crate) struct Requirements {
 pub(crate) struct LintContext<'a> {
     pub workspace: Option<&'a Workspace>,
     pub fast: Option<&'a FastModel>,
-    /// Dark until the first semantic-lint port consumes the model; the
-    /// `expect` rots loudly the moment a lint starts reading it.
-    #[expect(dead_code)]
     pub semantic: Option<&'a wl_engine::SemanticModel>,
+}
+
+/// Which engine the ported semantic lints run on. `WL_SEMANTIC_BACKEND=syn`
+/// selects the retained pre-pivot implementation — a transitional diffing
+/// switch (`tools/backend-diff`), not a supported configuration; it and the
+/// legacy code paths are deleted once all three ports have flipped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SemanticBackend {
+    Syn,
+    Rustc,
+}
+
+pub(crate) fn semantic_backend() -> SemanticBackend {
+    match std::env::var("WL_SEMANTIC_BACKEND").as_deref() {
+        Ok("syn") => SemanticBackend::Syn,
+        // The rustc engine is the default; any other value falls through to
+        // it rather than silently disabling the lint.
+        _ => SemanticBackend::Rustc,
+    }
 }
 
 /// `true` when `id` is enabled *anywhere* — its global effective level isn't

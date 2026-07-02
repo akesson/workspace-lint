@@ -221,11 +221,25 @@ impl Engine {
     ) -> Result<(), EngineError> {
         // SAFETY: single-threaded by the documented contract of `extract`.
         unsafe { std::env::set_var("WL_IR_OUT", ir_dir) };
-        let opts = dylint_opts(dylib, packages, &selector.cargo_args);
+        // The spawned `cargo check`'s stderr — compile progress, the
+        // extractor's per-fragment notes, and any real compile diagnostics —
+        // goes to a log next to the fragments, NOT the user's terminal: a
+        // successful run must stay byte-deterministic for callers that
+        // snapshot stderr. On failure the log is replayed verbatim (the
+        // compile errors ARE the diagnosis). dylint appends, so truncate
+        // between runs.
+        let log = ir_dir.with_extension("log");
+        let opts = dylint_opts(dylib, packages, &selector.cargo_args, &log);
         let run = |what: &str| {
-            dylint::run(&opts).map_err(|source| EngineError::Extraction {
-                config: format!("{} ({what})", selector.id),
-                source,
+            let _ = std::fs::write(&log, b"");
+            dylint::run(&opts).map_err(|source| {
+                if let Ok(captured) = std::fs::read_to_string(&log) {
+                    eprint!("{captured}");
+                }
+                EngineError::Extraction {
+                    config: format!("{} ({what})", selector.id),
+                    source,
+                }
             })
         };
         run("initial")?;
@@ -261,17 +275,23 @@ impl Engine {
 }
 
 /// The `dylint::run` options of the embed flow: load exactly our dylib by
-/// path, workspace members only, config selector forwarded to `cargo check`.
+/// path, workspace members only, config selector forwarded to `cargo check`,
+/// child stderr piped to `log` (surfaced only on failure).
 fn dylint_opts(
     dylib: &std::path::Path,
     packages: &[String],
     cargo_args: &[String],
+    log: &std::path::Path,
 ) -> dylint::opts::Dylint {
     use dylint::opts::{Check, Dylint, LibrarySelection, Operation};
     Dylint {
-        pipe_stderr: None,
+        pipe_stderr: Some(log.to_string_lossy().into_owned()),
         pipe_stdout: None,
-        quiet: false,
+        // dylint's own orchestrator-process chatter ("Checking with toolchain
+        // `nightly-…-<host triple>`", the pipe-stderr experimental warning)
+        // prints on OUR stderr, not the piped child's — and the triple makes
+        // it platform-dependent. Callers snapshot stderr; keep it silent.
+        quiet: true,
         operation: Operation::Check(Check {
             lib_sel: LibrarySelection {
                 lib_paths: vec![dylib.to_string_lossy().into_owned()],

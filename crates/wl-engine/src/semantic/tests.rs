@@ -288,16 +288,22 @@ fn boundary_splits_dead_from_api_surface() {
 }
 
 /// Unused-deps: facade closures credit `facade` via a `facade_core` reference;
-/// a never-referenced normal dep is flagged; build/optional deps are exempt;
-/// dev deps are judged only when a test target compiled.
+/// the lib-rename map credits package `md_5` via an edge to its lib crate
+/// `md5`; a never-referenced normal dep is flagged; build/optional deps are
+/// exempt; dev deps are judged only when a test target compiled.
 #[test]
 fn deps_verdict_scopes_and_facades() {
-    let alpha_edges = vec![edge(
-        &["alpha", "user"],
-        &["facade_core", "Thing"],
-        "K_EXT",
-        false,
-    )];
+    let alpha_edges = vec![
+        edge(
+            &["alpha", "user"],
+            &["facade_core", "Thing"],
+            "K_EXT",
+            false,
+        ),
+        // Edges carry the LIB crate name (`tcx.crate_name`), not the package
+        // name — the declared dep is `md_5`, the edge target is `md5`.
+        edge(&["alpha", "hasher"], &["md5", "Md5"], "K_MD5", false),
+    ];
     let alpha = frag("alpha", vec![], alpha_edges);
 
     // Without a test config: dev_helper must be not-judged, not flagged.

@@ -3,3 +3,9 @@
 [lints]
 default = "allow"
 unused-deps = "warn"
+
+# The wasm-bindgen usage lives inside `#[cfg(test)]` generated code and the
+# wasm-bindgen-test dev-dep is judgeable only when a test target compiles —
+# both need the `--tests` config in the rustc engine's matrix.
+[engine]
+configs = ["default", "--tests"]

@@ -183,6 +183,13 @@ fn audit_one(entry: &CorpusEntry, src: &Path, bless: bool) -> Result<(), String>
 
     let output = workspace_lint()
         .current_dir(tmp.path())
+        // The corpus FP audit tracks the LEGACY syn backend until the corpus
+        // coverage restructuring (migration PR 13): under the rustc backend a
+        // semantic lint would compile every corpus crate — minutes of build
+        // (the dioxus monorepo especially) inside the default test suite. The
+        // rustc backend's real-crate story is the scheduled full-tier corpus
+        // job that PR lands.
+        .env("WL_SEMANTIC_BACKEND", "syn")
         .output()
         .map_err(|e| format!("spawn: {e}"))?;
     let expected_path = expected_dir().join(format!("{}.stderr", entry.name));

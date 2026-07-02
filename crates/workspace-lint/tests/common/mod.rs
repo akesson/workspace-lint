@@ -278,7 +278,17 @@ pub fn normalize_stderr(stderr: &str, tmp: &Path) -> String {
     // committed `expected.stderr` to CRLF on checkout while the captured
     // subprocess output stays LF. Comparing post-normalization keeps the
     // snapshots cross-platform without requiring a .gitattributes rule.
-    out.replace("\r\n", "\n")
+    let out = out.replace("\r\n", "\n");
+    // Drop the engine's per-config progress line: dylint prints "Checking
+    // with toolchain `nightly-…-<host triple>`" straight to stderr (its
+    // Builder asserts a `check` can never be quieted), the triple is
+    // platform-dependent, and the line count varies with the `[engine]`
+    // config matrix — all three make it unsnapshottable. It's deliberate
+    // user-facing progress, so it's filtered here rather than suppressed.
+    out.lines()
+        .filter(|l| !l.starts_with("Checking with toolchain `"))
+        .map(|l| format!("{l}\n"))
+        .collect()
 }
 
 /// Every regular file under `root`, as paths relative to `root`, sorted — for
