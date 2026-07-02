@@ -10,7 +10,7 @@ pub(crate) use types::{GlobPattern, Globs, LintLevel, LintLevels};
 
 use crate::diagnostic::Diagnostic;
 use crate::lints::LintId;
-use syn_workspace::Workspace;
+use wl_engine::fast::FastModel;
 
 // Per-lint config structs live next to their lint impls under `crate::lints`.
 // `Config` re-exports them so the top-level TOML schema (the user-facing
@@ -143,12 +143,12 @@ impl Config {
 /// member is almost always a typo or a stale entry, and (because the config is
 /// centralized) would otherwise silently do nothing. Emits a `config`
 /// diagnostic with a "did you mean …?" hint. Kept separate from the pure-TOML
-/// [`audit::audit`] because it needs the loaded [`Workspace`].
-pub(crate) fn audit_crate_membership(config: &Config, workspace: &Workspace) -> Vec<Diagnostic> {
+/// [`audit::audit`] because it needs the loaded [`FastModel`].
+pub(crate) fn audit_crate_membership(config: &Config, fast: &FastModel) -> Vec<Diagnostic> {
     if config.crates.is_empty() {
         return Vec::new();
     }
-    let members: Vec<String> = workspace.members().map(|c| c.name.clone()).collect();
+    let members: Vec<String> = fast.members().iter().map(|c| c.name.clone()).collect();
     audit::audit_crate_names(config, &members, &config_source_path())
 }
 

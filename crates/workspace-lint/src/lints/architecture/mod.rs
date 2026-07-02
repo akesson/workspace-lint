@@ -61,6 +61,7 @@ impl Lint for Architecture {
     fn requirements(&self) -> Requirements {
         Requirements {
             needs_workspace: true,
+            ..Requirements::default()
         }
     }
 

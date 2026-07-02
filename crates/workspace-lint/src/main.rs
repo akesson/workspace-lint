@@ -21,6 +21,7 @@ use diagnostic::Diagnostic;
 use diagnostic::render::{Format, render};
 use lints::{LintContext, LintId};
 use syn_workspace::{LoadOptions, Workspace};
+use wl_engine::fast::FastModel;
 
 fn main() {
     let cli = Cli::parse();
@@ -44,17 +45,17 @@ fn main() {
             {
                 expand::run(ec);
             }
-            let (mut diagnostics, workspace) = run_all(&config, !cli.no_build_env);
+            let (mut diagnostics, workspace, fast) = run_all(&config, !cli.no_build_env);
             // Config-validation findings join the stream before suppression
             // (so a `# workspace-lint: allow(config)` directive can silence
             // them) and before leveling (so `[lints] config = …` applies).
             diagnostics.extend(config_diags);
             // The per-crate `[crates.<name>]` tier's crate names are validated
             // against the resolved workspace membership (a typo'd or stale crate
-            // name is otherwise a silent no-op). Needs the loaded `Workspace`,
+            // name is otherwise a silent no-op). Needs the loaded `FastModel`,
             // so it runs here rather than in the pure-TOML config audit.
-            if let Some(ws) = workspace.as_ref() {
-                diagnostics.extend(config::audit_crate_membership(&config, ws));
+            if let Some(fm) = fast.as_ref() {
+                diagnostics.extend(config::audit_crate_membership(&config, fm));
             }
             // Generated (`include!`d) code participates in analysis but is not a
             // place users can act on; drop findings anchored in it before
@@ -65,7 +66,7 @@ fn main() {
             // are leveled too and `allow`-ed lints are dropped from the final
             // set before the exit-code tally.
             apply_suppression(workspace.as_ref(), &mut diagnostics);
-            apply_lint_levels(&config, workspace.as_ref(), &mut diagnostics);
+            apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
             if cli.fix {
                 apply_fix(
                     cli.no_deep,
@@ -92,11 +93,11 @@ fn main() {
             // config file exists, so `workspace-lint check file-size` and the
             // default run agree on severity.
             let config_for_levels = config::try_load();
-            let (mut diagnostics, workspace) = run_single_check(rule, !cli.no_build_env);
+            let (mut diagnostics, workspace, fast) = run_single_check(rule, !cli.no_build_env);
             drop_generated_anchored(workspace.as_ref(), &mut diagnostics);
             apply_suppression(workspace.as_ref(), &mut diagnostics);
             if let Some(cfg) = &config_for_levels {
-                apply_lint_levels(cfg, workspace.as_ref(), &mut diagnostics);
+                apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
             }
             if cli.fix {
                 apply_fix(
@@ -157,10 +158,10 @@ fn apply_fix(
 /// deliberate per-rule severity.
 fn apply_lint_levels(
     config: &config::Config,
-    workspace: Option<&Workspace>,
+    fast: Option<&FastModel>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let crate_dirs = crate_dirs(workspace);
+    let crate_dirs = crate_dirs(fast);
     diagnostics.retain_mut(|d| {
         if d.level_is_explicit {
             return true;
@@ -194,16 +195,17 @@ struct CrateDir {
     depth: usize,
 }
 
-/// Build the per-crate match table. Empty when no workspace was loaded — then
-/// every diagnostic resolves to the global level.
-fn crate_dirs(workspace: Option<&Workspace>) -> Vec<CrateDir> {
-    let Some(ws) = workspace else {
+/// Build the per-crate match table. Empty when no [`FastModel`] was loaded —
+/// then every diagnostic resolves to the global level.
+fn crate_dirs(fast: Option<&FastModel>) -> Vec<CrateDir> {
+    let Some(fm) = fast else {
         return Vec::new();
     };
-    let mut dirs: Vec<CrateDir> = ws
+    let mut dirs: Vec<CrateDir> = fm
         .members()
+        .iter()
         .map(|c| {
-            let rel = ws.crate_relative_path(&c.manifest_dir);
+            let rel = fm.crate_relative_path(&c.manifest_dir);
             let depth = rel.components().count();
             CrateDir {
                 forms: vec![rel, c.manifest_dir.clone()],
@@ -345,35 +347,53 @@ fn apply_suppression(
 fn run_all(
     config: &config::Config,
     harvest_build_env: bool,
-) -> (Vec<Diagnostic>, Option<Workspace>) {
+) -> (Vec<Diagnostic>, Option<Workspace>, Option<FastModel>) {
     let registry = lints::registry(config);
-    // A loaded workspace is needed when some enabled lint asks for it, or when
-    // a per-crate `[crates.*]` tier is present — the latter so per-crate levels
-    // can map diagnostics to their owning crate and crate names can be
-    // validated against the membership, even if no lint itself needs the resolver.
-    let needs_ws =
-        registry.iter().any(|l| l.requirements().needs_workspace) || !config.crates.is_empty();
+    // The resolver-loaded workspace is needed only when some enabled lint asks
+    // for it. The build-free FastModel is needed when some enabled lint asks
+    // for it, or when a per-crate `[crates.*]` tier is present — the latter so
+    // per-crate levels can map diagnostics to their owning crate and crate
+    // names can be validated against the membership, even if no lint itself
+    // needs the metadata.
+    let needs_ws = registry.iter().any(|l| l.requirements().needs_workspace);
+    let needs_fast =
+        registry.iter().any(|l| l.requirements().needs_fast) || !config.crates.is_empty();
     let workspace = needs_ws.then(|| load_workspace(config.macros.as_ref(), harvest_build_env));
+    let fast = needs_fast.then(load_fast_model);
     let cx = LintContext {
         workspace: workspace.as_ref(),
+        fast: fast.as_ref(),
     };
     let diagnostics: Vec<Diagnostic> = registry.iter().flat_map(|l| l.check(&cx)).collect();
-    (diagnostics, workspace)
+    (diagnostics, workspace, fast)
 }
 
 fn run_single_check(
     rule: CheckRule,
     harvest_build_env: bool,
-) -> (Vec<Diagnostic>, Option<Workspace>) {
+) -> (Vec<Diagnostic>, Option<Workspace>, Option<FastModel>) {
     let lint = rule.into_lint();
-    let workspace = lint
-        .requirements()
+    let requirements = lint.requirements();
+    let workspace = requirements
         .needs_workspace
         .then(|| load_workspace(None, harvest_build_env));
+    let fast = requirements.needs_fast.then(load_fast_model);
     let cx = LintContext {
         workspace: workspace.as_ref(),
+        fast: fast.as_ref(),
     };
-    (lint.check(&cx), workspace)
+    (lint.check(&cx), workspace, fast)
+}
+
+/// Load the build-free `FastModel` (`cargo metadata` + parsed manifests).
+/// Loud-fail on error, mirroring [`load_workspace`]: a silent `None` would
+/// mask a broken state in CI.
+fn load_fast_model() -> FastModel {
+    FastModel::load(std::path::Path::new(".")).unwrap_or_else(|e| {
+        util::fail(format!(
+            "failed to load workspace metadata for manifest-backed lints: {e}"
+        ))
+    })
 }
 
 /// Load the resolver-backed `Workspace` and (when configured) register the

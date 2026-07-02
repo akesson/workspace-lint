@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
-use syn_workspace::Workspace;
-use syn_workspace::manifest::{DepSection, Manifest};
-use syn_workspace::toml_edit::Item;
+use wl_engine::fast::toml_edit::Item;
+use wl_engine::fast::{DepSection, FastModel, Manifest};
 
 use crate::diagnostic::builder::at_crate;
 use crate::diagnostic::{Applicability, Diagnostic, Span, Suggestion};
@@ -31,25 +30,26 @@ impl Lint for CentralizedDeps {
 
     fn requirements(&self) -> Requirements {
         Requirements {
-            needs_workspace: true,
+            needs_fast: true,
+            ..Requirements::default()
         }
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let workspace = cx
-            .workspace
-            .expect("centralized-deps lint requires Workspace (Requirements::needs_workspace)");
-        check(workspace)
+        let fast = cx
+            .fast
+            .expect("centralized-deps lint requires FastModel (Requirements::needs_fast)");
+        check(fast)
     }
 }
 
-pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(fast: &FastModel) -> Vec<Diagnostic> {
     let lint_id = LintId::CentralizedDeps.id();
-    let workspace_dep_names = workspace.root_manifest().workspace_dep_names();
+    let workspace_dep_names = fast.root_manifest().workspace_dep_names();
 
     let mut diagnostics = Vec::new();
 
-    for krate in workspace.members() {
+    for krate in fast.members() {
         let manifest = krate.manifest();
         let mut crate_errors: Vec<String> = Vec::new();
         let mut suggestions: Vec<Suggestion> = Vec::new();
@@ -87,8 +87,8 @@ pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
             // can actually match the diagnostic's `SilenceAnchor::Crate`.
             // `display_path` forces forward slashes so Windows runs produce the
             // same diagnostic text as Linux/macOS (snapshot fixtures lock it in).
-            let manifest_path_rel = workspace.crate_relative_path(manifest.path());
-            let manifest_dir_rel = workspace.crate_relative_path(&krate.manifest_dir);
+            let manifest_path_rel = fast.crate_relative_path(manifest.path());
+            let manifest_dir_rel = fast.crate_relative_path(&krate.manifest_dir);
             let cargo_path_str = crate::diagnostic::render::display_path(&manifest_path_rel);
             let mut builder = at_crate(
                 lint_id,

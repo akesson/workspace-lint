@@ -2799,6 +2799,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "toml_edit 0.25.12+spec-1.1.0",
  "wl-ir",
 ]
 
@@ -2834,6 +2835,7 @@ dependencies = [
  "tempfile",
  "tokei",
  "toml 1.1.2+spec-1.1.0",
+ "wl-engine",
 ]
 
 [[package]]

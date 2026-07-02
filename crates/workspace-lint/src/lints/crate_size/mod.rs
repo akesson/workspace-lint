@@ -1,7 +1,7 @@
 use globset::{Glob, GlobSetBuilder};
 use std::path::{Path, PathBuf};
-use syn_workspace::Workspace;
 use tokei::{Config as TokeiConfig, Languages};
+use wl_engine::fast::FastModel;
 
 use crate::config::GlobPattern;
 use crate::diagnostic::Diagnostic;
@@ -47,19 +47,20 @@ impl Lint for CrateSize {
 
     fn requirements(&self) -> Requirements {
         Requirements {
-            needs_workspace: true,
+            needs_fast: true,
+            ..Requirements::default()
         }
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let workspace = cx
-            .workspace
-            .expect("crate-size lint requires Workspace (Requirements::needs_workspace)");
-        check(&self.config, workspace)
+        let fast = cx
+            .fast
+            .expect("crate-size lint requires FastModel (Requirements::needs_fast)");
+        check(&self.config, fast)
     }
 }
 
-pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &CrateSizeConfig, fast: &FastModel) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     for rule in &config.rules {
@@ -93,11 +94,12 @@ pub(crate) fn check(config: &CrateSizeConfig, workspace: &Workspace) -> Vec<Diag
         // are honored), and the resulting anchor path is workspace-
         // relative for free — `# workspace-lint: allow(crate-size)` in a
         // member Cargo.toml now matches.
-        let mut matches: Vec<(String, std::path::PathBuf)> = workspace
+        let mut matches: Vec<(String, std::path::PathBuf)> = fast
             .members()
+            .iter()
             .map(|krate| {
                 (
-                    workspace.crate_relative_path(&krate.manifest_dir),
+                    fast.crate_relative_path(&krate.manifest_dir),
                     krate.manifest_dir.clone(),
                 )
             })

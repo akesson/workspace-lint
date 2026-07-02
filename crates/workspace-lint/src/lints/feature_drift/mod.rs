@@ -45,6 +45,7 @@ impl Lint for FeatureDrift {
     fn requirements(&self) -> Requirements {
         Requirements {
             needs_workspace: true,
+            ..Requirements::default()
         }
     }
 

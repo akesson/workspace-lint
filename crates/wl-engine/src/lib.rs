@@ -8,6 +8,9 @@
 //!
 //! This crate is the stable data layer for both of the binary's tiers:
 //!
+//! - [`fast`] — the build-free fast tier's data layer: the workspace shape
+//!   from `cargo metadata --no-deps` plus each member's parsed manifest (the
+//!   syntactic module-tree walker joins it in a later migration PR).
 //! - [`orchestrate`] — Phase-1 orchestration: vendored-source materialization,
 //!   toolchain preflight, the per-config extraction loop (embedded
 //!   `dylint::run`), and the completeness guard.
@@ -15,14 +18,15 @@
 //!   join (`DefPathHash`) → cfg-matrix union (`(crate, def_path)`) → the
 //!   verdict-producing queries the semantic lints consume.
 //!
-//! The build-free fast-tier model (`fast`) lands in the next migration PR;
-//! keeping all tiers in one crate enforces the "Phase 2 is plain data"
+//! Keeping all tiers in one crate enforces the "Phase 2 is plain data"
 //! boundary structurally — wl-engine never depends on the app layer
 //! (diagnostics, config, rendering).
 
+pub mod fast;
 pub mod orchestrate;
 pub mod semantic;
 
+pub use fast::FastModel;
 pub use orchestrate::{
     CfgSelector, ConfigRun, Engine, EngineConfig, EngineError, ExtractionRuns, ExtractorSource,
 };
