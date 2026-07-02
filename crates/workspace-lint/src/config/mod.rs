@@ -58,6 +58,68 @@ pub(crate) struct Config {
     /// `unused-pub`. See [`CrateConfig`] and [`Config::effective_level`].
     #[serde(default)]
     pub crates: HashMap<String, CrateConfig>,
+    /// The `[engine]` table: how the rustc-backed semantic tier extracts.
+    /// Absent table ⇒ the default single-config matrix. See [`EngineSection`].
+    #[serde(default)]
+    pub engine: EngineSection,
+}
+
+/// The `[engine]` table: the cargo-configuration matrix the full (rustc-backed)
+/// tier extracts under. Only consulted when a semantic lint is enabled (or the
+/// hidden `--engine-dump` runs) — a plain run never touches the engine.
+#[derive(Deserialize, Clone)]
+pub(crate) struct EngineSection {
+    /// Config selectors, first entry = primary (it defines the candidate set
+    /// downstream). Accepted entries: `"default"` (plain `cargo check`) and
+    /// `"--tests"` (alias `"tests"`). Unknown entries draw a `config`
+    /// diagnostic from the audit and are skipped by [`Self::selectors`].
+    #[serde(default = "default_engine_configs")]
+    pub configs: Vec<String>,
+}
+
+impl Default for EngineSection {
+    fn default() -> Self {
+        Self {
+            configs: default_engine_configs(),
+        }
+    }
+}
+
+fn default_engine_configs() -> Vec<String> {
+    vec!["default".into()]
+}
+
+impl EngineSection {
+    /// Every accepted `configs` entry spelling (`tests` aliases `--tests`).
+    /// The audit's "did you mean …?" candidates; kept next to
+    /// [`Self::selector_for`] so the two can't drift.
+    pub const KNOWN: &'static [&'static str] = &["default", "--tests", "tests"];
+
+    /// The engine selector one entry maps to; `None` for an unknown entry
+    /// (already reported by the config audit).
+    pub fn selector_for(entry: &str) -> Option<wl_engine::CfgSelector> {
+        match entry {
+            "default" => Some(wl_engine::CfgSelector::default_cfg()),
+            "--tests" | "tests" => Some(wl_engine::CfgSelector::tests()),
+            _ => None,
+        }
+    }
+
+    /// The extraction matrix, in declaration order (first = primary). Unknown
+    /// entries are skipped (the audit already flagged them). An empty result —
+    /// an explicit `configs = []` or all entries unknown — falls back to the
+    /// default config so extraction always has a primary.
+    pub fn selectors(&self) -> Vec<wl_engine::CfgSelector> {
+        let mut out: Vec<wl_engine::CfgSelector> = self
+            .configs
+            .iter()
+            .filter_map(|e| Self::selector_for(e))
+            .collect();
+        if out.is_empty() {
+            out.push(wl_engine::CfgSelector::default_cfg());
+        }
+        out
+    }
 }
 
 /// One `[crates.<name>]` block: the per-crate middle tier of the lint cascade.

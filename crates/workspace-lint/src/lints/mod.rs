@@ -66,19 +66,29 @@ pub(crate) trait Lint: 'static {
 
 /// Static description of what shared resources a lint needs. Inspected
 /// before any check runs so the runner can skip expensive setup (notably
-/// `Workspace::load`) when no enabled lint requires it.
+/// `Workspace::load` and the rustc-backed extraction) when no enabled lint
+/// requires it.
 #[derive(Default, Clone, Copy, Debug)]
 pub(crate) struct Requirements {
     /// The resolver-loaded [`Workspace`] (parses every source file).
     pub needs_workspace: bool,
     /// The build-free [`FastModel`] (`cargo metadata` + manifests only).
     pub needs_fast: bool,
+    /// The rustc-extracted [`wl_engine::SemanticModel`] (runs the full tier:
+    /// embedded dylint extraction on the pinned toolchain + Phase-2 assembly). Skipped
+    /// under `--fast-only`. No lint sets this yet — the tier plumbing is dark
+    /// until the first semantic-lint port.
+    pub needs_semantic: bool,
 }
 
 /// Shared, per-run inputs passed to every [`Lint::check`] call.
 pub(crate) struct LintContext<'a> {
     pub workspace: Option<&'a Workspace>,
     pub fast: Option<&'a FastModel>,
+    /// Dark until the first semantic-lint port consumes the model; the
+    /// `expect` rots loudly the moment a lint starts reading it.
+    #[expect(dead_code)]
+    pub semantic: Option<&'a wl_engine::SemanticModel>,
 }
 
 /// `true` when `id` is enabled *anywhere* — its global effective level isn't
