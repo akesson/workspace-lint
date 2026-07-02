@@ -179,5 +179,5 @@ root `.workspace-lint.toml` carries explanatory comments for every `ignore` /
 # Approach
 
 1. This software is not released: no backwards-compatibility is needed.
-2. Priorise architectural soundness over effort. Spend all the effort needed to get to a clean tech-dept free situation.
+2. Prioritise architectural soundness over effort. Spend all the effort needed to get to a clean tech-debt free situation.
 3. Use a object-oriented Rust style.

@@ -41,6 +41,13 @@ fn main() -> anyhow::Result<()> {
     let target = argv.next().expect("arg1: target workspace dir");
     let lib_path = argv.next().expect("arg2: lib path (…@toolchain.dylib)");
     let ir_out = argv.next().expect("arg3: WL_IR_OUT dir");
+    // We `chdir` into `target` below (dylint checks the CWD workspace), so any
+    // relative path arg would resolve against the wrong dir afterwards — dylint's
+    // `--path <lib>` lookup, `force_relint`'s mtime bump, and the driver's inherited
+    // `WL_IR_OUT` all run post-chdir. Resolve to absolute now, while CWD is still
+    // the caller's. (`target` is consumed before the chdir, so it stays as-is.)
+    let lib_path = std::path::absolute(&lib_path)?.to_string_lossy().into_owned();
+    let ir_out = std::path::absolute(&ir_out)?.to_string_lossy().into_owned();
     // arg4.. : zero or more packages, then optionally `--` + cargo check args.
     // Empty package list (or a lone `*`) ⇒ whole workspace; args after `--` are
     // the cfg selector forwarded to `cargo check` (see the module docs).
