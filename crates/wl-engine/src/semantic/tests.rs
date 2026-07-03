@@ -29,6 +29,7 @@ fn item(path: &[&str], key: &str, kind: &str, parent: Option<&str>) -> ItemFact 
         self_type: None,
         visibility: Visibility::Public,
         span: span(),
+        full_span: span(),
         vis_span: None,
         attrs: Vec::new(),
     }
@@ -50,6 +51,8 @@ fn edge(from: &[&str], to: &[&str], to_key: &str, import: bool) -> RefEdge {
         alias: None,
         via: None,
         span: None,
+        decl_span: None,
+        elem_span: None,
     }
 }
 
@@ -690,6 +693,176 @@ fn pub_candidates_union_across_configs() {
     // The integration-test crate is not a primary member: none of its defs
     // may become candidates.
     assert!(m.pub_candidates().iter().all(|c| c.krate == "alpha"));
+}
+
+// --- the one-pass unused-pub `--fix` cascade (`pub_candidates_excluding` /
+//     `dangling_imports`) ---
+
+/// A plain `use`-declaration leaf carrying the `--fix` deletion spans. `braced`
+/// picks the extractor's discriminator: a brace-list leaf has `decl == elem`
+/// (rustc collapses the leaf item's span); a standalone `use a::b;` has `decl`
+/// strictly containing `elem`. `lo` keeps distinct imports from colliding on
+/// the `(file, decl.lo, elem.lo)` dedup key.
+fn import_edge(from: &[&str], to: &[&str], to_key: &str, braced: bool, lo: u32) -> RefEdge {
+    let elem = Span {
+        file: "src/lib.rs".into(),
+        lo,
+        hi: lo + 10,
+        line: 5,
+        from_expansion: false,
+    };
+    let decl = if braced {
+        elem.clone()
+    } else {
+        Span {
+            lo: lo.saturating_sub(4),
+            hi: lo + 12,
+            ..elem.clone()
+        }
+    };
+    RefEdge {
+        reexport: false,
+        decl_span: Some(decl),
+        elem_span: Some(elem),
+        ..edge(from, to, to_key, true)
+    }
+}
+
+fn usage_map(cands: &[PubCandidate]) -> std::collections::HashMap<String, PubUsage> {
+    cands.iter().map(|c| (c.id.clone(), c.usage)).collect()
+}
+
+/// The core cascade: an item reached only by a now-removed item drops to
+/// `Unused` in the same pass, so `--fix` deletes the whole dead chain in one
+/// run instead of one layer per invocation.
+#[test]
+fn cascade_frees_transitively_dead_item() {
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "driver"], "K_DRV", "fn", Some("mod")),
+            item(&["app", "helper"], "K_HLP", "fn", Some("mod")),
+        ],
+        vec![edge(&["app", "driver"], &["app", "helper"], "K_HLP", false)],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let base = usage_map(&m.pub_candidates());
+    assert_eq!(base["app::driver"], PubUsage::Unused);
+    assert_eq!(base["app::helper"], PubUsage::IntraCrate);
+
+    let removed = RemovalSet::new(["app::driver"]);
+    let after = usage_map(&m.pub_candidates_excluding(&removed));
+    assert_eq!(
+        after["app::helper"],
+        PubUsage::Unused,
+        "helper, reached only by the removed driver, must free"
+    );
+}
+
+/// From-attribution is segment-wise: removing `app::driver` drops edges out of
+/// `driver` and its body-nested defs (`driver::{closure}`) but NOT a sibling
+/// whose path merely shares the string prefix (`driver_two`).
+#[test]
+fn cascade_from_attribution_is_segment_prefix() {
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "driver"], "K_DRV", "fn", Some("mod")),
+            item(&["app", "driver_two"], "K_DRV2", "fn", Some("mod")),
+            item(&["app", "helper"], "K_HLP", "fn", Some("mod")),
+            item(&["app", "keeper"], "K_KP", "fn", Some("mod")),
+        ],
+        vec![
+            // helper reached ONLY from a closure nested inside driver.
+            edge(
+                &["app", "driver", "{closure#0}"],
+                &["app", "helper"],
+                "K_HLP",
+                false,
+            ),
+            // keeper reached from the sibling driver_two.
+            edge(&["app", "driver_two"], &["app", "keeper"], "K_KP", false),
+        ],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let after = usage_map(&m.pub_candidates_excluding(&RemovalSet::new(["app::driver"])));
+    assert_eq!(
+        after["app::helper"],
+        PubUsage::Unused,
+        "driver's closure edge must drop with driver"
+    );
+    assert_eq!(
+        after["app::keeper"],
+        PubUsage::IntraCrate,
+        "driver_two is not segment-covered by `driver` — its edge survives"
+    );
+}
+
+/// The cascade preserves the cfg-matrix union: an item that becomes `Unused`
+/// in one config after removal but is still used under ANOTHER config stays
+/// alive — deleting it would break that config's build.
+#[test]
+fn cascade_preserves_cross_config_union() {
+    let default_cfg = frag(
+        "app",
+        vec![
+            item(&["app", "driver"], "K_DRV", "fn", Some("mod")),
+            item(&["app", "helper"], "K_HLP", "fn", Some("mod")),
+        ],
+        vec![edge(&["app", "driver"], &["app", "helper"], "K_HLP", false)],
+    );
+    // Under `--tests` helper is reached by a test-only keeper (distinct key,
+    // same identity path — StableCrateId moves across configs).
+    let tests_cfg = frag(
+        "app",
+        vec![
+            item(&["app", "driver"], "K_DRV2", "fn", Some("mod")),
+            item(&["app", "helper"], "K_HLP2", "fn", Some("mod")),
+        ],
+        vec![edge(
+            &["app", "tests", "keeper"],
+            &["app", "helper"],
+            "K_HLP2",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![default_cfg]),
+        ("--tests", vec![tests_cfg]),
+    ]);
+    let after = usage_map(&m.pub_candidates_excluding(&RemovalSet::new(["app::driver"])));
+    assert_eq!(
+        after["app::helper"],
+        PubUsage::IntraCrate,
+        "helper is Unused in default-after-removal but used under --tests → union keeps it"
+    );
+}
+
+/// `dangling_imports` returns exactly the `use` leaves whose target is removed,
+/// deduped across configs, carrying the brace discriminator (`decl == elem`).
+#[test]
+fn dangling_imports_targets_removed_defs_only() {
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "inner", "helper"], "K_HLP", "fn", Some("mod")),
+            item(&["app", "inner", "kept"], "K_KEPT", "fn", Some("mod")),
+        ],
+        vec![
+            import_edge(&["app"], &["app", "inner", "helper"], "K_HLP", true, 100),
+            import_edge(&["app"], &["app", "inner", "kept"], "K_KEPT", true, 200),
+        ],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::inner::helper"]));
+    assert_eq!(dangling.len(), 1, "only the helper import dangles");
+    let d = &dangling[0];
+    assert_eq!(d.elem.lo, 100, "the helper leaf, not the kept one");
+    assert!(
+        d.decl.lo == d.elem.lo && d.decl.hi == d.elem.hi,
+        "brace-leaf: decl == elem (the excise discriminator)"
+    );
+    assert!(!d.reexport);
 }
 
 /// (PR 10) The must-stay-pub guards surface per candidate: a `use`/`pub use`

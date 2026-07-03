@@ -562,6 +562,154 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         }
     }
 
+    // 18. (import surgery) `decl_span` / `elem_span` — the unused-pub `--fix`
+    //     deletion surfaces, and the brace discriminator the lint relies on:
+    //       * standalone `use a::b;` → `decl_span` is the WHOLE statement and
+    //         strictly contains `elem_span` (`decl != elem`) → delete the
+    //         statement.
+    //       * brace-list leaf → rustc collapses the leaf item's span to the
+    //         leaf, so `decl_span == elem_span` → excise the leaf in place.
+    //     `elem_span` must cover the whole brace entry as written, including a
+    //     nested path (`deep::buried`) or an `as`-rename — never just the last
+    //     segment (that would leave `deep::` behind).
+    {
+        let root = ck.root.clone();
+        let slice = |sp: &wl_ir::Span| -> String {
+            let bytes = std::fs::read(root.join(&sp.file)).unwrap_or_default();
+            bytes
+                .get(sp.lo as usize..sp.hi as usize)
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default()
+        };
+        let same = |a: &wl_ir::Span, b: &wl_ir::Span| a.lo == b.lo && a.hi == b.hi;
+        let last = |v: &[String]| v.last().cloned().unwrap_or_default();
+        // (from, to, braced, want_elem, want_decl_if_standalone)
+        let cases = [
+            // Standalone: decl ⊋ elem, decl is the whole `use …;`.
+            (
+                "named_user",
+                "globbed",
+                false,
+                "super::globbed",
+                "use super::globbed;",
+            ),
+            (
+                "renamed_user",
+                "glob_target",
+                false,
+                "super::globbed::glob_target as renamed_target",
+                "use super::globbed::glob_target as renamed_target;",
+            ),
+            // Brace-list leaves: decl == elem (leaf-collapsed).
+            ("list_user", "first", true, "first", ""),
+            ("list_user", "second", true, "second", ""),
+            ("list_user", "aliased_src", true, "aliased_src as al", ""),
+            // Nested path inside a brace: elem is the whole entry `deep::buried`.
+            ("nested_user", "buried", true, "deep::buried", ""),
+            ("nested_user", "shallow", true, "shallow", ""),
+        ];
+        let mut results: Vec<Result<String, String>> = Vec::new();
+        for (from, to, braced, want_elem, want_decl) in cases {
+            let found = frag
+                .references
+                .iter()
+                .find(|e| e.import && last(&e.from) == from && last(&e.to) == to);
+            match found {
+                None => results.push(Err(format!("[{from} -> {to}] missing import edge"))),
+                Some(e) => {
+                    let (Some(decl), Some(elem)) = (&e.decl_span, &e.elem_span) else {
+                        results.push(Err(format!(
+                            "[{from} -> {to}] want both spans, got decl={:?} elem={:?}",
+                            e.decl_span, e.elem_span
+                        )));
+                        continue;
+                    };
+                    let elem_text = slice(elem);
+                    let is_braced = same(decl, elem);
+                    let elem_ok = elem_text == want_elem;
+                    let braced_ok = is_braced == braced;
+                    // For a standalone import the whole-statement delete surface
+                    // must be exactly `decl_span`.
+                    let decl_ok = braced || slice(decl) == want_decl;
+                    if elem_ok && braced_ok && decl_ok {
+                        results.push(Ok(format!(
+                            "{from}->{to}: braced={braced} elem={want_elem:?}"
+                        )));
+                    } else {
+                        results.push(Err(format!(
+                            "[{from} -> {to}] want braced={braced} elem={want_elem:?} \
+                             decl={want_decl:?}, got braced={is_braced} elem={elem_text:?} \
+                             decl={:?}",
+                            slice(decl)
+                        )));
+                    }
+                }
+            }
+        }
+        for r in results {
+            match r {
+                Ok(m) => {
+                    ck.passes += 1;
+                    println!("PASS  {m}");
+                }
+                Err(e) => ck.failures.push(e),
+            }
+        }
+    }
+
+    // 19. (deletion surface) `full_span` is the WHOLE item — leading doc
+    //     comments and attributes through the body's closing brace — not
+    //     `def_span` (the signature). Deleting `def_span` would orphan the body
+    //     `{ … }` and leave a dangling `///`; `full_span` removes the item
+    //     cleanly. Sliced byte-exact against `plain` (documented, with a body).
+    {
+        let src = std::fs::read_to_string(ck.root.join("src/lib.rs"))?;
+        let plain = frag
+            .items
+            .iter()
+            .find(|it| it.path.last().map(String::as_str) == Some("plain") && it.path.len() == 2);
+        match plain.and_then(|it| it.full_span.as_ref()) {
+            None => ck
+                .failures
+                .push("[plain] full_span missing (deletion surface)".into()),
+            Some(fs) => {
+                let text = src.get(fs.lo as usize..fs.hi as usize).unwrap_or("");
+                let ok = text.starts_with("///")
+                    && text.contains("pub fn plain() -> u32")
+                    && text.trim_end().ends_with('}');
+                if ok {
+                    ck.passes += 1;
+                    println!("PASS  plain: full_span spans doc-comment..body-close");
+                } else {
+                    ck.failures
+                        .push(format!("[plain] full_span text unexpected: {text:?}"));
+                }
+            }
+        }
+        // Attributed fn: the delete surface must cover the doc comment and the
+        // outer attributes so a delete leaves nothing orphaned.
+        let attributed = frag.items.iter().find(|it| {
+            it.path.last().map(String::as_str) == Some("attributed") && it.path.len() == 2
+        });
+        match attributed.and_then(|it| it.full_span.as_ref()) {
+            None => ck.failures.push("[attributed] full_span missing".into()),
+            Some(fs) => {
+                let text = src.get(fs.lo as usize..fs.hi as usize).unwrap_or("");
+                let ok = text.trim_start().starts_with("///")
+                    && text.contains("#[inline]")
+                    && text.contains("#[allow")
+                    && text.trim_end().ends_with('}');
+                if ok {
+                    ck.passes += 1;
+                    println!("PASS  attributed: full_span covers doc + attrs + body");
+                } else {
+                    ck.failures
+                        .push(format!("[attributed] full_span text: {text:?}"));
+                }
+            }
+        }
+    }
+
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());
     anyhow::ensure!(
         ck.failures.is_empty(),

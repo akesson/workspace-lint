@@ -180,6 +180,55 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
+        // unused-pub: an item the one-pass `--fix` cascade freed — something
+        // *does* reference it in source, but that referrer is deleted in the
+        // same pass, so it becomes unused. The extra note distinguishes this
+        // from a directly-dead item.
+        (
+            "unused_pub_cascade_transitive",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub fn `helper` in crate `mycrate` appears unused — consider removing",
+                PathBuf::from("crates/mycrate/src/inner.rs"),
+                14,
+            )
+            .help("remove the item or its `pub` visibility")
+            .note(
+                "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
+            )
+            .note(
+                "transitively unused: the only item(s) that referenced it are also deleted by this `--fix`",
+            )
+            .build(),
+        ),
+        // unused-pub: the dangling-`use` surgery the cascade emits — a deleted
+        // item's import leaf is excised so the tree still compiles (no E0432).
+        (
+            "unused_pub_import_surgery",
+            at_line(
+                "workspace-lint::unused-pub",
+                "unused import of a removed item",
+                PathBuf::from("crates/mycrate/src/lib.rs"),
+                3,
+            )
+            .help("removing the dangling `use` left by the deleted item")
+            .suggestion(Suggestion {
+                span: Span {
+                    file: PathBuf::from("crates/mycrate/src/lib.rs"),
+                    line_start: 3,
+                    line_end: 3,
+                    col_start: 1,
+                    col_end: 1,
+                    byte_start: 12,
+                    byte_end: 20,
+                },
+                message: "remove the unused import".to_string(),
+                replacement: String::new(),
+                applicability: Applicability::MachineApplicable,
+                original: Some("helper, ".to_string()),
+            })
+            .build(),
+        ),
         // unused-pub: crate-level hint nudging `publish = true` for an internal
         // crate that accumulated several findings.
         (
@@ -554,6 +603,42 @@ mod tests {
             help: if intentional, silence with:
               |
             42 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
+        fn unused_pub_cascade_transitive() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_cascade_transitive")), @r"
+            warning: pub fn `helper` in crate `mycrate` appears unused — consider removing
+             --> crates/mycrate/src/inner.rs:14:1
+              |
+              = help: remove the item or its `pub` visibility
+              = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+              = note: transitively unused: the only item(s) that referenced it are also deleted by this `--fix`
+            help: if intentional, silence with:
+              |
+            14 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
+        fn unused_pub_import_surgery() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_import_surgery")), @r"
+            warning: unused import of a removed item
+             --> crates/mycrate/src/lib.rs:3:1
+              |
+              = help: removing the dangling `use` left by the deleted item
+            help: remove the unused import
+              |
+            3 - helper, 
+              |
+            help: if intentional, silence with:
+              |
+            3 + workspace_lint::expect!(unused_pub);
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -970,6 +1055,16 @@ mod tests {
         #[test]
         fn unused_pub_removal_candidate() {
             insta::assert_snapshot!(render(&scenario("unused_pub_removal_candidate")), @"::warning file=crates/mycrate/src/lib.rs,line=42,col=1,title=workspace-lint%3A%3Aunused-pub::pub fn `helper` in crate `mycrate` appears unused — consider removing");
+        }
+
+        #[test]
+        fn unused_pub_cascade_transitive() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_cascade_transitive")), @"::warning file=crates/mycrate/src/inner.rs,line=14,col=1,title=workspace-lint%3A%3Aunused-pub::pub fn `helper` in crate `mycrate` appears unused — consider removing");
+        }
+
+        #[test]
+        fn unused_pub_import_surgery() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_import_surgery")), @"::warning file=crates/mycrate/src/lib.rs,line=3,col=1,title=workspace-lint%3A%3Aunused-pub::unused import of a removed item");
         }
 
         #[test]

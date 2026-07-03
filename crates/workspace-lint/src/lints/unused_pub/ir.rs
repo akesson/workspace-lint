@@ -42,13 +42,41 @@ use crate::lints::LintId;
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
 
+/// One unused-pub finding paired with the two things the `--fix` cascade needs
+/// beyond the rendered diagnostic: the candidate identity (the removed-set key)
+/// and whether it is a genuinely-`Unused` item carrying a MachineApplicable
+/// deletion — i.e. a removal seed that will actually be applied.
+pub(crate) struct PubFinding {
+    /// `PubCandidate::id`; `None` for the crate-level publish hint.
+    pub id: Option<String>,
+    /// `Unused` + `auto-delete` + git-clean ⇒ this item's deletion is
+    /// MachineApplicable, so removing it (and cascading) is sound.
+    pub removable: bool,
+    pub diagnostic: Diagnostic,
+}
+
 pub(super) fn check(
     global: &UnusedPubConfig,
     per_crate: &HashMap<String, UnusedPubConfig>,
     fast: &FastModel,
     model: &SemanticModel,
 ) -> Vec<Diagnostic> {
-    let candidates = model.pub_candidates();
+    findings(global, per_crate, fast, model.pub_candidates())
+        .into_iter()
+        .map(|f| f.diagnostic)
+        .collect()
+}
+
+/// The candidate-driven core of the lint — shared by the plain [`check`] (fed
+/// `SemanticModel::pub_candidates`) and the `--fix` cascade (fed
+/// `pub_candidates_excluding`). Returns per-candidate [`PubFinding`]s plus the
+/// crate-level publish hints, in the same order [`check`] always emitted them.
+pub(crate) fn findings(
+    global: &UnusedPubConfig,
+    per_crate: &HashMap<String, UnusedPubConfig>,
+    fast: &FastModel,
+    candidates: Vec<PubCandidate>,
+) -> Vec<PubFinding> {
     let mut by_crate: BTreeMap<&str, Vec<&PubCandidate>> = BTreeMap::new();
     for c in &candidates {
         by_crate.entry(c.krate.as_str()).or_default().push(c);
@@ -64,7 +92,7 @@ pub(super) fn check(
         });
     }
 
-    let mut diagnostics = Vec::new();
+    let mut out = Vec::new();
     for krate in fast.members() {
         // A per-crate `[crates.<name>.unused-pub]` wholesale-replaces the
         // global params for this crate; the glob sets / kind filter are built
@@ -103,10 +131,10 @@ pub(super) fn check(
             auto_delete: config.auto_delete,
             exempt_external_api,
         };
-        let mut crate_diags = Vec::new();
+        let mut crate_findings = Vec::new();
         for cand in cands {
-            if let Some(d) = check_candidate(cand, &ctx) {
-                crate_diags.push(d);
+            if let Some(f) = check_candidate(cand, &ctx) {
+                crate_findings.push(f);
             }
         }
         // When a *workspace-internal* crate accumulates several findings, the
@@ -116,12 +144,16 @@ pub(super) fn check(
         let threshold = config
             .publish_hint_threshold
             .unwrap_or(DEFAULT_PUBLISH_HINT_THRESHOLD);
-        if !exempt_external_api && threshold > 0 && crate_diags.len() >= threshold {
-            diagnostics.push(publish_hint(krate, &crate_code, crate_diags.len()));
+        if !exempt_external_api && threshold > 0 && crate_findings.len() >= threshold {
+            out.push(PubFinding {
+                id: None,
+                removable: false,
+                diagnostic: publish_hint(krate, &crate_code, crate_findings.len()),
+            });
         }
-        diagnostics.extend(crate_diags);
+        out.extend(crate_findings);
     }
-    diagnostics
+    out
 }
 
 struct CheckCtx<'a> {
@@ -147,7 +179,7 @@ impl CheckCtx<'_> {
     }
 }
 
-fn check_candidate(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> Option<Diagnostic> {
+fn check_candidate(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> Option<PubFinding> {
     if candidate_skipped_by_filters(cand, ctx) {
         return None;
     }
@@ -161,7 +193,12 @@ fn check_candidate(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> Option<Diagnostic
         PubUsage::Unused => PubVerdict::Unused,
     };
     let span = cand.span.as_ref()?;
-    Some(build_diagnostic(cand, ctx, span, verdict))
+    let (diagnostic, removable) = build_diagnostic(cand, ctx, span, verdict);
+    Some(PubFinding {
+        id: Some(cand.id.clone()),
+        removable,
+        diagnostic,
+    })
 }
 
 /// Pure filter cascade — every reason to bail before composing a diagnostic,
@@ -224,12 +261,15 @@ fn candidate_skipped_by_filters(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> bool
     false
 }
 
+/// Build the rendered diagnostic, returning `(diagnostic, removable)` where
+/// `removable` is `true` iff the structural fix is a **MachineApplicable
+/// deletion** — the signal the cascade seeds its removed set from.
 fn build_diagnostic(
     cand: &PubCandidate,
     ctx: &CheckCtx<'_>,
     span: &wl_ir::Span,
     verdict: PubVerdict,
-) -> Diagnostic {
+) -> (Diagnostic, bool) {
     let kind_str = &cand.kind;
     let crate_code = ctx.crate_code;
     let (message, suggestion) = match verdict {
@@ -255,7 +295,9 @@ fn build_diagnostic(
         .note(
             "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
         );
-    apply_structural_fix(builder, cand, ctx.auto_delete, &file, span, verdict).build()
+    let (builder, removable) =
+        apply_structural_fix(builder, cand, ctx.auto_delete, &file, span, verdict);
+    (builder.build(), removable)
 }
 
 /// Structural fix policy — identical to the syn backend's:
@@ -275,14 +317,24 @@ fn apply_structural_fix(
     file: &Path,
     span: &wl_ir::Span,
     verdict: PubVerdict,
-) -> crate::diagnostic::builder::DiagnosticBuilder {
-    if let Some((sugg, note)) = pick_deletion_fix(auto_delete, file, span, verdict) {
+) -> (crate::diagnostic::builder::DiagnosticBuilder, bool) {
+    // The deletion surface is the WHOLE item (attrs/doc through body) — `span`
+    // is rustc's `def_span`, only the signature, so deleting it would orphan a
+    // function's body. `full_span` falls back to `span` only for the
+    // no-editable-surface items that are never deletion candidates anyway.
+    let delete_span = cand.full_span.as_ref().unwrap_or(span);
+    if let Some((sugg, note)) = pick_deletion_fix(auto_delete, file, delete_span, verdict) {
+        // Only a git-clean (recoverable) deletion is MachineApplicable — that
+        // is the removal the cascade may build on.
+        let removable = sugg.applicability == Applicability::MachineApplicable;
         let with_sugg = builder.suggestion(sugg);
-        return note.into_iter().fold(with_sugg, |b, reason| b.note(reason));
+        let builder = note.into_iter().fold(with_sugg, |b, reason| b.note(reason));
+        return (builder, removable);
     }
-    build_tighten_suggestion(cand, file, verdict)
+    let builder = build_tighten_suggestion(cand, file, verdict)
         .into_iter()
-        .fold(builder, |b, s| b.suggestion(s))
+        .fold(builder, |b, s| b.suggestion(s));
+    (builder, false)
 }
 
 /// Build a suggestion that overwrites the item's visibility token with
@@ -363,10 +415,17 @@ pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcom
     let Ok(source) = fs_err::read_to_string(file) else {
         return DeleteOutcome::Unavailable;
     };
-    let start = span.lo as usize;
+    let mut start = span.lo as usize;
     let mut end = (span.hi as usize).min(source.len());
     if start >= end {
         return DeleteOutcome::Unavailable;
+    }
+    // Eat the item's leading indentation (horizontal whitespace back to the
+    // line start) so a deleted nested item leaves no orphaned indent. Safe: it
+    // only crosses spaces/tabs, never a newline or another item's text.
+    let bytes = source.as_bytes();
+    while start > 0 && matches!(bytes[start - 1], b' ' | b'\t') {
+        start -= 1;
     }
     // The item text itself (sans the trailing newline the deletion also
     // eats), for the rendered `-` diff line.

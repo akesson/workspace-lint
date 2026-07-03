@@ -34,8 +34,10 @@ use crate::lints::{Lint, LintContext, LintId, Requirements};
 /// `publish-hint-threshold` unset.
 pub(super) const DEFAULT_PUBLISH_HINT_THRESHOLD: usize = 3;
 
+pub(crate) mod cascade;
 pub mod config;
 mod ir;
+mod surgery;
 #[cfg(test)]
 mod tests;
 

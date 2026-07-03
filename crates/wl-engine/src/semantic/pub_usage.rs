@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use wl_ir::Span;
 
-use super::assembly::{Assembly, CANDIDATE_KINDS, Category, Reach};
+use super::assembly::{Assembly, CANDIDATE_KINDS, Category, DegreeView, Reach, RemovalSet};
 
 /// How a candidate is used, unioned across every extracted config. Mirrors the
 /// syn lint's `Usage` vocabulary, plus the dispatch/export class the rustc
@@ -54,9 +54,13 @@ pub struct PubCandidate {
     pub kind: String,
     pub category: Category,
     pub usage: PubUsage,
-    /// Whole-definition span (on-disk byte offsets; see [`wl_ir::Span`]).
+    /// Whole-definition span (on-disk byte offsets; see [`wl_ir::Span`]) — the
+    /// diagnostic-anchor line (the signature).
     pub span: Option<Span>,
-    /// Visibility-token span — the `--fix` tighten write surface.
+    /// Whole-**item** span (attrs/doc through body) — the `--fix` *delete*
+    /// write surface (see [`wl_ir::ItemFact::full_span`]).
+    pub full_span: Option<Span>,
+    /// Visibility-token span — the `--fix` *tighten* write surface.
     pub vis_span: Option<Span>,
     /// Named in a `pub` item's signature under some config: tightening would
     /// not compile (E0446 / `private_interfaces`) — must stay `pub`.
@@ -83,6 +87,36 @@ struct Fold {
 }
 
 pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
+    compute_impl(configs, None)
+}
+
+/// [`compute`] with a cascade removal set: each config's degrees are recomputed
+/// as if `removed`'s defs had been deleted, so items a deleted item solely
+/// reached surface as `Unused` in the *same* pass. Candidates whose own
+/// identity is in `removed` are still returned (they read `Unused` once their
+/// referrers vanish) — the caller dedups against what it has already scheduled.
+pub(super) fn compute_excluding(
+    configs: &[(String, Assembly)],
+    removed: &RemovalSet,
+) -> Vec<PubCandidate> {
+    let overlays: Vec<_> = configs
+        .iter()
+        .map(|(_, a)| a.refold_excluding(removed))
+        .collect();
+    let views: Vec<DegreeView> = overlays.iter().map(|o| o.view()).collect();
+    compute_impl(configs, Some(&views))
+}
+
+/// The shared fold. `overlay_views`, when present, supplies each config's
+/// removal-recomputed degree source (index-aligned with `configs`); otherwise
+/// the prebuilt indexes are used. Only the three removal-sensitive reads
+/// (in/intra degree, signature exposure, and reach — which consults in-degree)
+/// route through the view; `is_externally_reachable` / `is_import_target` are
+/// invariant under item deletion and stay direct.
+fn compute_impl(
+    configs: &[(String, Assembly)],
+    overlay_views: Option<&[DegreeView<'_>]>,
+) -> Vec<PubCandidate> {
     let (_, primary) = &configs[0];
     let members = &primary.crates;
 
@@ -92,7 +126,15 @@ pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
     let mut folds: BTreeMap<String, Fold> = BTreeMap::new();
     let mut display: BTreeMap<String, (&Assembly, String)> = BTreeMap::new();
 
-    for (_, assembly) in configs {
+    for (ci, (_, assembly)) in configs.iter().enumerate() {
+        let prebuilt;
+        let view: &DegreeView = match overlay_views {
+            Some(vs) => &vs[ci],
+            None => {
+                prebuilt = assembly.degree_view();
+                &prebuilt
+            }
+        };
         for (key, def) in &assembly.defs {
             if !def.public
                 || def.synthetic
@@ -112,14 +154,15 @@ pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
                 continue;
             }
             let fold = folds.entry(def.path.clone()).or_default();
-            let (workspace_wide, intra_only) = assembly.degrees(key);
+            let workspace_wide = view.in_degree.get(key).copied().unwrap_or(0);
+            let intra_only = view.intra_degree.get(key).copied().unwrap_or(0);
             fold.cross |= workspace_wide > intra_only;
             fold.intra |= intra_only > 0;
             fold.dispatch |= matches!(
-                assembly.reach_of(key, def),
+                assembly.reach_with(key, def, view.in_degree),
                 Reach::ExternalDispatch | Reach::InternalDispatch | Reach::ExportRoot
             );
-            fold.signature_exposed |= assembly.exposed_in_public_signature(key);
+            fold.signature_exposed |= view.signature_exposed.contains(key);
             fold.externally_reachable |= assembly.is_externally_reachable(key, def);
             fold.reexport_target |= assembly.is_import_target(key);
             display
@@ -149,6 +192,7 @@ pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
                 category: def.category,
                 usage,
                 span: def.span.clone(),
+                full_span: def.full_span.clone(),
                 vis_span: def.vis_span.clone(),
                 signature_exposed: fold.signature_exposed,
                 externally_reachable: fold.externally_reachable,

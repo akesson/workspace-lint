@@ -81,6 +81,20 @@ impl SuppressionMap {
         }
     }
 
+    /// Would any directive suppress this diagnostic? The read-only twin of
+    /// [`SuppressionMap::is_suppressed`] — no `matched` side effect — used by
+    /// the unused-pub `--fix` cascade to decide, without disturbing
+    /// stale-expect accounting, whether a would-be deletion is silenced (so its
+    /// target must not seed a removal). The real filtering + `expect`
+    /// fulfilment still runs later via [`is_suppressed`](Self::is_suppressed).
+    pub(crate) fn would_suppress(&self, d: &Diagnostic) -> bool {
+        let lint_short = d.lint_short();
+        self.entries.iter().any(|entry| {
+            entry.directive.lint == lint_short
+                && applies(&entry.directive.anchor, &d.silence_anchor)
+        })
+    }
+
     /// Test whether any directive suppresses this diagnostic. Side-effect:
     /// records `matched = true` on every matching `expect` so the
     /// stale-detection pass picks it up.
