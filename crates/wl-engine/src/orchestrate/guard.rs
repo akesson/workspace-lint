@@ -146,7 +146,23 @@ pub(super) fn missing_fragments(ir_dir: &Path, expected: &BTreeSet<String>) -> V
 /// Force the next `dylint::run` to re-lint every workspace member by bumping
 /// the lint dylib's mtime (dylint fingerprints the dylib into each
 /// primary-package unit's dep-info).
+///
+/// The dylib is shared across concurrent workspace-lint processes (one cache
+/// per binary version), so the handle must not conflict with a simultaneous
+/// `LoadLibraryExW`/`dlopen` in another process's driver. On Windows a
+/// write-class handle (`append`) makes that load fail with a sharing
+/// violation; `FILE_WRITE_ATTRIBUTES`-only access is sufficient for
+/// `set_modified` and invisible to the loader. Unix has no such conflict.
 pub(super) fn force_relint(dylib: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let f = {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .open(dylib)?
+    };
+    #[cfg(not(windows))]
     let f = std::fs::OpenOptions::new().append(true).open(dylib)?;
     f.set_modified(std::time::SystemTime::now())
 }

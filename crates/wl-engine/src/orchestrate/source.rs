@@ -43,11 +43,21 @@ impl ExtractorSource {
             Self::Vendored { cache_root } => {
                 // Keyed by binary version: a new release re-materializes; a
                 // stale cache can never feed an old extractor to a new
-                // assembler. Writes are idempotent and self-healing (always
-                // rewritten — seven small files).
+                // assembler. Self-healing but **mtime-stable**: a file is
+                // rewritten only when its content differs (missing/corrupt).
+                // Unconditional rewrites would refresh source mtimes and
+                // dirty cargo's fingerprint, relinking the cached dylib on
+                // every invocation — needless work for one run, and a data
+                // race for concurrent runs: relinking a dylib another
+                // process's driver has loaded truncates a mapped file on
+                // Unix (SIGBUS in that driver mid-compile) and fails the
+                // link with a sharing violation on Windows.
                 let root = cache_root.join(env!("CARGO_PKG_VERSION"));
                 for (rel, bytes) in VENDORED_FILES {
                     let dest = root.join(rel);
+                    if std::fs::read(&dest).is_ok_and(|existing| existing.as_slice() == *bytes) {
+                        continue;
+                    }
                     let write = |source| EngineError::Materialize {
                         dir: dest.clone(),
                         source,
@@ -167,9 +177,27 @@ mod tests {
             );
         }
 
-        // Idempotent re-materialization (self-healing cache).
+        // Idempotent re-materialization (self-healing cache) — and
+        // mtime-stable: an unchanged file must NOT be rewritten, or every
+        // invocation would dirty cargo's fingerprint and relink the cached
+        // dylib (racing any concurrent process that has it loaded). Pin a
+        // sentinel mtime and assert it survives.
+        let lib_rs = pkg.join("src/lib.rs");
+        let sentinel =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        let f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&lib_rs)
+            .unwrap();
+        f.set_modified(sentinel).unwrap();
+        drop(f);
         let again = source.materialize().unwrap();
         assert_eq!(pkg, again);
+        assert_eq!(
+            std::fs::metadata(&lib_rs).unwrap().modified().unwrap(),
+            sentinel,
+            "re-materialization rewrote an unchanged file — warm caches must stay mtime-stable"
+        );
     }
 
     #[test]

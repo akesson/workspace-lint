@@ -39,8 +39,13 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
     // as "fresh" and nothing lands in the new temp dir. Bumping the dylib mtime
     // invalidates exactly the probe's lint units — the same mechanism as the
     // orchestrator's completeness guard (`force_relint` in the spike embed).
-    let lib_file = std::fs::OpenOptions::new().append(true).open(&lib_path)?;
-    lib_file.set_modified(std::time::SystemTime::now())?;
+    // Scoped: the handle must be CLOSED before `dylint::run` — Windows refuses
+    // to load a dylib any process holds open for write (sharing violation),
+    // and this write handle would otherwise live to the end of the test.
+    {
+        let lib_file = std::fs::OpenOptions::new().append(true).open(&lib_path)?;
+        lib_file.set_modified(std::time::SystemTime::now())?;
+    }
 
     // The embed flow, verbatim from the spike orchestrator: WL_IR_OUT is
     // inherited by the spawned driver; dylint checks the CWD workspace.
