@@ -58,6 +58,7 @@ cargo test                                    # plain runner also works
 cargo test --test cases                       # fixture taxonomy harness
 cargo test --test dogfood                     # tool must pass on its own repo
 cargo test --test fix_fixtures                # whole-tree --fix snapshots
+cargo test --test corpus -- --ignored         # full-tier corpus subset (compiles them)
 (cd extractor && cargo test)                  # extractor probe suite (pinned nightly)
 
 # Lint / format (CI denies warnings)
@@ -94,8 +95,13 @@ Always review the diff before committing a blessed change.
 2. **`run_all`** → `lints::registry(config)` builds `Vec<Box<dyn Lint>>`. A lint
    is enabled iff its effective level (`[lints]` override → `default` → built-in
    `warn`) isn't `allow`, and — for `LintId::requires_config` (policy) lints —
-   its config table is present. Structural lints are on by default. The runner
-   only pays `Workspace::load` if some enabled lint sets `needs_workspace`.
+   its config table is present. Structural lints are on by default. Each lint
+   declares `Requirements { needs_fast, needs_semantic }`: the runner pays
+   `FastModel::load` (cargo metadata + manifests, build-free) and the
+   rustc-backed extraction only if some enabled lint asks. Under `--fast-only`
+   the semantic lints are *retained out* of the registry (skipped, never run
+   model-less). A memberless workspace skips the semantic tier entirely.
+   See **The engine** below for what the semantic tier does.
 3. **`apply_suppression`** — scans for `expect!` / `allow!` macros and
    `# workspace-lint: expect(...)` comments (`directives.rs`), builds a
    `SuppressionMap` (`suppress.rs`), filters the stream, then appends
@@ -108,7 +114,9 @@ Always review the diff before committing a blessed change.
 5. **`fix::run`** (if `--fix`) — applies only `MachineApplicable` suggestions as
    byte-range replacements directly (no rustfix). `--fix` never inserts silence
    directives and never deletes files (except `unused-pub auto-delete`, gated on
-   a clean git state as backup).
+   a clean git state as backup). The IR's byte offsets are ON-DISK positions
+   (CRLF-safe — see `wl_ir::Span`), which is what makes them a valid write
+   surface.
 6. **`report_and_exit`** — `human` → stderr, `json`/`github` → stdout. Exit 1 iff
    any surviving diagnostic is `Deny`.
 
@@ -122,6 +130,46 @@ is consumable by rust-analyzer unmodified. Build diagnostics with the grain-matc
 helpers in `diagnostic/builder.rs` (`at_workspace` / `at_crate` / `at_file` /
 `at_line`) so the `SilenceAnchor` — where the "silence with:" hint points — is
 correct. Renderers are in `diagnostic/render/{human,json,github}.rs`.
+
+## The engine (semantic tier)
+
+Two phases, forced by rustc's per-crate compilation model:
+
+- **Phase 1 — extract** (`wl-engine::orchestrate`): the binary vendors the
+  `extractor/` sources (embedded at compile time via build.rs), materializes
+  them to `~/.cache/workspace-lint/<binary-version>/`, builds the dylib once
+  per toolchain, and runs one `dylint::run` (a wrapped `cargo check`) per
+  `[engine] configs` entry with `--workspace` (a non-virtual workspace would
+  otherwise make members mere dependency units — unlintable when warm). Each
+  crate's `LateLintPass` writes an `IrFragment` (defs + resolved reference
+  edges, `wl-ir` schema) to `target/workspace-lint/ir/<config>/` under a
+  canonical name (`<crate>[@bin][+test].json` — a package's bin may share the
+  lib's crate name). Cargo freshness keeps fragments valid without re-runs;
+  the **completeness guard** covers the one hole (`WL_IR_OUT` isn't in
+  cargo's fingerprint): expected-vs-present check, one forced re-lint (dylib
+  mtime bump), then a hard error. Whole-workspace runs also **prune** stale
+  fragments (renamed crates, older naming schemes) so they can't silently
+  assemble forever.
+- **Phase 2 — assemble** (`wl-engine::semantic`): pure stable data work.
+  Within a config, cross-crate join on `DefPathHash` (`ItemFact::key` ↔
+  `RefEdge::to_key` — display paths are NOT stable across crates); across
+  configs, union on `(crate, def_path)` (the hash is NOT stable across
+  configs — the two identities are duals). Derived indexes (reachability,
+  re-export chains, signature exposure, dispatch, dep matrix) live here, not
+  in the extractor: the emit vocabulary stays minimal ground facts, every
+  derivation testable on stable.
+
+Failure semantics: toolchain preflight errors carry paste-able remediation
+(snapshotted in `messages.rs`); a compile failure names the config and
+replays cargo's diagnostics; the tier never silently degrades — the explicit
+degradation is `--fast-only`.
+
+**Bumping the pinned nightly** (`extractor/rust-toolchain.toml`; track
+*dylint's* pin, not the newest nightly): update the pin file, expect the
+`register_late_pass` signature edit in `extractor/src/lib.rs` (documented
+inline at the call), run the probe suite (`cd extractor && cargo test`), and
+update the CI pin strings (`ci.yml`, `corpus.yml`, `extractor.yml` cache
+keys). Verified cadence: a ~10-week jump needed exactly one edit.
 
 ## Adding a new lint
 
@@ -154,6 +202,17 @@ correct. Renderers are in `diagnostic/render/{human,json,github}.rs`.
   in all three formats, as inline `insta` snapshots. Read top-to-bottom to audit
   the entire user-facing message surface.
 - **`tests/fix_fixtures.rs`** — whole-tree before/after snapshots for `--fix`.
+- **`extractor/tests/probe.rs`** — the golden-IR spine, tier 1: compiles the
+  probe crate and asserts extraction policy (span projection, vis tokens,
+  edge metadata) on the emitted fragment. Runs on the pinned nightly
+  (`cd extractor && cargo test`); its own 3-OS CI workflow triggers on
+  extractor/wl-ir changes.
+- **`wl-engine/src/semantic/tests.rs`** — tier 2: hand-crafted fragment
+  fixtures through the assembler on stable, in every `cargo test`.
+- **`tests/corpus.rs`** — real third-party crates (git submodules under
+  `corpus/`): a fast-tier smoke over every checked-out crate in the default
+  suite (skips cleanly when submodules are absent), and an `#[ignore]`d
+  full-tier subset run driven by the scheduled `corpus.yml` workflow.
 
 ## Dogfooding
 
@@ -179,7 +238,11 @@ root `.workspace-lint.toml` carries explanatory comments for every `ignore` /
   unscrubbed child git operates on the *invoker's* repository (this once let
   the test suite, run by the pre-push hook, commit fixture trees onto the
   developer's real branch).
-- Edition 2024, MSRV 1.88 (`[workspace.package] rust-version`).
+- Edition 2024, MSRV 1.88 (`[workspace.package] rust-version`). The pinned
+  nightly is the *extractor's* build toolchain only.
+- `SPIKE-rustc-fidelity-tree.md` is the pivot spike's historical design
+  record — the `SPIKE §…` references in `extractor/` comments point there.
+  It describes the exploration, not the current tree.
 
 # Approach
 

@@ -10,6 +10,20 @@ A Rust CLI that enforces workspace quality standards via configurable lint check
 Emits clippy-style human output, rustc-compatible JSON, or GitHub Actions
 workflow commands so editor and CI integrations work without glue.
 
+Two tiers, one binary. The **structural lints** (file/crate size, module
+tree, dependency hygiene, freshness, …) are build-free: `cargo metadata`
+plus parsed manifests and sources, no compilation. The **semantic lints**
+(`unused-deps`, `unused-pub`, `architecture`) are judged on a
+**rustc-fidelity engine**: the workspace is compiled (a cached `cargo
+check`), a compiler-plugin extractor emits each crate's resolved reference
+graph, and the lints query the assembled workspace-global view — the
+compiler's own answer, seeing through macro expansions, re-export chains,
+`#[cfg]` variants, trait dispatch, and type inference. The trade is
+explicit: **the workspace must compile** for the semantic tier, and a
+pinned nightly toolchain must be installed (the tool prints the exact
+install commands if it isn't). `--fast-only` runs just the build-free tier
+— no toolchain, no compile. See [The semantic engine](#the-semantic-engine).
+
 ## Installation
 
 ```sh
@@ -132,7 +146,14 @@ crate = "wasm-bindgen"
 
 ### unused-deps
 
-Scans workspace crates for dependencies declared in `Cargo.toml` that don't appear to be used in source files.
+Flags dependencies declared in `Cargo.toml` that nothing references. Judged
+on the engine's resolved reference graph, facade-aware (a dep is credited
+when anything in its resolved dependency closure is referenced, so `clap`
+counts even though every symbol resolves into `clap_builder`) and
+rename-aware (`package = "…"` followed). Doc-fence code blocks and feature
+plumbing also credit a dep. Dev-dependencies are judged only when a
+`--tests` entry is in the [`[engine]` config matrix](#the-semantic-engine)
+— without one they are skipped, never guessed.
 
 ```toml
 [unused-deps]
@@ -373,27 +394,81 @@ needed. The old `[[macros.external]]` config section now draws a `config`
 finding telling you to delete it, and the `expansion_uses!` /
 `# workspace-lint: expansion-uses(...)` source annotations are no longer read.
 
-### Built-in usage assertions
+### Naming quirks the matcher smooths over
 
-Some upstream crates have a *documented contract* the resolver can't see by
-parsing: a derive macro expands to code that references a runtime crate, an
-attribute requires a crate at expansion time, or an attribute names a path
-inside a string literal. `workspace-lint` ships built-in assertions for the
-common ones, so `unused-deps` / `unused-pub` don't report them as false
-positives. They fire on a syntactic trigger and only ever *suppress* a finding —
-never create one.
+Macro-expansion contracts (a derive that references its runtime crate, an
+attribute that names a module in a string) need no special handling: the
+engine sees the expanded code, so those references are ordinary edges.
+What remains heuristic is pure *naming*: a dep whose hyphen-stripped name
+matches a referenced lib target is credited (`md-5` declares the crate
+whose lib is `md5`), so a rename-by-convention never reads as unused. This
+only ever *suppresses* a finding — never creates one. For everything else
+there is the `[unused-deps] ignore` knob.
 
-| Rule | Trigger | Credits |
-|------|---------|---------|
-| `strum-derive` | `#[derive(EnumString \| EnumIter \| …)]`, or any `strum::…` / `strum_macros::…` derive | `strum` |
-| `wasm-bindgen-test` | `#[wasm_bindgen_test]` | `wasm-bindgen` |
-| `serde-with` | `#[serde(with = "…")]` / `#[serde(crate = "…")]` | the named module + its `serialize` / `deserialize` |
-| `md5-libname` | a dep whose hyphen-stripped name matches a referenced lib (e.g. `md-5` → `md5`) | the dep |
+## The semantic engine
 
-These are not configurable. For project-specific cases use `[[macros.external]]`
-above (still applied workspace-wide) or the `[unused-deps] ignore` knob; a bare
-`#[derive(Display)]` is intentionally *not* covered by `strum-derive` because it
-is ambiguous with `derive_more`.
+The semantic lints (`unused-deps`, `unused-pub`, `architecture`) are judged
+on the compiler's own resolution, in two phases:
+
+1. **Extract.** The binary embeds the source of a compiler-plugin extractor
+   (a [Dylint](https://github.com/trailofbits/dylint) lint that never
+   warns), materializes it to a per-version cache, builds it once per
+   toolchain, and drives one `cargo check` per configured entry over your
+   workspace with the plugin loaded. Each compiled crate writes an IR
+   fragment — its definitions and resolved reference edges — under
+   `target/workspace-lint/ir/<config>/`. Cargo's own caching applies:
+   unchanged crates aren't recompiled and their fragments stay valid, so
+   warm runs cost roughly a no-op `cargo check`.
+2. **Assemble.** The stable side joins the fragments into a
+   workspace-global reference graph (cross-crate identities via
+   `DefPathHash`; results unioned across the config matrix) that the lints
+   query.
+
+### The config matrix
+
+```toml
+[engine]
+# One `cargo check` per entry; verdicts union across them. The first entry
+# is primary. Accepted: "default" (plain check), "--tests", "--benches".
+configs = ["default", "--tests"]
+```
+
+`#[cfg]`-gated code exists only under the config that compiles it, so the
+matrix is what keeps test-gated usage from reading as dead: an item used
+only from `#[cfg(test)]` code is *used* under `--tests` and the union
+clears it. `--tests` is also what makes dev-dependencies judgeable at all.
+The output names which configs ran — code compiled under configs outside
+the matrix can still cause false positives, and the diagnostics say so.
+
+### Toolchain requirement
+
+The extractor builds against a **pinned nightly** (it links `rustc`
+internals; the pin ships inside the binary and moves only with tool
+releases). The first semantic run checks for it and fails with the exact
+commands if anything is missing:
+
+```sh
+rustup toolchain install <pin> --profile minimal \
+    --component rustc-dev --component llvm-tools-preview
+cargo install dylint-link --locked
+```
+
+Your own code never compiles on that nightly — it is the *extractor's*
+build toolchain; your workspace compiles on whatever toolchain cargo would
+normally pick.
+
+### Failure semantics
+
+If the workspace doesn't compile under a configured entry, the fast-tier
+lints still report, then the run fails naming the config, with cargo's
+diagnostics replayed verbatim. The full tier never silently degrades to a
+weaker analysis — the explicit degradation path is `--fast-only`.
+
+### Hooks and CI
+
+- **pre-commit**: `workspace-lint --fast-only` — build-free, sub-second.
+- **pre-push / CI**: `workspace-lint` — the full tier; warm runs are
+  cheap, and CI caches the extractor build per toolchain pin.
 
 ## Output formats
 
@@ -569,11 +644,14 @@ removed files in the post-fix tree propagate correctly.
 - `workspace-lint` — run all configured checks.
 - `workspace-lint check <rule> [opts]` — run a single check.
 - `workspace-lint --message-format <human|json|github>` — pick the renderer.
+- `workspace-lint --fast-only` — run only the build-free lints: no
+  compile, no pinned-toolchain requirement. The semantic lints are
+  *skipped* (a `check <semantic-lint> --fast-only` is a hard error rather
+  than a silent no-op). The right mode for fast pre-commit hooks.
 - `workspace-lint --fix` — apply every diagnostic's `MachineApplicable`
   structural rewrite in place. **Requires a clean git working tree**
-  (override with `--allow-dirty`) so the whole change — fixes *and* any
-  auto-written directives — is reviewable as one `git diff`. Available
-  structural fixes:
+  (override with `--allow-dirty`) so the whole change is reviewable as one
+  `git diff`. Available structural fixes:
     - **centralized-deps** rewrites `serde = "1"` (or table forms) to
       `serde = { workspace = true }`, preserving `features`, `optional`,
       and `default-features` when present.
