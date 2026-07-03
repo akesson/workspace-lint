@@ -186,10 +186,16 @@ pub enum Visibility {
 }
 
 /// A byte range within a workspace-relative source file. Byte offsets are
-/// relative to the start of `file` (not the global `SourceMap` coordinate),
-/// and `line` is the 1-based line of `lo` — emitted by the extractor (it has
-/// the `SourceMap`; re-deriving lines downstream would duplicate file I/O and
-/// can drift from the compiler's own accounting).
+/// **on-disk** positions relative to the start of `file` — NOT rustc's
+/// internal coordinates, which live in a CRLF→LF/BOM-normalized copy of the
+/// source: the extractor maps positions back through the file's
+/// normalization records, so `raw_bytes[lo..hi]` is the span's text even in
+/// a CRLF file (where every preceding `\r` shifts the raw position by one).
+/// That property is what makes `lo..hi` a valid `--fix` write surface.
+/// `line` is the 1-based line of `lo` (identical in both coordinate
+/// systems) — emitted by the extractor (it has the `SourceMap`; re-deriving
+/// lines downstream would duplicate file I/O and can drift from the
+/// compiler's own accounting).
 ///
 /// When `from_expansion` is `true` the original rustc span was inside a macro
 /// expansion, and `lo`/`hi` have been projected to the **callsite**

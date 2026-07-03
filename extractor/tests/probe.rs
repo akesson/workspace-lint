@@ -222,7 +222,26 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         }
     }
 
-    // 10. Global invariant (load-bearing): nothing in the fragment references
+    // 10. CRLF fidelity (the `.gitattributes`-pinned `src/crlf.rs`): span
+    //    offsets must be ON-DISK bytes. rustc normalizes CRLF→LF while
+    //    loading, and a span emitted in normalized coordinates slices one
+    //    byte early per preceding `\r` — exactly what a Windows
+    //    `core.autocrlf=true` checkout produced before the
+    //    `original_relative_byte_pos` mapping. Byte-exact vis text is the
+    //    `--fix` write-surface guarantee.
+    ck.check_nested("crlf_probed", &frag, |c, it| {
+        c.expect(
+            !span_from_expansion(it),
+            it,
+            "span must not be from expansion",
+        );
+        c.expect_vis_text(it, "pub");
+    });
+    ck.check_nested("crlf_crate_only", &frag, |c, it| {
+        c.expect_vis_text(it, "pub(crate)");
+    });
+
+    // 11. Global invariant (load-bearing): nothing in the fragment references
     //    gen.rs except the `make_pub_fn` macro definition itself (which genuinely
     //    lives there, is a `macro`, and is not from an expansion).
     for it in &frag.items {
@@ -288,6 +307,25 @@ impl Checker {
             .items
             .iter()
             .filter(|it| it.path.last().map(String::as_str) == Some(name) && it.path.len() == 2)
+            .collect();
+        match matches.as_slice() {
+            [it] => {
+                let it = (*it).clone();
+                f(self, &it);
+            }
+            [] => self.failures.push(format!("[{name}] item not found")),
+            many => self
+                .failures
+                .push(format!("[{name}] expected 1 item, found {}", many.len())),
+        }
+    }
+
+    /// [`Checker::check`] for an item one module deep (`[crate, mod, name]`).
+    fn check_nested(&mut self, name: &str, frag: &IrFragment, f: impl Fn(&mut Checker, &ItemFact)) {
+        let matches: Vec<&ItemFact> = frag
+            .items
+            .iter()
+            .filter(|it| it.path.last().map(String::as_str) == Some(name) && it.path.len() == 3)
             .collect();
         match matches.as_slice() {
             [it] => {

@@ -434,13 +434,18 @@ fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option
         },
         _ => return None,
     };
-    let start = sf.start_pos.0;
+    // Cross-file `hi` (macro splice): no meaningful byte range in `lo`'s file.
+    if !sf.contains(hi) {
+        return None;
+    }
     // 1-based line of `lo` (same emit as the extractor dylib's copy).
     let line = sf.lookup_line(sf.relative_position(lo)).map_or(0, |l| l + 1) as u32;
+    // ON-DISK byte offsets: rustc's positions are in CRLF/BOM-normalized
+    // coordinates; consumers slice the raw file. See the extractor copy.
     Some(Span {
         file,
-        lo: lo.0.saturating_sub(start),
-        hi: hi.0.saturating_sub(start),
+        lo: sf.original_relative_byte_pos(lo).0,
+        hi: sf.original_relative_byte_pos(hi).0,
         line,
         from_expansion,
     })

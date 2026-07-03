@@ -62,3 +62,8 @@ pub extern "C" fn ffi_export() -> u32 {
 pub fn exposes_probed() -> Probed {
     Probed { field: 6 }
 }
+
+// CRLF-pinned file (see its `//!` doc and the sibling `.gitattributes`):
+// on-disk byte-offset fidelity for spans in `\r\n` sources. Declared last so
+// the line-number assertions above stay put.
+mod crlf;

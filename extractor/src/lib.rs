@@ -529,15 +529,30 @@ fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option
         },
         _ => return None,
     };
-    let start = sf.start_pos.0;
+    // A macro can splice tokens from another file; a `hi` outside `lo`'s file
+    // has no meaningful byte range there (and would underflow the relative
+    // mapping below).
+    if !sf.contains(hi) {
+        return None;
+    }
     // 1-based line of `lo`, from the file's own line table (computed on the
     // callsite-projected span, matching `lo`/`hi`). Diagnostic anchors need
     // it, and the extractor is the only place that has the SourceMap.
-    let line = sf.lookup_line(sf.relative_position(lo)).map_or(0, |l| l + 1) as u32;
+    let line = sf
+        .lookup_line(sf.relative_position(lo))
+        .map_or(0, |l| l + 1) as u32;
+    // ON-DISK byte offsets, not rustc's internal ones: rustc normalizes a
+    // source while loading (CRLF → LF, BOM strip) and all its positions live
+    // in the normalized coordinates, but every consumer of `lo`/`hi` slices
+    // the raw on-disk file — the probe checker and, critically, `--fix`
+    // byte-range edits. In a CRLF file each preceding `\r` shifts the raw
+    // position by one; map back through the file's normalization records.
+    // (Line numbers are identical in both coordinate systems. For an LF file
+    // the records are empty and this is the plain relative position.)
     Some(Span {
         file,
-        lo: lo.0.saturating_sub(start),
-        hi: hi.0.saturating_sub(start),
+        lo: sf.original_relative_byte_pos(lo).0,
+        hi: sf.original_relative_byte_pos(hi).0,
         line,
         from_expansion,
     })
