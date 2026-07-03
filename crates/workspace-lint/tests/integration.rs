@@ -59,6 +59,31 @@ fn fast_only_skips_semantic_lints() {
         .success();
 }
 
+/// An `expect` for a semantic lint must not report stale under `--fast-only`:
+/// the lint never ran, so "unmatched" carries no staleness signal — regression
+/// guard for the 14 false stale-expects the first real-world `--fast-only`
+/// run emitted (one per committed `expect(unused-deps)`).
+#[test]
+fn fast_only_does_not_stale_semantic_expects() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    copy_tree(fixture("unused_deps_clean"), tmp.path()).expect("copy fixture");
+    std::fs::write(
+        tmp.path().join(".workspace-lint.toml"),
+        "[unused-deps]\n[unused-pub]\n",
+    )
+    .expect("write config");
+    let manifest = tmp.path().join("crates/alpha/Cargo.toml");
+    let mut text = std::fs::read_to_string(&manifest).expect("read member manifest");
+    text.push_str("\n# workspace-lint: expect(unused-deps)\n");
+    std::fs::write(&manifest, text).expect("append expect directive");
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("--fast-only")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("stale").not());
+}
+
 #[test]
 fn unused_deps_clean_passes() {
     workspace_lint()

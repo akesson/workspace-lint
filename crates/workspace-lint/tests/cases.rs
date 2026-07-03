@@ -43,9 +43,11 @@ use common::{
 /// Apply an optional `setup.toml` (sibling of `workspace/`) to the copied
 /// tempdir before the binary runs. Lets cases that need state which can't be
 /// committed inert — a git index, or relative file mtimes — join the standard
-/// taxonomy. Schema:
+/// taxonomy. Returns extra CLI args for the case's binary invocation. Schema:
 ///
 /// ```toml
+/// args = ["--fast-only"]      # extra CLI args for the binary
+///
 /// [git]                       # for stale-git-index
 /// init = true                 # git init + add -A + commit
 /// delete_after = ["a/b.rs"]   # rm from disk AFTER commit (stays in the index)
@@ -54,10 +56,10 @@ use common::{
 /// path = "crates/api/CLAUDE.md"
 /// order = 0                   # lower = older
 /// ```
-fn apply_setup(case_dir: &Path, tmp: &Path) -> Result<(), String> {
+fn apply_setup(case_dir: &Path, tmp: &Path) -> Result<Vec<String>, String> {
     let setup_path = case_dir.join("setup.toml");
     if !setup_path.exists() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let text = std::fs::read_to_string(&setup_path).map_err(|e| format!("read setup.toml: {e}"))?;
     let doc: toml::Value = toml::from_str(&text).map_err(|e| format!("parse setup.toml: {e}"))?;
@@ -113,6 +115,20 @@ fn apply_setup(case_dir: &Path, tmp: &Path) -> Result<(), String> {
         }
     }
 
+    // Extra CLI args for the binary — lets a case exercise a flagged run
+    // (e.g. `--fast-only`) while staying in the standard taxonomy.
+    let mut args = Vec::new();
+    if let Some(entries) = doc.get("args").and_then(toml::Value::as_array) {
+        for entry in entries {
+            args.push(
+                entry
+                    .as_str()
+                    .ok_or("args entries must be strings")?
+                    .to_string(),
+            );
+        }
+    }
+
     if let Some(entries) = doc.get("mtime").and_then(toml::Value::as_array) {
         // Assign mtimes in `order`: a deterministic base plus 10s per step, so
         // a lower order is strictly older regardless of filesystem resolution.
@@ -136,7 +152,7 @@ fn apply_setup(case_dir: &Path, tmp: &Path) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    Ok(args)
 }
 
 fn git_cmd(dir: &Path, args: &[&str]) -> Result<(), String> {
@@ -185,13 +201,14 @@ fn run_case(kind: Kind, case_dir: &Path, bless: bool) -> Result<(), Failure> {
     // Optional per-case setup: initialize a git repo and/or set relative file
     // mtimes that can't live inert in a committed fixture (they're needed by
     // stale-git-index and freshness). See `apply_setup`.
-    apply_setup(case_dir, tmp.path()).map_err(|e| Failure {
+    let args = apply_setup(case_dir, tmp.path()).map_err(|e| Failure {
         case_path: case_dir.to_path_buf(),
         kind,
         reason: format!("setup: {e}"),
     })?;
 
     let output = workspace_lint()
+        .args(&args)
         .current_dir(tmp.path())
         // Run lints deterministically regardless of the CI env: `freshness`
         // short-circuits when `CI` is set, which would otherwise make its

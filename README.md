@@ -288,7 +288,9 @@ These lints take no configuration and run on every invocation (silence with
   no longer exist on disk.
 - **stale-expect** — fires when an `expect!` / `expect(...)` directive silences
   nothing because the underlying lint stopped firing (see
-  [Silencing diagnostics](#silencing-diagnostics)).
+  [Silencing diagnostics](#silencing-diagnostics)). Only lints that actually
+  ran are judged: directives for a lint skipped by `--fast-only`, disabled via
+  `allow`, or outside a `check <lint>` run are never reported stale.
 - **config** — a structural problem in the config file itself: an unknown
   section or key (with a "did you mean …?" hint), or a policy lint enabled in
   `[lints]` with no rules table (so it would never fire).

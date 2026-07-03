@@ -1,0 +1,10 @@
+# Under `--fast-only` the semantic `unused-deps` lint is retained out of the
+# registry and never runs — its expect can't match anything, but that is not
+# staleness (the mirror true-positive `expect_never_fires` runs the lint and
+# must keep flagging). The directive is injected here (not committed in the
+# fixture) so this repo's own dogfood scan doesn't pick it up from tests/cases/.
+args = ["--fast-only"]
+
+[[append]]
+path = "crates/demo/Cargo.toml"
+text = "\n# workspace-lint: expect(unused-deps)\n"

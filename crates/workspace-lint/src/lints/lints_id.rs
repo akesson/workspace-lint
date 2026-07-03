@@ -331,7 +331,9 @@ deny = [\"crates/b/**\"]
 
     /// Lints that are emitted by the config-audit / suppression pipeline rather
     /// than a [`crate::lints::registry`] entry — they have no `Lint` instance.
-    /// Every *other* variant must be produced by the registry.
+    /// Every *other* variant must be produced by the registry. The stale-expect
+    /// "ran" set mirrors this split: `apply_suppression` always counts its own
+    /// two meta-lints as ran, and the default run adds `config`.
     const META_LINTS: &[LintId] = &[LintId::Config, LintId::StaleExpect, LintId::UnknownLint];
 
     #[test]
