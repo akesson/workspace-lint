@@ -8,6 +8,9 @@
 //!   walk a tree for equality comparison.
 //! - [`Kind`] / [`walk_cases`] / [`cases_root`] — the `tests/cases/` taxonomy
 //!   and its discovery walk, shared by `cases.rs` and `fixture_compile.rs`.
+//! - [`apply_setup`] — apply a fixture's optional `setup.toml` (git index, file
+//!   mtimes, uncommitted directive injection) to a staged tempdir; shared by
+//!   `cases.rs` and `fix_fixtures.rs`.
 //! - [`SEMANTIC_LINTS`] / [`lint_needs_build`] — routing metadata: which lints'
 //!   fixtures are analyzed by the compiling (rustc-driver) engine backend.
 //! - [`TestWorkspace`] — build a minimal cargo workspace + `.workspace-lint.toml`
@@ -24,6 +27,7 @@
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 pub fn workspace_lint() -> assert_cmd::Command {
     cargo_bin_cmd!("workspace-lint")
@@ -75,6 +79,142 @@ pub fn git(dir: &Path) -> std::process::Command {
 
 pub fn bless_enabled() -> bool {
     std::env::var_os("WORKSPACE_LINT_BLESS").is_some()
+}
+
+/// Apply an optional `setup.toml` (sibling of the fixture's staged tree) to the
+/// copied tempdir before the binary runs. Lets fixtures that need state which
+/// can't be committed inert — a git index, relative file mtimes, or an injected
+/// `# workspace-lint:` directive — stay dogfood-safe: a directive committed
+/// under `tests/**` would be picked up by this repo's own scan. Returns extra
+/// CLI args for the binary invocation. Shared by `cases.rs` and
+/// `fix_fixtures.rs`. Schema:
+///
+/// ```toml
+/// args = ["--fast-only"]      # extra CLI args for the binary
+///
+/// [git]                       # for stale-git-index
+/// init = true                 # git init + add -A + commit
+/// delete_after = ["a/b.rs"]   # rm from disk AFTER commit (stays in the index)
+///
+/// [[append]]                  # inject a directive that must stay uncommitted
+/// path = "crates/demo/Cargo.toml"
+/// text = "\n# workspace-lint: expect(centralized-deps)\n"
+///
+/// [[mtime]]                   # for freshness; relative order is deterministic
+/// path = "crates/api/CLAUDE.md"
+/// order = 0                   # lower = older
+/// ```
+pub fn apply_setup(fixture_dir: &Path, tmp: &Path) -> Result<Vec<String>, String> {
+    let setup_path = fixture_dir.join("setup.toml");
+    if !setup_path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&setup_path).map_err(|e| format!("read setup.toml: {e}"))?;
+    let doc: toml::Value = toml::from_str(&text).map_err(|e| format!("parse setup.toml: {e}"))?;
+
+    if let Some(git) = doc.get("git") {
+        if git.get("init").and_then(toml::Value::as_bool) == Some(true) {
+            git_cmd(tmp, &["init", "-q"])?;
+            git_cmd(tmp, &["add", "-A"])?;
+            git_cmd(
+                tmp,
+                &[
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "setup",
+                ],
+            )?;
+        }
+        if let Some(deletes) = git.get("delete_after").and_then(toml::Value::as_array) {
+            for entry in deletes {
+                let rel = entry
+                    .as_str()
+                    .ok_or("delete_after entries must be strings")?;
+                std::fs::remove_file(tmp.join(rel))
+                    .map_err(|e| format!("delete_after {rel}: {e}"))?;
+            }
+        }
+    }
+
+    // Append text to a file *after* copy — used to inject a `# workspace-lint:`
+    // directive that must reach the run but stay out of the committed fixture
+    // (otherwise this repo's own dogfood scan would pick the directive up from
+    // tests/ and trip stale-expect / unknown-lint).
+    if let Some(entries) = doc.get("append").and_then(toml::Value::as_array) {
+        for entry in entries {
+            let rel = entry
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .ok_or("append entry needs a string `path`")?;
+            let text = entry
+                .get("text")
+                .and_then(toml::Value::as_str)
+                .ok_or("append entry needs a string `text`")?;
+            let p = tmp.join(rel);
+            let mut content =
+                std::fs::read_to_string(&p).map_err(|e| format!("append read {rel}: {e}"))?;
+            content.push_str(text);
+            std::fs::write(&p, content).map_err(|e| format!("append write {rel}: {e}"))?;
+        }
+    }
+
+    // Extra CLI args for the binary — lets a fixture exercise a flagged run
+    // (e.g. `--fast-only`) while staying in the standard taxonomy.
+    let mut args = Vec::new();
+    if let Some(entries) = doc.get("args").and_then(toml::Value::as_array) {
+        for entry in entries {
+            args.push(
+                entry
+                    .as_str()
+                    .ok_or("args entries must be strings")?
+                    .to_string(),
+            );
+        }
+    }
+
+    if let Some(entries) = doc.get("mtime").and_then(toml::Value::as_array) {
+        // Assign mtimes in `order`: a deterministic base plus 10s per step, so
+        // a lower order is strictly older regardless of filesystem resolution.
+        let base = SystemTime::now();
+        for entry in entries {
+            let rel = entry
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .ok_or("mtime entry needs a string `path`")?;
+            let order = entry
+                .get("order")
+                .and_then(toml::Value::as_integer)
+                .ok_or("mtime entry needs an integer `order`")?;
+            let when = base + Duration::from_secs(order.max(0) as u64 * 10);
+            let f = std::fs::File::options()
+                .write(true)
+                .open(tmp.join(rel))
+                .map_err(|e| format!("open {rel} for mtime: {e}"))?;
+            f.set_times(std::fs::FileTimes::new().set_modified(when))
+                .map_err(|e| format!("set mtime {rel}: {e}"))?;
+        }
+    }
+
+    Ok(args)
+}
+
+fn git_cmd(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let out = git(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {args:?}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
 }
 
 /// The semantic lints being ported onto the compiling (rustc-driver) engine

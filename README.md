@@ -291,7 +291,9 @@ These lints take no configuration and run on every invocation (silence with
   nothing because the underlying lint stopped firing (see
   [Silencing diagnostics](#silencing-diagnostics)). Only lints that actually
   ran are judged: directives for a lint skipped by `--fast-only`, disabled via
-  `allow`, or outside a `check <lint>` run are never reported stale.
+  `allow`, or outside a `check <lint>` run are never reported stale. `--fix`
+  deletes a stale directive line for you (unless it also names a still-live or
+  unjudged lint, in which case removing it by hand is left to you).
 - **config** — a structural problem in the config file itself: an unknown
   section or key (with a "did you mean …?" hint), or a policy lint enabled in
   `[lints]` with no rules table (so it would never fire).
@@ -690,11 +692,16 @@ removed files in the post-fix tree propagate correctly.
       file is dirty or untracked the deletion suggestion is downgraded
       to `MaybeIncorrect` and `--fix` skips it; the diagnostic carries
       a `note:` explaining why.
+    - **stale-expect** deletes the whole directive line once the lint it
+      silenced stops firing — the mechanical inverse of writing a silence
+      directive. Withheld when the line also names a still-live or
+      unjudged lint (deleting it would silence that lint too).
 
   `--fix` is non-destructive: it rewrites files but never deletes them.
-  Idempotent: re-running on a clean tree is a no-op. It never writes a
+  Idempotent: re-running on a clean tree is a no-op. It never *writes* a
   silence directive on your behalf — that's always a human decision (paste
-  the directive the diagnostic prints).
+  the directive the diagnostic prints); deleting a stale one, which only
+  reduces suppression, is the one exception.
 - `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.
 

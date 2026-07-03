@@ -318,7 +318,13 @@ fn apply_suppression(
     let mut ran = ran;
     ran.insert(LintId::StaleExpect);
     ran.insert(LintId::UnknownLint);
-    let mut stale = map.stale_expects(&ran);
+    // The origin paths in the map are relative to this same root (the fast
+    // tier's root, or `.` on the model-less fallback), so `root.join(origin)`
+    // round-trips when `stale_expects` reads a file to build its deletion span.
+    let root = fast
+        .map(FastModel::root)
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut stale = map.stale_expects(&ran, root);
     suppress::apply(&mut map, &mut stale);
     suppress::apply(&mut map, &mut unknown);
     diagnostics.extend(stale);

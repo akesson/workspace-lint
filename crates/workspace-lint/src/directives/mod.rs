@@ -19,6 +19,9 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use wl_engine::fast::FastModel;
 
+mod deletion;
+pub(crate) use deletion::deletion_suggestion;
+
 /// One parsed suppression directive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Directive {
@@ -41,7 +44,14 @@ pub(crate) enum DirectiveKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DirectiveOrigin {
     pub file: PathBuf,
+    /// First line of the directive text (1-based).
     pub line: u32,
+    /// Last line of the directive text (1-based). Equals `line` for the
+    /// single-line comment forms; a `workspace_lint::expect!( … )` macro
+    /// invocation split across lines spans `line..=line_end`. This drives the
+    /// whole-directive byte range the `--fix` deletion suggestion removes
+    /// (see [`deletion::deletion_suggestion`]).
+    pub line_end: u32,
 }
 
 /// Scan the workspace for directives. Walks every file ignoring git-ignored
@@ -212,6 +222,7 @@ fn scan_rust_comments(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
                 origin: DirectiveOrigin {
                     file: rel.to_path_buf(),
                     line: line_no,
+                    line_end: line_no,
                 },
             });
         }
@@ -234,7 +245,14 @@ fn walk_items(items: &[syn::Item], rel: &Path, out: &mut Vec<Directive>) {
             syn::Item::Macro(item_macro)
                 if let Some((kind, idents)) = parse_workspace_lint_directive(&item_macro.mac) =>
             {
-                let line = item_macro.mac.path.segments[0].ident.span().start().line as u32;
+                // Span the *whole* item (attrs → path → args → semicolon), not
+                // just the path segment: `--fix` deletes `line..=line_end`, and
+                // a multi-line invocation (or a leading attribute) must be
+                // covered end-to-end so nothing dangles.
+                use syn::spanned::Spanned;
+                let span = item_macro.span();
+                let line = (span.start().line as u32).max(1);
+                let line_end = (span.end().line as u32).max(line);
                 // Step past consecutive directive macros to find the next
                 // non-directive item (if any).
                 let mut next = i + 1;
@@ -265,7 +283,8 @@ fn walk_items(items: &[syn::Item], rel: &Path, out: &mut Vec<Directive>) {
                             anchor: anchor.clone(),
                             origin: DirectiveOrigin {
                                 file: rel.to_path_buf(),
-                                line: line.max(1),
+                                line,
+                                line_end,
                             },
                         });
                     }
@@ -387,6 +406,7 @@ fn scan_text(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
                     origin: DirectiveOrigin {
                         file: rel.to_path_buf(),
                         line: line_no,
+                        line_end: line_no,
                     },
                 });
             }

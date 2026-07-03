@@ -6,9 +6,10 @@
 //! `stale-expect` meta-lint in step 4 / task #13)?
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use crate::diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
-use crate::directives::{Directive, DirectiveKind};
+use crate::directives::{Directive, DirectiveKind, DirectiveOrigin};
 use crate::lints::LintId;
 
 pub(crate) const STALE_EXPECT_LINT: &str = LintId::StaleExpect.id();
@@ -101,79 +102,114 @@ impl SuppressionMap {
         suppressed
     }
 
-    /// One diagnostic per *origin* (file + line + lint) whose `expect`
-    /// directive didn't match anything. A single source-level `expect!` may
-    /// have produced multiple internal `Entry` rows (e.g. a Cargo.toml
-    /// comment fans out to Line + Crate anchors); we group by origin so the
-    /// user sees a single stale diagnostic per source directive.
+    /// One diagnostic per source directive *line* whose `expect` didn't match
+    /// anything. A single source-level `expect!` may have produced multiple
+    /// internal `Entry` rows — a Cargo.toml comment fans out to Line + Crate
+    /// anchors, and `expect(a, b)` names several lints — so we group by
+    /// `(origin.file, origin.line)` and emit at most one diagnostic per line,
+    /// naming every lint that went stale there.
     ///
-    /// **Invariant the key relies on**: every `Entry` that originated from
-    /// the same source directive carries identical
-    /// `(directive.origin.file, directive.origin.line, directive.lint)`,
-    /// regardless of which anchor grains the scanner emitted. Adding a new
-    /// anchor grain (e.g. a File-and-Line pair for non-Rust files) is
-    /// safe — the dedup keeps working as long as the fan-out reuses the
-    /// same `origin`. See `directives.rs::cargo_toml_fan_out` for the
-    /// Line + Crate emitter that's the original motivating case.
+    /// **Invariant the key relies on**: every `Entry` from one source directive
+    /// carries identical `(origin.file, origin.line)`, whatever anchor grains or
+    /// lint names the scanner emitted. Adding a new anchor grain stays safe as
+    /// long as the fan-out reuses the same `origin`. See
+    /// `directives.rs::parses_toml_comment_directive_emits_line_and_crate_anchors`
+    /// for the Line + Crate emitter that's the original motivating case.
     ///
     /// `ran` is the set of lints that actually executed this invocation
     /// (registry membership plus the pipeline meta-lints); expects for any
     /// other lint are exempt from staleness — see [`Entry::matched`].
-    pub(crate) fn stale_expects(&self, ran: &HashSet<LintId>) -> Vec<Diagnostic> {
+    ///
+    /// When *every* lint a directive names is judged stale, the diagnostic also
+    /// carries a `MachineApplicable` deletion suggestion (`--fix` removes the
+    /// line). If any lint at that line is unknown, didn't run, or matched, the
+    /// deletion is withheld — removing the line would also silence a live or
+    /// unjudged lint — and the diagnostic stays help-only. `root` is the
+    /// workspace root the origin paths are relative to, used to read the file
+    /// when building the deletion span.
+    pub(crate) fn stale_expects(&self, ran: &HashSet<LintId>, root: &Path) -> Vec<Diagnostic> {
+        use std::collections::BTreeMap;
         use std::collections::HashMap;
 
-        // origin_key -> (any_matched, representative_entry)
-        let mut by_origin: HashMap<(std::path::PathBuf, u32, String), (bool, &Entry)> =
-            HashMap::new();
+        /// Per-line accumulation of every `expect` entry's verdict.
+        struct OriginGroup<'a> {
+            /// Representative origin (widest `line..=line_end` span seen).
+            origin: &'a DirectiveOrigin,
+            /// Judgeable lint (known + ran) → did any of its anchors match?
+            judgeable: BTreeMap<String, bool>,
+            /// Any lint at this line we can't judge (unknown, or didn't run
+            /// this invocation). Its presence blocks the whole-line deletion.
+            has_unjudgeable: bool,
+        }
+
+        let mut by_line: HashMap<(std::path::PathBuf, u32), OriginGroup> = HashMap::new();
         for entry in &self.entries {
             if entry.directive.kind != DirectiveKind::Expect {
                 continue;
             }
-            // A directive naming an unknown lint can never match (the lint
-            // doesn't exist), so it would always look "stale" — but it's
-            // already reported by `unknown-lint`. Skip it here to avoid a
-            // double report (stale-expect + unknown-lint) for one typo.
-            let Some(lint) = LintId::from_short(&entry.directive.lint) else {
-                continue;
-            };
-            // A lint that didn't run this invocation (`--fast-only`, an
-            // `allow` level, or a `check <other-lint>` run) produced nothing
-            // an expect could match — "unmatched" carries no staleness
-            // signal, so judging it would misreport every such directive.
-            if !ran.contains(&lint) {
-                continue;
+            let origin = &entry.directive.origin;
+            let group = by_line
+                .entry((origin.file.clone(), origin.line))
+                .or_insert_with(|| OriginGroup {
+                    origin,
+                    judgeable: BTreeMap::new(),
+                    has_unjudgeable: false,
+                });
+            // Track the widest span at this line (a pathological same-line
+            // `expect!(a); expect!(b);` pair) so the deletion covers all of it.
+            if origin.line_end > group.origin.line_end {
+                group.origin = origin;
             }
-            let key = (
-                entry.directive.origin.file.clone(),
-                entry.directive.origin.line,
-                entry.directive.lint.clone(),
-            );
-            by_origin
-                .entry(key)
-                .and_modify(|(any, _)| *any |= entry.matched)
-                .or_insert((entry.matched, entry));
+            match LintId::from_short(&entry.directive.lint) {
+                // Unknown lint: already reported by `unknown-lint`, and its
+                // typo probably wants fixing rather than deleting — never judge
+                // it stale, and block the deletion so the line survives.
+                None => group.has_unjudgeable = true,
+                // Known but not run this invocation (`--fast-only`, an `allow`
+                // level, a `check <other-lint>` run): produced nothing an
+                // expect could match, so "unmatched" carries no staleness
+                // signal here.
+                Some(lint) if !ran.contains(&lint) => group.has_unjudgeable = true,
+                Some(_) => {
+                    *group
+                        .judgeable
+                        .entry(entry.directive.lint.clone())
+                        .or_insert(false) |= entry.matched;
+                }
+            }
         }
 
-        let mut out: Vec<Diagnostic> = by_origin
-            .into_values()
-            .filter(|(matched, _)| !*matched)
-            .map(|(_, e)| {
-                let file = e.directive.origin.file.clone();
-                let line = e.directive.origin.line;
-                at_line(
-                    STALE_EXPECT_LINT,
-                    format!(
-                        "expect directive for `{}` did not match any diagnostic",
-                        e.directive.lint
-                    ),
-                    file,
-                    line,
-                )
-                .help("remove this expect — the lint it tracks is no longer firing")
-                .note("a stale expect usually means the underlying issue has been fixed")
-                .build()
-            })
-            .collect();
+        let mut out: Vec<Diagnostic> = Vec::new();
+        for group in by_line.into_values() {
+            let stale: Vec<&str> = group
+                .judgeable
+                .iter()
+                .filter(|(_, matched)| !**matched)
+                .map(|(lint, _)| lint.as_str())
+                .collect();
+            if stale.is_empty() {
+                continue;
+            }
+            // Delete only when the whole line is stale: any unjudgeable lint or
+            // any still-live lint sharing the line means removing it would
+            // silence something we shouldn't.
+            let fully_stale =
+                !group.has_unjudgeable && group.judgeable.values().all(|matched| !*matched);
+            let mut builder = at_line(
+                STALE_EXPECT_LINT,
+                stale_message(&stale),
+                group.origin.file.clone(),
+                group.origin.line,
+            )
+            .help(stale_help(&stale, fully_stale))
+            .note("a stale expect usually means the underlying issue has been fixed");
+            if fully_stale
+                && let Some(sug) = crate::directives::deletion_suggestion(root, group.origin)
+            {
+                builder = builder.suggestion(sug);
+            }
+            out.push(builder.build());
+        }
         // Stable order so renderers / tests don't flap on HashMap iteration.
         out.sort_by(|a, b| {
             let a_span = a.primary.as_ref();
@@ -187,6 +223,44 @@ impl SuppressionMap {
         });
         out
     }
+}
+
+/// The stale-expect message, listing every lint that went stale at one line.
+fn stale_message(stale: &[&str]) -> String {
+    match stale {
+        [one] => format!("expect directive for `{one}` did not match any diagnostic"),
+        many => format!(
+            "expect directives for {} did not match any diagnostic",
+            backtick_list(many)
+        ),
+    }
+}
+
+/// The stale-expect help line. When the whole directive line is stale it
+/// invites deleting it (the fix `--fix` applies); when other lints on the
+/// line are still live or unjudged, it names exactly which lint(s) to remove
+/// so the reader doesn't delete a line that still does work.
+fn stale_help(stale: &[&str], fully_stale: bool) -> String {
+    if fully_stale {
+        let tracked = match stale {
+            [_] => "lint it tracks is",
+            _ => "lints it tracks are",
+        };
+        format!("remove this expect — the {tracked} no longer firing")
+    } else {
+        format!(
+            "remove {} from this expect — the other lints on this line still apply",
+            backtick_list(stale)
+        )
+    }
+}
+
+fn backtick_list(lints: &[&str]) -> String {
+    lints
+        .iter()
+        .map(|l| format!("`{l}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `true` if `directive` is at the same scope as `diag`, a wider one
@@ -230,9 +304,11 @@ pub(crate) fn apply(map: &mut SuppressionMap, diagnostics: &mut Vec<Diagnostic>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::Applicability;
     use crate::diagnostic::builder::{at_crate, at_file, at_line as build_at_line, at_workspace};
     use crate::directives::{DirectiveKind, DirectiveOrigin};
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
     /// The "every lint ran" set — the staleness domain of a full default run,
     /// which is what most of these tests model.
@@ -248,6 +324,7 @@ mod tests {
             origin: DirectiveOrigin {
                 file: file_of(&anchor).unwrap_or_else(|| PathBuf::from("dummy")),
                 line: 1,
+                line_end: 1,
             },
         }
     }
@@ -260,8 +337,16 @@ mod tests {
             origin: DirectiveOrigin {
                 file: PathBuf::from(origin_file),
                 line: origin_line,
+                line_end: origin_line,
             },
         }
+    }
+
+    /// A dummy workspace root for tests that don't exercise the deletion
+    /// suggestion — its origin files don't exist on disk, so
+    /// `deletion_suggestion` returns `None` and the diagnostic stays help-only.
+    fn no_root() -> &'static Path {
+        Path::new("/nonexistent-workspace-root")
     }
 
     fn file_of(a: &SilenceAnchor) -> Option<PathBuf> {
@@ -517,7 +602,7 @@ mod tests {
         )]);
         let d = at_file("workspace-lint::file-size", "x", "src/lib.rs").build();
         assert!(map.is_suppressed(&d));
-        assert!(map.stale_expects(&all_ran()).is_empty());
+        assert!(map.stale_expects(&all_ran(), no_root()).is_empty());
     }
 
     #[test]
@@ -531,7 +616,7 @@ mod tests {
             1,
         )]);
         // No matching diagnostic was ever passed through `is_suppressed`.
-        let stales = map.stale_expects(&all_ran());
+        let stales = map.stale_expects(&all_ran(), no_root());
         assert_eq!(stales.len(), 1);
         assert_eq!(stales[0].lint, STALE_EXPECT_LINT);
         assert!(stales[0].message.contains("file-size"));
@@ -553,11 +638,11 @@ mod tests {
         )]);
         let ran = HashSet::from([LintId::FileSize]);
         assert!(
-            map.stale_expects(&ran).is_empty(),
+            map.stale_expects(&ran, no_root()).is_empty(),
             "expect for a lint that did not run must not be judged stale"
         );
         // Same map, lint in the ran set: the staleness verdict returns.
-        assert_eq!(map.stale_expects(&all_ran()).len(), 1);
+        assert_eq!(map.stale_expects(&all_ran(), no_root()).len(), 1);
     }
 
     #[test]
@@ -573,7 +658,7 @@ mod tests {
             1,
         )]);
         assert!(
-            map.stale_expects(&all_ran()).is_empty(),
+            map.stale_expects(&all_ran(), no_root()).is_empty(),
             "unknown-lint-named expect should not double-report as stale-expect"
         );
     }
@@ -587,7 +672,149 @@ mod tests {
             },
         )]);
         // `allow` never goes stale; only `expect` does.
-        assert!(map.stale_expects(&all_ran()).is_empty());
+        assert!(map.stale_expects(&all_ran(), no_root()).is_empty());
+    }
+
+    // --- stale-expect deletion suggestion (the `--fix` surface) ---
+
+    fn line_expect(lint: &str, file: &str, line: u32) -> Directive {
+        expect(
+            lint,
+            SilenceAnchor::Line {
+                file: PathBuf::from(file),
+                line,
+            },
+            file,
+            line,
+        )
+    }
+
+    /// Apply a suggestion's byte-range deletion to `content` and return the
+    /// result — the same replace the `--fix` applier performs.
+    fn apply_deletion(content: &str, sug: &crate::diagnostic::Suggestion) -> String {
+        let mut fixed = content.to_string();
+        fixed.replace_range(sug.span.byte_start as usize..sug.span.byte_end as usize, "");
+        fixed
+    }
+
+    #[test]
+    fn fully_stale_expect_attaches_deletion_suggestion() {
+        let tmp = TempDir::new().unwrap();
+        let body = "[dependencies]\n# workspace-lint: expect(unused-deps)\nserde = \"1\"\n";
+        std::fs::write(tmp.path().join("Cargo.toml"), body).unwrap();
+        let map =
+            SuppressionMap::from_directives(vec![line_expect("unused-deps", "Cargo.toml", 2)]);
+        let stales = map.stale_expects(&all_ran(), tmp.path());
+        assert_eq!(stales.len(), 1);
+        let sug = stales[0]
+            .suggestions
+            .first()
+            .expect("a deletion suggestion");
+        assert_eq!(sug.replacement, "");
+        assert_eq!(sug.applicability, Applicability::MachineApplicable);
+        assert!(sug.span.byte_end > sug.span.byte_start);
+        assert_eq!(apply_deletion(body, sug), "[dependencies]\nserde = \"1\"\n");
+    }
+
+    #[test]
+    fn deletion_suggestion_is_crlf_safe() {
+        let tmp = TempDir::new().unwrap();
+        let body = "[dependencies]\r\n# workspace-lint: expect(unused-deps)\r\nserde = \"1\"\r\n";
+        std::fs::write(tmp.path().join("Cargo.toml"), body).unwrap();
+        let map =
+            SuppressionMap::from_directives(vec![line_expect("unused-deps", "Cargo.toml", 2)]);
+        let stales = map.stale_expects(&all_ran(), tmp.path());
+        let sug = stales[0].suggestions.first().unwrap();
+        assert_eq!(
+            apply_deletion(body, sug),
+            "[dependencies]\r\nserde = \"1\"\r\n"
+        );
+    }
+
+    #[test]
+    fn multi_lint_all_stale_lists_both_and_attaches_suggestion() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "# workspace-lint: expect(unused-deps, centralized-deps)\n",
+        )
+        .unwrap();
+        let map = SuppressionMap::from_directives(vec![
+            line_expect("unused-deps", "Cargo.toml", 1),
+            line_expect("centralized-deps", "Cargo.toml", 1),
+        ]);
+        let stales = map.stale_expects(&all_ran(), tmp.path());
+        // One diagnostic for the whole line, naming both stale lints.
+        assert_eq!(stales.len(), 1);
+        assert!(stales[0].message.contains("centralized-deps"));
+        assert!(stales[0].message.contains("unused-deps"));
+        assert_eq!(stales[0].suggestions.len(), 1);
+    }
+
+    #[test]
+    fn partially_stale_multi_lint_expect_has_no_suggestion() {
+        // One directive line names two lints; one matched (live), one is stale.
+        // Deleting the line would silence the live one — so no fix, and the
+        // message names only the stale lint.
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "# workspace-lint: expect(unused-deps, centralized-deps)\n",
+        )
+        .unwrap();
+        let mut map = SuppressionMap::from_directives(vec![
+            line_expect("unused-deps", "Cargo.toml", 1),
+            line_expect("centralized-deps", "Cargo.toml", 1),
+        ]);
+        // centralized-deps fires on this line → its expect matches (live).
+        let d = build_at_line("workspace-lint::centralized-deps", "x", "Cargo.toml", 1).build();
+        assert!(map.is_suppressed(&d));
+        let stales = map.stale_expects(&all_ran(), tmp.path());
+        assert_eq!(stales.len(), 1);
+        assert!(stales[0].message.contains("unused-deps"));
+        assert!(
+            !stales[0].message.contains("centralized-deps"),
+            "a still-live lint must not be named as stale"
+        );
+        assert!(
+            stales[0].suggestions.is_empty(),
+            "no deletion — it would silence the live lint"
+        );
+        // The help must direct the reader at the stale lint only — "remove
+        // this expect" would invite deleting the live suppression with it.
+        let help = &stales[0].helps[0];
+        assert!(
+            help.contains("remove `unused-deps` from this expect"),
+            "partial-stale help must name the lint to remove, got: {help}"
+        );
+    }
+
+    #[test]
+    fn unknown_lint_at_same_line_blocks_deletion() {
+        // A typo'd lint sharing the directive line: the known lint is stale,
+        // but deleting the line would also drop the typo the user likely wants
+        // to fix (unknown-lint points at it). Report the stale lint, no fix.
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "# workspace-lint: expect(unused-deps, unusd-typo)\n",
+        )
+        .unwrap();
+        let map = SuppressionMap::from_directives(vec![
+            line_expect("unused-deps", "Cargo.toml", 1),
+            line_expect("unusd-typo", "Cargo.toml", 1),
+        ]);
+        let stales = map.stale_expects(&all_ran(), tmp.path());
+        assert_eq!(stales.len(), 1);
+        assert!(stales[0].message.contains("unused-deps"));
+        assert!(
+            stales[0].suggestions.is_empty(),
+            "an unknown lint on the line blocks the whole-line deletion"
+        );
+        assert!(
+            stales[0].helps[0].contains("remove `unused-deps` from this expect"),
+            "help must not invite whole-line deletion while the typo'd lint is on it"
+        );
     }
 
     // --- `apply` integration ---

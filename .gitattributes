@@ -2,6 +2,13 @@
 # fail comparisons after git's autocrlf converts checkouts to CRLF.
 *.stderr text eol=lf
 
+# The fix-fixture input/expected trees are byte-compared after checkout
+# (tests/fix_fixtures.rs reads each file to a String and asserts equality).
+# A setup.toml `[[append]]` hook injects directive lines with LF, so a Windows
+# CRLF checkout would desync the two sides. Force LF across the fixture trees
+# so the comparison is platform-independent.
+crates/workspace-lint/tests/fixtures/** text eol=lf
+
 # Committed rust-analyzer SCIP indexes for the deep `--fix` fixtures are binary
 # protobuf — never apply EOL conversion, or a Windows checkout would corrupt
 # them and `ScipIndex::load` would fail to decode.

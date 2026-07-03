@@ -166,9 +166,6 @@ pub(crate) const ALL_LINTS: &[&str] = &[
 /// - `freshness`: needs mtime manipulation that can't live inert in a
 ///   committed fixture (timestamps move on every clone / checkout).
 /// - `cli-crate-version`: needs a fake CLI binary the fixture can invoke.
-/// - `stale-expect`: depends on a prior `expect!` directive matching a
-///   diagnostic — the test would be testing the suppression pipeline, not
-///   `--fix` mechanics.
 /// - `stale-git-index`: needs `git ls-files` to disagree with on-disk
 ///   state, which requires an in-tempdir git init/add/rm dance.
 /// - `config`, `unknown-lint`: config-validation diagnostics with no
@@ -179,6 +176,7 @@ pub(crate) const ALL_LINTS: &[&str] = &[
 #[allow(dead_code)] // test-only (drives the fix-fixture coverage guard)
 pub(crate) const FIXTURABLE_LINTS: &[&str] = &[
     LintId::CentralizedDeps.id(),
+    LintId::StaleExpect.id(),
     LintId::UnusedDeps.id(),
     LintId::UnusedPub.id(),
 ];
