@@ -3,11 +3,13 @@
 //! `--fix` applies real per-lint rewrites — byte-range replacements produced by
 //! lints that know how to resolve their own findings: centralized-deps
 //! (`serde = "1"` → `serde = { workspace = true }`), unused-deps (line
-//! deletion), unused-pub (delete the item, or tighten `pub` → `pub(crate)`).
-//! The lint's `check` function attaches these to `Diagnostic.suggestions` with
-//! `Applicability::MachineApplicable`. It never writes a silence directive on
-//! the author's behalf — the renderers print each finding's "if intentional,
-//! silence with:" hint for a human to paste.
+//! deletion), unused-pub (delete the item, or tighten `pub` → `pub(crate)`),
+//! and stale-expect (delete the now-pointless directive line). The lint's
+//! `check` function attaches these to `Diagnostic.suggestions` with
+//! `Applicability::MachineApplicable`. It never *writes* a silence directive on
+//! the author's behalf — deleting a stale one is the mechanical inverse, and
+//! the renderers still print each finding's "if intentional, silence with:"
+//! hint for a human to paste.
 //!
 //! Correctness properties this module maintains:
 //!
@@ -275,6 +277,39 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             "pub(crate) fn x() {}\n"
+        );
+    }
+
+    #[test]
+    fn fix_applies_whole_line_deletion() {
+        // An empty replacement whose span covers a line incl. its newline —
+        // the shape stale-expect and unused-deps produce — removes the line.
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("lib.rs");
+        let body = "keep_a();\nworkspace_lint::expect!(unused_pub);\nkeep_b();\n";
+        std::fs::write(&p, body).unwrap();
+        let line2_start = body.find("workspace_lint").unwrap();
+        let line2_end = body[line2_start..].find('\n').unwrap() + line2_start + 1;
+        let s = Suggestion {
+            span: Span {
+                file: p.clone(),
+                line_start: 2,
+                line_end: 2,
+                col_start: 1,
+                col_end: 1,
+                byte_start: line2_start as u32,
+                byte_end: line2_end as u32,
+            },
+            message: "remove this stale expect directive".into(),
+            replacement: String::new(),
+            applicability: Applicability::MachineApplicable,
+            original: Some("workspace_lint::expect!(unused_pub);".into()),
+        };
+        let modified = apply_to_file(&p, std::slice::from_ref(&s)).unwrap();
+        assert!(modified);
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "keep_a();\nkeep_b();\n"
         );
     }
 

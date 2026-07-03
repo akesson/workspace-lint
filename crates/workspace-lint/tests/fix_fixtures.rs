@@ -11,12 +11,18 @@
 //! On `WORKSPACE_LINT_BLESS=1 cargo test`, the driver instead overwrites
 //! `expected/` with the post-fix tree. The test still passes so a casual
 //! `BLESS=1 cargo test` run does the right thing.
+//!
+//! A fixture may carry a `setup.toml` sibling of `input/` (same schema as the
+//! `tests/cases/` harness — see [`common::apply_setup`]); it's applied to the
+//! staged tempdir after copy. `fix__stale_expect` uses its `[[append]]` hook to
+//! inject the `expect` directive uncommitted, so this repo's own dogfood scan
+//! doesn't trip on a committed stale directive under `tests/fixtures/`.
 
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 mod common;
-use common::{bless_enabled, copy_tree, walk_files, workspace_lint};
+use common::{apply_setup, bless_enabled, copy_tree, walk_files, workspace_lint};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -43,11 +49,16 @@ fn run_fix_fixture(name: &str) {
     let tmp = TempDir::new().expect("create tempdir");
     copy_tree(&input, tmp.path()).expect("copy input → tempdir");
 
+    // Apply an optional `setup.toml` (sibling of input/) — e.g. inject an
+    // `expect` directive that must stay out of the committed fixture. Extra
+    // CLI args it returns are appended to the `--fix` invocation.
+    let setup_args = apply_setup(&fixture, tmp.path()).expect("apply setup.toml");
+
     // --fix runs the renderer after fixing, which exits 1 if any Deny-level
     // diagnostic survived. Fixture tests focus on the resulting tree, not
     // exit status, so the assertion is dropped here.
     let mut cmd = workspace_lint();
-    cmd.current_dir(tmp.path()).arg("--fix");
+    cmd.current_dir(tmp.path()).arg("--fix").args(&setup_args);
     let _ = cmd.assert();
 
     if bless_enabled() {
@@ -123,4 +134,12 @@ fn fix_unused_deps() {
 #[test]
 fn fix_unused_pub() {
     run_fix_fixture("fix__unused_pub");
+}
+
+#[test]
+fn fix_stale_expect() {
+    // The stale `expect` directive is injected via setup.toml's `[[append]]`
+    // (kept out of the committed input/ so dogfood stays green); `--fix`
+    // deletes the now-pointless line.
+    run_fix_fixture("fix__stale_expect");
 }

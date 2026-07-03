@@ -130,7 +130,7 @@ fn rust_comment_directive_suppresses_item_below_via_lookback() {
     let d = at_line("workspace-lint::unused-pub", "unused", "src/lib.rs", 2).build();
     assert!(map.is_suppressed(&d));
     let ran = crate::lints::LintId::ALL.iter().copied().collect();
-    assert!(map.stale_expects(&ran).is_empty());
+    assert!(map.stale_expects(&ran, tmp.path()).is_empty());
 }
 
 #[test]
@@ -274,6 +274,38 @@ fn origin_records_file_and_line() {
     let directives = scan(tmp.path());
     assert_eq!(directives[0].origin.file, PathBuf::from("src/lib.rs"));
     assert_eq!(directives[0].origin.line, 3);
+    // A single-line macro invocation: origin spans exactly its own line.
+    assert_eq!(directives[0].origin.line_end, 3);
+}
+
+#[test]
+fn comment_directive_origin_is_single_line() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        tmp.path(),
+        "Cargo.toml",
+        "[deps]\n# workspace-lint: expect(unused-deps)\n",
+    );
+    let directives = scan(tmp.path());
+    assert!(
+        directives
+            .iter()
+            .all(|d| d.origin.line == 2 && d.origin.line_end == 2)
+    );
+}
+
+#[test]
+fn multiline_macro_invocation_origin_spans_start_to_end() {
+    let tmp = TempDir::new().unwrap();
+    // The invocation opens on line 2 and closes on line 4.
+    write(
+        tmp.path(),
+        "src/lib.rs",
+        "\nworkspace_lint::expect!(\n    unused_pub,\n);\n",
+    );
+    let directives = scan(tmp.path());
+    assert_eq!(directives[0].origin.line, 2);
+    assert_eq!(directives[0].origin.line_end, 4);
 }
 
 #[test]

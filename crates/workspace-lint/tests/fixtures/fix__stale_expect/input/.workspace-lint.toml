@@ -1,0 +1,9 @@
+# centralized-deps must RUN (so it enters the `ran` set and its expect is
+# judgeable) but must NOT fire (demo has no deps) — leaving the injected
+# `expect(centralized-deps)` stale. stale-expect must be enabled (not `allow`,
+# or apply_lint_levels would drop the diagnostic before `--fix` sees it).
+# `default = "allow"` keeps the semantic tier off, so this stays a fast fixture.
+[lints]
+default = "allow"
+centralized-deps = "warn"
+stale-expect = "warn"

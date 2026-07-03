@@ -19,8 +19,8 @@
 
 use std::path::PathBuf;
 
-use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::{at_crate, at_file, at_line, at_workspace};
+use crate::diagnostic::{Applicability, Diagnostic, Span, Suggestion};
 
 /// Every distinct diagnostic the tool can emit, in a fixed order. The order
 /// here is what the snapshot tests assert against, so think of this as the
@@ -197,7 +197,8 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
-        // stale-expect: an `expect!` directive that didn't fire.
+        // stale-expect: an `expect!` directive that didn't fire. Carries a
+        // MachineApplicable whole-line deletion (`--fix` removes the directive).
         (
             "stale_expect",
             at_line(
@@ -208,6 +209,21 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .help("remove this expect — the lint it tracks is no longer firing")
             .note("a stale expect usually means the underlying issue has been fixed")
+            .suggestion(Suggestion {
+                span: Span {
+                    file: PathBuf::from("crates/api/src/lib.rs"),
+                    line_start: 1,
+                    line_end: 1,
+                    col_start: 1,
+                    col_end: 1,
+                    byte_start: 0,
+                    byte_end: 36,
+                },
+                message: "remove this stale expect directive".to_string(),
+                replacement: String::new(),
+                applicability: Applicability::MachineApplicable,
+                original: Some("workspace_lint::expect!(file_size);".to_string()),
+            })
             .build(),
         ),
         // stale-git-index: file deleted from disk but still tracked.
@@ -583,6 +599,10 @@ mod tests {
               |
               = help: remove this expect — the lint it tracks is no longer firing
               = note: a stale expect usually means the underlying issue has been fixed
+            help: remove this stale expect directive
+              |
+            1 - workspace_lint::expect!(file_size);
+              |
             help: if intentional, silence with:
               |
             1 + workspace_lint::expect!(stale_expect);

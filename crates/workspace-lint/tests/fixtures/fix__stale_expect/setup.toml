@@ -1,0 +1,8 @@
+# Inject the stale `expect` directive AFTER the tree is staged, so it never
+# lives in the committed fixture — this repo's own dogfood scan walks
+# tests/fixtures/** and a committed stale directive there would trip
+# stale-expect. `--fix` deletes the line; the append's leading `\n` survives as
+# one trailing blank line in expected/crates/demo/Cargo.toml.
+[[append]]
+path = "crates/demo/Cargo.toml"
+text = "\n# workspace-lint: expect(centralized-deps)\n"

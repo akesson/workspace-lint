@@ -3,10 +3,14 @@ error: expect directive for `unused-deps` did not match any diagnostic
   |
   = help: remove this expect — the lint it tracks is no longer firing
   = note: a stale expect usually means the underlying issue has been fixed
+help: remove this stale expect directive
+  |
+9 - # workspace-lint: expect(unused-deps)
+  |
 help: if intentional, silence with:
   |
 9 + # workspace-lint: expect(stale-expect)
   |
   = note: `#[deny(workspace_lint::stale_expect)]` on by default
 
-workspace-lint: generated 1 error
+workspace-lint: generated 1 error (run `workspace-lint --fix` to apply 1 suggestion)
