@@ -41,7 +41,7 @@ quote = "1"
 regex = "1"
 # SCIP index parser for `--fix` deep verification (binary-only; the published
 # `syn-workspace` library stays scip-free, emitting its own `ScipOccurrence`s).
-scip = "0.8"
+scip = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shell-words = "1"
