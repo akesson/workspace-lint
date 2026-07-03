@@ -508,6 +508,60 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         }
     }
 
+    // 17. (gap fix) Build-script extraction: the probe's build.rs compiles as
+    //     crate `build_script_build` through the same wrapper; the extractor
+    //     must emit a references-only fragment keyed on the owning package.
+    //     (Key-join against the stub is deliberately NOT asserted here — the
+    //     stub is a `no_deps` dependency with no fragment, and build.rs edges
+    //     carry Build-mode keys; the assembler's path-fallback join is
+    //     covered by wl-engine's golden tests and the cases fixture.)
+    {
+        let build_path = ir_out.path().join("probe_expansion@build.json");
+        match std::fs::read_to_string(&build_path) {
+            Err(e) => ck
+                .failures
+                .push(format!("[build fragment] missing {build_path:?}: {e}")),
+            Ok(text) => {
+                let bfrag: IrFragment = serde_json::from_str(&text)?;
+                bfrag.check_schema().map_err(anyhow::Error::msg)?;
+                if bfrag.target_kind == "build"
+                    && bfrag.crate_name == "build_script_build"
+                    && bfrag.items.is_empty()
+                {
+                    ck.passes += 1;
+                    println!(
+                        "PASS  build fragment: references-only, target_kind=build, \
+                         crate_name=build_script_build"
+                    );
+                } else {
+                    ck.failures.push(format!(
+                        "[build fragment] want target_kind=build crate_name=build_script_build \
+                         items=[], got kind={:?} crate={:?} items={}",
+                        bfrag.target_kind,
+                        bfrag.crate_name,
+                        bfrag.items.len()
+                    ));
+                }
+                // The build.rs call into the stub is a real (non-import) edge.
+                match bfrag.references.iter().find(|e| {
+                    !e.import && e.to.last().map(String::as_str) == Some("build_helper")
+                }) {
+                    Some(e) if e.to.first().map(String::as_str) == Some("buildstub") => {
+                        ck.passes += 1;
+                        println!("PASS  build fragment: edge to buildstub::build_helper");
+                    }
+                    Some(e) => ck.failures.push(format!(
+                        "[build fragment] build_helper edge with unexpected to: {:?}",
+                        e.to
+                    )),
+                    None => ck
+                        .failures
+                        .push("[build fragment] missing edge to buildstub::build_helper".into()),
+                }
+            }
+        }
+    }
+
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());
     anyhow::ensure!(
         ck.failures.is_empty(),

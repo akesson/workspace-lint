@@ -1,0 +1,10 @@
+# No `publish` field on purpose: the default is judged (only an explicit
+# `publish = true` exempts an API surface), mirroring the real-world
+# build-utils crate whose items were the false positive.
+[package]
+name = "tools"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"

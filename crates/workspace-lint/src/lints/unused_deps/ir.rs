@@ -21,10 +21,13 @@
 //! - **dev deps** are judged only when a test/example/bench target actually
 //!   compiled (a `--tests` entry in `[engine] configs`); otherwise their
 //!   usage is invisible and they are skipped, never flagged.
-//! - **build deps** are never judged: build scripts aren't lint-passed (and
-//!   every one compiles as the same `build_script_build` crate). The legacy
-//!   backend parsed `build.rs` syntactically and could judge them; the
-//!   `ignore` knob remains the answer for link-only/side-effect deps.
+//! - **build deps** are never judged. Build scripts ARE lint-passed (their
+//!   `<pkg>@build.json` fragments back unused-pub's build.rs-consumer
+//!   crediting), but `DepUsage` deliberately finds no owner for the shared
+//!   `build_script_build` crate name, so their references credit no
+//!   package's `[dependencies]` and `[build-dependencies]` stay unjudged.
+//!   The legacy backend parsed `build.rs` syntactically and could judge
+//!   them; the `ignore` knob remains the answer for link-only deps.
 //!
 //! The diagnostic shape (message, helps, notes, suggestion bytes) mirrors
 //! `legacy.rs` exactly — fixtures pin the two backends to byte-identical
