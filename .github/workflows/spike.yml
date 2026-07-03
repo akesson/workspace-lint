@@ -74,5 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           ./spike/embed/target/debug/wl-embed "$PWD" "${{ steps.lib.outputs.path }}" "$PWD/spike/ir-ci-ws"
-          test "$(ls spike/ir-ci-ws | wc -l)" -ge 5
+          # One fragment per member: wl-engine, wl-ir, workspace-lint(@bin),
+          # workspace-lint-marker (the syn-workspace crates retired in PR 12).
+          test "$(ls spike/ir-ci-ws | wc -l)" -ge 4
           ./spike/target/debug/wl-assemble "$PWD/spike/ir-ci-ws" --ws "$PWD"
