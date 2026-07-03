@@ -49,8 +49,6 @@ pub(crate) struct Config {
     pub unused_pub: Option<UnusedPubConfig>,
     #[serde(default)]
     pub architecture: Option<ArchitectureConfig>,
-    #[serde(default)]
-    pub macros: Option<MacrosConfig>,
     /// Per-crate config tier, keyed by Cargo package name (`[crates.<name>]`).
     /// Each entry can carry per-crate lint *levels* (`[crates.<name>.lints]`,
     /// for any lint) and per-crate *params* for the two lints whose params are
@@ -239,31 +237,6 @@ pub(crate) struct ExpandRule {
     pub marker: String,
     #[serde(default, rename = "auto-stage")]
     pub auto_stage: bool,
-}
-
-#[derive(Deserialize, Default, Clone)]
-pub(crate) struct MacrosConfig {
-    /// External macros (defined outside the workspace) whose expansion
-    /// references items the resolver can't see from source alone. Each entry
-    /// contributes its `expansion-uses` paths to the workspace-wide
-    /// implicit-refs set consulted by unused-pub / unused-deps / architecture.
-    #[serde(default)]
-    pub external: Vec<ExternalMacro>,
-}
-
-#[derive(Deserialize, Clone)]
-pub(crate) struct ExternalMacro {
-    /// Canonical path of the external macro, e.g. `tokio::main` or
-    /// `sqlx::query`. Currently only used for documentation in the config
-    /// — v1 just unions every `expansion-uses` entry into the workspace's
-    /// implicit-refs set regardless of which macro it's attached to. A
-    /// future version will narrow application to actual invocation sites.
-    #[allow(dead_code)]
-    pub path: String,
-    /// Paths the macro's expansion references. Treated as if these items
-    /// were imported at every call site of the macro.
-    #[serde(default, rename = "expansion-uses")]
-    pub expansion_uses: Vec<String>,
 }
 
 const STANDALONE_FILE: &str = ".workspace-lint.toml";

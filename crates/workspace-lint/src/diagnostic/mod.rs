@@ -101,49 +101,16 @@ pub(crate) struct Suggestion {
     /// renderer falls back to the placeholder then. Renderers other than
     /// `human` ignore it, and `--fix` never reads it.
     pub original: Option<String>,
-    /// Optional side-channel for `--fix`'s deep (rust-analyzer SCIP)
-    /// verification. Present on reference-evidence findings (`unused-deps`,
-    /// `unused-pub`) so the verifier can decide — per finding — whether the
-    /// resolver and rust-analyzer agree (apply the structural fix) or
-    /// disagree (write a suppression directive instead). `None` for every
-    /// other suggestion; ignored by all three renderers and by `fix::run`.
-    pub evidence: Option<Evidence>,
 }
 
-/// What a [`Suggestion`] asserts about a reference-evidence finding, so
-/// `--fix`'s deep pass can check it against the SCIP ground truth. Only
-/// attached to `MachineApplicable` suggestions (the ones `--fix` would act on).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Evidence {
-    /// An `unused-deps` finding: dependency `package_name` (the *resolved*
-    /// package name — `package = "…"` renames followed through) of crate
-    /// `krate_code` looks unreferenced. SCIP disproves it if any occurrence in
-    /// that crate's documents references a symbol in `package_name`.
-    DepUnused {
-        krate_code: String,
-        package_name: String,
-    },
-    /// An `unused-pub` finding: the item at canonical path `canonical`, owned
-    /// by crate `krate_code`, with the resolver's [`PubVerdict`]. SCIP
-    /// disproves it per the verdict's rule (see [`PubVerdict`]).
-    PubUnused {
-        krate_code: String,
-        canonical: Vec<String>,
-        verdict: PubVerdict,
-    },
-}
-
-/// The resolver's usage verdict for an `unused-pub` finding — selects what
-/// counts as a disproving SCIP reference. (`CrossCrate` items never produce a
-/// fix, so they're absent here.)
+/// The engine's usage verdict for an `unused-pub` finding — selects the fix
+/// shape. (`CrossCrate` items never produce a fix, so they're absent here.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PubVerdict {
-    /// Zero referrers found → the fix deletes the item. *Any* SCIP reference
-    /// to it (or to one of its methods) disproves the finding.
+    /// Zero referrers found under any config → the fix deletes the item
+    /// (when `auto-delete` opted in; tighten otherwise).
     Unused,
     /// Only same-crate referrers found → the fix tightens to `pub(crate)`.
-    /// Only a SCIP reference from a *different* crate (or a sibling target)
-    /// disproves it; a same-crate reference is consistent with tightening.
     IntraCrate,
 }
 
@@ -302,7 +269,6 @@ impl Diagnostic {
             replacement,
             applicability: Applicability::MachineApplicable,
             original: None,
-            evidence: None,
         })
     }
 }

@@ -2,17 +2,13 @@
 //! Items used only intra-crate get a "tighten to `pub(crate)`" suggestion;
 //! items with no references at all get a "remove" suggestion.
 //!
-//! Two backends behind one lint (transitional, `WL_SEMANTIC_BACKEND`):
+//! The judged substrate is the rustc-extracted reference graph (the engine's
+//! [`wl_engine::SemanticModel`]), which natively sees macro expansions,
+//! `#[cfg]`-gated code (via the config matrix), associated items, and
+//! trait-dispatch/FFI-export reachability — the classes of blind spot the
+//! retired syn resolver documented as false positives/negatives.
 //!
-//! - [`ir`] — the default: the rustc-extracted reference graph (the engine's
-//!   [`wl_engine::SemanticModel`]), which natively sees macro expansions,
-//!   `#[cfg]`-gated code (via the config matrix), associated items, and
-//!   trait-dispatch/FFI-export reachability — the classes of blind spot the
-//!   syn resolver documented as false positives/negatives.
-//! - [`legacy`] — the pre-pivot syn-resolver implementation, kept verbatim
-//!   for diffing until the migration's deletion PR.
-//!
-//! Shared semantics (both backends):
+//! Semantics:
 //!
 //! - **Structural must-stay-`pub` guards.** A re-export target (E0364/E0365)
 //!   and an item named in a more-visible signature (E0446 /
@@ -31,7 +27,7 @@ use std::collections::HashMap;
 
 use crate::config::GlobPattern;
 use crate::diagnostic::Diagnostic;
-use crate::lints::{Lint, LintContext, LintId, Requirements, SemanticBackend, semantic_backend};
+use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 /// Number of unused-pub findings an internal crate must accumulate before we
 /// emit the one-time `publish = true` hint. Used when the config leaves
@@ -40,7 +36,6 @@ pub(super) const DEFAULT_PUBLISH_HINT_THRESHOLD: usize = 3;
 
 pub mod config;
 mod ir;
-mod legacy;
 #[cfg(test)]
 mod tests;
 
@@ -101,46 +96,26 @@ impl Lint for UnusedPub {
     }
 
     fn requirements(&self) -> Requirements {
-        match semantic_backend() {
-            SemanticBackend::Rustc => Requirements {
-                needs_semantic: true,
-                // Manifests (publish resolution), workspace-relative paths.
-                needs_fast: true,
-                ..Requirements::default()
-            },
-            SemanticBackend::Syn => Requirements {
-                needs_workspace: true,
-                ..Requirements::default()
-            },
+        Requirements {
+            needs_semantic: true,
+            // Manifests (publish resolution), workspace-relative paths.
+            needs_fast: true,
         }
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        match semantic_backend() {
-            SemanticBackend::Rustc => {
-                let fast = cx
-                    .fast
-                    .expect("unused-pub (rustc backend) requires the FastModel");
-                // The runner skips the tier for a memberless workspace (there
-                // is nothing to extract or judge) — mirror that here instead
-                // of expecting a model that deliberately wasn't built.
-                if fast.members().is_empty() {
-                    return Vec::new();
-                }
-                ir::check(
-                    &self.global,
-                    &self.per_crate,
-                    fast,
-                    cx.semantic
-                        .expect("unused-pub (rustc backend) requires the SemanticModel"),
-                )
-            }
-            SemanticBackend::Syn => legacy::check(
-                &self.global,
-                &self.per_crate,
-                cx.workspace
-                    .expect("unused-pub (syn backend) requires the Workspace"),
-            ),
+        let fast = cx.fast.expect("unused-pub requires the FastModel");
+        // The runner skips the tier for a memberless workspace (there is
+        // nothing to extract or judge) — mirror that here instead of
+        // expecting a model that deliberately wasn't built.
+        if fast.members().is_empty() {
+            return Vec::new();
         }
+        ir::check(
+            &self.global,
+            &self.per_crate,
+            fast,
+            cx.semantic.expect("unused-pub requires the SemanticModel"),
+        )
     }
 }

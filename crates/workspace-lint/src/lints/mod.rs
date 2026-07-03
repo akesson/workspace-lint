@@ -2,9 +2,10 @@
 //!
 //! Every check lives in `crates/workspace-lint/src/lints/<name>/` and
 //! implements [`Lint`]. The shared [`LintContext`] carries the optional
-//! resolver-loaded [`Workspace`] and the optional build-free [`FastModel`];
-//! everything else a lint needs (its configuration, glob matchers, etc.) is
-//! captured inside the lint instance at construction time.
+//! build-free [`FastModel`] and the optional rustc-extracted
+//! [`wl_engine::SemanticModel`]; everything else a lint needs (its
+//! configuration, glob matchers, etc.) is captured inside the lint instance
+//! at construction time.
 //!
 //! ## Adding a new lint
 //!
@@ -37,13 +38,13 @@ pub(crate) use lints_id::LintId;
 
 use crate::config::{Config, LintLevel};
 use crate::diagnostic::Diagnostic;
-use syn_workspace::Workspace;
 use wl_engine::fast::FastModel;
 
 /// Object-safe trait every check implements. Lints are owned `Box<dyn Lint>`
 /// instances built once at startup from the user's [`Config`]; the
 /// [`LintContext`] passed to [`Lint::check`] carries only state shared across
-/// lints (the resolver-loaded [`Workspace`] and the build-free [`FastModel`]).
+/// lints (the build-free [`FastModel`] and the rustc-extracted
+/// [`wl_engine::SemanticModel`]).
 pub(crate) trait Lint: 'static {
     /// Stable identity, asserted against `LintId::ALL` by the registry-coverage
     /// and CLI-dispatch tests. The runtime routes on each diagnostic's string
@@ -52,13 +53,13 @@ pub(crate) trait Lint: 'static {
     fn id(&self) -> LintId;
 
     /// Declared up-front so the runner can decide whether to pay the
-    /// `syn_workspace::Workspace::load` / `FastModel::load` cost.
+    /// `FastModel::load` / extraction cost.
     fn requirements(&self) -> Requirements {
         Requirements::default()
     }
 
     /// Produce the lint's diagnostics. Lints that don't need a shared model
-    /// can ignore [`LintContext::workspace`] / [`LintContext::fast`]; lints
+    /// can ignore [`LintContext::fast`] / [`LintContext::semantic`]; lints
     /// that do need one set the matching [`Requirements`] flag so the runner
     /// loads it before calling `check`.
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic>;
@@ -66,12 +67,9 @@ pub(crate) trait Lint: 'static {
 
 /// Static description of what shared resources a lint needs. Inspected
 /// before any check runs so the runner can skip expensive setup (notably
-/// `Workspace::load` and the rustc-backed extraction) when no enabled lint
-/// requires it.
+/// the rustc-backed extraction) when no enabled lint requires it.
 #[derive(Default, Clone, Copy, Debug)]
 pub(crate) struct Requirements {
-    /// The resolver-loaded [`Workspace`] (parses every source file).
-    pub needs_workspace: bool,
     /// The build-free [`FastModel`] (`cargo metadata` + manifests only).
     pub needs_fast: bool,
     /// The rustc-extracted [`wl_engine::SemanticModel`] (runs the full tier:
@@ -82,28 +80,8 @@ pub(crate) struct Requirements {
 
 /// Shared, per-run inputs passed to every [`Lint::check`] call.
 pub(crate) struct LintContext<'a> {
-    pub workspace: Option<&'a Workspace>,
     pub fast: Option<&'a FastModel>,
     pub semantic: Option<&'a wl_engine::SemanticModel>,
-}
-
-/// Which engine the ported semantic lints run on. `WL_SEMANTIC_BACKEND=syn`
-/// selects the retained pre-pivot implementation — a transitional diffing
-/// switch (`tools/backend-diff`), not a supported configuration; it and the
-/// legacy code paths are deleted once all three ports have flipped.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SemanticBackend {
-    Syn,
-    Rustc,
-}
-
-pub(crate) fn semantic_backend() -> SemanticBackend {
-    match std::env::var("WL_SEMANTIC_BACKEND").as_deref() {
-        Ok("syn") => SemanticBackend::Syn,
-        // The rustc engine is the default; any other value falls through to
-        // it rather than silently disabling the lint.
-        _ => SemanticBackend::Rustc,
-    }
 }
 
 /// `true` when `id` is enabled *anywhere* — its global effective level isn't

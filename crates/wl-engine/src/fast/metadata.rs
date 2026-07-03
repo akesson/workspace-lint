@@ -307,8 +307,6 @@ mod tests {
         assert_eq!(
             names,
             [
-                "syn-workspace",
-                "syn-workspace-marker",
                 "wl-engine",
                 "wl-ir",
                 "workspace-lint",

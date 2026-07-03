@@ -38,7 +38,7 @@ use wl_engine::semantic::{DepUsage, SemanticModel};
 use super::UnusedDepsConfig;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::at_crate;
-use crate::diagnostic::{Applicability, Evidence, Span, Suggestion};
+use crate::diagnostic::{Applicability, Span, Suggestion};
 use crate::lints::LintId;
 
 pub(super) fn check(
@@ -105,14 +105,7 @@ pub(super) fn check(
                 entry.section.as_str(),
                 entry.original_name
             ));
-            // The evidence payload names the dep's real *package* (a
-            // `package = "…"` rename resolved) — the stable identity
-            // downstream verification keys on.
-            let evidence = Evidence::DepUnused {
-                krate_code: krate.code_name(),
-                package_name: resolve_package_name(fast.root_manifest(), manifest, entry),
-            };
-            if let Some(s) = build_delete_suggestion(manifest, entry, Some(evidence)) {
+            if let Some(s) = build_delete_suggestion(manifest, entry) {
                 builder = builder.suggestion(s);
             }
         }
@@ -172,13 +165,12 @@ pub(super) fn find_unused_deps(
         .collect()
 }
 
-/// Byte-for-byte the legacy suggestion builder, over the fast tier's
-/// `Manifest` (a verbatim copy of syn-workspace's — same locators, same
-/// spans).
+/// The dep-line deletion suggestion, over the fast tier's `Manifest`
+/// (locator-driven byte spans; swallows the trailing (CR)LF so the whole
+/// line disappears).
 pub(super) fn build_delete_suggestion(
     manifest: &Manifest,
     entry: &DeclaredDep,
-    evidence: Option<Evidence>,
 ) -> Option<Suggestion> {
     let location = manifest
         .locate_dep(entry.section, &entry.original_name)
@@ -207,7 +199,6 @@ pub(super) fn build_delete_suggestion(
         replacement: String::new(),
         applicability: Applicability::MachineApplicable,
         original: Some(deleted.to_string()),
-        evidence,
     })
 }
 

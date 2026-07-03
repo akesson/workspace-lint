@@ -38,17 +38,11 @@ jobs:
         run: cargo audit
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Clippy (syn-workspace, no default features)
-        run: cargo clippy -p syn-workspace --no-default-features --locked -- -D warnings
       - name: Docs
         run: cargo doc --workspace --no-deps --locked
-      - name: Build oracle-bless tool (detached harness; compile-only, catches API drift)
-        run: cargo build --manifest-path tools/oracle-bless/Cargo.toml --locked
       - name: Publish dry-run (publishable libs)
         run: |
-          cargo publish --dry-run -p syn-workspace-marker --allow-dirty
           cargo publish --dry-run -p workspace-lint-marker --allow-dirty
-          cargo publish --dry-run -p syn-workspace --allow-dirty
           cargo publish --dry-run -p wl-ir --allow-dirty
 
   test:
@@ -59,13 +53,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      # Phase-2 corpus crates are git submodules under `corpus/`. The corpus
-      # tests (smoke / lint-FP audit / set-level SCIP differential) load them via
-      # `cargo metadata --no-deps`, so they need no network — but they do need the
-      # submodule sources checked out. Without them the corpus tests skip cleanly.
+      # No submodules: the syn-era corpus tests retired with the resolver;
+      # migration PR 13 rebuilds corpus coverage in its engine-era shape
+      # (fast tier in the default suite, a scheduled full-tier subset job).
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       # The full tier is live: `unused-deps` runs on the rustc engine, so the
       # dogfood test and the unused-deps case fixtures extract IR during the
@@ -110,8 +101,8 @@ jobs:
       - name: Semantic fixture compile sweep
         if: matrix.os == 'ubuntu-latest'
         run: WL_FIXTURE_COMPILE=1 cargo test -p workspace-lint --test fixture_compile --locked -- --nocapture
-      # nextest does not run doctests — exercise them (incl. the published
-      # syn-workspace lib.rs example) so a broken doc example can't ship.
+      # nextest does not run doctests — exercise them so a broken doc
+      # example can't ship.
       - name: Doctests
         run: cargo test --doc --workspace --locked
 

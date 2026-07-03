@@ -159,7 +159,6 @@ fn build_rewrite_suggestion(
         replacement,
         applicability,
         original: Some(original.to_string()),
-        evidence: None,
     })
 }
 

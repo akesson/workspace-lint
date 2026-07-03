@@ -49,9 +49,9 @@ glob = "crates/*"
 # `examples/` dev-target trees and in-file `#[cfg(test)]` items / `#[test]`
 # fns (a crate-size budget is about maintained product code, not the test
 # mass that dwarfs it — see `lints::shipped_source`, shared with `file-size`).
-# Under this metric syn-workspace is ~3.7k and workspace-lint ~5.4k shipped
-# lines, so 6000 still trips on genuine source growth. workspace-lint is the
-# binding crate — keep an eye on it as lints are added.
+# Under this metric workspace-lint is ~5k shipped lines, so 6000 still trips
+# on genuine source growth. workspace-lint is the binding crate — keep an eye
+# on it as lints are added.
 max-code-lines = 6000
 
 # The rustc engine's config matrix (one `cargo check` compile per entry; the
@@ -75,11 +75,10 @@ ignore = [
     "cargo-husky",
 ]
 
-# `unused-pub` is resolver-backed (no SCIP, no rust-analyzer subprocess), so it
-# runs everywhere — local + CI dogfood — without extra installs. It's
-# publish-aware: a crate's public API is treated as external (and exempt) only
-# when the crate declares `publish = true`. The published libraries here
-# (syn-workspace + the two marker crates) set `publish = true`, so their APIs
-# aren't flagged; the `workspace-lint` binary publishes no API, so its `pub`
-# items are checked as workspace-internal (as before).
+# `unused-pub` runs on the rustc engine, so it runs everywhere — local + CI
+# dogfood. It's publish-aware: a crate's public API is treated as external
+# (and exempt) only when the crate declares `publish = true`. The published
+# libraries here (workspace-lint-marker, wl-ir) set `publish = true`, so their
+# APIs aren't flagged; the `workspace-lint` binary publishes no API, so its
+# `pub` items are checked as workspace-internal (as before).
 [unused-pub]

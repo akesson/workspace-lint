@@ -246,11 +246,10 @@ fn plain_run_does_not_expand() {
 fn fix_run_applies_expand() {
     let tmp = tempfile::tempdir().expect("create tempdir");
     expand_workspace(tmp.path());
-    // Not a git repo → the clean-tree gate warns and proceeds; `--no-deep`
-    // keeps it hermetic (no rust-analyzer).
+    // Not a git repo → the clean-tree gate warns and proceeds.
     workspace_lint()
         .current_dir(tmp.path())
-        .args(["--fix", "--no-deep"])
+        .args(["--fix"])
         .assert()
         .success();
     let after = std::fs::read_to_string(tmp.path().join("DOC.md")).unwrap();
@@ -392,7 +391,7 @@ fn leaked_git_dir_does_not_block_fix() {
     workspace_lint()
         .current_dir(tmp.path())
         .env("GIT_DIR", victim.path().join(".git"))
-        .args(["--fix", "--no-deep"])
+        .args(["--fix"])
         .assert()
         .success()
         .stderr(predicate::str::contains("not a git repository"));

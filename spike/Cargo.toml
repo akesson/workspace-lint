@@ -4,7 +4,7 @@
 # the pinned nightly (rust-toolchain.toml) because the driver links rustc_private.
 [workspace]
 resolver = "2"
-members = ["driver", "assemble", "fidelity"]
+members = ["driver", "assemble"]
 
 [workspace.dependencies]
 # The IR contract graduated to the main workspace (migration PR 1); the spike
@@ -16,6 +16,3 @@ serde_json = "1"
 # split "unused in workspace" (published-lib API surface) from "dead" (bin / not
 # publishable). Same version already in the lock via syn-workspace (SPIKE §7 step 5).
 cargo_metadata = "0.23"
-# The transitional fidelity oracle (SPIKE §10) diffs the rustc IR against the
-# syn resolver's model of the same crate. Path dep on the (being-retired) crate.
-syn-workspace = { path = "../crates/syn-workspace" }

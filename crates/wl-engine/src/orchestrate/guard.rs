@@ -210,8 +210,8 @@ mod tests {
 
         let default = set.expected_fragments(&[]);
         for frag in [
-            "syn_workspace.json",
             "workspace_lint@bin.json",
+            "workspace_lint_marker.json",
             "wl_ir.json",
             "wl_engine.json",
         ] {

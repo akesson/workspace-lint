@@ -145,9 +145,10 @@ only one member.
 
 ### unused-pub
 
-Detects `pub` items that are never used across the workspace. Resolver-backed
-(built on `syn-workspace`): it needs **no** SCIP index and **no** `rust-analyzer`
-subprocess, so it runs the same locally and in CI. Items re-exported via `pub use`
+Detects `pub` items that are never used across the workspace, judged on the
+rustc engine's resolved reference graph — it needs **no** SCIP index and **no**
+`rust-analyzer` subprocess, so it runs the same locally and in CI. Items
+re-exported via `pub use`
 are always skipped (narrowing them would break the re-export). So are types that
 appear in the *public signature* of a more-visible item (a `pub fn` return type,
 a `pub` field, a trait-impl associated type, …) — tightening those would not
@@ -507,11 +508,7 @@ can't silently rot against a renamed or removed crate.
 ## Silencing diagnostics
 
 Silence directives are author-written — every diagnostic prints the exact text
-to paste, in one of two forms picked by file kind. The one exception is
-`--fix`'s deep verification (see the **Deep `--fix` verification** section under
-CLI flags), which writes an `expect` directive *only* for a finding
-rust-analyzer proved false — gated on a clean git tree so the write is
-reviewable. The suggested
+to paste, in one of two forms picked by file kind. The suggested
 directive uses `expect!` (and its `expect(…)` comment form): it silences a
 diagnostic but emits a `workspace-lint::stale-expect` warning if the underlying
 lint stops firing, so silences don't quietly rot.
@@ -592,72 +589,18 @@ removed files in the post-fix tree propagate correctly.
       a `note:` explaining why.
 
   `--fix` is non-destructive: it rewrites files but never deletes them.
-  Idempotent: re-running on a clean tree is a no-op. By default it runs
-  deep verification (below); `--no-deep` restores the plain behavior.
-- `workspace-lint --fix --no-deep` — skip the rust-analyzer pass.
-- `workspace-lint --fix --scip-index <path>` — verify against an existing
-  `rust-analyzer scip` index instead of invoking rust-analyzer (CI caching,
-  hermetic tests).
-- `workspace-lint --no-build-env` — skip the build-script env harvest. By
-  default the binary runs a scoped `cargo check` to resolve `OUT_DIR`-based
-  generated code (only for crates that have **both** a `build.rs` and an
-  `include!`; see **Generated code** below), so a default run is not necessarily
-  offline. This flag skips that subprocess, keeping the run fully offline;
-  literal and `CARGO_*`-based `include!`s still resolve.
+  Idempotent: re-running on a clean tree is a no-op. It never writes a
+  silence directive on your behalf — that's always a human decision (paste
+  the directive the diagnostic prints).
 - `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.
 
-### Deep `--fix` verification
-
-The reference-evidence lints (`unused-deps`, `unused-pub`) are backed by a
-deliberately shallow `syn`-based resolver, which can flag an item or dependency
-as unused when it's actually referenced through machinery the resolver doesn't
-model (a method call that resolves through an `impl`, a cross-crate use only
-visible after type inference). To keep `--fix` from acting on those false
-positives, it runs a **deep verification** pass: it invokes `rust-analyzer scip`
-and uses that index as a one-directional oracle (per
-`crates/syn-workspace/DESIGN-ir-pipeline.md` §10).
-
-- A finding rust-analyzer **agrees** is unreferenced → the structural fix is
-  applied as usual.
-- A finding rust-analyzer **disproves** (it sees a reference) → the structural
-  fix is *skipped* and an `expect` directive is written above the item / dep
-  with a provenance trailer (`-- rust-analyzer sees `x` referenced (file:line)`),
-  so later non-`--fix` runs stay clean. The finding is also re-labelled a
-  resolver false positive in the report.
-
-rust-analyzer must be on `PATH` (`rustup component add rust-analyzer`); if it
-isn't, `--fix` errors with a hint rather than silently skipping verification.
-Use `--no-deep` to opt out, or `--scip-index <path>` to supply an index. Deep
-verification only ever *suppresses* a fix — it never deletes code on
-rust-analyzer's say-so alone, and the clean-tree gate keeps everything
-reviewable. Trait visibility used only via method dispatch is a known blind spot
-the symbol-level match can't disprove (rust-analyzer attributes the call to the
-concrete `impl`, not the trait); the clean-tree review catches those.
-
 ### Generated code (`include!`)
 
-The resolver follows `include!(...)` and splices the included file into the
-model, so generated code **participates in analysis** — a dependency or `pub`
-item used only from generated code is seen as used (no `unused-deps` /
-`unused-pub` / `module-tree` false positive) — while findings anchored *in* a
-generated file are dropped (a generated `pub fn` is never reported unused). Two
-tiers:
-
-- **Literal / `CARGO_*` includes** (`include!("table.rs")`,
-  `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/gen.rs"))`) resolve with no
-  subprocess — always on.
-- **`OUT_DIR` / build-script includes** (`include!(concat!(env!("OUT_DIR"),
-  "/proto.rs"))`) need a build script's environment. For crates that have
-  **both** a `build.rs` and an `include!`, a scoped `cargo check
-  --message-format=json` is run to harvest `OUT_DIR` and any
-  `cargo::rustc-env=` exports. This harvest is **on by default** (so a default
-  run may spawn `cargo check`); a workspace without that combination pays
-  nothing; a `cargo check` failure degrades to literal-only resolution with a
-  prominent warning rather than erroring (so `OUT_DIR`-only references may then
-  resurface as false positives). Pass `--no-build-env` to skip the harvest and
-  stay fully offline.
-
-Only `include!` is followed: `mod`/`#[path]` already resolve checked-in files,
-while proc-macro / `#[derive]` expansion (which produces no file to read)
-remains out of scope.
+Generated code **participates in analysis** — the semantic lints judge the
+compiler's own view, where every `include!` (literal, `CARGO_*`, and
+`OUT_DIR`-based) is already spliced, so a dependency or `pub` item used only
+from generated code is seen as used. Findings anchored *in* a generated file
+are dropped (a generated `pub fn` is never reported unused): the structural
+lints' build-free walk resolves literal / `CARGO_*` includes for the drop
+set, and the semantic lints skip anything under cargo's target directory.

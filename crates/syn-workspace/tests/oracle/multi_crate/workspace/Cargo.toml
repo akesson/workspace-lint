@@ -1,6 +1,0 @@
-# Committed oracle fixture — its own [workspace] table detaches it from the
-# parent (members = ["crates/*"] never matches this deep), so it is NOT a
-# parent member and never affects `cargo build`/dogfood/publish.
-[workspace]
-resolver = "2"
-members = ["crates/oracle-core", "crates/oracle-app", "crates/oracle-extra"]

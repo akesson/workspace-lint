@@ -49,9 +49,7 @@ pub(crate) fn unknown_lint_diagnostics(directives: &[Directive]) -> Vec<Diagnost
 
 /// Lookback window (in lines) when matching a TOML/Markdown comment
 /// directive to a diagnostic on a nearby line. A directive on line 5 will
-/// suppress a diagnostic on lines 5, 6, 7, or 8. Shared with the
-/// `deep::directive` module so the "is a directive already here?" check
-/// (written by `--fix`) uses the exact same window the suppressor honors.
+/// suppress a diagnostic on lines 5, 6, 7, or 8.
 pub(crate) const LOOKBACK_FORWARD: u32 = 3;
 
 pub(crate) struct SuppressionMap {

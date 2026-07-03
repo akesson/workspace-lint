@@ -33,22 +33,6 @@ pub(crate) struct Cli {
     /// Off by default so the resulting changes stay reviewable as one diff.
     #[arg(long, global = true, default_value_t = false)]
     pub allow_dirty: bool,
-    /// Skip `--fix`'s deep (rust-analyzer SCIP) verification, restoring the
-    /// plain "apply machine-applicable fixes" behavior with no second opinion.
-    #[arg(long, global = true, default_value_t = false, requires = "fix")]
-    pub no_deep: bool,
-    /// Use an existing `rust-analyzer scip` index for deep verification instead
-    /// of invoking rust-analyzer (for CI caching and hermetic tests).
-    #[arg(long, global = true, value_name = "PATH", requires = "fix")]
-    pub scip_index: Option<std::path::PathBuf>,
-    /// Skip the `cargo check` that harvests build-script env (`OUT_DIR` and
-    /// `cargo::rustc-env=` exports) for resolving `include!(concat!(env!(…), …))`
-    /// generated code. Keeps the run fully offline and subprocess-light; literal
-    /// and `CARGO_*`-based includes still resolve. By default the harvest runs
-    /// only for crates that have both a `build.rs` and an `include!`, so a
-    /// workspace without that combination already pays nothing.
-    #[arg(long, global = true, default_value_t = false)]
-    pub no_build_env: bool,
     /// Run only the build-free lints — skip the rustc-backed semantic tier
     /// (and its pinned-toolchain requirement) entirely.
     #[arg(long, global = true, default_value_t = false)]

@@ -6,35 +6,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `workspace-lint` is a Rust CLI that enforces quality standards on a cargo
 workspace via configurable lint checks. It emits clippy-style human output,
-rustc-compatible JSON (for rust-analyzer's `check.overrideCommand`), or GitHub
-Actions workflow commands. Its distinguishing trait: lints that need semantic
-information are backed by `syn-workspace`, a from-scratch resolver built on
-`syn` — **no rust-analyzer / SCIP subprocess required**. (One exception: to
-resolve `OUT_DIR`-based generated code the binary runs a scoped `cargo check`
-for crates that have both a `build.rs` and an `include!`; pass `--no-build-env`
-to skip it. See **Generated code** in `README.md`.)
+rustc-compatible JSON, or GitHub Actions workflow commands. Its distinguishing
+trait: the semantic lints (`unused-pub` / `unused-deps` / `architecture`) are
+backed by a **rustc-fidelity engine** — a vendored, nightly-pinned Dylint
+extractor emits per-crate IR fragments and a stable-side assembler joins them
+into the workspace-global reference graph the lints judge. The workspace must
+compile; `--fast-only` runs just the build-free structural lints.
 
 User-facing docs live in `README.md`; read it for the config surface and per-lint
 options. This file covers the internal architecture.
 
 ## Workspace layout
 
-Four crates under `crates/` (`members = ["crates/*"]`):
+Four crates under `crates/` (`members = ["crates/*"]`), plus the excluded
+nightly `extractor/` package:
 
 - **`workspace-lint`** — the binary. All lints, config loading, the diagnostic
   pipeline, and renderers. This is where ~all work happens.
-- **`syn-workspace`** — publishable library. Loads a cargo workspace and
-  resolves imports, `use ... as` renames, `pub use` re-export chains, cross-file
-  module trees, and macro-body references. Deliberate non-goals: no type
-  inference, no trait solving, no proc-macro execution (precision traded for
-  sub-second speed). The resolved model is `Send + Sync`.
+- **`wl-engine`** — stable library: both tiers' data layer. `fast/` is the
+  build-free `FastModel` (cargo metadata, manifests, a lean syntactic module
+  walker); `semantic/` assembles extracted IR fragments into the
+  `SemanticModel` (cross-crate join on `DefPathHash`, cfg-matrix union);
+  `orchestrate/` vendors, builds, and drives the extractor dylib.
+- **`wl-ir`** — the serde-only IR contract between the extractor and the
+  assembler (publishable; schema-versioned).
 - **`workspace-lint-marker`** — zero-dep crate exporting the `expect!` / `allow!`
   macros (expand to nothing; workspace-lint scans the *source text* for them).
-- **`syn-workspace-marker`** — zero-dep crate exporting `expansion_uses!` so
-  macro authors annotate which items a macro's expansion references (avoids
-  false positives in `unused-deps` / `unused-pub` / architecture lints).
+- **`extractor/`** (workspace-excluded, own toolchain pin + lockfile) — the
+  nightly Dylint `LateLintPass` that walks `TyCtxt` and emits IR fragments.
+  Ships vendored inside the binary; its gate is the probe suite in
+  `extractor/tests`.
 
-The two marker crates and `syn-workspace` are published; CI gates them with
+`workspace-lint-marker` and `wl-ir` are published; CI gates them with
 `cargo publish --dry-run`.
 
 ## Common commands
@@ -55,7 +58,7 @@ cargo test                                    # plain runner also works
 cargo test --test cases                       # fixture taxonomy harness
 cargo test --test dogfood                     # tool must pass on its own repo
 cargo test --test fix_fixtures                # whole-tree --fix snapshots
-cargo test -p syn-workspace                   # resolver tests
+(cd extractor && cargo test)                  # extractor probe suite (pinned nightly)
 
 # Lint / format (CI denies warnings)
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -168,10 +171,6 @@ root `.workspace-lint.toml` carries explanatory comments for every `ignore` /
 - **`--fix` is author-respecting**: it resolves findings structurally but never
   writes a silence directive on your behalf — that's always a human decision
   (paste the directive the diagnostic prints).
-- **`dioxus-rsx` is pinned to an exact patch** (`=0.7.9`) in the root
-  `[workspace.dependencies]` — it's an unstable internal Dioxus crate. Upgrade
-  procedure is documented inline in `Cargo.toml`; bump in lockstep with the
-  `plugins/dioxus_rsx` AST walker.
 - All workspace crates use `workspace = true` deps (enforced by the
   `centralized-deps` lint, on for this repo).
 - **Never `Command::new("git")` directly** — spawn git via `git::command` (src)
