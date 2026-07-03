@@ -52,6 +52,12 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         rule: CheckRule,
     },
+    /// Scaffold a default `.workspace-lint.toml` at the workspace root
+    Init {
+        /// Overwrite an existing `.workspace-lint.toml`
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Mark freshness targets as up-to-date (requires TOML config)
     Done,
     /// Expand markers in files with command output

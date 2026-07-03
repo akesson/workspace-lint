@@ -337,6 +337,23 @@ workspace-lint check freshness --glob "**/CLAUDE.md" --depends-on "**/*.rs"
 workspace-lint check unused-deps --ignore prost --ignore tonic
 ```
 
+### Initialize a config
+
+```sh
+workspace-lint init
+```
+
+Writes a commented starter `.workspace-lint.toml` in the current directory. It
+enables the batteries-included structural lints, escalates `centralized-deps` to
+`deny`, and includes ready-to-uncomment blocks for every policy lint and the
+engine matrix.
+
+`init` must be run at the **workspace root**: the root `Cargo.toml` must declare
+a `[workspace]` table and the current directory must be that root (not a member
+subdir) — a lone `[package]` is rejected. It refuses to overwrite an existing
+config (a standalone file or `[workspace.metadata.workspace-lint]`); pass
+`--force` to replace an existing `.workspace-lint.toml`.
+
 ### Mark freshness targets as up-to-date
 
 ```sh

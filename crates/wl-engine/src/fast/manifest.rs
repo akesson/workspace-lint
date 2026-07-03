@@ -337,6 +337,14 @@ impl Manifest {
         classify_publish_item(item)
     }
 
+    /// `true` if this manifest declares a `[workspace]` table (a virtual root
+    /// or a root package that also defines the workspace). Distinguishes a real
+    /// workspace root from a lone `[package]` that cargo treats as its own
+    /// implicit workspace.
+    pub fn defines_workspace(&self) -> bool {
+        self.doc.as_table().contains_key("workspace")
+    }
+
     /// `[workspace.package] publish` from a workspace *root* manifest — the
     /// inheritance source for members that declare `publish.workspace = true`.
     /// [`Publish::Absent`] if there's no such key.

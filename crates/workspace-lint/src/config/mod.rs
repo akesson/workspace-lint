@@ -239,7 +239,31 @@ pub(crate) struct ExpandRule {
     pub auto_stage: bool,
 }
 
-const STANDALONE_FILE: &str = ".workspace-lint.toml";
+pub(crate) const STANDALONE_FILE: &str = ".workspace-lint.toml";
+
+/// Whether a standalone `.workspace-lint.toml` is present in the cwd. Used by
+/// the `init` scaffolder to refuse clobbering an existing config.
+pub(crate) fn standalone_config_exists() -> bool {
+    Path::new(STANDALONE_FILE).exists()
+}
+
+/// Whether config already lives in `Cargo.toml`'s
+/// `[workspace.metadata.workspace-lint]`. Used by `init` so it never scaffolds
+/// a second, conflicting config source (loading both is a hard error — see
+/// [`load`]).
+pub(crate) fn metadata_config_exists() -> bool {
+    read_cargo_metadata().is_some()
+}
+
+/// Parse `toml_str` as a [`Config`] and run the raw-key audit against it,
+/// returning any `config` / `unknown-lint` findings. Test-only: the `init`
+/// scaffolder uses it to prove its emitted template is self-clean, so a future
+/// renamed/removed section can't make the default config self-flag.
+#[cfg(test)]
+pub(crate) fn audit_str(toml_str: &str) -> Vec<Diagnostic> {
+    let config: Config = toml::from_str(toml_str).expect("template config parses");
+    audit::audit(toml_str, STANDALONE_FILE, &config)
+}
 
 /// Load and parse the project config, returning the typed [`Config`] plus any
 /// `config` / `unknown-lint` validation diagnostics (anchored at the config
