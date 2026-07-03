@@ -154,7 +154,10 @@ fn load_fragments(dir: &Path) -> Result<Vec<IrFragment>, SemanticError> {
             dir: dir.to_path_buf(),
         });
     }
-    fragments.sort_by(|a, b| a.crate_name.cmp(&b.crate_name));
+    // `crate_name` alone can tie — a package's bin may share the lib's crate
+    // name — and read_dir order is OS-dependent, so break the tie on
+    // target_kind to keep assembly deterministic.
+    fragments.sort_by(|a, b| (&a.crate_name, &a.target_kind).cmp(&(&b.crate_name, &b.target_kind)));
     Ok(fragments)
 }
 

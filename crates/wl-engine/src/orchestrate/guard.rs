@@ -102,9 +102,15 @@ impl TargetSet {
                 // cargo_metadata's enum representation (as the spike did).
                 for k in &t.kind {
                     match k.to_string().as_str() {
-                        "lib" | "rlib" | "dylib" | "cdylib" | "staticlib" | "proc-macro"
-                        | "bin" => {
+                        "lib" | "rlib" | "dylib" | "cdylib" | "staticlib" | "proc-macro" => {
                             set.compile_units.insert(name.clone());
+                        }
+                        // Bins carry the extractor's `@bin` infix: a package's
+                        // bin may share the lib's crate name (`src/lib.rs` +
+                        // `src/main.rs`), and un-infixed the two units would
+                        // collide on one fragment filename.
+                        "bin" => {
+                            set.compile_units.insert(format!("{name}@bin"));
                         }
                         "test" => {
                             set.test_targets.insert(name.clone());
@@ -118,10 +124,11 @@ impl TargetSet {
     }
 
     /// The fragment filenames one config must produce, exactly as the
-    /// extractor's `write_fragment` keys them: `<crate>.json` for a default
-    /// `cargo check`; `<crate>+test.json` for everything compiled under
-    /// `--tests` (unit-test harnesses of lib/bin/proc-macro AND integration
-    /// tests, all with `sess.opts.test`).
+    /// extractor's `write_fragment` keys them: `<crate>[@bin].json` for a
+    /// default `cargo check`; `<crate>[@bin]+test.json` for everything
+    /// compiled under `--tests` (unit-test harnesses of lib/bin/proc-macro AND
+    /// integration tests, all with `sess.opts.test` — a bin's harness keeps
+    /// the `@bin` infix, since the sibling lib harness shares its crate name).
     pub(super) fn expected_fragments(&self, cargo_args: &[String]) -> BTreeSet<String> {
         let tests = cargo_args.iter().any(|a| a == "--tests");
         let mut expected = BTreeSet::new();
@@ -204,7 +211,7 @@ mod tests {
         let default = set.expected_fragments(&[]);
         for frag in [
             "syn_workspace.json",
-            "workspace_lint.json",
+            "workspace_lint@bin.json",
             "wl_ir.json",
             "wl_engine.json",
         ] {
@@ -218,7 +225,7 @@ mod tests {
         // --tests: every compile unit flips to +test AND integration-test
         // targets appear (this repo has several under crates/workspace-lint).
         let tests = set.expected_fragments(&["--tests".to_string()]);
-        assert!(tests.contains("workspace_lint+test.json"));
+        assert!(tests.contains("workspace_lint@bin+test.json"));
         assert!(tests.contains("dogfood+test.json"), "{tests:?}");
         assert!(tests.iter().all(|f| f.ends_with("+test.json")));
         assert!(tests.len() > default.len());
