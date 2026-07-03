@@ -160,11 +160,11 @@ pub struct Assembly {
     /// re-export (E0364/E0365), so the unused-pub port suppresses these — the
     /// driver-backed analog of the syn re-export-index `is_target` guard.
     import_targets: BTreeSet<String>,
-    /// Re-export-target key → the module paths whose `pub use` declarations
-    /// name it (the edge's `from` — `visit_use` attributes a use-path to its
+    /// Re-export-target key → the modules whose `pub use` declarations name
+    /// it (the edge's `from` — `visit_use` attributes a use-path to its
     /// enclosing module). The re-export leg of external reachability: a def
     /// `pub use`d in an externally-reachable module is nameable through it.
-    import_froms: BTreeMap<String, Vec<String>>,
+    reexporters: BTreeMap<String, Vec<String>>,
     /// `mod` def path (joined) → is-public, for the pub-module-hop
     /// reachability judgement.
     module_vis: BTreeMap<String, bool>,
@@ -223,7 +223,7 @@ impl Assembly {
         let mut import_edges = 0usize;
         let mut signature_exposed = BTreeSet::new();
         let mut import_targets = BTreeSet::new();
-        let mut import_froms: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut reexporters: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for frag in &fragments {
             for e in &frag.references {
                 let Some(def) = defs.get(&e.to_key) else {
@@ -251,7 +251,7 @@ impl Assembly {
                     // module; a plain `use` is neither.
                     if e.reexport {
                         import_targets.insert(e.to_key.clone());
-                        import_froms
+                        reexporters
                             .entry(e.to_key.clone())
                             .or_default()
                             .push(e.from.join("::"));
@@ -271,8 +271,8 @@ impl Assembly {
         // re-export index did. (`pub use m;` is indistinguishable from
         // `pub use m::*` here; expanding both over-approximates toward
         // suppression — the safe direction. Plain `use` never lands in
-        // `import_froms`, so a test-mod `use super::*` expands nothing.)
-        let module_imports: Vec<(String, Vec<String>)> = import_froms
+        // `reexporters`, so a test-mod `use super::*` expands nothing.)
+        let module_imports: Vec<(String, Vec<String>)> = reexporters
             .iter()
             .filter(|(key, _)| defs.get(*key).is_some_and(|d| d.kind == "mod"))
             .map(|(key, importers)| (defs[key].path.clone(), importers.clone()))
@@ -287,7 +287,7 @@ impl Assembly {
                         .is_some_and(|rest| !rest.contains("::"))
                 {
                     import_targets.insert(child_key.clone());
-                    import_froms
+                    reexporters
                         .entry(child_key.clone())
                         .or_default()
                         .extend(importers.iter().cloned());
@@ -307,7 +307,7 @@ impl Assembly {
             impls_of,
             signature_exposed,
             import_targets,
-            import_froms,
+            reexporters,
             module_vis,
         }
     }
@@ -396,7 +396,7 @@ impl Assembly {
         }
         self.module_hop_reachable(&def.path)
             || self
-                .import_froms
+                .reexporters
                 .get(key)
                 .is_some_and(|importers| importers.iter().any(|m| self.module_hop_reachable(m)))
     }
