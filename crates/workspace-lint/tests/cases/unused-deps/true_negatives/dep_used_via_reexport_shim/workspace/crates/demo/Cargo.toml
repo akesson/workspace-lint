@@ -1,0 +1,12 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Load-bearing shim dep: used unconditionally below, yet every resolved
+# target lives in std — crediting must come from the written path root.
+web-time = { path = "../../stubs/web-time" }

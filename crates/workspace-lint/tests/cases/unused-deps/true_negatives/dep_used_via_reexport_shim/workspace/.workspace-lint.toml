@@ -1,0 +1,8 @@
+[unused-deps]
+
+[lints]
+default = "allow"
+unused-deps = "warn"
+
+[engine]
+configs = ["default"]

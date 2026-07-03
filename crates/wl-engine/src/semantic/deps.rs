@@ -97,6 +97,15 @@ impl DepUsage {
                     {
                         set.insert(to.clone());
                     }
+                    // `to[0]` is the *defining* crate; a re-export shim
+                    // (`use web_time::Instant` resolving into `std`) is only
+                    // named by the written path root the extractor records
+                    // in `via` — credit it too, or the shim dep reads unused.
+                    if let Some(via) = &e.via
+                        && via != owner
+                    {
+                        set.insert(via.clone());
+                    }
                 }
             }
         }

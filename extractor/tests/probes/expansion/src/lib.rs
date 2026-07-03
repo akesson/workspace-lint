@@ -102,3 +102,20 @@ mod renamed_user {
         renamed_target()
     }
 }
+
+// Written-root recording (`RefEdge::via`): a dep whose surface is another
+// crate's items re-exported (`shim` re-exports `std::time::Duration`). rustc
+// resolves the whole path into core/std, so without `via` the shim dep is
+// invisible to unused-deps — the `web-time` FP class.
+mod via_user {
+    // Resolves through the shim into core/std → via = Some("shim").
+    use shim::Duration;
+    // Defined by the shim itself → written root == defining crate → via = None.
+    use shim::OwnItem;
+
+    pub fn wait(_how_long: Duration) -> OwnItem {
+        // Fully-qualified code path through the shim — the non-`use` shape.
+        let _zero = shim::Duration::from_secs(0);
+        OwnItem
+    }
+}
