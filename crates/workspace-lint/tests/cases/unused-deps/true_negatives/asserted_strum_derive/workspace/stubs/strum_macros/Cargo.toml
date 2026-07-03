@@ -1,0 +1,11 @@
+# Fixture-local stub for the real `strum_macros` crate (not in the root
+# workspace's dependency tree, so an offline CI cache can't provide it). The
+# derive expands to nothing — the assertion under test keys on the derive's
+# generated-code edge is the premise on both backends.
+[package]
+name = "strum_macros"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true

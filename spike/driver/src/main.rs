@@ -45,6 +45,13 @@ impl Callbacks for ExtractCallbacks {
         _compiler: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> Compilation {
+        // A member's build script compiles as its own crate, and cargo names
+        // EVERY one `build_script_build` — all of a workspace's build scripts
+        // would collide on one fragment filename, and none is a lintable
+        // target. Skip them (same guard as the extractor dylib).
+        if tcx.crate_name(LOCAL_CRATE).as_str() == "build_script_build" {
+            return Compilation::Continue;
+        }
         let fragment = extract(tcx);
         write_fragment(&fragment);
         Compilation::Continue
@@ -105,12 +112,14 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
             visibility,
             span: span_to_ir(sm, tcx.def_span(def_id)),
             vis_span: vis_span_to_ir(tcx, sm, local_id),
+            attrs: export_attrs(tcx, local_id),
         });
     }
 
     let references = collect_references(tcx, &crate_code);
 
     IrFragment {
+        schema_version: wl_ir::SCHEMA_VERSION,
         crate_name: crate_code,
         items,
         references,
@@ -145,11 +154,11 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
     /// Record `enclosing-item-of(at) → to`. `import` marks a `use`/re-export.
     fn record(&mut self, at: HirId, to: DefId, import: bool) {
         let from_id = self.tcx.hir_get_parent_item(at).to_def_id();
-        self.record_edge(from_id, to, import);
+        self.record_edge(from_id, to, import, false);
     }
 
     /// Record `from_id → to`, skipping self-edges (DefId or path-level).
-    fn record_edge(&mut self, from_id: DefId, to: DefId, import: bool) {
+    fn record_edge(&mut self, from_id: DefId, to: DefId, import: bool, in_signature: bool) {
         if from_id == to {
             return;
         }
@@ -172,6 +181,7 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             to_kind: def_kind_str(self.tcx.def_kind(to)),
             external,
             import,
+            in_signature,
         });
     }
 
@@ -201,7 +211,7 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
                 _ => continue,
             }
             for to in proj.out {
-                self.record_edge(did, to, false);
+                self.record_edge(did, to, false, true);
             }
         }
     }
@@ -215,12 +225,16 @@ struct ProjVisitor {
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ProjVisitor {
     fn visit_ty(&mut self, t: Ty<'tcx>) {
-        if let ty::Alias(alias) = t.kind() {
-            if let ty::AliasTyKind::Projection { def_id } | ty::AliasTyKind::Inherent { def_id } =
-                alias.kind
-            {
-                self.out.push(def_id);
+        match t.kind() {
+            ty::Alias(alias) => {
+                if let ty::AliasTyKind::Projection { def_id }
+                | ty::AliasTyKind::Inherent { def_id } = alias.kind
+                {
+                    self.out.push(def_id);
+                }
             }
+            ty::Adt(adt, _) => self.out.push(adt.did()),
+            _ => {}
         }
         t.super_visit_with(self);
     }
@@ -378,6 +392,25 @@ fn parent_def_kind(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
 /// points into the macro *definition*, a wrong `--fix` write surface, but the
 /// callsite is a real user-file position worth keeping for display/identity.
 /// See [`Span`] for the policy. Kept verbatim in sync with the wl-lint copy.
+/// The export-shaped attributes on a def (same closed set as the extractor
+/// dylib's copy — kept verbatim in sync; parsed-attribute API, see there).
+fn export_attrs(tcx: TyCtxt<'_>, local_id: LocalDefId) -> Vec<String> {
+    use rustc_hir::attrs::AttributeKind;
+    use rustc_hir::find_attr;
+    let attrs = tcx.hir_attrs(tcx.local_def_id_to_hir_id(local_id));
+    let mut out = Vec::new();
+    if find_attr!(attrs, AttributeKind::NoMangle(_)) {
+        out.push("no_mangle".to_string());
+    }
+    if find_attr!(attrs, AttributeKind::ExportName { .. }) {
+        out.push("export_name".to_string());
+    }
+    if find_attr!(attrs, AttributeKind::Used { .. }) {
+        out.push("used".to_string());
+    }
+    out
+}
+
 fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option<Span> {
     if span.is_dummy() {
         return None;
@@ -401,11 +434,19 @@ fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option
         },
         _ => return None,
     };
-    let start = sf.start_pos.0;
+    // Cross-file `hi` (macro splice): no meaningful byte range in `lo`'s file.
+    if !sf.contains(hi) {
+        return None;
+    }
+    // 1-based line of `lo` (same emit as the extractor dylib's copy).
+    let line = sf.lookup_line(sf.relative_position(lo)).map_or(0, |l| l + 1) as u32;
+    // ON-DISK byte offsets: rustc's positions are in CRLF/BOM-normalized
+    // coordinates; consumers slice the raw file. See the extractor copy.
     Some(Span {
         file,
-        lo: lo.0.saturating_sub(start),
-        hi: hi.0.saturating_sub(start),
+        lo: sf.original_relative_byte_pos(lo).0,
+        hi: sf.original_relative_byte_pos(hi).0,
+        line,
         from_expansion,
     })
 }
@@ -444,8 +485,11 @@ fn write_fragment(fragment: &IrFragment) {
         return;
     }
     let path = format!("{out_dir}/{}.json", fragment.crate_name);
+    // Write-then-rename so a fragment is only ever observed complete (same
+    // torn-read guard as the extractor dylib's copy).
+    let tmp = format!("{path}.{}.tmp", std::process::id());
     if let Ok(json) = serde_json::to_string_pretty(fragment) {
-        let _ = std::fs::write(path, json);
+        let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path));
     }
 }
 

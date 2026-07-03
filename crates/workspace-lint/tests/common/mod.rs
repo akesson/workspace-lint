@@ -6,6 +6,10 @@
 //! - [`git`] — spawn git in a fixture dir; the ONLY way tests may run git.
 //! - [`copy_tree`] / [`walk_files`] — stage a workspace tree into a tempdir, and
 //!   walk a tree for equality comparison.
+//! - [`Kind`] / [`walk_cases`] / [`cases_root`] — the `tests/cases/` taxonomy
+//!   and its discovery walk, shared by `cases.rs` and `fixture_compile.rs`.
+//! - [`SEMANTIC_LINTS`] / [`lint_needs_build`] — routing metadata: which lints'
+//!   fixtures are analyzed by the compiling (rustc-driver) engine backend.
 //! - [`TestWorkspace`] — build a minimal cargo workspace + `.workspace-lint.toml`
 //!   in a tempdir.
 //! - [`snapshot_stderr`] — the normalize → (bless | compare) snapshot core.
@@ -71,6 +75,104 @@ pub fn git(dir: &Path) -> std::process::Command {
 
 pub fn bless_enabled() -> bool {
     std::env::var_os("WORKSPACE_LINT_BLESS").is_some()
+}
+
+/// The semantic lints being ported onto the compiling (rustc-driver) engine
+/// backend. Their case fixtures are analyzed by an engine that `cargo check`s
+/// the fixture workspace, so `fixture_compile.rs` gates that every one of
+/// their `tests/cases/<lint>/**/workspace/` trees compiles offline.
+///
+/// Keep in sync with `LintId` in `src/lints/lints_id.rs` — not importable
+/// here (the crate is binary-only). The drift guard is
+/// `cases.rs::semantic_lint_routing_matches_case_dirs`, which pins each entry
+/// to its `tests/cases/<lint>/` directory; those directory names are in turn
+/// pinned to `LintId::short()` by lints_id.rs's `every_lint_has_case_fixtures`.
+pub const SEMANTIC_LINTS: &[&str] = &["architecture", "unused-deps", "unused-pub"];
+
+/// Case-routing metadata: `true` if `lint_dir` (a `tests/cases/<lint_dir>/`
+/// name) belongs to a lint whose backend compiles the fixture workspace.
+/// `fixture_compile.rs` uses it to pick which cases to sweep; the case
+/// harness itself will use it to route fast vs semantic runs once the
+/// rustc-backed lint ports land.
+pub fn lint_needs_build(lint_dir: &str) -> bool {
+    SEMANTIC_LINTS.contains(&lint_dir)
+}
+
+/// The four-kind outcome taxonomy under `tests/cases/<lint>/<kind>/<case>/`;
+/// see `cases.rs` for the layout contract and what each kind asserts.
+#[derive(Debug, Clone, Copy)]
+pub enum Kind {
+    TruePositive,
+    TrueNegative,
+    KnownFalsePositive,
+    KnownFalseNegative,
+}
+
+impl Kind {
+    pub fn from_dir_name(name: &str) -> Option<Self> {
+        match name {
+            "true_positives" => Some(Self::TruePositive),
+            "true_negatives" => Some(Self::TrueNegative),
+            "known_false_positives" => Some(Self::KnownFalsePositive),
+            "known_false_negatives" => Some(Self::KnownFalseNegative),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TruePositive => "TP",
+            Self::TrueNegative => "TN",
+            Self::KnownFalsePositive => "KFP",
+            Self::KnownFalseNegative => "KFN",
+        }
+    }
+
+    /// Exit-code policy applied by `cases.rs`: kinds where the lint flags
+    /// something must exit non-zero.
+    pub fn expects_failure_exit(self) -> bool {
+        matches!(self, Self::TruePositive | Self::KnownFalsePositive)
+    }
+}
+
+/// `tests/cases/` in the source tree (not a tempdir copy).
+pub fn cases_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("cases")
+}
+
+/// Walk every `tests/cases/<lint>/<kind>/<case>/` directory, invoking
+/// `visit(lint, kind, case_dir)`. Directories whose kind name isn't one of
+/// the four taxonomy buckets are skipped. Shared by `cases.rs` (runs each
+/// case) and `fixture_compile.rs` (offline-compiles the semantic subset).
+pub fn walk_cases(mut visit: impl FnMut(&str, Kind, &Path)) {
+    let root = cases_root();
+    if !root.exists() {
+        return;
+    }
+    for lint_entry in std::fs::read_dir(&root).expect("read cases/").flatten() {
+        let lint_dir = lint_entry.path();
+        if !lint_dir.is_dir() {
+            continue;
+        }
+        let lint = lint_dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        for kind_entry in std::fs::read_dir(&lint_dir).expect("read kind/").flatten() {
+            let kind_dir = kind_entry.path();
+            let Some(kind_name) = kind_dir.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Some(kind) = Kind::from_dir_name(kind_name) else {
+                continue;
+            };
+            for case_entry in std::fs::read_dir(&kind_dir).expect("read case/").flatten() {
+                let case_dir = case_entry.path();
+                if case_dir.is_dir() {
+                    visit(lint, kind, &case_dir);
+                }
+            }
+        }
+    }
 }
 
 /// Directory names pruned from every [`copy_tree`]: VCS metadata (`.git`, and
@@ -176,7 +278,17 @@ pub fn normalize_stderr(stderr: &str, tmp: &Path) -> String {
     // committed `expected.stderr` to CRLF on checkout while the captured
     // subprocess output stays LF. Comparing post-normalization keeps the
     // snapshots cross-platform without requiring a .gitattributes rule.
-    out.replace("\r\n", "\n")
+    let out = out.replace("\r\n", "\n");
+    // Drop the engine's per-config progress line: dylint prints "Checking
+    // with toolchain `nightly-…-<host triple>`" straight to stderr (its
+    // Builder asserts a `check` can never be quieted), the triple is
+    // platform-dependent, and the line count varies with the `[engine]`
+    // config matrix — all three make it unsnapshottable. It's deliberate
+    // user-facing progress, so it's filtered here rather than suppressed.
+    out.lines()
+        .filter(|l| !l.starts_with("Checking with toolchain `"))
+        .map(|l| format!("{l}\n"))
+        .collect()
 }
 
 /// Every regular file under `root`, as paths relative to `root`, sorted — for

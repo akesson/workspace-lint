@@ -1,0 +1,3 @@
+# crlf.rs IS the test: its \r\n endings must survive every checkout
+# and every commit unconverted.
+src/crlf.rs -text

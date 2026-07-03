@@ -1,0 +1,72 @@
+# The Phase-1 extractor package: build the rustc_private cdylib on every
+# platform the binary ships to (dist targets: macOS arm64/x64, Linux x64,
+# Windows x64) and run the golden-spine tier-1 test (`extractor/tests/probe.rs`
+# drives the dylib over the expansion probe via the embedded `dylint::run` and
+# asserts the span policy). Windows is the deliberately front-loaded unknown:
+# the spike only ever smoked `.so`/`.dylib`, and the full tier ships
+# platform-gated if this leg can't be made green.
+#
+# Isolated from the main `ci.yml`: the extractor is `exclude`d from the root
+# workspace and pins its own nightly (rust-toolchain.toml, dylint's pin).
+# Trigger scope is the migration branches until PR 13 folds this into the
+# steady-state CI story.
+name: Extractor (rustc-fidelity Phase 1)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["migrate/*", "spike-*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  probe:
+    name: Build + probe test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The dylib links rustc_private → the PINNED nightly + rustc-dev.
+      # extractor/rust-toolchain.toml selects it for the builds; install the
+      # components explicitly so the runner has them.
+      - name: Install pinned nightly (+ rustc-dev)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-04-16
+          components: rustc-dev, llvm-tools-preview
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # The custom linker the dylib needs (extractor/.cargo/config.toml).
+      - name: Install dylint-link
+        run: cargo install dylint-link --locked
+
+      # dylint builds its driver once per toolchain into ~/.dylint_drivers —
+      # the slowest step of a cold probe test; cache it on the pin.
+      - name: Cache dylint driver
+        uses: actions/cache@v4
+        with:
+          path: ~/.dylint_drivers
+          key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
+
+      - name: Build extractor dylib
+        working-directory: extractor
+        run: cargo build --locked
+
+      - name: Probe test (golden spine tier 1)
+        working-directory: extractor
+        run: cargo test --locked -- --nocapture
+
+      # The wl-engine orchestrator end-to-end (stable side): vendored source →
+      # materialize → build the dylib → dylint::run → completeness guard.
+      # Gated behind WL_ENGINE_E2E because it needs the pin + dylint-link —
+      # which this job has already installed.
+      - name: wl-engine e2e (vendored extract)
+        run: WL_ENGINE_E2E=1 cargo +stable test -p wl-engine --test e2e --locked -- --nocapture
+        shell: bash

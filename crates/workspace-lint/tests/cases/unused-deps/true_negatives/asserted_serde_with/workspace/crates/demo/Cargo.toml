@@ -8,4 +8,6 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_with = "3"
+# Path stub (see stubs/): the assertion under test keys on the dep NAME as it
+# appears in the `with = "…"` string — registry vs path is invisible to it.
+serde_with = { path = "../../stubs/serde_with" }

@@ -1,0 +1,11 @@
+# Fixture-local stub for the real `typed-builder` crate (not in the root
+# workspace's dependency tree, so an offline CI cache can't provide it). It
+# gives the source exactly what it names — the `TypedBuilder` derive and its
+# `#[builder(...)]` helper attribute — so the fixture `cargo check`s offline.
+[package]
+name = "typed-builder"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true

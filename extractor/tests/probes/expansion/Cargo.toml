@@ -1,0 +1,14 @@
+# Purpose-built probe for the macro-expansion span policy (SPIKE §12.7, WS1).
+# A *lint target*, not a workspace member: it has its own empty `[workspace]`
+# table so the extractor (dylint → driver) compiles it in isolation, exactly
+# like a real downstream crate. The dangerous case it exercises: an item whose
+# `pub` token lives in a *different* file (a cross-file `macro_rules!`), which
+# must never become a `--fix` write surface. Assertions live in
+# `extractor/tests/probe.rs` (the golden-spine tier-1 test).
+[package]
+name = "probe-expansion"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]

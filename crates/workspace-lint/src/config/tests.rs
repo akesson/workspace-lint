@@ -529,3 +529,85 @@ fn parse_expand_defaults() {
         .rules;
     assert!(!rules[0].auto_stage);
 }
+
+// --- [engine] table ---
+
+fn selector_ids(section: &EngineSection) -> Vec<String> {
+    section.selectors().into_iter().map(|s| s.id).collect()
+}
+
+#[test]
+fn engine_defaults_to_single_default_config() {
+    // Absent table and present-table-absent-key both mean `["default"]`.
+    assert_eq!(parse("").engine.configs, ["default"]);
+    assert_eq!(parse("[engine]\n").engine.configs, ["default"]);
+}
+
+#[test]
+fn engine_selectors_map_entries_in_order() {
+    let config = parse("[engine]\nconfigs = [\"default\", \"--tests\"]\n");
+    assert_eq!(selector_ids(&config.engine), ["default", "tests"]);
+    // First entry = primary: declaration order is preserved.
+    let config = parse("[engine]\nconfigs = [\"tests\", \"default\"]\n");
+    assert_eq!(selector_ids(&config.engine), ["tests", "default"]);
+}
+
+#[test]
+fn engine_selectors_accept_tests_alias() {
+    let config = parse("[engine]\nconfigs = [\"tests\"]\n");
+    let selectors = config.engine.selectors();
+    assert_eq!(selectors.len(), 1);
+    assert_eq!(selectors[0].id, "tests");
+    assert_eq!(selectors[0].cargo_args, ["--tests"]);
+}
+
+#[test]
+fn engine_selectors_fall_back_to_default_when_empty() {
+    // An explicit empty list — and an all-unknown list (the audit already
+    // reported the entries) — still yields a primary config.
+    for toml in [
+        "[engine]\nconfigs = []\n",
+        "[engine]\nconfigs = [\"nonsense\"]\n",
+    ] {
+        assert_eq!(selector_ids(&parse(toml).engine), ["default"]);
+    }
+}
+
+#[test]
+fn audit_engine_clean_for_known_configs() {
+    let diags = audit_of("[engine]\nconfigs = [\"default\", \"--tests\", \"tests\"]\n");
+    assert!(diags.is_empty(), "unexpected: {diags:?}");
+}
+
+#[test]
+fn audit_flags_unknown_engine_config() {
+    let diags = audit_of("[engine]\nconfigs = [\"default\", \"--test\"]\n");
+    let d = diags
+        .iter()
+        .find(|d| d.lint.ends_with("::config"))
+        .expect("expected a config diagnostic");
+    assert!(d.message.contains("--test"));
+    assert!(d.helps.iter().any(|h| h.contains("--tests")));
+}
+
+#[test]
+fn audit_flags_unknown_engine_field() {
+    let diags = audit_of("[engine]\nconfig = [\"default\"]\n");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.lint.ends_with("::config") && d.message.contains("`config`")),
+        "unexpected: {diags:?}"
+    );
+}
+
+#[test]
+fn engine_known_list_matches_selector_for() {
+    // The audit suggests from KNOWN; every suggestion must actually map.
+    for entry in EngineSection::KNOWN {
+        assert!(
+            EngineSection::selector_for(entry).is_some(),
+            "`{entry}` is in KNOWN but has no selector"
+        );
+    }
+}

@@ -1,0 +1,21 @@
+# This manifest is deliberately SELF-CONTAINED (no `workspace = true`
+# inheritance): the workspace-lint binary vendors this crate together with
+# `extractor/` and materializes both into a cache dir at user sites, where no
+# workspace root exists to inherit from. Keep every field concrete.
+[package]
+name = "wl-ir"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+# Publishable-intent flag: this schema is the engine's public extension surface,
+# and the flag marks its API external for workspace-lint's publish-aware
+# `unused-pub` (same convention as the marker crates).
+publish = true
+repository = "https://github.com/akesson/workspace-lint"
+description = "The serde IR contract between workspace-lint's per-crate rustc extractor (Phase 1) and its workspace assembler (Phase 2)."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# workspace-lint: expect(centralized-deps) — must stay concrete; see the
+# self-containment note at the top of this file.
+serde = { version = "1", features = ["derive"] }

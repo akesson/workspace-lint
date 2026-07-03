@@ -5,13 +5,16 @@ members = ["crates/*"]
 # `corpus/`, used as test fixtures (smoke / lint-FP audit / set-level SCIP
 # differential). Excluded so cargo treats each as its own standalone package —
 # otherwise cargo would try to fold them into this workspace and error.
-exclude = ["corpus", "spike"]
+# `extractor` is the nightly rustc_private lint dylib (its own toolchain pin,
+# own lockfile); `spike` is the pivot spike, retiring in migration PR 13.
+exclude = ["corpus", "spike", "extractor"]
 
 [workspace.package]
 rust-version = "1.88"
 
 [workspace.dependencies]
 # Bin deps
+anyhow = "1"
 cargo_metadata = "0.23"
 clap = { version = "4", features = ["derive"] }
 # Pin the exact patch — dioxus-rsx is an internal Dioxus crate whose
@@ -20,6 +23,11 @@ clap = { version = "4", features = ["derive"] }
 # update the pinned version here in lockstep with any AST walker
 # adjustments in the plugins/dioxus_rsx walker.
 dioxus-rsx = "=0.7.9"
+# The dylint orchestrator library (no rustc_private — the binary stays stable).
+# `library_packages` pulls in the cargo-cli plumbing `run()` needs to build the
+# driver and invoke `cargo check`. Version-locked to the pin in
+# extractor/rust-toolchain.toml — bump both together (SPIKE §12.4).
+dylint = { version = "6.0.1", features = ["library_packages"] }
 fs-err = "3"
 globset = "0.4"
 ignore = "0.4"
@@ -39,6 +47,7 @@ serde_json = "1"
 shell-words = "1"
 strip-ansi-escapes = "0.2"
 syn = { version = "2", features = ["extra-traits", "full", "visit"] }
+thiserror = "2"
 tokei = { version = "14", default-features = false }
 toml = "1"
 toml_edit = "0.25"

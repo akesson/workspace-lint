@@ -11,6 +11,8 @@
 // dioxus `global_facts` hook binds them to the same-crate `pub fn`s, making each
 // IntraCrate (suppressed here), so this passes cleanly.
 
+use dioxus::{Routable, component};
+
 // Private (not a pub item, so not finding-eligible itself); the route attributes
 // are the only thing referencing the components.
 #[derive(Routable, Clone, PartialEq)]

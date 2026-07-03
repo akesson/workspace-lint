@@ -31,6 +31,7 @@ const SECTIONS: &[&str] = &[
     "architecture",
     "expand",
     "macros",
+    "engine",
 ];
 
 /// Allowed field names for a section's flat table or its `rules`/entry
@@ -81,6 +82,7 @@ fn section_schema(section: &str) -> Option<Schema> {
             None,
         ),
         "macros" => s(&["external"], None),
+        "engine" => s(&["configs"], None),
         _ => None,
     }
 }
@@ -106,7 +108,31 @@ pub(super) fn audit(raw: &str, config_path: &str, config: &Config) -> Vec<Diagno
     }
 
     audit_enabled_but_unconfigured(config, config_path, &mut out);
+    audit_engine_configs(config, config_path, &mut out);
     out
+}
+
+/// `[engine] configs` entries must name a known cargo configuration — an
+/// unknown one would otherwise be silently skipped when the semantic tier
+/// builds its extraction matrix (see [`super::EngineSection::selectors`]).
+/// Validated from the typed config (like the enabled-but-unconfigured check):
+/// an absent table defaults to `["default"]`, which is always clean.
+fn audit_engine_configs(config: &Config, config_path: &str, out: &mut Vec<Diagnostic>) {
+    for entry in &config.engine.configs {
+        if super::EngineSection::selector_for(entry).is_some() {
+            continue;
+        }
+        let mut d = at_file(
+            LintId::Config.id(),
+            format!("unknown engine config `{entry}` in `[engine] configs`"),
+            config_path,
+        );
+        if let Some(sugg) = closest(entry, super::EngineSection::KNOWN) {
+            d = d.help(format!("did you mean `{sugg}`?"));
+        }
+        d = d.help("accepted configs: `default` (plain cargo check) and `--tests`");
+        out.push(d.build());
+    }
 }
 
 /// `[lints]`-shaped keys must be `default` or a known lint short name. `ctx` is
@@ -404,6 +430,9 @@ publish-hint-threshold = 3
 [[macros.external]]
 path = "tokio::main"
 expansion-uses = ["tokio::runtime::Runtime"]
+
+[engine]
+configs = ["default", "--tests"]
 
 [crates.demo.lints]
 default = "warn"

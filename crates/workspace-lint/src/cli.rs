@@ -49,6 +49,14 @@ pub(crate) struct Cli {
     /// workspace without that combination already pays nothing.
     #[arg(long, global = true, default_value_t = false)]
     pub no_build_env: bool,
+    /// Run only the build-free lints — skip the rustc-backed semantic tier
+    /// (and its pinned-toolchain requirement) entirely.
+    #[arg(long, global = true, default_value_t = false)]
+    pub fast_only: bool,
+    /// Debug: run the extraction+assembly tier and print its stats, then exit
+    /// without running any lints. Requires the pinned toolchain.
+    #[arg(long, global = true, hide = true, default_value_t = false)]
+    pub engine_dump: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

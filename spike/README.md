@@ -9,7 +9,8 @@ defs) into a cross-crate reverse index:
 - **step 0** — a raw `rustc_driver` wrapper (`driver/`) run as
   `RUSTC_WORKSPACE_WRAPPER`. Proves we can link `rustc_private` and walk `TyCtxt`.
 - **step 1** — the *same* `extract()` lifted verbatim into a **Dylint
-  `LateLintPass`** (`wl-lint/`), then driven two ways: via the `cargo dylint` CLI,
+  `LateLintPass`** (now `../extractor/`, formerly `wl-lint/` here), then driven
+  two ways: via the `cargo dylint` CLI,
   and via a **stable single binary** that embeds `dylint::run(opts)` (`embed/`).
   Proves the real target (Dylint lint host + single-bin packaging, SPIKE §3/§8/§11).
 
@@ -18,7 +19,9 @@ so none of this touches the stable build or the dogfood lint.
 
 ## Layout
 
-- `ir/`       — `wl-ir`: the cross-phase serialization contract (plain serde). §6.
+- `../crates/wl-ir/` — the cross-phase serialization contract (plain serde). §6.
+                Graduated to the main workspace in migration PR 1; the spike
+                crates keep path-depping on it until they retire.
 - `driver/`   — `wl-driver`: raw `rustc_driver` wrapper (step 0). Emits an
                 `IrFragment` per primary crate → `$WL_IR_OUT/<crate>.json`.
 - `assemble/` — `wl-assemble`: Phase-2 assembler. Reads *all* fragments and
@@ -30,35 +33,34 @@ so none of this touches the stable build or the dogfood lint.
                 against the syn resolver's model of the same crate and prints a
                 scored fidelity delta (recall/precision/visibility). Depends on the
                 being-retired `syn-workspace`.
-- `wl-lint/`  — the Dylint `LateLintPass` (step 1). **Isolated workspace**, pins
-                `nightly-2026-04-16` (dylint 6.0.1's toolchain). `extract()` is
-                lifted verbatim from `driver/`. Drops `clippy_utils` (the
-                extractor uses raw `rustc_middle`/`rustc_hir`).
+- `../extractor/` — the Dylint `LateLintPass` (step 1, **graduated out of
+                `spike/` in migration PR 2** as package `wl-extractor`).
+                Isolated workspace, pins `nightly-2026-04-16` (dylint 6.0.1's
+                toolchain). `extract()` is lifted verbatim from `driver/`.
+                Drops `clippy_utils`. Its WS1 span-policy probe + the 21
+                assertions (formerly `probe-check/` + `probes/expansion/`)
+                now live in `../extractor/tests/` as a plain `cargo test`.
 - `embed/`    — `wl-embed`: **stable** binary that calls `dylint::run(opts)`
                 directly (no `cargo-dylint` CLI) — the single-bin embed check.
                 Now also carries the **completeness guard** (WS5.1): after the run
                 it checks every expected fragment exists (from `cargo metadata`),
                 and on a miss bumps the dylib mtime + re-lints once — closing the
                 §11 caching gotcha in code.
-- `probe-check/` — `wl-probe-check`: asserts the WS1 span-fidelity policy over the
-                extractor's output for `probes/expansion` (21 assertions).
-- `probes/expansion/` — a purpose-built **lint target** (isolated workspace) whose
-                cross-file `macro_rules!` is the dangerous `--fix`-surface case.
 
-Hardening scripts (WS1/WS4/WS5.1):
+Hardening scripts (WS4/WS5.1):
 
-- `roundtrip-suggestion.sh` — captures a rustc-native `span_suggestion` through
-  `--message-format=json`, asserts byte-exact `MachineApplicable`, applies it,
-  and `cargo check`s the result.
 - `kfn-flip-demo.sh` — runs the extractor over the actual `unused-pub` known-false
   fixtures: the impl-method KFN flips to a real finding; the `#[no_mangle]` KFP is
   honestly reported as *not* fixed (needs attribute capture).
 - `test-completeness.sh` — the completeness-guard test (delete a fragment
   out-of-band → guard regenerates it with no registry-dep recompile).
+- (`roundtrip-suggestion.sh` retired with the demo findings lint in migration
+  PR 2 — the WS1-A4 suggestion round-trip it verified is recorded in SPIKE
+  §12.6/§12b; the production round-trip returns with the ported lints.)
 
 The two nightly `[toolchain]` pins differ on purpose: `driver/` used the rolling
-nightly it was written against (2026-05-01); `wl-lint/` adopts dylint 6.0.1's pin
-(2026-04-16). Adopting dylint's pin is the production choice (see Status). The
+nightly it was written against (2026-05-01); `../extractor/` adopts dylint 6.0.1's
+pin (2026-04-16). Adopting dylint's pin is the production choice (see Status). The
 `--fix` span surface, the toolchain-bump cost, the cost envelope, real-crate
 fidelity breadth, the completeness guard, and a Linux CI smoke are all covered by
 the **WS1–5 hardening pass** — see `../SPIKE-rustc-fidelity-tree.md` §12a/§12b.
@@ -67,7 +69,8 @@ the **WS1–5 hardening pass** — see `../SPIKE-rustc-fidelity-tree.md` §12a/�
 
 ```sh
 REPO="$(git rev-parse --show-toplevel)"
-LIB="$REPO/spike/wl-lint/target/debug/libwl_lint@nightly-2026-04-16-aarch64-apple-darwin.dylib"
+# The extractor dylib: filename embeds toolchain + host triple, so glob it.
+LIB="$(ls "$REPO"/extractor/target/debug/libwl_extractor@*.dylib "$REPO"/extractor/target/debug/libwl_extractor@*.so 2>/dev/null | head -1)"
 
 # --- step 0: raw driver ---
 (cd spike && cargo build)                                  # nightly + rustc-dev
@@ -77,7 +80,7 @@ WL_IR_OUT="$REPO/spike/ir-out" RUSTC_WORKSPACE_WRAPPER="$PWD/spike/target/debug/
 
 # --- step 1a: Dylint LateLintPass via the cargo-dylint CLI ---
 # (needs: cargo install cargo-dylint dylint-link)
-(cd spike/wl-lint && cargo build)
+(cd extractor && cargo build)
 WL_IR_OUT="$REPO/spike/ir-out-dylint" \
   cargo dylint --lib-path "$LIB" --no-deps -- -p syn-workspace
 
@@ -89,7 +92,7 @@ WL_IR_OUT="$REPO/spike/ir-out-dylint" \
 # --- cross-crate: orchestrate the WHOLE workspace (no -p ⇒ all members) ---
 # One dylint::run; cargo fans out; the driver emits one fragment per crate.
 "$REPO/spike/embed/target/debug/wl-embed" \
-  "$REPO" "$LIB" "$REPO/spike/ir-out-workspace"          # 4 fragments
+  "$REPO" "$LIB" "$REPO/spike/ir-out-workspace"          # one per member (5)
 (cd spike && cargo run -q -p wl-assemble -- "$REPO/spike/ir-out-workspace")
 
 # --- cfg-matrix union: one IR dir per cfg, then union across dirs ---
@@ -301,13 +304,15 @@ assembler computes verdicts in plain Rust. The **findings channel** (SPIKE §4/�
 is the *other* half of the design: real diagnostics emitted through Dylint's native
 lint path and captured by the orchestrator. It's now proven end-to-end.
 
-`wl-lint` registers **two** lints in one dylib: the silent `WL_IR_EXTRACT` extractor
-(facts) and an *emitting* `WL_UNDOCUMENTED_PUB` demo (findings — warns on a
-module-level `pub fn` with no doc comment). Two lints means the macro `register_lints`
-won't do (it wires one), so it's hand-written — registering both passes so they run
-in **one compilation against one `TyCtxt`** (the SPIKE §8 "same pass" claim, made
-concrete). The `extract()` body is untouched, so the facts channel stays byte-
-identical to the raw driver.
+The spike's `wl-lint` registered **two** lints in one dylib: the silent
+`WL_IR_EXTRACT` extractor (facts) and an *emitting* `WL_UNDOCUMENTED_PUB` demo
+(findings — warned on a module-level `pub fn` with no doc comment). Two lints
+means the macro `register_lints` won't do (it wires one), so it's hand-written —
+registering both passes so they run in **one compilation against one `TyCtxt`**
+(the SPIKE §8 "same pass" claim, made concrete). The `extract()` body was
+untouched, so the facts channel stayed byte-identical to the raw driver.
+(The demo lint did not graduate with the extractor in migration PR 2 — the
+proof below is the record; production findings lints re-enter with the ports.)
 
 Three findings on the pinned nightly (`nightly-2026-04-16`), verified:
 

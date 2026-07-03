@@ -17,3 +17,13 @@ macro_rules! debug {
         log::debug!($($tt)*)
     };
 }
+
+// The macro must be INVOKED for the reference to exist under compiler
+// semantics: an uninvoked `macro_rules!` body is never expanded, so its paths
+// resolve nowhere (the real memchr this mirrors invokes `debug!` throughout).
+// The invocation is what puts the `log::debug!` edge in post-expansion HIR;
+// the namespace question — the local `macro_rules! log` must not shadow the
+// module-namespace `log` crate — is exercised identically on both backends.
+pub fn touch() {
+    debug!("exercised");
+}

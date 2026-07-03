@@ -7,5 +7,7 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-strum = "0.27"
-strum_macros = "0.27"
+# Path stubs (see stubs/): the strum-derive assertion under test keys on dep
+# NAMES — registry vs path is invisible to it.
+strum = { path = "../../stubs/strum" }
+strum_macros = { path = "../../stubs/strum_macros" }

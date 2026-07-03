@@ -1,2 +1,6 @@
 [workspace]
 members = ["crates/alpha"]
+# Compile-only path stubs stay out of the member set (cargo auto-adopts
+# in-tree path deps as members otherwise); the lint's workspace view is
+# unchanged by them.
+exclude = ["stubs/keep", "stubs/unused_stub", "stubs/unused_block"]

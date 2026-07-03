@@ -1,0 +1,9 @@
+# Fixture-local stub for the real `strum` crate (not in the root workspace's
+# dependency tree, so an offline CI cache can't provide it). Deliberately
+# empty: the case is that `strum` is never named in source — only the real
+# EnumString expansion would reference it, which the strum-derive assertion
+# credits by NAME.
+[package]
+name = "strum"
+version = "0.1.0"
+edition = "2024"

@@ -4,13 +4,13 @@
 //!
 //! - **mod_decl_missing_target**: `mod foo;` appears in source but neither
 //!   `foo.rs` nor `foo/mod.rs` exists adjacent to the parent file, and no
-//!   `#[path = "..."]` override resolves either. Recorded by syn-workspace's
-//!   `BrokenModDecl` during the Tier 2 walk.
+//!   `#[path = "..."]` override resolves either. Recorded by the fast tier's
+//!   `BrokenModDecl` during the module-tree walk.
 //! - **orphan_rs_file**: a `.rs` file lives under `<crate>/src/` but isn't
 //!   reachable via any target's `mod` chain. Usually a renamed/moved module
 //!   that left a stale source file behind.
 
-use syn_workspace::{Crate, Module, Workspace};
+use wl_engine::fast::{CrateInfo, FastModel, Module};
 
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::{at_file, at_line};
@@ -38,30 +38,31 @@ impl Lint for ModuleTree {
 
     fn requirements(&self) -> Requirements {
         Requirements {
-            needs_workspace: true,
+            needs_fast: true,
+            ..Requirements::default()
         }
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let workspace = cx
-            .workspace
-            .expect("module-tree lint requires Workspace (Requirements::needs_workspace)");
-        check(workspace)
+        let fast = cx
+            .fast
+            .expect("module-tree lint requires FastModel (Requirements::needs_fast)");
+        check(fast)
     }
 }
 
-pub(crate) fn check(workspace: &Workspace) -> Vec<Diagnostic> {
+pub(crate) fn check(fast: &FastModel) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    for krate in workspace.members() {
+    for krate in fast.members() {
         for module in krate.all_modules() {
-            collect_broken_mod_decls(workspace, module, &mut diagnostics);
+            collect_broken_mod_decls(fast, module, &mut diagnostics);
         }
-        collect_orphan_files(workspace, krate, &mut diagnostics);
+        collect_orphan_files(fast, krate, &mut diagnostics);
     }
     diagnostics
 }
 
-fn collect_broken_mod_decls(workspace: &Workspace, module: &Module, out: &mut Vec<Diagnostic>) {
+fn collect_broken_mod_decls(fast: &FastModel, module: &Module, out: &mut Vec<Diagnostic>) {
     let lint_id = LintId::ModuleTree.id();
     for decl in &module.broken_mod_decls {
         let msg = format!(
@@ -72,7 +73,7 @@ fn collect_broken_mod_decls(workspace: &Workspace, module: &Module, out: &mut Ve
             at_line(
                 lint_id,
                 msg,
-                workspace.crate_relative_path(&decl.declared_in),
+                fast.crate_relative_path(&decl.declared_in),
                 decl.line,
             )
                 .help(format!(
@@ -85,9 +86,9 @@ fn collect_broken_mod_decls(workspace: &Workspace, module: &Module, out: &mut Ve
     }
 }
 
-fn collect_orphan_files(workspace: &Workspace, krate: &Crate, out: &mut Vec<Diagnostic>) {
+fn collect_orphan_files(fast: &FastModel, krate: &CrateInfo, out: &mut Vec<Diagnostic>) {
     let lint_id = LintId::ModuleTree.id();
-    for path in &krate.orphan_files {
+    for path in krate.orphan_files() {
         // Crate-relative is still the right form for the in-message
         // `src/orphan.rs` snippet (the crate root is the natural origin
         // for the user's mental model of `mod` declarations). The anchor,
@@ -97,7 +98,7 @@ fn collect_orphan_files(workspace: &Workspace, krate: &Crate, out: &mut Vec<Diag
             .strip_prefix(&krate.manifest_dir)
             .map(display_path)
             .unwrap_or_else(|_| display_path(path));
-        let workspace_rel = workspace.crate_relative_path(path);
+        let workspace_rel = fast.crate_relative_path(path);
 
         out.push(
             at_file(lint_id, format!("orphan source file `{crate_rel}` is not reachable from any `mod` declaration"), workspace_rel)

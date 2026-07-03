@@ -5,3 +5,8 @@ edition = "2024"
 # Published → the public struct is exempt as external API surface; only the
 # private-`mod` error type goes through the cross-crate-usage check.
 publish = true
+
+[dependencies]
+# Compile-only stub (see stubs/): the lint recognizes `#[builder(...)]` from
+# the source text; the dep exists so the fixture `cargo check`s offline.
+typed-builder = { path = "../../stubs/typed-builder" }

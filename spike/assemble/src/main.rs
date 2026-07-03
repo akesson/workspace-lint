@@ -295,7 +295,15 @@ fn load_fragments(dir: &str) -> Vec<IrFragment> {
             continue;
         }
         match std::fs::read_to_string(&path).map(|s| serde_json::from_str::<IrFragment>(&s)) {
-            Ok(Ok(frag)) => fragments.push(frag),
+            Ok(Ok(frag)) => {
+                // Skew detection: a stale or foreign-build fragment must fail the
+                // run, not silently assemble alongside current-schema fragments.
+                if let Err(e) = frag.check_schema() {
+                    eprintln!("wl-assemble: {}: {e}", path.display());
+                    std::process::exit(1);
+                }
+                fragments.push(frag);
+            }
             Ok(Err(e)) => eprintln!("wl-assemble: bad IR {}: {e}", path.display()),
             Err(e) => eprintln!("wl-assemble: read {}: {e}", path.display()),
         }

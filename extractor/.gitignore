@@ -1,0 +1,4 @@
+/target
+# lint-target fixtures: dylint runs cargo against them in place
+tests/probes/*/Cargo.lock
+tests/probes/*/target

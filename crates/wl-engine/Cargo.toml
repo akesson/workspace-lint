@@ -1,0 +1,31 @@
+[package]
+name = "wl-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+# Publishable-intent flag (unused-pub convention): the engine library is the
+# stable data layer both tiers consume. Not in the CI publish dry-run gate —
+# it path-depends on the unpublished wl-ir, so a dry-run cannot resolve.
+publish = true
+repository = "https://github.com/akesson/workspace-lint"
+description = "workspace-lint's engine library: orchestrates the Phase-1 rustc IR extraction (embedded dylint) and assembles the Phase-2 workspace model."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+wl-ir = { path = "../wl-ir" }
+dylint = { workspace = true }
+cargo_metadata = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# fast tier: the parsed-Cargo.toml layer (re-exported as `fast::toml_edit`).
+toml_edit = { workspace = true }
+# fast tier: the syntactic module-tree walker parses member sources with syn;
+# proc-macro2's `span-locations` feature supplies the line numbers on
+# broken-`mod`-declaration records.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+# dylint::run's error type — wrapped, not exposed in our API shapes.
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,11 @@
+# Fixture-local stub for the real `wasm-bindgen` crate. It IS in the root
+# workspace's lockfile, but only behind wasm32-target-gated deps — a host-only
+# offline CI cache never downloads it. Deliberately empty: the case is that
+# `wasm-bindgen` is never named in source — only the real wasm_bindgen_test
+# expansion would reference it, which the assertion credits by NAME.
+[package]
+name = "wasm-bindgen"
+# rustc hard-rejects any crate NAMED wasm-bindgen below 0.2.88 (an upstream
+# ABI-compatibility special case), so the stub must claim a newer version.
+version = "0.2.100"
+edition = "2024"

@@ -1,0 +1,13 @@
+# Fixture-local stub for the real `dioxus` crate (not in the root workspace's
+# dependency tree, so an offline CI cache can't provide it). It gives the
+# source exactly what it names — `#[component]`, `rsx!`, and the `Routable`
+# derive with its route/layout helpers — so the fixture `cargo check`s
+# offline. The resolver recognizes all of them by NAME from the source text,
+# never through the (inert) expansions.
+[package]
+name = "dioxus"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true

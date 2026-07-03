@@ -54,6 +54,14 @@ glob = "crates/*"
 # binding crate — keep an eye on it as lints are added.
 max-code-lines = 6000
 
+# The rustc engine's config matrix (one `cargo check` compile per entry; the
+# verdict unions across them). `--tests` is load-bearing for `unused-deps`:
+# dev-dependencies are judged only when a test target actually compiles —
+# without it they'd be silently skipped, weaker than the syn backend this
+# replaced. It also retires test-only `unused-pub` leads once that lint ports.
+[engine]
+configs = ["default", "--tests"]
+
 # `unused-deps` `ignore` is scoped per-crate (a worked example of the
 # `[crates.<name>]` tier): these deps are unused only in the `workspace-lint`
 # binary, so scoping the ignore here keeps it from masking a genuinely-unused
