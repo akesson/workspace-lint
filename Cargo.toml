@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-# Phase-2 corpus: real third-party crates vendored as git submodules under
-# `corpus/`, used as test fixtures (smoke / lint-FP audit / set-level SCIP
-# differential). Excluded so cargo treats each as its own standalone package —
+# Real third-party crates vendored as git submodules under `corpus/` are test
+# fixtures (fast-tier smoke in the default suite; a scheduled full-tier
+# subset run). Excluded so cargo treats each as its own standalone package —
 # otherwise cargo would try to fold them into this workspace and error.
 # `extractor` is the nightly rustc_private lint dylib (its own toolchain pin,
-# own lockfile); `spike` is the pivot spike, retiring in migration PR 13.
-exclude = ["corpus", "spike", "extractor"]
+# own lockfile).
+exclude = ["corpus", "extractor"]
 
 [workspace.package]
 rust-version = "1.88"

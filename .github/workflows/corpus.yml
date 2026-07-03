@@ -1,0 +1,47 @@
+# Scheduled full-tier corpus run: the complete engine (extraction on the
+# pinned toolchain + assembly + semantic lints) over the single-crate corpus
+# repos, compiling them for real. Too slow (and network-dependent — the corpus
+# crates' registry deps) for the per-PR suite, where the fast-tier corpus
+# smoke covers every submodule instead (tests/corpus.rs).
+name: Corpus (full tier)
+
+on:
+  schedule:
+    # Weekly, Monday 05:20 UTC — off the peak-hours runners.
+    - cron: "20 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  corpus-full:
+    name: Full-tier corpus subset
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      # Same full-tier provisioning as the main CI test matrix: the pinned
+      # nightly (+ rustc-dev) the extractor builds on, dylint-link, and the
+      # cached per-toolchain dylint driver. Keep the pin in lockstep with
+      # extractor/rust-toolchain.toml.
+      - name: Install pinned nightly (+ rustc-dev) for the extraction engine
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-04-16
+          components: rustc-dev, llvm-tools-preview
+      - name: Install dylint-link
+        run: cargo install dylint-link --locked
+      - name: Cache dylint driver
+        uses: actions/cache@v4
+        with:
+          path: ~/.dylint_drivers
+          key: dylint-driver-nightly-2026-04-16-${{ runner.os }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Full-tier corpus subset
+        run: cargo test -p workspace-lint --test corpus --locked -- --ignored --nocapture

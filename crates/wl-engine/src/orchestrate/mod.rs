@@ -339,6 +339,15 @@ fn dylint_opts(
             },
             no_deps: true,
             packages: packages.to_vec(),
+            // An unscoped run must select EVERY member as a primary package.
+            // In a non-virtual workspace (a root package with `[workspace]
+            // members`, e.g. thiserror) a plain `cargo check` selects only
+            // the root: the member crates compile as mere dependencies, whose
+            // lint units dylint does not dylib-fingerprint — so their
+            // fragments are never regenerated once cargo is warm, and the
+            // completeness guard hard-fails. (This repo's own dogfood never
+            // saw it: a virtual workspace's members are all primary.)
+            workspace: packages.is_empty(),
             args: cargo_args.to_vec(),
             ..Default::default()
         }),

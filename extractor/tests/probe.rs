@@ -7,7 +7,7 @@
 //! derive-generated items carry no editable `vis_span` and map their whole-item
 //! `span` to the invocation site (never the macro definition file `gen.rs`).
 //!
-//! Ported from the spike's `wl-probe-check` binary (WS1, SPIKE §12.7/§12b);
+//! Ported from the retired pivot spike's `wl-probe-check` binary (WS1);
 //! the assertion set is the 21-check suite that verified the policy, plus the
 //! schema-version gate. One `#[test]` only: the flow chdirs into the probe
 //! (dylint checks the CWD workspace), which must not race a sibling test.
@@ -38,7 +38,7 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
     // cargo's fingerprint, so with a warm dylint cache the lint pass is skipped
     // as "fresh" and nothing lands in the new temp dir. Bumping the dylib mtime
     // invalidates exactly the probe's lint units — the same mechanism as the
-    // orchestrator's completeness guard (`force_relint` in the spike embed).
+    // orchestrator's completeness guard (`force_relint`).
     // Scoped: the handle must be CLOSED before `dylint::run` — Windows refuses
     // to load a dylib any process holds open for write (sharing violation),
     // and this write handle would otherwise live to the end of the test.
@@ -47,7 +47,7 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         lib_file.set_modified(std::time::SystemTime::now())?;
     }
 
-    // The embed flow, verbatim from the spike orchestrator: WL_IR_OUT is
+    // The embed flow, same as the production orchestrator: WL_IR_OUT is
     // inherited by the spawned driver; dylint checks the CWD workspace.
     let ir_out = tempfile::tempdir()?;
     // SAFETY: single-threaded at this point — this file holds exactly one test,
