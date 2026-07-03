@@ -275,9 +275,9 @@ impl Assembly {
         let module_imports: Vec<(String, Vec<String>)> = import_froms
             .iter()
             .filter(|(key, _)| defs.get(*key).is_some_and(|d| d.kind == "mod"))
-            .map(|(key, froms)| (defs[key].path.clone(), froms.clone()))
+            .map(|(key, importers)| (defs[key].path.clone(), importers.clone()))
             .collect();
-        for (mod_path, froms) in module_imports {
+        for (mod_path, importers) in module_imports {
             let prefix = format!("{mod_path}::");
             for (child_key, child) in &defs {
                 if child.public
@@ -290,7 +290,7 @@ impl Assembly {
                     import_froms
                         .entry(child_key.clone())
                         .or_default()
-                        .extend(froms.iter().cloned());
+                        .extend(importers.iter().cloned());
                 }
             }
         }
@@ -398,7 +398,7 @@ impl Assembly {
             || self
                 .import_froms
                 .get(key)
-                .is_some_and(|froms| froms.iter().any(|m| self.module_hop_reachable(m)))
+                .is_some_and(|importers| importers.iter().any(|m| self.module_hop_reachable(m)))
     }
 
     /// Every ancestor module on `path` (proper prefixes past the crate root)
