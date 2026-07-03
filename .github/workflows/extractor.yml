@@ -2,20 +2,29 @@
 # platform the binary ships to (dist targets: macOS arm64/x64, Linux x64,
 # Windows x64) and run the golden-spine tier-1 test (`extractor/tests/probe.rs`
 # drives the dylib over the expansion probe via the embedded `dylint::run` and
-# asserts the span policy). Windows is the deliberately front-loaded unknown:
-# the spike only ever smoked `.so`/`.dylib`, and the full tier ships
-# platform-gated if this leg can't be made green.
+# asserts the span policy). All three dist OSes stay covered — Windows was the
+# migration's front-loaded unknown and is proven.
 #
 # Isolated from the main `ci.yml`: the extractor is `exclude`d from the root
 # workspace and pins its own nightly (rust-toolchain.toml, dylint's pin).
-# Trigger scope is the migration branches until PR 13 folds this into the
-# steady-state CI story.
+# Steady state: runs when the extractor or the IR contract it compiles
+# against changes (the main suite's dogfood/case extractions exercise the
+# vendored copy on every PR anyway).
 name: Extractor (rustc-fidelity Phase 1)
 
 on:
   workflow_dispatch:
   push:
-    branches: ["migrate/*", "spike-*"]
+    branches: [main]
+    paths:
+      - "extractor/**"
+      - "crates/wl-ir/**"
+      - ".github/workflows/extractor.yml"
+  pull_request:
+    paths:
+      - "extractor/**"
+      - "crates/wl-ir/**"
+      - ".github/workflows/extractor.yml"
 
 env:
   CARGO_TERM_COLOR: always

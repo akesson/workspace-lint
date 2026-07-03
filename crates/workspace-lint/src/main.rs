@@ -308,7 +308,13 @@ fn apply_suppression(fast: Option<&FastModel>, diagnostics: &mut Vec<Diagnostic>
 }
 
 fn run_all(config: &config::Config, fast_only: bool) -> (Vec<Diagnostic>, Option<FastModel>) {
-    let registry = lints::registry(config);
+    let mut registry = lints::registry(config);
+    // `--fast-only` runs only the build-free lints: a semantic lint is
+    // *skipped* — not invoked without its model (its `check` rightly demands
+    // one) and not silently degraded to a weaker analysis.
+    if fast_only {
+        registry.retain(|l| !l.requirements().needs_semantic);
+    }
     // The build-free FastModel is needed when some enabled lint asks for it,
     // or when a per-crate `[crates.*]` tier is present — the latter so
     // per-crate levels can map diagnostics to their owning crate and crate
@@ -316,9 +322,9 @@ fn run_all(config: &config::Config, fast_only: bool) -> (Vec<Diagnostic>, Option
     // needs the metadata.
     let needs_fast =
         registry.iter().any(|l| l.requirements().needs_fast) || !config.crates.is_empty();
-    // The rustc-backed tier runs only when some enabled lint asks for it and
-    // `--fast-only` doesn't veto it.
-    let needs_semantic = registry.iter().any(|l| l.requirements().needs_semantic) && !fast_only;
+    // The rustc-backed tier runs only when some (still-enabled) lint asks
+    // for it — never under `--fast-only` (the retain above emptied those).
+    let needs_semantic = registry.iter().any(|l| l.requirements().needs_semantic);
     let fast = needs_fast.then(load_fast_model);
     // A memberless workspace (a bare virtual manifest) has nothing to extract
     // or judge — cargo would just error "the workspace has no members" — so

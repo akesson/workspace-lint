@@ -2,7 +2,7 @@ use predicates::prelude::*;
 use std::path::Path;
 
 mod common;
-use common::{TestWorkspace, workspace_lint};
+use common::{TestWorkspace, copy_tree, workspace_lint};
 
 fn fixture(name: &str) -> &Path {
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -38,6 +38,26 @@ fn centralized_deps_violation_fails() {
 }
 
 // --- unused-deps ---
+
+/// `--fast-only` must *skip* the semantic lints, not run them without their
+/// model — regression guard: this panicked ("unused-deps requires the
+/// SemanticModel") on any semantic-lint-enabled workspace from the first
+/// port until the corpus fast-tier smoke caught it.
+#[test]
+fn fast_only_skips_semantic_lints() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    copy_tree(fixture("unused_deps_clean"), tmp.path()).expect("copy fixture");
+    std::fs::write(
+        tmp.path().join(".workspace-lint.toml"),
+        "[unused-deps]\n[unused-pub]\n",
+    )
+    .expect("write config");
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("--fast-only")
+        .assert()
+        .success();
+}
 
 #[test]
 fn unused_deps_clean_passes() {

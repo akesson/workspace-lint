@@ -1,8 +1,0 @@
-# The driver links rustc_private, so the whole spike workspace builds on nightly
-# with the rustc-dev component. `channel = "nightly"` uses the installed rolling
-# nightly to avoid a re-download; PRODUCTION must pin a DATED channel
-# (e.g. "nightly-2026-05-01") + clippy_utils in lockstep — that pin is the
-# load-bearing toolchain treadmill described in SPIKE-rustc-fidelity-tree.md §9.
-[toolchain]
-channel = "nightly"
-components = ["rustc-dev"]

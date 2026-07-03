@@ -5,11 +5,10 @@
 //! This "lint" never warns: it harvests facts into `$WL_IR_OUT/<crate>.json`
 //! (the IR channel). Real diagnostics (the findings channel) ride Dylint's
 //! native lint path separately; the two never mix (SPIKE §4). The
-//! findings-channel round-trip itself was proven by the spike (WS1-A4, SPIKE
-//! §12.6/§12b) with a demo lint that did not graduate with this package.
-//!
-//! The spike's raw `rustc_driver` twin (`spike/driver`) carries an identical
-//! copy of [`extract`] — the original proof that the walk is host-agnostic.
+//! findings-channel round-trip itself was proven by the retired pivot spike
+//! (WS1-A4, SPIKE §12.6/§12b) with a demo lint that did not graduate with
+//! this package; the spike's raw `rustc_driver` twin also proved this walk
+//! is host-agnostic before it retired.
 #![feature(rustc_private)]
 
 // Compiler-crate imports are inherited from the `cargo dylint new` template:
