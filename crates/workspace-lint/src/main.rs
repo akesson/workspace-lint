@@ -12,6 +12,7 @@ mod suppress;
 mod util;
 
 use clap::Parser;
+use std::collections::HashSet;
 use std::io;
 
 use cli::{CheckRule, Cli, Commands};
@@ -50,7 +51,10 @@ fn main() {
             {
                 expand::run(ec);
             }
-            let (mut diagnostics, fast) = run_all(&config, cli.fast_only);
+            let (mut diagnostics, fast, mut ran) = run_all(&config, cli.fast_only);
+            // Config-audit findings (below) are produced on every default
+            // run, so expects for `config` are always judgeable here.
+            ran.insert(LintId::Config);
             // Config-validation findings join the stream before suppression
             // (so a `# workspace-lint: allow(config)` directive can silence
             // them) and before leveling (so `[lints] config = …` applies).
@@ -75,7 +79,7 @@ fn main() {
             // `unknown-lint` findings; leveling runs last so the appended ones
             // are leveled too and `allow`-ed lints are dropped from the final
             // set before the exit-code tally.
-            apply_suppression(fast.as_ref(), &mut diagnostics);
+            apply_suppression(fast.as_ref(), ran, &mut diagnostics);
             apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
@@ -98,14 +102,14 @@ fn main() {
             // config file exists, so `workspace-lint check file-size` and the
             // default run agree on severity.
             let config_for_levels = config::try_load();
-            let (mut diagnostics, fast) =
+            let (mut diagnostics, fast, ran) =
                 run_single_check(rule, cli.fast_only, config_for_levels.as_ref());
             // Same backfill as the default run: the drop and the directive
             // scanner's parse cache want the FastModel even when the single
             // checked rule didn't require one.
             let fast = fast.or_else(try_load_fast_model);
             drop_generated_anchored(fast.as_ref(), &mut diagnostics);
-            apply_suppression(fast.as_ref(), &mut diagnostics);
+            apply_suppression(fast.as_ref(), ran, &mut diagnostics);
             if let Some(cfg) = &config_for_levels {
                 apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
             }
@@ -290,7 +294,11 @@ fn try_load_fast_model() -> Option<FastModel> {
 /// stores only file *paths*, not ASTs — it re-parses on demand to stay
 /// `Send + Sync`). Without one (a non-cargo directory), we fall back to the
 /// per-file on-demand parse path.
-fn apply_suppression(fast: Option<&FastModel>, diagnostics: &mut Vec<Diagnostic>) {
+fn apply_suppression(
+    fast: Option<&FastModel>,
+    ran: HashSet<LintId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     let directives_list = match fast {
         Some(fm) => directives::scan_with_model(fm),
         None => directives::scan(std::path::Path::new(".")),
@@ -300,14 +308,25 @@ fn apply_suppression(fast: Option<&FastModel>, diagnostics: &mut Vec<Diagnostic>
     let mut unknown = suppress::unknown_lint_diagnostics(&directives_list);
     let mut map = suppress::SuppressionMap::from_directives(directives_list);
     suppress::apply(&mut map, diagnostics);
-    let mut stale = map.stale_expects();
+    // This function itself produces `stale-expect` / `unknown-lint`, so
+    // expects targeting them are always judgeable, whatever the caller ran.
+    let mut ran = ran;
+    ran.insert(LintId::StaleExpect);
+    ran.insert(LintId::UnknownLint);
+    let mut stale = map.stale_expects(&ran);
     suppress::apply(&mut map, &mut stale);
     suppress::apply(&mut map, &mut unknown);
     diagnostics.extend(stale);
     diagnostics.extend(unknown);
 }
 
-fn run_all(config: &config::Config, fast_only: bool) -> (Vec<Diagnostic>, Option<FastModel>) {
+/// The default run's lint pipeline. The returned [`LintId`] set records which
+/// lints actually ran (post-`--fast-only`, post-`allow`) — the staleness
+/// domain for `expect` directives.
+fn run_all(
+    config: &config::Config,
+    fast_only: bool,
+) -> (Vec<Diagnostic>, Option<FastModel>, HashSet<LintId>) {
     let mut registry = lints::registry(config);
     // `--fast-only` runs only the build-free lints: a semantic lint is
     // *skipped* — not invoked without its model (its `check` rightly demands
@@ -338,15 +357,16 @@ fn run_all(config: &config::Config, fast_only: bool) -> (Vec<Diagnostic>, Option
         fast: fast.as_ref(),
         semantic: semantic.as_ref(),
     };
+    let ran: HashSet<LintId> = registry.iter().map(|l| l.id()).collect();
     let diagnostics: Vec<Diagnostic> = registry.iter().flat_map(|l| l.check(&cx)).collect();
-    (diagnostics, fast)
+    (diagnostics, fast, ran)
 }
 
 fn run_single_check(
     rule: CheckRule,
     fast_only: bool,
     config: Option<&config::Config>,
-) -> (Vec<Diagnostic>, Option<FastModel>) {
+) -> (Vec<Diagnostic>, Option<FastModel>, HashSet<LintId>) {
     let lint = rule.into_lint();
     let requirements = lint.requirements();
     // A semantic lint cannot run without its model; under `--fast-only` that
@@ -370,7 +390,8 @@ fn run_single_check(
         fast: fast.as_ref(),
         semantic: semantic.as_ref(),
     };
-    (lint.check(&cx), fast)
+    let ran = HashSet::from([lint.id()]);
+    (lint.check(&cx), fast, ran)
 }
 
 /// Build the full (rustc-backed) tier: vendored extractor → one embedded

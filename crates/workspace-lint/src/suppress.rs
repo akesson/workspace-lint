@@ -5,6 +5,8 @@
 //! suppressed? And which `expect` directives went unmatched (used by the
 //! `stale-expect` meta-lint in step 4 / task #13)?
 
+use std::collections::HashSet;
+
 use crate::diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
 use crate::directives::{Directive, DirectiveKind};
 use crate::lints::LintId;
@@ -17,8 +19,6 @@ pub(crate) const STALE_EXPECT_LINT: &str = LintId::StaleExpect.id();
 /// Anchored at the directive's own line; deduped by origin so a Cargo.toml
 /// comment that fans out to multiple anchors yields a single diagnostic.
 pub(crate) fn unknown_lint_diagnostics(directives: &[Directive]) -> Vec<Diagnostic> {
-    use std::collections::HashSet;
-
     let known: Vec<&str> = LintId::ALL.iter().map(|l| l.short()).collect();
     let mut seen: HashSet<(std::path::PathBuf, u32, String)> = HashSet::new();
     let mut out = Vec::new();
@@ -59,8 +59,11 @@ pub(crate) struct SuppressionMap {
 struct Entry {
     directive: Directive,
     /// Set to `true` the first time a diagnostic matches an `expect`
-    /// directive. After the run, any `expect` with `matched == false`
-    /// becomes a `stale-expect` diagnostic.
+    /// directive. After the run, any `expect` with `matched == false` —
+    /// *and whose lint actually ran this invocation* — becomes a
+    /// `stale-expect` diagnostic. A lint skipped by `--fast-only`, disabled
+    /// via `allow`, or outside a `check <lint>` run produced nothing to
+    /// match, so its expects carry no staleness signal.
     matched: bool,
 }
 
@@ -112,7 +115,11 @@ impl SuppressionMap {
     /// safe — the dedup keeps working as long as the fan-out reuses the
     /// same `origin`. See `directives.rs::cargo_toml_fan_out` for the
     /// Line + Crate emitter that's the original motivating case.
-    pub(crate) fn stale_expects(&self) -> Vec<Diagnostic> {
+    ///
+    /// `ran` is the set of lints that actually executed this invocation
+    /// (registry membership plus the pipeline meta-lints); expects for any
+    /// other lint are exempt from staleness — see [`Entry::matched`].
+    pub(crate) fn stale_expects(&self, ran: &HashSet<LintId>) -> Vec<Diagnostic> {
         use std::collections::HashMap;
 
         // origin_key -> (any_matched, representative_entry)
@@ -126,7 +133,14 @@ impl SuppressionMap {
             // doesn't exist), so it would always look "stale" — but it's
             // already reported by `unknown-lint`. Skip it here to avoid a
             // double report (stale-expect + unknown-lint) for one typo.
-            if LintId::from_short(&entry.directive.lint).is_none() {
+            let Some(lint) = LintId::from_short(&entry.directive.lint) else {
+                continue;
+            };
+            // A lint that didn't run this invocation (`--fast-only`, an
+            // `allow` level, or a `check <other-lint>` run) produced nothing
+            // an expect could match — "unmatched" carries no staleness
+            // signal, so judging it would misreport every such directive.
+            if !ran.contains(&lint) {
                 continue;
             }
             let key = (
@@ -219,6 +233,12 @@ mod tests {
     use crate::diagnostic::builder::{at_crate, at_file, at_line as build_at_line, at_workspace};
     use crate::directives::{DirectiveKind, DirectiveOrigin};
     use std::path::PathBuf;
+
+    /// The "every lint ran" set — the staleness domain of a full default run,
+    /// which is what most of these tests model.
+    fn all_ran() -> HashSet<LintId> {
+        LintId::ALL.iter().copied().collect()
+    }
 
     fn allow(lint: &str, anchor: SilenceAnchor) -> Directive {
         Directive {
@@ -497,7 +517,7 @@ mod tests {
         )]);
         let d = at_file("workspace-lint::file-size", "x", "src/lib.rs").build();
         assert!(map.is_suppressed(&d));
-        assert!(map.stale_expects().is_empty());
+        assert!(map.stale_expects(&all_ran()).is_empty());
     }
 
     #[test]
@@ -511,11 +531,33 @@ mod tests {
             1,
         )]);
         // No matching diagnostic was ever passed through `is_suppressed`.
-        let stales = map.stale_expects();
+        let stales = map.stale_expects(&all_ran());
         assert_eq!(stales.len(), 1);
         assert_eq!(stales[0].lint, STALE_EXPECT_LINT);
         assert!(stales[0].message.contains("file-size"));
         assert_eq!(stales[0].primary.as_ref().unwrap().line_start, 1);
+    }
+
+    #[test]
+    fn unmatched_expect_for_lint_that_did_not_run_is_not_stale() {
+        // The lint never ran this invocation (`--fast-only`, an `allow`
+        // level, or a `check <other-lint>` run) — "unmatched" carries no
+        // staleness signal, so the expect must not be reported.
+        let map = SuppressionMap::from_directives(vec![expect(
+            "unused-deps",
+            SilenceAnchor::File {
+                file: PathBuf::from("src/lib.rs"),
+            },
+            "src/lib.rs",
+            1,
+        )]);
+        let ran = HashSet::from([LintId::FileSize]);
+        assert!(
+            map.stale_expects(&ran).is_empty(),
+            "expect for a lint that did not run must not be judged stale"
+        );
+        // Same map, lint in the ran set: the staleness verdict returns.
+        assert_eq!(map.stale_expects(&all_ran()).len(), 1);
     }
 
     #[test]
@@ -531,7 +573,7 @@ mod tests {
             1,
         )]);
         assert!(
-            map.stale_expects().is_empty(),
+            map.stale_expects(&all_ran()).is_empty(),
             "unknown-lint-named expect should not double-report as stale-expect"
         );
     }
@@ -545,7 +587,7 @@ mod tests {
             },
         )]);
         // `allow` never goes stale; only `expect` does.
-        assert!(map.stale_expects().is_empty());
+        assert!(map.stale_expects(&all_ran()).is_empty());
     }
 
     // --- `apply` integration ---

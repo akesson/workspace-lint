@@ -1,0 +1,4 @@
+[lints]
+default = "allow"
+unused-deps = "warn"
+stale-expect = "deny"
