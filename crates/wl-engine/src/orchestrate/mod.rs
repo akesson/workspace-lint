@@ -162,6 +162,37 @@ pub enum EngineError {
     },
 }
 
+impl EngineError {
+    /// The command that repairs this failure, as an argv — the same command
+    /// the `Display` text tells the user to paste (a lockstep test in
+    /// `toolchain.rs` keeps the two from drifting). `None` for failures with
+    /// no safe auto-remediation: installing rustup itself is a shell pipe
+    /// from the network, and everything past preflight (compile failures,
+    /// IO) is not a provisioning problem.
+    pub fn remediation(&self) -> Option<Vec<String>> {
+        let argv: Vec<&str> = match self {
+            Self::ToolchainMissing { pin } => vec![
+                "rustup",
+                "toolchain",
+                "install",
+                pin,
+                "--profile",
+                "minimal",
+                "--component",
+                "rustc-dev",
+                "--component",
+                "llvm-tools-preview",
+            ],
+            Self::ComponentMissing { pin, component } => {
+                vec!["rustup", "component", "add", component, "--toolchain", pin]
+            }
+            Self::DylintLinkMissing => vec!["cargo", "install", "dylint-link", "--locked"],
+            _ => return None,
+        };
+        Some(argv.into_iter().map(String::from).collect())
+    }
+}
+
 /// The Phase-1 engine. Construct with an [`ExtractorSource`] (vendored at user
 /// sites, `Repo` in this repository's own tests) and call [`Engine::extract`].
 pub struct Engine {

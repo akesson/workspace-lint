@@ -167,7 +167,9 @@ Two phases, forced by rustc's per-crate compilation model:
   derivation testable on stable.
 
 Failure semantics: toolchain preflight errors carry paste-able remediation
-(snapshotted in `messages.rs`); a compile failure names the config and
+(snapshotted in `messages.rs`; `EngineError::remediation` exposes the same
+command as an argv — lockstep-tested — and on an interactive terminal the
+CLI offers to run it, `provision.rs`); a compile failure names the config and
 replays cargo's diagnostics; the tier never silently degrades — the explicit
 degradation is `--fast-only`.
 
