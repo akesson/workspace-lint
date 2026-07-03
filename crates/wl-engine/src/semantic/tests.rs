@@ -26,6 +26,7 @@ fn item(path: &[&str], key: &str, kind: &str, parent: Option<&str>) -> ItemFact 
         kind: kind.into(),
         parent_kind: parent.map(String::from),
         trait_item: None,
+        self_type: None,
         visibility: Visibility::Public,
         span: span(),
         vis_span: None,
@@ -450,6 +451,145 @@ fn external_reachability_walks_module_visibility() {
     )]);
     let asm = m.primary();
     let def = |k: &str| asm.defs.get(k).unwrap();
-    assert!(asm.is_externally_reachable(def("K_R")));
-    assert!(!asm.is_externally_reachable(def("K_U")));
+    assert!(asm.is_externally_reachable("K_R", def("K_R")));
+    assert!(!asm.is_externally_reachable("K_U", def("K_U")));
+}
+
+/// (PR 10) The per-candidate classification the ported unused-pub lint
+/// consumes: cross-vs-intra-vs-unused mirrors the syn `Usage` vocabulary —
+/// a foreign-crate use-site wins over an intra one, intra over none.
+#[test]
+fn pub_candidates_split_cross_intra_unused() {
+    let alpha = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "cross_used"], "K_X", "fn", Some("mod")),
+            item(&["alpha", "intra_used"], "K_I", "fn", Some("mod")),
+            item(&["alpha", "dead"], "K_D", "fn", Some("mod")),
+        ],
+        vec![edge(
+            &["alpha", "caller"],
+            &["alpha", "intra_used"],
+            "K_I",
+            false,
+        )],
+    );
+    let beta = frag(
+        "beta",
+        vec![],
+        vec![edge(
+            &["beta", "main"],
+            &["alpha", "cross_used"],
+            "K_X",
+            false,
+        )],
+    );
+    let m = model(vec![("default", vec![alpha, beta])]);
+    let usage_of = |id: &str| {
+        m.pub_candidates()
+            .into_iter()
+            .find(|c| c.id == id)
+            .map(|c| c.usage)
+            .unwrap()
+    };
+    assert_eq!(usage_of("alpha::cross_used"), PubUsage::CrossCrate);
+    assert_eq!(usage_of("alpha::intra_used"), PubUsage::IntraCrate);
+    assert_eq!(usage_of("alpha::dead"), PubUsage::Unused);
+}
+
+/// (PR 10) The union is per-candidate too: an item reached only under the
+/// `--tests` config reads IntraCrate (not Unused), and a cross-crate use in
+/// ANY config wins over intra usage in the primary.
+#[test]
+fn pub_candidates_union_across_configs() {
+    let alpha_default = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "test_only"], "K_T", "fn", Some("mod")),
+            item(&["alpha", "intra_then_cross"], "K_C", "fn", Some("mod")),
+        ],
+        vec![edge(
+            &["alpha", "caller"],
+            &["alpha", "intra_then_cross"],
+            "K_C",
+            false,
+        )],
+    );
+    // Under --tests the same defs carry different keys (StableCrateId moves)
+    // but the same identity path; the unit-test module calls test_only, and
+    // an integration-test crate (a NON-member) calls intra_then_cross.
+    let alpha_tests = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "test_only"], "K_T2", "fn", Some("mod")),
+            item(&["alpha", "intra_then_cross"], "K_C2", "fn", Some("mod")),
+        ],
+        vec![edge(
+            &["alpha", "tests", "calls_it"],
+            &["alpha", "test_only"],
+            "K_T2",
+            false,
+        )],
+    );
+    let it_crate = frag(
+        "it_case",
+        vec![],
+        vec![edge(
+            &["it_case", "t"],
+            &["alpha", "intra_then_cross"],
+            "K_C2",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default]),
+        ("--tests", vec![alpha_tests, it_crate]),
+    ]);
+    let usage_of = |id: &str| {
+        m.pub_candidates()
+            .into_iter()
+            .find(|c| c.id == id)
+            .map(|c| c.usage)
+            .unwrap()
+    };
+    assert_eq!(usage_of("alpha::test_only"), PubUsage::IntraCrate);
+    assert_eq!(usage_of("alpha::intra_then_cross"), PubUsage::CrossCrate);
+    // The integration-test crate is not a primary member: none of its defs
+    // may become candidates.
+    assert!(m.pub_candidates().iter().all(|c| c.krate == "alpha"));
+}
+
+/// (PR 10) The must-stay-pub guards surface per candidate: a `use`/`pub use`
+/// target is flagged `reexport_target` (usage still Unused — imports are
+/// discounted), and an export-shaped attr classifies DispatchReached (the
+/// `ffi_no_mangle_export` fix).
+#[test]
+fn pub_candidates_guards_and_export_roots() {
+    let mut ffi = item(&["alpha", "ffi_export"], "K_F", "fn", Some("mod"));
+    ffi.attrs = vec!["no_mangle".into()];
+    let mut vised = item(&["alpha", "reexported"], "K_R", "fn", Some("mod"));
+    vised.vis_span = Some(Span {
+        file: "src/lib.rs".into(),
+        lo: 0,
+        hi: 3,
+        line: 1,
+        from_expansion: false,
+    });
+    let alpha = frag("alpha", vec![ffi, vised], vec![]);
+    let beta = frag(
+        "beta",
+        vec![],
+        vec![edge(&["beta"], &["alpha", "reexported"], "K_R", true)],
+    );
+    let m = model(vec![("default", vec![alpha, beta])]);
+    let cand = |id: &str| m.pub_candidates().into_iter().find(|c| c.id == id).unwrap();
+    let ffi = cand("alpha::ffi_export");
+    assert_eq!(ffi.usage, PubUsage::DispatchReached);
+    let re = cand("alpha::reexported");
+    assert!(re.reexport_target);
+    assert_eq!(re.usage, PubUsage::Unused);
+    // Spans ride along for the lint's anchor + tighten fix.
+    assert_eq!(re.vis_span.as_ref().map(|s| (s.lo, s.hi)), Some((0, 3)));
+    assert_eq!(re.name, "reexported");
+    assert_eq!(re.kind, "fn");
 }

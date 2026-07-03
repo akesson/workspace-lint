@@ -45,7 +45,7 @@ impl Category {
     /// Is this a def the unused-pub verdict judges? Module-level and
     /// inherent-impl by direct use-site, trait-impl by dispatch expansion.
     /// Only `Other` (trait *declaration* items, fn-local defs) stays out.
-    fn is_candidate(self) -> bool {
+    pub(super) fn is_candidate(self) -> bool {
         matches!(
             self,
             Category::ModuleLevel | Category::InherentImpl | Category::TraitImpl
@@ -96,6 +96,16 @@ pub struct DefInfo {
     /// Carries an export-shaped attribute (`ItemFact::attrs` non-empty) — a
     /// linker-visible root; see [`Reach::ExportRoot`].
     pub export_root: bool,
+    /// For an inherent-impl item, the stable key of the impl's nominal self
+    /// type — the external-reachability handle (see [`wl_ir::ItemFact::self_type`]).
+    pub self_type: Option<String>,
+    /// The whole-definition span (on-disk byte offsets — see [`wl_ir::Span`]).
+    /// `None` exactly when `synthetic`.
+    pub span: Option<wl_ir::Span>,
+    /// The visibility-token span — the `--fix` tighten write surface. `None`
+    /// when there is no independently editable token (private, trait-forced,
+    /// macro-generated); see [`wl_ir::ItemFact::vis_span`].
+    pub vis_span: Option<wl_ir::Span>,
 }
 
 /// One candidate def as the cfg-matrix union sees it: reduced to its
@@ -112,8 +122,9 @@ pub(crate) struct CandReach {
 /// The kinds the unused-pub verdict judges. Widened from the spike's
 /// `fn|struct|enum|trait|type` narrowing (migration PR 4): const/static/macro/
 /// union pub items are candidates too — the per-lint `kinds` config filters at
-/// the lint layer, not here.
-const CANDIDATE_KINDS: &[&str] = &[
+/// the lint layer, not here. Exactly the syn model's `ItemKind::is_definition`
+/// set (`mod` deliberately absent — a container, not a named definition).
+pub(super) const CANDIDATE_KINDS: &[&str] = &[
     "fn", "struct", "enum", "trait", "type", "const", "static", "macro", "union",
 ];
 
@@ -144,6 +155,18 @@ pub struct Assembly {
     /// Keys named in some PUB item's signature (`in_signature` edges whose
     /// `from` def is public) — the `exposed_in_public_signature` substrate.
     signature_exposed: BTreeSet<String>,
+    /// Keys that are the target of a `use`/`pub use` declaration. Tightening
+    /// or deleting such a def can break the re-export (E0364/E0365), so the
+    /// unused-pub port suppresses these — the driver-backed analog of the syn
+    /// re-export-index `is_target` guard. The IR doesn't distinguish `use`
+    /// from `pub use`, so this over-approximates toward suppression (false
+    /// negatives, never false positives).
+    import_targets: BTreeSet<String>,
+    /// Import-target key → the module paths whose `use` declarations name it
+    /// (the edge's `from` — `visit_use` attributes a use-path to its enclosing
+    /// module). The re-export leg of external reachability: a def `use`d in an
+    /// externally-reachable module is nameable from outside through it.
+    import_froms: BTreeMap<String, Vec<String>>,
     /// `mod` def path (joined) → is-public, for the pub-module-hop
     /// reachability judgement.
     module_vis: BTreeMap<String, bool>,
@@ -179,6 +202,9 @@ impl Assembly {
                         trait_item: it.trait_item.clone(),
                         synthetic: it.span.is_none(),
                         export_root: !it.attrs.is_empty(),
+                        self_type: it.self_type.clone(),
+                        span: it.span.clone(),
+                        vis_span: it.vis_span.clone(),
                     },
                 );
             }
@@ -198,6 +224,8 @@ impl Assembly {
         let mut referenced = BTreeSet::new();
         let mut import_edges = 0usize;
         let mut signature_exposed = BTreeSet::new();
+        let mut import_targets = BTreeSet::new();
+        let mut import_froms: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for frag in &fragments {
             for e in &frag.references {
                 let Some(def) = defs.get(&e.to_key) else {
@@ -220,6 +248,11 @@ impl Assembly {
                 }
                 if e.import {
                     import_edges += 1;
+                    import_targets.insert(e.to_key.clone());
+                    import_froms
+                        .entry(e.to_key.clone())
+                        .or_default()
+                        .push(e.from.join("::"));
                     continue; // re-export/import: not a use-site for unused-pub
                 }
                 *in_degree.entry(e.to_key.clone()).or_insert(0) += 1;
@@ -240,6 +273,8 @@ impl Assembly {
             import_edges,
             impls_of,
             signature_exposed,
+            import_targets,
+            import_froms,
             module_vis,
         }
     }
@@ -281,20 +316,62 @@ impl Assembly {
         self.signature_exposed.contains(key)
     }
 
-    /// Pub-module-hop external reachability: the def is `pub` and every
-    /// ancestor module on its definition path is `pub` too, so an external
-    /// consumer can name it. Judged from the emitted `mod` ItemFacts (path →
-    /// visibility); path segments without a matching `mod` fact — impl-block
-    /// renderings, trait names — are treated as transparent (they don't gate
-    /// module reachability). A def reachable only through a `pub use` chain
-    /// from a private module reads NOT reachable here — the re-export index
-    /// refinement belongs to the unused-pub port if fixtures demand it.
-    pub fn is_externally_reachable(&self, def: &DefInfo) -> bool {
+    /// Is `key`'s def the target of a `use`/`pub use` declaration? Tightening
+    /// or deleting it can break the re-export (E0364/E0365) — the unused-pub
+    /// re-export guard.
+    pub fn is_import_target(&self, key: &str) -> bool {
+        self.import_targets.contains(key)
+    }
+
+    /// `(workspace-wide, intra-crate-only)` real-use in-degrees of `key`.
+    /// A cross-crate use-site exists iff the first exceeds the second.
+    pub(super) fn degrees(&self, key: &str) -> (usize, usize) {
+        (
+            self.in_degree.get(key).copied().unwrap_or(0),
+            self.intra_degree.get(key).copied().unwrap_or(0),
+        )
+    }
+
+    /// External reachability: could an out-of-workspace consumer name this
+    /// def? Three legs, all derived from emitted facts:
+    ///
+    /// 1. **Pub-module-hop**: the def is `pub` and every ancestor module on
+    ///    its definition path is `pub` too. Judged from the `mod` ItemFacts
+    ///    (path → visibility); segments without a matching `mod` fact —
+    ///    impl-block renderings, trait names — are transparent.
+    /// 2. **Re-export**: a `use` of the def sits in a module that is itself
+    ///    module-hop reachable (`pub use` at the crate root being the common
+    ///    case). The IR can't tell `pub use` from `use`, so this
+    ///    over-approximates toward exemption — the safe direction for a
+    ///    delete-suggesting lint. Chains through modules that are only
+    ///    re-export-reachable themselves are not followed (rare; also
+    ///    FN-safe).
+    /// 3. **Inherent-impl items** flow through their self type
+    ///    (`ItemFact::self_type` — the emitted key link, exact even for impl
+    ///    blocks in a different module than the type): `Type::method` is
+    ///    nameable iff `Type` is.
+    pub fn is_externally_reachable(&self, key: &str, def: &DefInfo) -> bool {
         if !def.public {
             return false;
         }
-        let segments: Vec<&str> = def.path.split("::").collect();
-        // Ancestors: every proper prefix longer than the crate root.
+        if def.category == Category::InherentImpl {
+            return def.self_type.as_deref().is_some_and(|k| {
+                self.defs
+                    .get(k)
+                    .is_some_and(|type_def| self.is_externally_reachable(k, type_def))
+            });
+        }
+        self.module_hop_reachable(&def.path)
+            || self
+                .import_froms
+                .get(key)
+                .is_some_and(|froms| froms.iter().any(|m| self.module_hop_reachable(m)))
+    }
+
+    /// Every ancestor module on `path` (proper prefixes past the crate root)
+    /// is `pub`. The crate root itself is trivially reachable.
+    fn module_hop_reachable(&self, path: &str) -> bool {
+        let segments: Vec<&str> = path.split("::").collect();
         for end in 2..segments.len() {
             let prefix = segments[..end].join("::");
             if let Some(vis) = self.module_vis.get(prefix.as_str())
@@ -302,6 +379,14 @@ impl Assembly {
             {
                 return false;
             }
+        }
+        // A module path names the module itself — its own visibility gates
+        // the hop too (a def path's last segment is the def, not a module,
+        // and module_vis simply has no entry for it).
+        if let Some(vis) = self.module_vis.get(path)
+            && !vis
+        {
+            return false;
         }
         true
     }

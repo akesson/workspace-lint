@@ -109,6 +109,7 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
             kind: kind.to_string(),
             parent_kind: parent_def_kind(tcx, def_id),
             trait_item: trait_item_key(tcx, def_id),
+            self_type: self_type_key(tcx, def_id),
             visibility,
             span: span_to_ir(sm, tcx.def_span(def_id)),
             vis_span: vis_span_to_ir(tcx, sm, local_id),
@@ -359,6 +360,21 @@ fn def_kind_str(k: DefKind) -> String {
 fn trait_item_key(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
     let ti = tcx.opt_associated_item(def_id)?.trait_item_def_id()?;
     Some(def_key(tcx, ti))
+}
+
+/// (Kept verbatim in sync with `extractor/src/lib.rs::self_type_key`.)
+fn self_type_key(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
+    let assoc = tcx.opt_associated_item(def_id)?;
+    if assoc.trait_item_def_id().is_some() {
+        return None; // trait-impl item: dispatch-judged via `trait_item`
+    }
+    let parent = tcx.opt_parent(def_id)?;
+    if !matches!(tcx.def_kind(parent), DefKind::Impl { .. }) {
+        return None; // trait-declaration assoc item
+    }
+    let self_ty = tcx.type_of(parent).skip_binder();
+    let adt = self_ty.ty_adt_def()?;
+    Some(def_key(tcx, adt.did()))
 }
 
 /// The parent's `DefKind` in a small closed vocabulary — the principled signal

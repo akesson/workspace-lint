@@ -1,5 +1,10 @@
+use super::legacy::{
+    DeleteOutcome, Usage, apply_structural_fix, build_glob_set, delete_suggestion,
+    pick_deletion_fix,
+};
 use super::*;
 use crate::config::GlobPattern;
+use syn_workspace::ItemKind;
 
 #[test]
 fn kind_filter_maps_to_item_kind() {

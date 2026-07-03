@@ -30,7 +30,6 @@ const SECTIONS: &[&str] = &[
     "unused-pub",
     "architecture",
     "expand",
-    "macros",
     "engine",
 ];
 
@@ -81,7 +80,6 @@ fn section_schema(section: &str) -> Option<Schema> {
             ],
             None,
         ),
-        "macros" => s(&["external"], None),
         "engine" => s(&["configs"], None),
         _ => None,
     }
@@ -99,6 +97,7 @@ pub(super) fn audit(raw: &str, config_path: &str, config: &Config) -> Vec<Diagno
             match key.as_str() {
                 "lints" => audit_lints(val, "[lints]", config_path, &mut out),
                 "crates" => audit_crates_tree(val, config_path, &mut out),
+                "macros" => out.push(macros_deprecated(config_path)),
                 section if section_schema(section).is_some() => {
                     audit_section(section, val, config_path, &mut out);
                 }
@@ -291,20 +290,24 @@ fn audit_section(section: &str, val: &toml::Value, config_path: &str, out: &mut 
             audit_table_fields(rule, rule_fields, &ctx, config_path, out);
         }
     }
-    // `[[macros.external]]` entries.
-    if section == "macros"
-        && let Some(toml::Value::Array(entries)) = table.get("external")
-    {
-        for entry in entries {
-            audit_table_fields(
-                entry,
-                &["path", "expansion-uses"],
-                "[[macros.external]]",
-                config_path,
-                out,
-            );
-        }
-    }
+}
+
+/// `[macros]` (the `[[macros.external]]` expansion-uses table) fed the syn
+/// resolver's blind spot for macro-generated references. The rustc engine
+/// sees expansions natively, so the whole surface is obsolete — a loud
+/// deprecation rather than silence, because a config carrying the section
+/// almost certainly still believes it does something.
+fn macros_deprecated(config_path: &str) -> Diagnostic {
+    at_file(
+        LintId::Config.id(),
+        "`[macros]` is obsolete: the engine sees macro expansions natively",
+        config_path,
+    )
+    .help(
+        "delete the `[macros]` section; `expansion_uses!` annotations and \
+         `# workspace-lint: expansion-uses(...)` comments are no longer read",
+    )
+    .build()
 }
 
 /// A policy lint leveled-on in `[lints]` but missing its config table will
@@ -427,10 +430,6 @@ auto-delete = false
 assume-all-public = false
 publish-hint-threshold = 3
 
-[[macros.external]]
-path = "tokio::main"
-expansion-uses = ["tokio::runtime::Runtime"]
-
 [engine]
 configs = ["default", "--tests"]
 
@@ -445,6 +444,15 @@ ignore = ["foo"]
 exclude-crates = ["x"]
 allowlist = ["Y"]
 "#;
+
+    #[test]
+    fn macros_section_is_deprecated() {
+        let raw = "[[macros.external]]\npath = \"tokio::main\"\n";
+        let config: Config = toml::from_str(raw).expect("config parses");
+        let findings = audit(raw, ".workspace-lint.toml", &config);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].message.contains("`[macros]` is obsolete"));
+    }
 
     #[test]
     fn audit_schema_covers_every_config_key() {

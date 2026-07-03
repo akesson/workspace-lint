@@ -149,6 +149,17 @@ pub struct ItemFact {
     /// dispatch-reachability.
     #[serde(default)]
     pub trait_item: Option<String>,
+    /// For an **inherent-impl** associated item, the stable `key` of the
+    /// impl's nominal self type — the external-reachability handle: the item
+    /// is nameable from outside exactly when its self type is (`Type::method`
+    /// hops through `Type`, wherever the `impl` block lives; `def_path_str`
+    /// renders a remote impl at the *impl's* module, so a path-prefix lookup
+    /// cannot recover the type). `None` for trait-impl items (dispatch-judged
+    /// via [`Self::trait_item`]), non-assoc defs, and exotic self types
+    /// (`&T`, tuples, primitives — no single nominal def to point at; treated
+    /// as not externally reachable, the flag-more direction).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_type: Option<String>,
     pub visibility: Visibility,
     /// Byte span of the whole definition in the original source, or `None` for
     /// synthetic defs (the `--test` harness `main`, etc.). For a macro-generated
