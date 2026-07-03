@@ -5,6 +5,7 @@ mod directives;
 mod expand;
 mod fix;
 mod git;
+mod init;
 mod lints;
 mod messages;
 mod provision;
@@ -86,6 +87,9 @@ fn main() {
                 fix::run(&diagnostics);
             }
             report_and_exit(diagnostics, format);
+        }
+        Some(Commands::Init { force }) => {
+            init::run(force);
         }
         Some(Commands::Done) => {
             // `done` only touches freshness targets; config diagnostics aren't

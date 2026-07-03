@@ -356,6 +356,132 @@ fn expand_subcommand_is_clean_tree_gated() {
     );
 }
 
+// --- init: scaffold a default config, but only at a workspace root ---
+
+/// A one-member virtual workspace with NO `.workspace-lint.toml` — the starting
+/// state `init` expects. Given a member so the virtual manifest isn't memberless
+/// (cargo errors on a memberless virtual root, which `init` would misreport).
+fn init_demo_workspace(tmp: &Path) {
+    TestWorkspace::new()
+        .lib_member("crates/demo", "demo", "0.0.1", "pub fn a() {}\n")
+        .write(tmp);
+}
+
+#[test]
+fn init_creates_config_at_workspace_root() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    init_demo_workspace(tmp.path());
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("created .workspace-lint.toml"));
+    let written = std::fs::read_to_string(tmp.path().join(".workspace-lint.toml"))
+        .expect("init wrote the config");
+    assert!(
+        written.contains("centralized-deps = \"deny\""),
+        "the scaffolded config should escalate centralized-deps; got:\n{written}"
+    );
+}
+
+/// The scaffolded config must be immediately usable: a plain run parses and
+/// audits it cleanly. `--fast-only` skips the semantic tier so this needs no
+/// nightly toolchain.
+#[test]
+fn init_output_is_a_usable_config() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    init_demo_workspace(tmp.path());
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("--fast-only")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("all passed"));
+}
+
+#[test]
+fn init_refuses_to_clobber_without_force() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    init_demo_workspace(tmp.path());
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .success();
+    // Second run without --force is refused, leaving the file intact.
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+    // --force overwrites.
+    workspace_lint()
+        .current_dir(tmp.path())
+        .args(["init", "--force"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("created .workspace-lint.toml"));
+}
+
+#[test]
+fn init_refuses_inside_a_member() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    init_demo_workspace(tmp.path());
+    workspace_lint()
+        .current_dir(tmp.path().join("crates/demo"))
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must run at the workspace root"));
+    assert!(
+        !tmp.path().join("crates/demo/.workspace-lint.toml").exists(),
+        "init must not write a config inside a member"
+    );
+}
+
+#[test]
+fn init_refuses_a_lone_package() {
+    // A single `[package]` with no `[workspace]` table — cargo's *implicit*
+    // workspace, which `init` must reject. Hand-written (TestWorkspace always
+    // emits a `[workspace]` root).
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[package]\nname = \"solo\"\nversion = \"0.0.1\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no [workspace] table"));
+    assert!(
+        !tmp.path().join(".workspace-lint.toml").exists(),
+        "init must not write a config for a lone package"
+    );
+}
+
+#[test]
+fn init_refuses_outside_a_cargo_project() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    workspace_lint()
+        .current_dir(tmp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no loadable Cargo.toml"));
+}
+
 // --- GIT_DIR leak hardening ---
 //
 // Git exports an absolute `GIT_DIR` to hook processes when the repository is
