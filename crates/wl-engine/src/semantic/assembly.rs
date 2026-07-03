@@ -77,6 +77,29 @@ pub enum Reach {
     Unreached,
 }
 
+/// One resolved reference out of a crate's primary-unit code — what
+/// [`Assembly::references_from`] returns and the `architecture` lint judges.
+/// `to_path` is canonical: the target's *definition* path for workspace defs
+/// (re-export chains resolved), the display path as-referenced otherwise.
+#[derive(Debug, Clone)]
+pub struct ResolvedRef {
+    /// Enclosing module of the use-site (crate-rooted definition path).
+    pub module: Vec<String>,
+    /// Canonical target path (see type docs).
+    pub to_path: Vec<String>,
+    /// The target's `DefKind` in the shared vocabulary (best-effort).
+    pub to_kind: String,
+    /// A `use`/`pub use` declaration, vs a code reference.
+    pub import: bool,
+    /// A glob import (`use m::*`) — judged as a representative child.
+    pub glob: bool,
+    /// Local binding name of a single-name import (`use a::B as C` ⇒ `C`).
+    pub alias: Option<String>,
+    /// Use-site span (file, on-disk byte range, 1-based line); `None` only
+    /// for dummy-span edge cases.
+    pub span: Option<wl_ir::Span>,
+}
+
 /// A def as the reverse index sees it — the owned copy keyed lookups return.
 #[derive(Debug)]
 pub struct DefInfo {
@@ -363,6 +386,67 @@ impl Assembly {
             self.in_degree.get(key).copied().unwrap_or(0),
             self.intra_degree.get(key).copied().unwrap_or(0),
         )
+    }
+
+    /// Every reference out of `krate`'s **primary-unit** fragments (lib, bin,
+    /// proc-macro — never `"test"`: integration tests legitimately reach
+    /// across layers), with canonical targets and module attribution — the
+    /// `architecture` lint's substrate.
+    ///
+    /// Lowered-signature edges are skipped: every surface-visible signature
+    /// type also flows through the HIR walk (which carries the use-site span
+    /// this query exists for); the lowered twin would only duplicate it at
+    /// alias granularity, spanless.
+    pub fn references_from(&self, krate: &str) -> Vec<ResolvedRef> {
+        let mut out = Vec::new();
+        for frag in &self.fragments {
+            if frag.crate_name != krate || frag.target_kind == "test" {
+                continue;
+            }
+            for e in &frag.references {
+                if e.in_signature {
+                    continue;
+                }
+                // Canonical target: the *definition* path when the target is
+                // a workspace def — rustc renders a consumer's view at the
+                // re-export path (visible-parent map), so this join is what
+                // sees through `pub use` chains, exactly like syn's
+                // `resolve_canonical`. Out-of-workspace targets keep their
+                // display path (rules may deny third-party crates by name).
+                let to_path = match self.defs.get(&e.to_key) {
+                    Some(def) => def.path.split("::").map(str::to_string).collect(),
+                    None => e.to.clone(),
+                };
+                out.push(ResolvedRef {
+                    module: self.enclosing_module(&e.from),
+                    to_path,
+                    to_kind: e.to_kind.clone(),
+                    import: e.import,
+                    glob: e.glob,
+                    alias: e.alias.clone(),
+                    span: e.span.clone(),
+                });
+            }
+        }
+        out
+    }
+
+    /// The nearest enclosing *module* of a `RefEdge::from` item path: the
+    /// longest prefix naming a known module. An import edge's `from` IS its
+    /// module (a `use`'s parent item is the module), so the full path is
+    /// tried first; a code edge's `from` is the item, whose trailing
+    /// segments (item name, impl-block renderings) never match a `mod` fact.
+    /// Falls back to the crate root.
+    fn enclosing_module(&self, from: &[String]) -> Vec<String> {
+        for end in (2..=from.len()).rev() {
+            if self
+                .module_vis
+                .contains_key(from[..end].join("::").as_str())
+            {
+                return from[..end].to_vec();
+            }
+        }
+        from.first().cloned().into_iter().collect()
     }
 
     /// External reachability: could an out-of-workspace consumer name this

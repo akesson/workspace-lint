@@ -12,7 +12,7 @@ mod meta;
 mod pub_usage;
 mod union;
 
-pub use assembly::{Assembly, Category, DefInfo, Reach};
+pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
 pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage};
@@ -112,6 +112,14 @@ impl SemanticModel {
     /// config's member crates; ordering is deterministic (by identity).
     pub fn pub_candidates(&self) -> Vec<PubCandidate> {
         pub_usage::compute(&self.configs)
+    }
+
+    /// Every reference out of `krate`'s primary-unit code under the
+    /// **primary config** (architecture rules govern production layering;
+    /// test cfg-variants and integration-test fragments are excluded), with
+    /// canonical targets and module attribution.
+    pub fn references_from(&self, krate: &str) -> Vec<ResolvedRef> {
+        self.primary().references_from(krate)
     }
 
     /// The unused-deps verdict (declared deps vs the reference graph).

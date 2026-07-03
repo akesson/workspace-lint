@@ -7,37 +7,47 @@
 //!
 //! For every `use` binding, every glob import (`use mod::*`), and every
 //! fully-qualified code reference (`other_crate::forbidden::Type::call()`) in
-//! every workspace module, the check resolves the referenced canonical path
-//! through Tier 2.5's re-export index, then for each rule whose `from` matches
-//! the importing crate, fires a diagnostic when the resolved canonical is in
-//! `deny` and not in `exceptions`. A glob import is tested as a representative
-//! child of its target module, so a `deny = ["mod::**"]` pattern catches
-//! `use mod::*` just as it catches `use mod::Item`. A fully-qualified reference
-//! is tested against its canonical and every prefix (so `mod::Type::method()`
-//! matches a `mod::Type` deny), and is reported once per `(target, rule)` per
-//! module — a violation already reported via its `use` binding is not repeated.
+//! every workspace module, the check resolves the referenced canonical path,
+//! then for each rule whose `from` matches the importing crate, fires a
+//! diagnostic when the resolved canonical is in `deny` and not in
+//! `exceptions`. A glob import is tested as a representative child of its
+//! target module, so a `deny = ["mod::**"]` pattern catches `use mod::*` just
+//! as it catches `use mod::Item`. A fully-qualified reference is tested
+//! against its canonical and every prefix (so `mod::Type::method()` matches a
+//! `mod::Type` deny), and is reported once per `(target, rule)` per module —
+//! a violation already reported via its `use` binding is not repeated.
+//! Architecture rules govern *production* layering: only each member's
+//! primary units (lib / proc-macro / bins) are judged — tests, examples, and
+//! benches legitimately reach across layers.
 //!
 //! Pattern grammar: `::` separates path segments; converted to `/` for
 //! globset matching. `*` matches one segment, `**` matches zero or more.
 //!
-//! ## Known scope limits
+//! Two backends behind one lint (transitional, `WL_SEMANTIC_BACKEND`):
 //!
-//! - **`pub(crate) use` re-export hops are invisible** — Tier 2.5 follows
-//!   only `pub use` edges.
-//! - **References inside macro bodies are not inspected** — only regular-code
-//!   ([`Origin::Code`]) references, matching the resolver's macro non-goals.
+//! - [`ir`] — the default: the rustc-extracted reference graph (the engine's
+//!   [`wl_engine::SemanticModel`]). Canonical paths come from joining each
+//!   reference to its target's *definition* — so every re-export chain
+//!   (`pub use` **and** `pub(crate) use`) resolves exactly, and references
+//!   inside macro expansions are judged (anchored at the invocation site) —
+//!   the two scope limits the syn resolver documented.
+//! - [`legacy`] — the pre-pivot syn-resolver implementation, kept verbatim
+//!   for diffing until the migration's deletion PR. Its known limits:
+//!   `pub(crate) use` re-export hops are invisible (Tier 2.5 follows only
+//!   `pub use` edges), and macro-body references are not inspected.
 
-use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use globset::{Glob, GlobMatcher};
-use syn_workspace::{Module, Origin, ResolvedPath, SourceSpan, Workspace};
 
 use crate::config::LintLevel;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::{at_crate, at_line};
-use crate::lints::{Lint, LintContext, LintId, Requirements};
+use crate::lints::{Lint, LintContext, LintId, Requirements, SemanticBackend, semantic_backend};
 
 pub mod config;
+mod ir;
+mod legacy;
 #[cfg(test)]
 mod tests;
 
@@ -59,198 +69,47 @@ impl Lint for Architecture {
     }
 
     fn requirements(&self) -> Requirements {
-        Requirements {
-            needs_workspace: true,
-            ..Requirements::default()
+        match semantic_backend() {
+            SemanticBackend::Rustc => Requirements {
+                needs_semantic: true,
+                // Member names (rule `from` globs match *package* names) and
+                // workspace-relative anchor paths.
+                needs_fast: true,
+                ..Requirements::default()
+            },
+            SemanticBackend::Syn => Requirements {
+                needs_workspace: true,
+                ..Requirements::default()
+            },
         }
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let workspace = cx
-            .workspace
-            .expect("architecture lint requires Workspace (Requirements::needs_workspace)");
-        check(&self.config, workspace)
-    }
-}
-
-pub(crate) fn check(config: &ArchitectureConfig, workspace: &Workspace) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    let compiled: Vec<CompiledRule> = config
-        .rules
-        .iter()
-        .filter_map(CompiledRule::compile)
-        .collect();
-    if compiled.is_empty() {
-        return diagnostics;
-    }
-
-    // Architecture rules govern production layering — apply to each member's
-    // primary unit (lib / proc-macro / main bin) only. Tests, examples,
-    // benches, and build scripts legitimately reach across layers and
-    // shouldn't enforce production constraints.
-    for (krate, target) in workspace.primary_units() {
-        let from_name = krate.name.as_str();
-        for module in target.root.walk() {
-            // Within a module, map a denied path's glob form → the set of rule
-            // indices that have already reported it: a violation surfaced via a
-            // `use` binding (or glob) is recorded here so the fully-qualified-
-            // reference pass below doesn't repeat it, and so N call sites of the
-            // same denied path collapse to one diagnostic. A map (not a set of
-            // `(idx, String)`) lets the code-reference pass probe by borrowed
-            // key, with no per-rule string allocation.
-            let mut reported: HashMap<String, HashSet<usize>> = HashMap::new();
-
-            // Explicit `use` bindings — the canonical path is the imported item,
-            // which is both what we match against `deny` and what we display.
-            for binding in &module.use_bindings {
-                let canonical = workspace.resolve_canonical(&binding.canonical);
-                // Architecture rules govern *cross-crate* layering; a crate
-                // referencing its own modules is never a violation.
-                if is_own_crate_ref(&canonical, krate) {
-                    continue;
+        match semantic_backend() {
+            SemanticBackend::Rustc => {
+                let fast = cx
+                    .fast
+                    .expect("architecture (rustc backend) requires the FastModel");
+                // The runner skips the tier for a memberless workspace —
+                // mirror that instead of expecting a model that deliberately
+                // wasn't built.
+                if fast.members().is_empty() {
+                    return Vec::new();
                 }
-                for (rule_idx, rule) in compiled.iter().enumerate() {
-                    if !rule.matches_from(from_name) || !rule.denies(&canonical) {
-                        continue;
-                    }
-                    if rule.is_exception(&canonical) {
-                        continue;
-                    }
-                    // Record even when a duplicate `use` wouldn't re-fire (it
-                    // can't, source-unique) — the point is to claim this
-                    // (canonical, rule) so the code-reference pass skips it.
-                    reported
-                        .entry(path_to_glob_form(&canonical))
-                        .or_default()
-                        .insert(rule_idx);
-                    diagnostics.push(build_diagnostic(
-                        rule,
-                        workspace,
-                        krate,
-                        module,
-                        binding.source.as_ref(),
-                        RefKind::Use(Some(binding.local_name.as_str())),
-                        &canonical,
-                    ));
-                }
+                ir::check(
+                    &self.config,
+                    fast,
+                    cx.semantic
+                        .expect("architecture (rustc backend) requires the SemanticModel"),
+                )
             }
-            // Glob imports `use mod::*` — matched as a representative child of
-            // the target module so a `deny = ["mod::**"]` pattern (which targets
-            // children, not the bare module) catches the wildcard import. The
-            // module prefix is what we display.
-            for occ in module
-                .occurrences
-                .iter()
-                .filter(|o| o.origin == Origin::GlobUse)
-            {
-                let Some(prefix) = occ.path.as_ref() else {
-                    continue;
-                };
-                let canonical = workspace.resolve_canonical(prefix);
-                if is_own_crate_ref(&canonical, krate) {
-                    continue;
-                }
-                let child = ResolvedPath::new(
-                    canonical
-                        .segments()
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once("*".to_string())),
-                );
-                for (rule_idx, rule) in compiled.iter().enumerate() {
-                    if !rule.matches_from(from_name) || !rule.denies(&child) {
-                        continue;
-                    }
-                    if rule.is_exception(&child) {
-                        continue;
-                    }
-                    reported
-                        .entry(path_to_glob_form(&child))
-                        .or_default()
-                        .insert(rule_idx);
-                    diagnostics.push(build_diagnostic(
-                        rule,
-                        workspace,
-                        krate,
-                        module,
-                        occ.span.as_ref(),
-                        RefKind::Glob,
-                        &canonical,
-                    ));
-                }
-            }
-            // Fully-qualified code references (`other::forbidden::Type::new()`
-            // with no `use`). Only regular-code occurrences — macro-body refs are
-            // out of scope (resolver macro non-goals); bare-ident origins carry
-            // no resolved path. Each reference is tested against its canonical
-            // and every prefix, so `Type::method` matches a `Type` deny, and the
-            // shortest denied prefix is what we report — unless an exception lies
-            // at or below that denied prefix (so an exception on `a::b::Foo`
-            // still covers `a::b::Foo::method` under `a::b::**`, but a broader
-            // ancestor like `a::b` does *not* exempt, matching the `use` pass).
-            for occ in module
-                .occurrences
-                .iter()
-                .filter(|o| o.origin == Origin::Code)
-            {
-                let Some(path) = occ.path.as_ref() else {
-                    continue;
-                };
-                let canonical = workspace.resolve_canonical(path);
-                // Cross-crate only: a crate's reference to its own modules is
-                // never a layering violation (see `use`-binding pass above).
-                if is_own_crate_ref(&canonical, krate) {
-                    continue;
-                }
-                let prefixes = canonical_prefixes(&canonical);
-                // Each prefix's glob form, computed once and reused across rules
-                // (the dedup probe below would otherwise re-allocate per rule).
-                let prefix_keys: Vec<String> = prefixes.iter().map(path_to_glob_form).collect();
-                for (rule_idx, rule) in compiled.iter().enumerate() {
-                    if !rule.matches_from(from_name) {
-                        continue;
-                    }
-                    let Some(denied_idx) = prefixes.iter().position(|p| rule.denies(p)) else {
-                        continue;
-                    };
-                    // Only an exception *at or below* the denied prefix exempts
-                    // the reference — a shorter ancestor must not (that would
-                    // diverge from the `use` pass, which checks the item itself).
-                    if prefixes[denied_idx..].iter().any(|p| rule.is_exception(p)) {
-                        continue;
-                    }
-                    // Skip if a `use`/glob or an earlier reference already
-                    // reported *any* prefix of this reference for the rule. Done
-                    // per-prefix (not just the matched one) so a `use`-binding
-                    // recorded at item granularity still dedups a reference a
-                    // broad `**` rule would otherwise report at module
-                    // granularity — and so N call sites collapse to one.
-                    if prefix_keys.iter().any(|k| {
-                        reported
-                            .get(k)
-                            .is_some_and(|rules| rules.contains(&rule_idx))
-                    }) {
-                        continue;
-                    }
-                    reported
-                        .entry(prefix_keys[denied_idx].clone())
-                        .or_default()
-                        .insert(rule_idx);
-                    diagnostics.push(build_diagnostic(
-                        rule,
-                        workspace,
-                        krate,
-                        module,
-                        occ.span.as_ref(),
-                        RefKind::Code,
-                        &prefixes[denied_idx],
-                    ));
-                }
-            }
+            SemanticBackend::Syn => legacy::check(
+                &self.config,
+                cx.workspace
+                    .expect("architecture (syn backend) requires the Workspace"),
+            ),
         }
     }
-
-    diagnostics
 }
 
 /// How a denied path was referenced — governs the diagnostic's verb and display.
@@ -264,39 +123,26 @@ enum RefKind<'a> {
     Code,
 }
 
-/// A reference is "own-crate" when its resolved canonical is rooted in the crate
-/// doing the referencing. Architecture rules govern *cross-crate* layering, so a
-/// crate touching its own modules is never a violation — even under a wildcard
-/// rule like `from = ["*"]`, `deny = ["*::internal::**"]`. Both sides are already
-/// in code form (underscored), so the comparison is exact.
-fn is_own_crate_ref(canonical: &ResolvedPath, krate: &syn_workspace::Crate) -> bool {
-    canonical.crate_name() == Some(krate.code_name().as_str())
+/// Where a violation diagnostic anchors: the offending line when the
+/// reference has a recorded source, else the crate as a whole.
+enum Anchor {
+    Line(PathBuf, u32),
+    Crate(PathBuf),
 }
 
-/// The canonical plus every prefix of length ≥ 2, shortest first. A reference to
-/// `a::b::Type::method` is also a use of `a::b::Type` and `a::b`, so a rule
-/// targeting any of those should fire. Length-1 (bare crate) prefixes are
-/// skipped — crate-level layering isn't this lint's grain.
-fn canonical_prefixes(canonical: &ResolvedPath) -> Vec<ResolvedPath> {
-    let segs = canonical.segments();
-    (2..=segs.len())
-        .map(|n| ResolvedPath::new(segs[..n].iter().cloned()))
-        .collect()
-}
-
-/// Build a violation diagnostic. `kind` selects the wording and display:
-/// `Use`/`Glob` render as "import of" (a glob adds a trailing `::*`), `Code`
-/// renders as "reference to" a fully-qualified call site; `Use` also carries the
-/// local alias that drives the rename note. `span` anchors the diagnostic at the
-/// offending line when available.
+/// Build a violation diagnostic from backend-independent data — one renderer,
+/// so the two backends' messages are byte-identical by construction. `kind`
+/// selects the wording and display: `Use`/`Glob` render as "import of" (a
+/// glob adds a trailing `::*`), `Code` renders as "reference to" a
+/// fully-qualified call site; `Use` also carries the local alias that drives
+/// the rename note.
 fn build_diagnostic(
     rule: &CompiledRule,
-    workspace: &Workspace,
-    krate: &syn_workspace::Crate,
-    module: &Module,
-    span: Option<&SourceSpan>,
-    kind: RefKind,
-    resolved: &ResolvedPath,
+    from_name: &str,
+    kind: RefKind<'_>,
+    resolved: &[String],
+    anchor: Anchor,
+    module_display: &str,
 ) -> Diagnostic {
     let rule_name = rule.name.as_deref().unwrap_or("unnamed");
     // Only an explicit `use` binding has an alias worth a rename note.
@@ -306,34 +152,20 @@ fn build_diagnostic(
     };
     let imported = match kind {
         // Glob import: display the target module with the wildcard.
-        RefKind::Glob => format!("{}::*", resolved.display()),
-        RefKind::Use(_) | RefKind::Code => resolved.display().to_string(),
+        RefKind::Glob => format!("{}::*", resolved.join("::")),
+        RefKind::Use(_) | RefKind::Code => resolved.join("::"),
     };
     let verb = match kind {
         RefKind::Use(_) | RefKind::Glob => "import of",
         RefKind::Code => "reference to",
     };
-    let msg = format!(
-        "{verb} `{imported}` from `{}` violates architecture rule `{rule_name}`",
-        krate.name,
-    );
+    let msg =
+        format!("{verb} `{imported}` from `{from_name}` violates architecture rule `{rule_name}`");
 
-    // Prefer line-accurate anchoring at the offending `use` line (the
-    // span landed in syn-workspace 0.4.0). For references built outside the
-    // parser (test mocks, future synthesized sources) fall back to a
-    // workspace-relative crate anchor.
-    let mut builder = match span {
-        Some(span) => at_line(
-            LintId::Architecture.id(),
-            msg,
-            workspace.crate_relative_path(&span.file),
-            span.line,
-        ),
-        None => at_crate(
-            LintId::Architecture.id(),
-            msg,
-            workspace.crate_relative_path(&krate.manifest_dir),
-        ),
+    let spanless = matches!(anchor, Anchor::Crate(_));
+    let mut builder = match anchor {
+        Anchor::Line(file, line) => at_line(LintId::Architecture.id(), msg, file, line),
+        Anchor::Crate(dir) => at_crate(LintId::Architecture.id(), msg, dir),
     };
     // An explicit per-rule severity wins over a blanket `[lints] architecture`
     // override (marked via `level_explicit`); `None` leaves the default `warn`,
@@ -361,25 +193,16 @@ fn build_diagnostic(
     // case (where the local alias is non-obvious) and only as a
     // fallback when the reference has no recorded source. Glob imports
     // (`local_name == None`) have no alias, so the rename note never applies.
-    let local_differs = local_name.is_some_and(|ln| {
-        ln != resolved
-            .segments()
-            .last()
-            .map(String::as_str)
-            .unwrap_or_default()
-    });
-    if span.is_none() {
+    let local_differs =
+        local_name.is_some_and(|ln| ln != resolved.last().map(String::as_str).unwrap_or_default());
+    if spanless {
         if local_differs {
             builder = builder.note(format!(
-                "imported locally as `{}` in module `{}`",
+                "imported locally as `{}` in module `{module_display}`",
                 local_name.unwrap_or_default(),
-                module.canonical.display(),
             ));
         } else {
-            builder = builder.note(format!(
-                "imported in module `{}`",
-                module.canonical.display(),
-            ));
+            builder = builder.note(format!("imported in module `{module_display}`"));
         }
     } else if local_differs {
         builder = builder.note(format!(
@@ -428,13 +251,13 @@ impl CompiledRule {
         self.from.iter().any(|g| g.is_match(crate_name))
     }
 
-    fn denies(&self, canonical: &ResolvedPath) -> bool {
-        let glob_path = path_to_glob_form(canonical);
+    fn denies(&self, canonical: &[String]) -> bool {
+        let glob_path = segments_to_glob_form(canonical);
         self.deny.iter().any(|g| g.is_match(&glob_path))
     }
 
-    fn is_exception(&self, canonical: &ResolvedPath) -> bool {
-        let glob_path = path_to_glob_form(canonical);
+    fn is_exception(&self, canonical: &[String]) -> bool {
+        let glob_path = segments_to_glob_form(canonical);
         self.exceptions.iter().any(|g| g.is_match(&glob_path))
     }
 }
@@ -457,6 +280,16 @@ fn path_pattern_to_glob_form(pattern: &str) -> String {
     pattern.replace('-', "_").replace("::", "/")
 }
 
-fn path_to_glob_form(path: &ResolvedPath) -> String {
-    path.segments().join("/")
+fn segments_to_glob_form(segments: &[String]) -> String {
+    segments.join("/")
+}
+
+/// The canonical plus every prefix of length ≥ 2, shortest first. A reference to
+/// `a::b::Type::method` is also a use of `a::b::Type` and `a::b`, so a rule
+/// targeting any of those should fire. Length-1 (bare crate) prefixes are
+/// skipped — crate-level layering isn't this lint's grain.
+fn canonical_prefixes(canonical: &[String]) -> Vec<Vec<String>> {
+    (2..=canonical.len())
+        .map(|n| canonical[..n].to_vec())
+        .collect()
 }
