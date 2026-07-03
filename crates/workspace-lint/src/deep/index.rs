@@ -38,7 +38,7 @@ impl ScipIndex {
     /// file, undecodable protobuf, zero documents) are returned as strings for
     /// the caller to surface — a zero-document index means rust-analyzer failed
     /// to load the workspace, which must not pass silently.
-    pub fn load(path: &Path) -> Result<Self, String> {
+    pub(crate) fn load(path: &Path) -> Result<Self, String> {
         let bytes =
             std::fs::read(path).map_err(|e| format!("read SCIP index {}: {e}", path.display()))?;
         let index = Index::parse_from_bytes(&bytes)

@@ -17,11 +17,11 @@ pub(crate) struct CliCrateVersion {
 }
 
 impl CliCrateVersion {
-    pub fn new(config: CliCrateVersionConfig) -> Self {
+    pub(crate) fn new(config: CliCrateVersionConfig) -> Self {
         Self { config }
     }
 
-    pub fn from_cli(command: String, pattern: String, crate_name: String) -> Self {
+    pub(crate) fn from_cli(command: String, pattern: String, crate_name: String) -> Self {
         Self::new(CliCrateVersionConfig {
             rules: vec![CliCrateVersionRule {
                 command: crate::cli::split_command(&command),

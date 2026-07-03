@@ -39,7 +39,7 @@ pub(crate) enum Format {
 }
 
 impl Format {
-    pub fn parse(s: &str) -> Result<Self, String> {
+    pub(crate) fn parse(s: &str) -> Result<Self, String> {
         match s {
             "human" => Ok(Self::Human),
             "json" => Ok(Self::Json),

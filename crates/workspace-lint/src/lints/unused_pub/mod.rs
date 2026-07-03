@@ -56,11 +56,14 @@ pub(crate) struct UnusedPub {
 }
 
 impl UnusedPub {
-    pub fn new(global: UnusedPubConfig, per_crate: HashMap<String, UnusedPubConfig>) -> Self {
+    pub(crate) fn new(
+        global: UnusedPubConfig,
+        per_crate: HashMap<String, UnusedPubConfig>,
+    ) -> Self {
         Self { global, per_crate }
     }
 
-    pub fn from_cli(
+    pub(crate) fn from_cli(
         exclude_crates: Vec<String>,
         allowlist: Vec<String>,
         kinds: Vec<KindFilter>,

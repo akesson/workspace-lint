@@ -13,7 +13,7 @@ impl ArchitectureConfig {
     /// it counts as "no config table" for enablement. Single source of truth for
     /// this rule, shared by [`crate::config::Config::has_table_for`] and the
     /// `registry` gating so the two can't drift.
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         !self.rules.is_empty()
     }
 }

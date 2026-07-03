@@ -171,7 +171,7 @@ impl CheckRule {
     /// `Lint` it exercises. Every lint construction lives in its own
     /// `from_cli` constructor inside `lints/<name>/`; this method is the
     /// thin dispatch table that wires the CheckRule variants to them.
-    pub fn into_lint(self) -> Box<dyn Lint> {
+    pub(crate) fn into_lint(self) -> Box<dyn Lint> {
         match self {
             CheckRule::CentralizedDeps => Box::new(CentralizedDeps::new()),
             CheckRule::FileSize {
@@ -213,7 +213,7 @@ impl CheckRule {
 
     /// Build an `ExpandConfig` from the `expand` subcommand's CLI args.
     /// `expand` is not a lint (it side-effects), so it keeps its own helper.
-    pub fn into_expand_config(
+    pub(crate) fn into_expand_config(
         command: String,
         glob: String,
         marker: String,

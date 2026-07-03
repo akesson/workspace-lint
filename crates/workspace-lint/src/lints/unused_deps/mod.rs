@@ -36,11 +36,14 @@ pub(crate) struct UnusedDeps {
 }
 
 impl UnusedDeps {
-    pub fn new(global: UnusedDepsConfig, per_crate: HashMap<String, UnusedDepsConfig>) -> Self {
+    pub(crate) fn new(
+        global: UnusedDepsConfig,
+        per_crate: HashMap<String, UnusedDepsConfig>,
+    ) -> Self {
         Self { global, per_crate }
     }
 
-    pub fn from_cli(ignore: Vec<String>) -> Self {
+    pub(crate) fn from_cli(ignore: Vec<String>) -> Self {
         Self::new(UnusedDepsConfig { ignore }, HashMap::new())
     }
 }

@@ -29,7 +29,7 @@ pub(crate) enum KindFilter {
 }
 
 impl KindFilter {
-    pub fn to_item_kind(self) -> ItemKind {
+    pub(crate) fn to_item_kind(self) -> ItemKind {
         match self {
             KindFilter::Function => ItemKind::Fn,
             KindFilter::Struct => ItemKind::Struct,
@@ -48,7 +48,7 @@ impl KindFilter {
     /// `DefKind`). `Module` is accepted for config compatibility but matches
     /// nothing — `mod` is a container, never an unused-pub candidate (same
     /// outcome as the syn backend's `is_definition` pre-filter).
-    pub fn to_ir_kind(self) -> &'static str {
+    pub(crate) fn to_ir_kind(self) -> &'static str {
         match self {
             KindFilter::Function => "fn",
             KindFilter::Struct => "struct",

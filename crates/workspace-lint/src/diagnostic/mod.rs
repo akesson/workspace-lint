@@ -24,7 +24,7 @@ pub(crate) enum Level {
 }
 
 impl Level {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Level::Warn => "warning",
             Level::Deny => "error",
@@ -46,7 +46,7 @@ pub(crate) enum Applicability {
 }
 
 impl Applicability {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Applicability::MachineApplicable => "MachineApplicable",
             Applicability::MaybeIncorrect => "MaybeIncorrect",
@@ -74,7 +74,7 @@ impl Span {
     /// used by checks whose grain is the file itself (file-size) and by the
     /// rendered "if intentional, silence with:" hint that targets the top of
     /// the file.
-    pub fn file_anchor(file: impl Into<PathBuf>) -> Self {
+    pub(crate) fn file_anchor(file: impl Into<PathBuf>) -> Self {
         Self {
             file: file.into(),
             line_start: 1,
@@ -171,7 +171,7 @@ impl SilenceAnchor {
     /// (notably `unused-pub`) anchor with the resolver's *absolute* paths, so a
     /// directive on `crates/x/src/lib.rs` must still contain a diagnostic on
     /// `/abs/…/crates/x/src/lib.rs`.
-    pub fn contains(&self, other: &SilenceAnchor) -> bool {
+    pub(crate) fn contains(&self, other: &SilenceAnchor) -> bool {
         match (self, other) {
             (SilenceAnchor::Workspace, _) => true,
             (SilenceAnchor::Crate { manifest_dir }, SilenceAnchor::Crate { manifest_dir: o }) => {
@@ -201,14 +201,14 @@ impl SilenceAnchor {
     /// Two anchor file paths name the same file despite possibly differing
     /// bases: equal, or one is a whole-component suffix of the other (a
     /// workspace-relative path vs the resolver's absolute one).
-    pub fn same_file(a: &Path, b: &Path) -> bool {
+    pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
         a == b || a.ends_with(b) || b.ends_with(a)
     }
 
     /// Returns the file the anchor refers to, if any. Used by renderers that
     /// need a `file:line:col` even for `Crate`/`Workspace` anchors (falls back
     /// to the manifest path).
-    pub fn file(&self) -> Option<&Path> {
+    pub(crate) fn file(&self) -> Option<&Path> {
         match self {
             SilenceAnchor::Line { file, .. } | SilenceAnchor::File { file } => Some(file),
             SilenceAnchor::Crate { manifest_dir } => Some(manifest_dir),
@@ -239,7 +239,7 @@ impl Diagnostic {
     /// Snake-case form of the lint name suitable for the marker macro
     /// (`workspace_lint::allow!(<this>)`). Strips the `workspace-lint::`
     /// prefix and converts dashes to underscores.
-    pub fn lint_ident(&self) -> String {
+    pub(crate) fn lint_ident(&self) -> String {
         self.lint
             .strip_prefix("workspace-lint::")
             .unwrap_or(&self.lint)
@@ -248,7 +248,7 @@ impl Diagnostic {
 
     /// Kebab-case form suitable for the comment directive
     /// (`# workspace-lint: allow(<this>)`).
-    pub fn lint_short(&self) -> &str {
+    pub(crate) fn lint_short(&self) -> &str {
         self.lint
             .strip_prefix("workspace-lint::")
             .unwrap_or(&self.lint)
@@ -260,7 +260,7 @@ impl Diagnostic {
     /// everything else gets the comment form. Renderers attach this to the
     /// human/JSON/github output so an author can paste it manually;
     /// `--fix` deliberately ignores it.
-    pub fn silence_suggestion(&self) -> Option<Suggestion> {
+    pub(crate) fn silence_suggestion(&self) -> Option<Suggestion> {
         let (span, is_rust) = match &self.silence_anchor {
             SilenceAnchor::Line { file, line } => {
                 let is_rs = file.extension().and_then(|e| e.to_str()) == Some("rs");
