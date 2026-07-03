@@ -38,6 +38,10 @@ impl TargetSet {
         // Flags that change which *targets* compile, beyond the `--tests` we
         // model. (Feature flags — `--features`, `--all-features`,
         // `--no-default-features` — change cfg/content, not the target set.)
+        // `--benches` stays unmodeled: a bench fragment's `+test` suffix
+        // depends on the target's `harness` flag, which cargo_metadata 0.23
+        // no longer exposes — the guard skips (with a warning) rather than
+        // guess wrong and force spurious re-lints.
         const UNMODELED: &[&str] = &[
             "--lib",
             "--bins",

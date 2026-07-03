@@ -1,10 +1,14 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // `Config` is the crate's published public API, so it's exempt. The `with`
 // helpers below are pub (serde requires it) but sit in a *private* module, so
-// they are not externally reachable — without the serde-with assertion crediting
-// `date_fmt::{serialize, deserialize}`, they'd read as "appears unused".
-#[derive(Serialize)]
+// they are not externally reachable. The derive expansions call
+// `date_fmt::serialize` / `date_fmt::deserialize` — references the rustc
+// engine sees natively (the syn backend needed a built-in serde-with
+// assertion to credit them; deriving BOTH directions is what makes both
+// helpers genuinely used — a lone `Serialize` derive would leave
+// `deserialize` truly dead, and the engine would rightly say so).
+#[derive(Serialize, Deserialize)]
 pub struct Config {
     #[serde(with = "date_fmt")]
     pub when: u64,

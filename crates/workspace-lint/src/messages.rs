@@ -161,7 +161,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .help("remove the item or its `pub` visibility")
             .note(
-                "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
+                "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
             )
             .build(),
         ),
@@ -176,7 +176,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .help("consider `pub(crate)` to tighten visibility")
             .note(
-                "#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives",
+                "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
             )
             .build(),
         ),
@@ -317,6 +317,21 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 PathBuf::from(".workspace-lint.toml"),
             )
             .help("did you mean `file-size`?")
+            .build(),
+        ),
+        // config: the retired `[macros]` expansion-uses surface — the rustc
+        // engine sees macro expansions natively.
+        (
+            "config_macros_deprecated",
+            at_file(
+                "workspace-lint::config",
+                "`[macros]` is obsolete: the engine sees macro expansions natively",
+                PathBuf::from(".workspace-lint.toml"),
+            )
+            .help(
+                "delete the `[macros]` section; `expansion_uses!` annotations and \
+                 `# workspace-lint: expansion-uses(...)` comments are no longer read",
+            )
             .build(),
         ),
         // unknown-lint: a referenced lint name that doesn't exist.
@@ -519,7 +534,7 @@ mod tests {
              --> crates/mycrate/src/lib.rs:42:1
               |
               = help: remove the item or its `pub` visibility
-              = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+              = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
             help: if intentional, silence with:
               |
             42 + workspace_lint::expect!(unused_pub);
@@ -535,7 +550,7 @@ mod tests {
              --> crates/mycrate/src/builder.rs:7:1
               |
               = help: consider `pub(crate)` to tighten visibility
-              = note: #[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives
+              = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
             help: if intentional, silence with:
               |
             7 + workspace_lint::expect!(unused_pub);
@@ -865,7 +880,7 @@ mod tests {
 
         #[test]
         fn unused_pub_tighten_visibility() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r##"{"level":"warning","message":"pub struct `Builder` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"#[cfg]-gated items, proc-macro usage, trait-method dispatch, and re-exports may cause false positives","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r#"{"level":"warning","message":"pub struct `Builder` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]}],"rendered":null}"#);
         }
 
         #[test]

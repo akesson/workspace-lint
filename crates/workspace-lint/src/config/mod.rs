@@ -93,7 +93,8 @@ impl EngineSection {
     /// Every accepted `configs` entry spelling (`tests` aliases `--tests`).
     /// The audit's "did you mean …?" candidates; kept next to
     /// [`Self::selector_for`] so the two can't drift.
-    pub(crate) const KNOWN: &'static [&'static str] = &["default", "--tests", "tests"];
+    pub(crate) const KNOWN: &'static [&'static str] =
+        &["default", "--tests", "tests", "--benches", "benches"];
 
     /// The engine selector one entry maps to; `None` for an unknown entry
     /// (already reported by the config audit).
@@ -101,6 +102,7 @@ impl EngineSection {
         match entry {
             "default" => Some(wl_engine::CfgSelector::default_cfg()),
             "--tests" | "tests" => Some(wl_engine::CfgSelector::tests()),
+            "--benches" | "benches" => Some(wl_engine::CfgSelector::benches()),
             _ => None,
         }
     }

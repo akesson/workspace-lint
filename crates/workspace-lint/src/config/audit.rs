@@ -129,7 +129,7 @@ fn audit_engine_configs(config: &Config, config_path: &str, out: &mut Vec<Diagno
         if let Some(sugg) = closest(entry, super::EngineSection::KNOWN) {
             d = d.help(format!("did you mean `{sugg}`?"));
         }
-        d = d.help("accepted configs: `default` (plain cargo check) and `--tests`");
+        d = d.help("accepted configs: `default` (plain cargo check), `--tests`, and `--benches`");
         out.push(d.build());
     }
 }

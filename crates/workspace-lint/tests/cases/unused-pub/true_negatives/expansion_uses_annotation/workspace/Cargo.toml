@@ -1,7 +1,0 @@
-[workspace]
-resolver = "2"
-members = ["crates/alpha"]
-# Compile-only stubs stay out of the member set so the lint's view of the
-# workspace (cargo metadata --no-deps) is unchanged; without `exclude` cargo
-# auto-adopts in-tree path deps as members.
-exclude = ["stubs/syn-workspace-marker"]

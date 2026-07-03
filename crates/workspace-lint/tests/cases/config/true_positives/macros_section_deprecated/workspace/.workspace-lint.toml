@@ -1,0 +1,11 @@
+[lints]
+default = "allow"
+config = "deny"
+
+# The syn resolver needed `[[macros.external]]` to be told which items a
+# macro's expansion references; the rustc engine sees expansions natively, so
+# carrying the section means the user still believes it does something — the
+# audit must say so loudly.
+[[macros.external]]
+path = "tokio::main"
+expansion-uses = ["tokio::runtime::Runtime"]

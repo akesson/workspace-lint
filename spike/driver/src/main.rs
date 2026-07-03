@@ -13,6 +13,12 @@
 //!
 //! NOTE: `rustc_private` APIs churn per-nightly. Version-sensitive call sites
 //! are marked `API:`; expect to adjust them on every toolchain bump (that churn
+//
+// FROZEN (PR 10): extraction semantics moved on in `extractor/src/lib.rs`
+// (ctor/variant→ADT projection, AssocTy items, assoc-type + generic-default
+// signature walks, macro-invocation edges). This raw driver still compiles
+// (schema kept in sync) but its IR is NO LONGER byte-identical to the
+// extractor's — `extractor/` is authoritative; this dies with the spike.
 //! is exactly the §9 treadmill signal this spike is meant to measure).
 #![feature(rustc_private)]
 
@@ -183,6 +189,8 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             external,
             import,
             in_signature,
+            // Frozen driver: `pub use` distinction not backported.
+            reexport: false,
         });
     }
 

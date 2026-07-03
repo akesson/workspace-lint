@@ -44,6 +44,8 @@ fn edge(from: &[&str], to: &[&str], to_key: &str, import: bool) -> RefEdge {
         external: from.first() != to.first(),
         import,
         in_signature: false,
+        // The fixture edges model `pub use` re-exports wherever import=true.
+        reexport: import,
     }
 }
 

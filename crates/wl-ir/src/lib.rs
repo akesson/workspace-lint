@@ -113,6 +113,14 @@ pub struct RefEdge {
     /// `private_interfaces`), so the unused-pub `--fix` must not propose it.
     #[serde(default)]
     pub in_signature: bool,
+    /// For an `import` edge: `true` iff the `use` declaration is itself `pub`
+    /// — a re-export. Only these need the must-stay-`pub` guard (tightening
+    /// the target breaks the `pub use`: E0364/E0365) and only these make the
+    /// target externally reachable through the importing module. A plain
+    /// same-crate `use` is neither; treating it as a re-export would let any
+    /// test-mod `use super::*` shield a crate's whole root from the verdict.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reexport: bool,
 }
 
 /// A single resolved definition.

@@ -362,24 +362,13 @@ in `[lints]` now:
 | `[checks]`<br>`visibility = true` | `[lints]`<br>`unused-pub = "warn"` (the `visibility` lint was folded in) |
 | `kinds = ["method"]` | removed — `method`/`field`/`variant` were never real kinds |
 
-### External macro annotations
+### External macro annotations (obsolete)
 
-Resolver-backed lints can't see items referenced only inside a macro's
-expansion. For macros defined *outside* the workspace, declare the paths their
-expansion references so `unused-deps` / `unused-pub` / `architecture` don't
-report false positives:
-
-```toml
-[[macros.external]]
-path = "tokio::main"                       # the macro (documentation only, for now)
-expansion-uses = ["tokio::runtime::Builder"]
-```
-
-For macros defined *inside* the workspace, annotate the definition at the source
-instead — either with the zero-dep `syn-workspace-marker` crate
-(`workspace_syn::expansion_uses!(...)`) or the equivalent dependency-free
-`// workspace-syn: expansion-uses(...)` comment directive, placed immediately
-before the `macro_rules!` definition.
+The semantic engine compiles the workspace with rustc, so references made
+inside macro expansions are ordinary reference-graph edges — no annotation
+needed. The old `[[macros.external]]` config section now draws a `config`
+finding telling you to delete it, and the `expansion_uses!` /
+`# workspace-lint: expansion-uses(...)` source annotations are no longer read.
 
 ### Built-in usage assertions
 

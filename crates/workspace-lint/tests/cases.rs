@@ -262,9 +262,18 @@ fn run_case(kind: Kind, case_dir: &Path, bless: bool) -> Result<(), Failure> {
 #[test]
 fn cases_pass_or_track_known_limitations() {
     let bless = bless_enabled();
+    // Substring filter for focused iteration on one lint or case, e.g.
+    // WORKSPACE_LINT_CASE_FILTER=unused-pub. Zero matches still fails the
+    // populated-taxonomy assert below — a typo'd filter is loud, not green.
+    let filter = std::env::var("WORKSPACE_LINT_CASE_FILTER").ok();
     let mut failures: Vec<Failure> = Vec::new();
     let mut count = 0;
     walk_cases(|_lint, kind, case_dir| {
+        if let Some(f) = &filter
+            && !case_dir.to_string_lossy().contains(f.as_str())
+        {
+            return;
+        }
         count += 1;
         if let Err(err) = run_case(kind, case_dir, bless) {
             failures.push(err);

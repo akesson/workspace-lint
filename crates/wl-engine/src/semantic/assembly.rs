@@ -155,17 +155,15 @@ pub struct Assembly {
     /// Keys named in some PUB item's signature (`in_signature` edges whose
     /// `from` def is public) — the `exposed_in_public_signature` substrate.
     signature_exposed: BTreeSet<String>,
-    /// Keys that are the target of a `use`/`pub use` declaration. Tightening
-    /// or deleting such a def can break the re-export (E0364/E0365), so the
-    /// unused-pub port suppresses these — the driver-backed analog of the syn
-    /// re-export-index `is_target` guard. The IR doesn't distinguish `use`
-    /// from `pub use`, so this over-approximates toward suppression (false
-    /// negatives, never false positives).
+    /// Keys that are the target of a `pub use` re-export
+    /// (`RefEdge::reexport`). Tightening or deleting such a def can break the
+    /// re-export (E0364/E0365), so the unused-pub port suppresses these — the
+    /// driver-backed analog of the syn re-export-index `is_target` guard.
     import_targets: BTreeSet<String>,
-    /// Import-target key → the module paths whose `use` declarations name it
-    /// (the edge's `from` — `visit_use` attributes a use-path to its enclosing
-    /// module). The re-export leg of external reachability: a def `use`d in an
-    /// externally-reachable module is nameable from outside through it.
+    /// Re-export-target key → the module paths whose `pub use` declarations
+    /// name it (the edge's `from` — `visit_use` attributes a use-path to its
+    /// enclosing module). The re-export leg of external reachability: a def
+    /// `pub use`d in an externally-reachable module is nameable through it.
     import_froms: BTreeMap<String, Vec<String>>,
     /// `mod` def path (joined) → is-public, for the pub-module-hop
     /// reachability judgement.
@@ -248,16 +246,51 @@ impl Assembly {
                 }
                 if e.import {
                     import_edges += 1;
-                    import_targets.insert(e.to_key.clone());
-                    import_froms
-                        .entry(e.to_key.clone())
-                        .or_default()
-                        .push(e.from.join("::"));
-                    continue; // re-export/import: not a use-site for unused-pub
+                    // Only a `pub use` (re-export) pins its target `pub`
+                    // (E0364/E0365) or exposes it through the importing
+                    // module; a plain `use` is neither.
+                    if e.reexport {
+                        import_targets.insert(e.to_key.clone());
+                        import_froms
+                            .entry(e.to_key.clone())
+                            .or_default()
+                            .push(e.from.join("::"));
+                    }
+                    continue; // import: not a use-site for unused-pub
                 }
                 *in_degree.entry(e.to_key.clone()).or_insert(0) += 1;
                 if !cross {
                     *intra_degree.entry(e.to_key.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // A glob re-export (`pub use m::*`) resolves to the MODULE def, but
+        // it re-exports every public def directly under it — expand so the
+        // re-export guard and reachability see through globs, as syn's
+        // re-export index did. (`pub use m;` is indistinguishable from
+        // `pub use m::*` here; expanding both over-approximates toward
+        // suppression — the safe direction. Plain `use` never lands in
+        // `import_froms`, so a test-mod `use super::*` expands nothing.)
+        let module_imports: Vec<(String, Vec<String>)> = import_froms
+            .iter()
+            .filter(|(key, _)| defs.get(*key).is_some_and(|d| d.kind == "mod"))
+            .map(|(key, froms)| (defs[key].path.clone(), froms.clone()))
+            .collect();
+        for (mod_path, froms) in module_imports {
+            let prefix = format!("{mod_path}::");
+            for (child_key, child) in &defs {
+                if child.public
+                    && child
+                        .path
+                        .strip_prefix(prefix.as_str())
+                        .is_some_and(|rest| !rest.contains("::"))
+                {
+                    import_targets.insert(child_key.clone());
+                    import_froms
+                        .entry(child_key.clone())
+                        .or_default()
+                        .extend(froms.iter().cloned());
                 }
             }
         }

@@ -1,0 +1,11 @@
+error: `[macros]` is obsolete: the engine sees macro expansions natively
+ --> .workspace-lint.toml:1:1
+  |
+  = help: delete the `[macros]` section; `expansion_uses!` annotations and `# workspace-lint: expansion-uses(...)` comments are no longer read
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(config)
+  |
+  = note: `#[deny(workspace_lint::config)]` on by default
+
+workspace-lint: generated 1 error

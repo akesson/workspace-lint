@@ -359,7 +359,7 @@ fn build_tighten_suggestion(
 /// the item is genuinely unused. Returns `None` to mean "fall back to the
 /// tightening suggestion". The `Option<String>` second element carries the
 /// "git-dirty file" caveat note when present.
-fn pick_deletion_fix(
+pub(super) fn pick_deletion_fix(
     auto_delete: bool,
     file: &Path,
     span: &wl_ir::Span,
@@ -375,7 +375,7 @@ fn pick_deletion_fix(
     }
 }
 
-enum DeleteOutcome {
+pub(super) enum DeleteOutcome {
     /// Git-tracked-clean: emit a MachineApplicable deletion suggestion.
     Apply(crate::diagnostic::Suggestion),
     /// Tracked-but-dirty or untracked: emit MaybeIncorrect so `--fix` passes
@@ -386,7 +386,7 @@ enum DeleteOutcome {
     Unavailable,
 }
 
-fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcome {
+pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcome {
     let Ok(source) = fs_err::read_to_string(file) else {
         return DeleteOutcome::Unavailable;
     };

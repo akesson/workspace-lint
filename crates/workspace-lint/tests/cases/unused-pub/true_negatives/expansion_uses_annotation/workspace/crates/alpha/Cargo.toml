@@ -1,9 +1,0 @@
-[package]
-name = "alpha"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-# Compile-only stub (see stubs/): syn-workspace parses the `expansion_uses!`
-# invocation from source; the dep exists so the fixture `cargo check`s offline.
-syn-workspace-marker = { path = "../../stubs/syn-workspace-marker" }
