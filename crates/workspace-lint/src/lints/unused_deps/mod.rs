@@ -1,13 +1,9 @@
 //! Unused-dependencies check: declared deps vs the crate's actual references.
 //!
-//! Two backends behind one lint (transitional, `WL_SEMANTIC_BACKEND`):
-//!
-//! - [`ir`] — the default: the rustc-extracted reference graph (the engine's
-//!   [`wl_engine::SemanticModel`]), facade- and lib-rename-aware via resolved
-//!   dependency closures, plus the FastModel's syntactic signals (doc-fence
-//!   refs, feature plumbing).
-//! - [`legacy`] — the pre-pivot syn-resolver implementation, kept verbatim
-//!   for diffing until the migration's deletion PR.
+//! The judged substrate is the rustc-extracted reference graph (the engine's
+//! [`wl_engine::SemanticModel`]), facade- and lib-rename-aware via resolved
+//! dependency closures, plus the FastModel's syntactic signals (doc-fence
+//! refs, feature plumbing).
 //!
 //! Known limitations (documented in tests/cases/unused-deps/): `build.rs`
 //! deps and `*-sys` link-only deps aren't judgeable from references; the
@@ -16,11 +12,10 @@
 use std::collections::HashMap;
 
 use crate::diagnostic::Diagnostic;
-use crate::lints::{Lint, LintContext, LintId, Requirements, SemanticBackend, semantic_backend};
+use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
 mod ir;
-mod legacy;
 #[cfg(test)]
 mod tests;
 
@@ -54,46 +49,26 @@ impl Lint for UnusedDeps {
     }
 
     fn requirements(&self) -> Requirements {
-        match semantic_backend() {
-            SemanticBackend::Rustc => Requirements {
-                needs_semantic: true,
-                // Manifests, doc-fence refs, and workspace-relative paths.
-                needs_fast: true,
-                ..Requirements::default()
-            },
-            SemanticBackend::Syn => Requirements {
-                needs_workspace: true,
-                ..Requirements::default()
-            },
+        Requirements {
+            needs_semantic: true,
+            // Manifests, doc-fence refs, and workspace-relative paths.
+            needs_fast: true,
         }
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        match semantic_backend() {
-            SemanticBackend::Rustc => {
-                let fast = cx
-                    .fast
-                    .expect("unused-deps (rustc backend) requires the FastModel");
-                // The runner skips the tier for a memberless workspace (there
-                // is nothing to extract or judge) — mirror that here instead
-                // of expecting a model that deliberately wasn't built.
-                if fast.members().is_empty() {
-                    return Vec::new();
-                }
-                ir::check(
-                    &self.global,
-                    &self.per_crate,
-                    fast,
-                    cx.semantic
-                        .expect("unused-deps (rustc backend) requires the SemanticModel"),
-                )
-            }
-            SemanticBackend::Syn => legacy::check(
-                &self.global,
-                &self.per_crate,
-                cx.workspace
-                    .expect("unused-deps (syn backend) requires the Workspace"),
-            ),
+        let fast = cx.fast.expect("unused-deps requires the FastModel");
+        // The runner skips the tier for a memberless workspace (there is
+        // nothing to extract or judge) — mirror that here instead of
+        // expecting a model that deliberately wasn't built.
+        if fast.members().is_empty() {
+            return Vec::new();
         }
+        ir::check(
+            &self.global,
+            &self.per_crate,
+            fast,
+            cx.semantic.expect("unused-deps requires the SemanticModel"),
+        )
     }
 }

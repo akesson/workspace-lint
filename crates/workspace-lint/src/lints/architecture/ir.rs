@@ -1,8 +1,8 @@
 //! Architecture check on the rustc engine: judges the primary config's
 //! resolved reference graph ([`SemanticModel::references_from`]) instead of
-//! the syn resolver's occurrence model.
+//! the retired syn resolver's occurrence model.
 //!
-//! What the substrate buys over [`super::legacy`]:
+//! What the substrate buys over the syn walk it replaced:
 //!
 //! - **Canonical paths are definition paths** (edge targets join their
 //!   `ItemFact` by stable key), so every re-export chain — `pub use` *and*
@@ -15,7 +15,7 @@
 //!   real compiled dependency edge and is judged like hand-written code,
 //!   anchored at the invocation site (`Span::from_expansion` projection).
 //!
-//! The pass structure mirrors the legacy walk per module — single-name
+//! The pass structure runs per module — single-name
 //! imports claim `(canonical, rule)` first, then glob imports, then code
 //! references dedup against both — so N call sites of a denied path still
 //! collapse to one diagnostic anchored at the earliest surfaced form.

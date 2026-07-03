@@ -1,6 +1,5 @@
 mod cli;
 mod config;
-mod deep;
 mod diagnostic;
 mod directives;
 mod expand;
@@ -16,11 +15,9 @@ use clap::Parser;
 use std::io;
 
 use cli::{CheckRule, Cli, Commands};
-use config::MacrosConfig;
 use diagnostic::Diagnostic;
 use diagnostic::render::{Format, render};
 use lints::{LintContext, LintId};
-use syn_workspace::{LoadOptions, Workspace};
 use wl_engine::fast::FastModel;
 
 fn main() {
@@ -53,8 +50,7 @@ fn main() {
             {
                 expand::run(ec);
             }
-            let (mut diagnostics, workspace, fast) =
-                run_all(&config, !cli.no_build_env, cli.fast_only);
+            let (mut diagnostics, fast) = run_all(&config, cli.fast_only);
             // Config-validation findings join the stream before suppression
             // (so a `# workspace-lint: allow(config)` directive can silence
             // them) and before leveling (so `[lints] config = …` applies).
@@ -74,7 +70,7 @@ fn main() {
             // Generated (`include!`d) code participates in analysis but is not a
             // place users can act on; drop findings anchored in it before
             // suppression so they never consume an `expect!` or skew stale-expect.
-            drop_generated_anchored(workspace.as_ref(), fast.as_ref(), &mut diagnostics);
+            drop_generated_anchored(fast.as_ref(), &mut diagnostics);
             // Suppression filters by directives and appends `stale-expect` /
             // `unknown-lint` findings; leveling runs last so the appended ones
             // are leveled too and `allow`-ed lints are dropped from the final
@@ -82,12 +78,7 @@ fn main() {
             apply_suppression(fast.as_ref(), &mut diagnostics);
             apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
             if cli.fix {
-                apply_fix(
-                    cli.no_deep,
-                    cli.scip_index.as_deref(),
-                    &mut diagnostics,
-                    workspace.as_ref(),
-                );
+                fix::run(&diagnostics);
             }
             report_and_exit(diagnostics, format);
         }
@@ -107,28 +98,19 @@ fn main() {
             // config file exists, so `workspace-lint check file-size` and the
             // default run agree on severity.
             let config_for_levels = config::try_load();
-            let (mut diagnostics, workspace, fast) = run_single_check(
-                rule,
-                !cli.no_build_env,
-                cli.fast_only,
-                config_for_levels.as_ref(),
-            );
+            let (mut diagnostics, fast) =
+                run_single_check(rule, cli.fast_only, config_for_levels.as_ref());
             // Same backfill as the default run: the drop and the directive
             // scanner's parse cache want the FastModel even when the single
             // checked rule didn't require one.
             let fast = fast.or_else(try_load_fast_model);
-            drop_generated_anchored(workspace.as_ref(), fast.as_ref(), &mut diagnostics);
+            drop_generated_anchored(fast.as_ref(), &mut diagnostics);
             apply_suppression(fast.as_ref(), &mut diagnostics);
             if let Some(cfg) = &config_for_levels {
                 apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
             }
             if cli.fix {
-                apply_fix(
-                    cli.no_deep,
-                    cli.scip_index.as_deref(),
-                    &mut diagnostics,
-                    workspace.as_ref(),
-                );
+                fix::run(&diagnostics);
             }
             report_and_exit(diagnostics, format);
         }
@@ -146,27 +128,6 @@ fn main() {
             expand::run(&ec);
         }
     }
-}
-
-/// The `--fix` action shared by the default and `check` runs. Unless
-/// `--no-deep` is set, deep verification (rust-analyzer SCIP) runs first: it
-/// downgrades any disproved structural suggestion (so `fix::run` skips it) and
-/// returns the `expect` directive insertions to write for those false
-/// positives. `fix::run` then applies the surviving structural fixes plus those
-/// insertions in one pass. The clean-tree gate already ran at the call site, so
-/// every change here lands in a reviewable working tree.
-fn apply_fix(
-    no_deep: bool,
-    scip_index: Option<&std::path::Path>,
-    diagnostics: &mut [Diagnostic],
-    workspace: Option<&Workspace>,
-) {
-    let inserts = if no_deep {
-        Vec::new()
-    } else {
-        deep::verify_findings(diagnostics, workspace, scip_index)
-    };
-    fix::run(diagnostics, &inserts);
 }
 
 /// Apply the lint-level cascade to the collected diagnostics: **drop** any
@@ -278,20 +239,12 @@ fn parse_format(arg: Option<&str>) -> Format {
 /// …) is noise. Runs **before** [`apply_suppression`] so a generated finding
 /// never consumes an `expect!` directive or pollutes the `stale-expect` tally.
 ///
-/// The drop set is the **union** of each loaded model's generated files —
-/// every model's set covers the findings its own lints emitted:
-///
-/// - the [`FastModel`]'s build-free walk resolves literal / `CARGO_*`
-///   includes only — the *checked-in* generated files that structural lints
-///   (`file-size`, `module-tree`, …) can anchor findings in;
-/// - the syn [`Workspace`], when a semantic lint loaded one, additionally
-///   holds the `OUT_DIR` splices its build-env harvest resolved — where
-///   resolver-span lints (`unused-pub`) anchor findings on generated items.
-///   Under `--no-build-env` that extra set is empty, so an `OUT_DIR` include
-///   simply stays out of the model (never spliced, never flagged).
-///
-/// Both models absent (not a loadable cargo workspace) degrades to no drop
-/// rather than failing the run.
+/// The drop set is the [`FastModel`]'s generated files: its build-free walk
+/// resolves literal / `CARGO_*` includes — the *checked-in* generated files
+/// lints can anchor findings in. (`OUT_DIR` splices never enter any model —
+/// the rustc engine's fragments live under the target directory and are
+/// filtered by the lints themselves.) No model (not a loadable cargo
+/// workspace) degrades to no drop rather than failing the run.
 ///
 /// Generated paths are absolute; lints anchor workspace-relative. We normalize
 /// each generated path to that same workspace-relative form via
@@ -299,32 +252,19 @@ fn parse_format(arg: Option<&str>) -> Format {
 /// Windows UNC prefixes) and match anchors by **exact** path equality. A loose
 /// suffix match would let a generated `crates/a/src/x.rs` drop a real finding on
 /// a *different* crate's handwritten `crates/b/src/x.rs` (or a bare `src/x.rs`).
-fn drop_generated_anchored(
-    workspace: Option<&Workspace>,
-    fast: Option<&FastModel>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    // One normalizer for both the generated set and the anchors, so the
-    // equality test can't be skewed by two implementations. The two models'
-    // `crate_relative_path` are copies of the same logic; prefer the
-    // FastModel's (present in practice — the caller backfills it).
-    let normalize = |p: &std::path::Path| -> Option<std::path::PathBuf> {
-        match (fast, workspace) {
-            (Some(fm), _) => Some(fm.crate_relative_path(p)),
-            (None, Some(ws)) => Some(ws.crate_relative_path(p)),
-            (None, None) => None,
-        }
+fn drop_generated_anchored(fast: Option<&FastModel>, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(fm) = fast else {
+        return;
     };
-    let generated: std::collections::HashSet<std::path::PathBuf> = fast
-        .into_iter()
-        .flat_map(|fm| fm.generated_files())
-        .chain(workspace.into_iter().flat_map(|ws| ws.generated_files()))
-        .filter_map(normalize)
-        .collect();
+    // One normalizer for both the generated set and the anchors, so the
+    // equality test can't be skewed by two implementations.
+    let normalize = |p: &std::path::Path| fm.crate_relative_path(p);
+    let generated: std::collections::HashSet<std::path::PathBuf> =
+        fm.generated_files().map(normalize).collect();
     if generated.is_empty() {
         return;
     }
-    diagnostics.retain(|d| match d.silence_anchor.file().and_then(normalize) {
+    diagnostics.retain(|d| match d.silence_anchor.file().map(normalize) {
         Some(file) => !generated.contains(&file),
         None => true,
     });
@@ -367,26 +307,18 @@ fn apply_suppression(fast: Option<&FastModel>, diagnostics: &mut Vec<Diagnostic>
     diagnostics.extend(unknown);
 }
 
-fn run_all(
-    config: &config::Config,
-    harvest_build_env: bool,
-    fast_only: bool,
-) -> (Vec<Diagnostic>, Option<Workspace>, Option<FastModel>) {
+fn run_all(config: &config::Config, fast_only: bool) -> (Vec<Diagnostic>, Option<FastModel>) {
     let registry = lints::registry(config);
-    // The resolver-loaded workspace is needed only when some enabled semantic
-    // lint (unused-pub / unused-deps / architecture) asks for it. The
-    // build-free FastModel is needed when some enabled lint asks for it, or
-    // when a per-crate `[crates.*]` tier is present — the latter so per-crate
-    // levels can map diagnostics to their owning crate and crate names can be
-    // validated against the membership, even if no lint itself needs the
-    // metadata.
-    let needs_ws = registry.iter().any(|l| l.requirements().needs_workspace);
+    // The build-free FastModel is needed when some enabled lint asks for it,
+    // or when a per-crate `[crates.*]` tier is present — the latter so
+    // per-crate levels can map diagnostics to their owning crate and crate
+    // names can be validated against the membership, even if no lint itself
+    // needs the metadata.
     let needs_fast =
         registry.iter().any(|l| l.requirements().needs_fast) || !config.crates.is_empty();
     // The rustc-backed tier runs only when some enabled lint asks for it and
     // `--fast-only` doesn't veto it.
     let needs_semantic = registry.iter().any(|l| l.requirements().needs_semantic) && !fast_only;
-    let workspace = needs_ws.then(|| load_workspace(config.macros.as_ref(), harvest_build_env));
     let fast = needs_fast.then(load_fast_model);
     // A memberless workspace (a bare virtual manifest) has nothing to extract
     // or judge — cargo would just error "the workspace has no members" — so
@@ -397,20 +329,18 @@ fn run_all(
     let semantic =
         (needs_semantic && has_members).then(|| load_semantic_model(config.engine.selectors()));
     let cx = LintContext {
-        workspace: workspace.as_ref(),
         fast: fast.as_ref(),
         semantic: semantic.as_ref(),
     };
     let diagnostics: Vec<Diagnostic> = registry.iter().flat_map(|l| l.check(&cx)).collect();
-    (diagnostics, workspace, fast)
+    (diagnostics, fast)
 }
 
 fn run_single_check(
     rule: CheckRule,
-    harvest_build_env: bool,
     fast_only: bool,
     config: Option<&config::Config>,
-) -> (Vec<Diagnostic>, Option<Workspace>, Option<FastModel>) {
+) -> (Vec<Diagnostic>, Option<FastModel>) {
     let lint = rule.into_lint();
     let requirements = lint.requirements();
     // A semantic lint cannot run without its model; under `--fast-only` that
@@ -421,9 +351,6 @@ fn run_single_check(
             lint.id().short()
         ));
     }
-    let workspace = requirements
-        .needs_workspace
-        .then(|| load_workspace(None, harvest_build_env));
     let fast = requirements.needs_fast.then(load_fast_model);
     // Outside a configured workspace (`config::try_load` → None) the engine
     // falls back to its default single-config matrix. A memberless workspace
@@ -434,11 +361,10 @@ fn run_single_check(
         load_semantic_model(engine.selectors())
     });
     let cx = LintContext {
-        workspace: workspace.as_ref(),
         fast: fast.as_ref(),
         semantic: semantic.as_ref(),
     };
-    (lint.check(&cx), workspace, fast)
+    (lint.check(&cx), fast)
 }
 
 /// Build the full (rustc-backed) tier: vendored extractor → one embedded
@@ -496,46 +422,14 @@ fn print_engine_stats(model: &wl_engine::SemanticModel) {
 }
 
 /// Load the build-free `FastModel` (`cargo metadata` + parsed manifests +
-/// the lean syntactic module trees). Loud-fail on error, mirroring
-/// [`load_workspace`]: a silent `None` would mask a broken state in CI.
+/// the lean syntactic module trees). Loud-fail on error: a silent `None`
+/// would mask a broken state in CI.
 fn load_fast_model() -> FastModel {
     FastModel::load(std::path::Path::new(".")).unwrap_or_else(|e| {
         util::fail(format!(
             "failed to load workspace metadata for manifest-backed lints: {e}"
         ))
     })
-}
-
-/// Load the resolver-backed `Workspace` and (when configured) register the
-/// external-macro expansion-uses set. Loud-fail on resolver error: a silent
-/// `Vec::new()` would mask a broken state in CI. Non-fatal load warnings
-/// (auxiliary targets that failed to parse) are surfaced to stderr —
-/// `Workspace` no longer prints them itself.
-fn load_workspace(macros: Option<&MacrosConfig>, harvest_build_env: bool) -> Workspace {
-    let opts = LoadOptions {
-        harvest_build_env,
-        ..LoadOptions::default()
-    };
-    let mut ws = Workspace::load_with_options(".", opts).unwrap_or_else(|e| {
-        util::fail(format!(
-            "failed to load workspace for resolver-backed lints: {e}"
-        ))
-    });
-    for w in ws.warnings() {
-        // Label as a warning so a degraded load (e.g. a failed build-env harvest
-        // that silently falls back to literal-only include resolution) reads as
-        // something gone wrong rather than blending into normal output.
-        eprintln!("workspace-lint: warning: {w}");
-    }
-    if let Some(m) = macros {
-        let paths = m.external.iter().flat_map(|m| {
-            m.expansion_uses
-                .iter()
-                .map(|p| syn_workspace::ResolvedPath::from_user_str(p))
-        });
-        ws.register_external_macro_uses(paths);
-    }
-    ws
 }
 
 fn report_and_exit(diagnostics: Vec<Diagnostic>, format: Format) {

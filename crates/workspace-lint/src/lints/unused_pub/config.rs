@@ -1,14 +1,13 @@
 use clap::ValueEnum;
 use serde::Deserialize;
-use syn_workspace::ItemKind;
 
 use crate::config::GlobPattern;
 
-/// Item kinds the `unused-pub` lint can filter on, mapping to
-/// [`syn_workspace::ItemKind`]. Shared by the `kinds` config field and the CLI
-/// `--kinds` flag; an invalid value fails fast with the valid set listed (so a
-/// typo like `method` — which isn't a modeled kind — can't silently match
-/// nothing). `fn`/`mod` are accepted as aliases for the keyword-minded.
+/// Item kinds the `unused-pub` lint can filter on. Shared by the `kinds`
+/// config field and the CLI `--kinds` flag; an invalid value fails fast with
+/// the valid set listed (so a typo like `method` — which isn't a modeled kind
+/// — can't silently match nothing). `fn`/`mod` are accepted as aliases for
+/// the keyword-minded.
 #[derive(Deserialize, ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum KindFilter {
@@ -29,21 +28,6 @@ pub(crate) enum KindFilter {
 }
 
 impl KindFilter {
-    pub(crate) fn to_item_kind(self) -> ItemKind {
-        match self {
-            KindFilter::Function => ItemKind::Fn,
-            KindFilter::Struct => ItemKind::Struct,
-            KindFilter::Enum => ItemKind::Enum,
-            KindFilter::Union => ItemKind::Union,
-            KindFilter::Trait => ItemKind::Trait,
-            KindFilter::Type => ItemKind::TypeAlias,
-            KindFilter::Const => ItemKind::Const,
-            KindFilter::Static => ItemKind::Static,
-            KindFilter::Module => ItemKind::Module,
-            KindFilter::Macro => ItemKind::Macro,
-        }
-    }
-
     /// The rustc-IR backend's kind vocabulary (the extractor's stringified
     /// `DefKind`). `Module` is accepted for config compatibility but matches
     /// nothing — `mod` is a container, never an unused-pub candidate (same

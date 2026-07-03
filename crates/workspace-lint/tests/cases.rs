@@ -310,36 +310,6 @@ fn cases_pass_or_track_known_limitations() {
     }
 }
 
-/// Tier-H forcing function (DESIGN-ir-pipeline.md §13, invariant 2): every
-/// built-in usage assertion must ship a guarding `true_negatives` fixture, the
-/// same shape as the `LintId::ALL` ↔ `messages::scenarios()` coverage check.
-/// `md5-libname` (H3) lives in the `unused-deps` matcher rather than the
-/// syn-workspace rule table, so it's tracked here via `LINT_SIDE_ASSERTIONS`.
-#[test]
-fn every_builtin_assertion_has_a_true_negative_fixture() {
-    /// Assertion rules implemented lint-side (no entry in `builtin_assertions`).
-    const LINT_SIDE_ASSERTIONS: &[&str] = &["md5-libname"];
-
-    let dir = cases_root().join("unused-deps").join("true_negatives");
-    let missing: Vec<String> = syn_workspace::builtin_assertions()
-        .iter()
-        .map(|a| a.id)
-        .chain(LINT_SIDE_ASSERTIONS.iter().copied())
-        .filter(|id| {
-            !dir.join(format!("asserted_{}", id.replace('-', "_")))
-                .join("workspace")
-                .is_dir()
-        })
-        .map(str::to_string)
-        .collect();
-
-    assert!(
-        missing.is_empty(),
-        "every Tier-H assertion needs a guarding fixture at \
-         tests/cases/unused-deps/true_negatives/asserted_<id>/workspace/; missing: {missing:?}",
-    );
-}
-
 /// Drift guard for the semantic-lint routing list (`common::SEMANTIC_LINTS`,
 /// consumed today by `fixture_compile.rs`'s offline-compile sweep and by this
 /// harness's fast-vs-semantic routing once the rustc-backed ports land).

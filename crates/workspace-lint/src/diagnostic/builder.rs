@@ -205,7 +205,6 @@ mod tests {
             replacement: "r".into(),
             applicability: Applicability::MachineApplicable,
             original: None,
-            evidence: None,
         };
         let d = at_workspace("workspace-lint::centralized-deps", "x")
             .level(Level::Deny)

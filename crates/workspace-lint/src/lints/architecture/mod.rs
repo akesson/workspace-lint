@@ -23,18 +23,12 @@
 //! Pattern grammar: `::` separates path segments; converted to `/` for
 //! globset matching. `*` matches one segment, `**` matches zero or more.
 //!
-//! Two backends behind one lint (transitional, `WL_SEMANTIC_BACKEND`):
-//!
-//! - [`ir`] — the default: the rustc-extracted reference graph (the engine's
-//!   [`wl_engine::SemanticModel`]). Canonical paths come from joining each
-//!   reference to its target's *definition* — so every re-export chain
-//!   (`pub use` **and** `pub(crate) use`) resolves exactly, and references
-//!   inside macro expansions are judged (anchored at the invocation site) —
-//!   the two scope limits the syn resolver documented.
-//! - [`legacy`] — the pre-pivot syn-resolver implementation, kept verbatim
-//!   for diffing until the migration's deletion PR. Its known limits:
-//!   `pub(crate) use` re-export hops are invisible (Tier 2.5 follows only
-//!   `pub use` edges), and macro-body references are not inspected.
+//! The judged substrate is the rustc-extracted reference graph (the engine's
+//! [`wl_engine::SemanticModel`]). Canonical paths come from joining each
+//! reference to its target's *definition* — so every re-export chain
+//! (`pub use` **and** `pub(crate) use`) resolves exactly, and references
+//! inside macro expansions are judged (anchored at the invocation site) —
+//! the two scope limits the retired syn resolver documented.
 
 use std::path::PathBuf;
 
@@ -43,11 +37,10 @@ use globset::{Glob, GlobMatcher};
 use crate::config::LintLevel;
 use crate::diagnostic::Diagnostic;
 use crate::diagnostic::builder::{at_crate, at_line};
-use crate::lints::{Lint, LintContext, LintId, Requirements, SemanticBackend, semantic_backend};
+use crate::lints::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
 mod ir;
-mod legacy;
 #[cfg(test)]
 mod tests;
 
@@ -69,46 +62,27 @@ impl Lint for Architecture {
     }
 
     fn requirements(&self) -> Requirements {
-        match semantic_backend() {
-            SemanticBackend::Rustc => Requirements {
-                needs_semantic: true,
-                // Member names (rule `from` globs match *package* names) and
-                // workspace-relative anchor paths.
-                needs_fast: true,
-                ..Requirements::default()
-            },
-            SemanticBackend::Syn => Requirements {
-                needs_workspace: true,
-                ..Requirements::default()
-            },
+        Requirements {
+            needs_semantic: true,
+            // Member names (rule `from` globs match *package* names) and
+            // workspace-relative anchor paths.
+            needs_fast: true,
         }
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        match semantic_backend() {
-            SemanticBackend::Rustc => {
-                let fast = cx
-                    .fast
-                    .expect("architecture (rustc backend) requires the FastModel");
-                // The runner skips the tier for a memberless workspace —
-                // mirror that instead of expecting a model that deliberately
-                // wasn't built.
-                if fast.members().is_empty() {
-                    return Vec::new();
-                }
-                ir::check(
-                    &self.config,
-                    fast,
-                    cx.semantic
-                        .expect("architecture (rustc backend) requires the SemanticModel"),
-                )
-            }
-            SemanticBackend::Syn => legacy::check(
-                &self.config,
-                cx.workspace
-                    .expect("architecture (syn backend) requires the Workspace"),
-            ),
+        let fast = cx.fast.expect("architecture requires the FastModel");
+        // The runner skips the tier for a memberless workspace — mirror that
+        // instead of expecting a model that deliberately wasn't built.
+        if fast.members().is_empty() {
+            return Vec::new();
         }
+        ir::check(
+            &self.config,
+            fast,
+            cx.semantic
+                .expect("architecture requires the SemanticModel"),
+        )
     }
 }
 

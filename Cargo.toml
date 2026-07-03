@@ -17,12 +17,6 @@ rust-version = "1.88"
 anyhow = "1"
 cargo_metadata = "0.23"
 clap = { version = "4", features = ["derive"] }
-# Pin the exact patch — dioxus-rsx is an internal Dioxus crate whose
-# public API is unstable. Upgrading: check the changelog, run
-# `cargo test -p syn-workspace` against the dioxus_rsx tests, and
-# update the pinned version here in lockstep with any AST walker
-# adjustments in the plugins/dioxus_rsx walker.
-dioxus-rsx = "=0.7.9"
 # The dylint orchestrator library (no rustc_private — the binary stays stable).
 # `library_packages` pulls in the cargo-cli plumbing `run()` needs to build the
 # driver and invoke `cargo check`. Version-locked to the pin in
@@ -32,16 +26,8 @@ fs-err = "3"
 globset = "0.4"
 ignore = "0.4"
 proc-macro2 = { version = "1", features = ["span-locations"] }
-# Needed by the `protobuf::Message` trait to decode a `rust-analyzer scip`
-# index for `--fix`'s deep verification. Kept open (^3) so it tracks whatever
-# protobuf `scip` itself pins (same call `tools/oracle-bless` makes). Binary-only
-# — the published library crates never pull it.
-protobuf = "3"
 quote = "1"
 regex = "1"
-# SCIP index parser for `--fix` deep verification (binary-only; the published
-# `syn-workspace` library stays scip-free, emitting its own `ScipOccurrence`s).
-scip = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shell-words = "1"

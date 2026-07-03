@@ -36,7 +36,7 @@ use wl_engine::wl_ir;
 
 use crate::config::GlobPattern;
 use crate::diagnostic::builder::{at_crate, at_line};
-use crate::diagnostic::{Applicability, Diagnostic, Evidence, PubVerdict};
+use crate::diagnostic::{Applicability, Diagnostic, PubVerdict};
 use crate::lints::LintId;
 
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
@@ -255,33 +255,7 @@ fn build_diagnostic(
         .note(
             "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
         );
-    let mut diag =
-        apply_structural_fix(builder, cand, ctx.auto_delete, &file, span, verdict).build();
-    attach_pub_evidence(&mut diag, cand, ctx, verdict);
-    diag
-}
-
-/// Tag the diagnostic's structural suggestion with the [`Evidence`] the fix
-/// pipeline keys on. Each `unused-pub` diagnostic carries at most one
-/// structural suggestion (a `pub(crate)` tighten or a deletion); we stamp
-/// every `MachineApplicable` one with the item's canonical path, owning
-/// crate, and the verdict.
-fn attach_pub_evidence(
-    diag: &mut Diagnostic,
-    cand: &PubCandidate,
-    ctx: &CheckCtx<'_>,
-    verdict: PubVerdict,
-) {
-    let evidence = Evidence::PubUnused {
-        krate_code: ctx.crate_code.to_string(),
-        canonical: cand.id.split("::").map(str::to_string).collect(),
-        verdict,
-    };
-    for s in &mut diag.suggestions {
-        if s.applicability == Applicability::MachineApplicable {
-            s.evidence = Some(evidence.clone());
-        }
-    }
+    apply_structural_fix(builder, cand, ctx.auto_delete, &file, span, verdict).build()
 }
 
 /// Structural fix policy — identical to the syn backend's:
@@ -351,7 +325,6 @@ fn build_tighten_suggestion(
         applicability,
         original,
         // Filled in by `attach_pub_evidence` once the diagnostic is built.
-        evidence: None,
     })
 }
 
@@ -421,7 +394,6 @@ pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcom
         applicability,
         original: Some(original),
         // Filled in by `attach_pub_evidence` once the diagnostic is built.
-        evidence: None,
     };
     if applicability == Applicability::MachineApplicable {
         DeleteOutcome::Apply(suggestion)
@@ -479,7 +451,7 @@ fn publish_hint(krate: &CrateInfo, crate_code: &str, count: usize) -> Diagnostic
     .build()
 }
 
-fn build_glob_set(patterns: &[GlobPattern]) -> Option<GlobSet> {
+pub(super) fn build_glob_set(patterns: &[GlobPattern]) -> Option<GlobSet> {
     if patterns.is_empty() {
         return None;
     }
