@@ -32,3 +32,6 @@ pub use orchestrate::{
     CfgSelector, ConfigRun, Engine, EngineConfig, EngineError, ExtractionRuns, ExtractorSource,
 };
 pub use semantic::{SemanticError, SemanticModel};
+// The IR contract is part of the semantic API surface (spans, fragments), so
+// consumers get it from the engine — no separate wl-ir dependency needed.
+pub use wl_ir;

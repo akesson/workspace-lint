@@ -24,7 +24,7 @@ pub(crate) enum LintLevel {
 
 impl LintLevel {
     /// The emitted-diagnostic level, or `None` when `Allow` (drop it).
-    pub fn to_diagnostic_level(self) -> Option<Level> {
+    pub(crate) fn to_diagnostic_level(self) -> Option<Level> {
         match self {
             LintLevel::Allow => None,
             LintLevel::Warn => Some(Level::Warn),
@@ -72,7 +72,7 @@ impl LintLevels {
     /// `unknown-lint`) are never lowered below `Warn` by a *global*
     /// `default = "allow"`; only an explicit per-lint entry can silence them,
     /// so a blanket allow can't quietly hide a broken config.
-    pub fn effective(&self, id: LintId) -> LintLevel {
+    pub(crate) fn effective(&self, id: LintId) -> LintLevel {
         if let Some(level) = self.overrides.get(&id) {
             return *level;
         }
@@ -84,7 +84,7 @@ impl LintLevels {
     /// silence the `config` / `unknown-lint` lints, so a blanket allow can't
     /// quietly hide a broken config. Pass a baseline level through here; an
     /// explicit per-lint override is honored verbatim and never floored.
-    pub fn floor_meta(id: LintId, base: LintLevel) -> LintLevel {
+    pub(crate) fn floor_meta(id: LintId, base: LintLevel) -> LintLevel {
         if base == LintLevel::Allow && matches!(id, LintId::Config | LintId::UnknownLint) {
             LintLevel::Warn
         } else {
@@ -96,7 +96,7 @@ impl LintLevels {
     /// to relying on the `default`). Used to decide when a policy lint that's
     /// been leveled-on but given no config table is a real mistake worth a
     /// `config` diagnostic.
-    pub fn has_override(&self, id: LintId) -> bool {
+    pub(crate) fn has_override(&self, id: LintId) -> bool {
         self.overrides.contains_key(&id)
     }
 }
@@ -110,14 +110,14 @@ pub(crate) struct GlobPattern(Glob);
 impl GlobPattern {
     /// Compile a pattern (used by the CLI `check` subcommands, which take
     /// raw `--glob` strings rather than deserializing a config table).
-    pub fn new(pattern: &str) -> Result<Self, globset::Error> {
+    pub(crate) fn new(pattern: &str) -> Result<Self, globset::Error> {
         Glob::new(pattern).map(GlobPattern)
     }
 
     /// Compile a CLI-provided pattern, exiting with a clear message on error.
     /// The `check` subcommands have no config file to anchor a diagnostic at,
     /// so an unusable glob is a fail-fast error, mirroring the config path.
-    pub fn from_cli(pattern: &str) -> Self {
+    pub(crate) fn from_cli(pattern: &str) -> Self {
         Self::new(pattern).unwrap_or_else(|e| {
             eprintln!("error: invalid glob `{pattern}`: {e}");
             std::process::exit(2);
@@ -125,12 +125,12 @@ impl GlobPattern {
     }
 
     /// The original pattern text.
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         self.0.glob()
     }
 
     /// The compiled `globset::Glob` (for building a `GlobSet` or a matcher).
-    pub fn compiled(&self) -> &Glob {
+    pub(crate) fn compiled(&self) -> &Glob {
         &self.0
     }
 }
@@ -180,7 +180,7 @@ impl From<&str> for Globs {
 }
 
 impl Globs {
-    pub fn iter(&self) -> std::slice::Iter<'_, GlobPattern> {
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, GlobPattern> {
         self.0.iter()
     }
 }

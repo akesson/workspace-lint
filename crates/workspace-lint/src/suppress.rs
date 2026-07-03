@@ -67,7 +67,7 @@ struct Entry {
 }
 
 impl SuppressionMap {
-    pub fn from_directives(directives: Vec<Directive>) -> Self {
+    pub(crate) fn from_directives(directives: Vec<Directive>) -> Self {
         Self {
             entries: directives
                 .into_iter()
@@ -82,7 +82,7 @@ impl SuppressionMap {
     /// Test whether any directive suppresses this diagnostic. Side-effect:
     /// records `matched = true` on every matching `expect` so the
     /// stale-detection pass picks it up.
-    pub fn is_suppressed(&mut self, d: &Diagnostic) -> bool {
+    pub(crate) fn is_suppressed(&mut self, d: &Diagnostic) -> bool {
         let lint_short = d.lint_short();
         let mut suppressed = false;
         for entry in &mut self.entries {
@@ -114,7 +114,7 @@ impl SuppressionMap {
     /// safe — the dedup keeps working as long as the fan-out reuses the
     /// same `origin`. See `directives.rs::cargo_toml_fan_out` for the
     /// Line + Crate emitter that's the original motivating case.
-    pub fn stale_expects(&self) -> Vec<Diagnostic> {
+    pub(crate) fn stale_expects(&self) -> Vec<Diagnostic> {
         use std::collections::HashMap;
 
         // origin_key -> (any_matched, representative_entry)

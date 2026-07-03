@@ -48,7 +48,7 @@ pub(crate) enum LintId {
 impl LintId {
     /// Every lint variant, in stable (alphabetical-by-id) order. Order is
     /// asserted by `tests::all_ids_are_sorted`.
-    pub const ALL: &'static [LintId] = &[
+    pub(crate) const ALL: &'static [LintId] = &[
         LintId::Architecture,
         LintId::CentralizedDeps,
         LintId::CliCrateVersion,
@@ -67,7 +67,7 @@ impl LintId {
 
     /// The full `workspace-lint::<short>` identifier emitted in diagnostics
     /// and accepted by config / suppression directives.
-    pub const fn id(self) -> &'static str {
+    pub(crate) const fn id(self) -> &'static str {
         match self {
             Self::Architecture => "workspace-lint::architecture",
             Self::CentralizedDeps => "workspace-lint::centralized-deps",
@@ -88,7 +88,7 @@ impl LintId {
 
     /// Short kebab name (no `workspace-lint::` prefix). Used in fixture
     /// directory names, comment directives, and the `[lints]` config table.
-    pub const fn short(self) -> &'static str {
+    pub(crate) const fn short(self) -> &'static str {
         match self {
             Self::Architecture => "architecture",
             Self::CentralizedDeps => "centralized-deps",
@@ -109,7 +109,7 @@ impl LintId {
 
     /// Reverse of [`Self::short`]: look up a variant by its kebab name.
     /// Returns `None` for unknown names.
-    pub fn from_short(s: &str) -> Option<Self> {
+    pub(crate) fn from_short(s: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|v| v.short() == s)
     }
 
@@ -121,7 +121,7 @@ impl LintId {
     /// required config, so they run whenever their effective level isn't
     /// `allow`. This is the single source of truth for that distinction; see
     /// [`crate::config`] for how it drives enablement.
-    pub const fn requires_config(self) -> bool {
+    pub(crate) const fn requires_config(self) -> bool {
         matches!(
             self,
             Self::FileSize

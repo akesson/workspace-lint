@@ -1,3 +1,7 @@
+# workspace-lint: expect(crate-size) — transitionally over the line while the
+# crate carries BOTH unused-pub backends (lints/unused_pub/legacy.rs) plus the
+# deep/ SCIP verifier; the migration's deletion PR removes them and this
+# expect rots loudly via stale-expect.
 [package]
 name = "workspace-lint"
 version = "0.1.0"

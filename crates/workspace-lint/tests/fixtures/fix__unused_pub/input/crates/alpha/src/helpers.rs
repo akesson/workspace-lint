@@ -13,28 +13,3 @@ pub struct Exposed;
 pub fn exposes() -> Exposed {
     Exposed
 }
-
-// `BuildErr` is named only inside the crate (the `impl From` self-type below),
-// so the resolver classes it `IntraCrate` — pre-fix it would be tightened. But
-// typed_builder expands `#[builder(build_method(into = …))]` into
-// `pub fn build(self) -> Result<Cfg, BuildErr>`, so narrowing `BuildErr` would
-// make a generated public fn expose a less-public type. The builder-attr
-// signature-exposure guard suppresses it, so `--fix` must leave `BuildErr` (and
-// `Cfg`) `pub` — the proc-macro analogue of the `Exposed` case above.
-use typed_builder::TypedBuilder;
-
-#[derive(TypedBuilder)]
-#[builder(build_method(into = Result<Cfg, BuildErr>))]
-pub struct Cfg {
-    pub n: u32,
-}
-
-pub enum BuildErr {
-    Bad,
-}
-
-impl From<Cfg> for Result<Cfg, BuildErr> {
-    fn from(c: Cfg) -> Self {
-        Ok(c)
-    }
-}

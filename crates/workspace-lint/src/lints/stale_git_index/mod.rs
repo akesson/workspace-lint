@@ -17,7 +17,7 @@ mod tests;
 pub(crate) struct StaleGitIndex;
 
 impl StaleGitIndex {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }

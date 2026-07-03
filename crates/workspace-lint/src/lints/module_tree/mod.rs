@@ -20,7 +20,7 @@ use crate::lints::{Lint, LintContext, LintId, Requirements};
 pub(crate) struct ModuleTree;
 
 impl ModuleTree {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }

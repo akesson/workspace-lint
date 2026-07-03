@@ -21,11 +21,11 @@ pub(crate) struct CrateSize {
 }
 
 impl CrateSize {
-    pub fn new(config: CrateSizeConfig) -> Self {
+    pub(crate) fn new(config: CrateSizeConfig) -> Self {
         Self { config }
     }
 
-    pub fn from_cli(glob: String, max_code_lines: usize, include: Vec<String>) -> Self {
+    pub(crate) fn from_cli(glob: String, max_code_lines: usize, include: Vec<String>) -> Self {
         Self::new(CrateSizeConfig {
             rules: vec![CrateSizeRule {
                 glob: GlobPattern::from_cli(&glob),

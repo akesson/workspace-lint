@@ -12,7 +12,7 @@ mod tests;
 pub(crate) struct CentralizedDeps;
 
 impl CentralizedDeps {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }

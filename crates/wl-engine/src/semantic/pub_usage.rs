@@ -1,0 +1,160 @@
+//! Per-candidate unused-pub classification across the config matrix — the
+//! query surface the ported `unused-pub` lint consumes.
+//!
+//! Where [`super::union::UnionVerdict`] reduces the matrix to lead/retired
+//! *identities*, the lint needs the full per-candidate picture: the
+//! cross-vs-intra usage split (drives the "tighten to `pub(crate)`" vs
+//! "consider removing" message), the structural must-stay-`pub` guards
+//! (re-export target, named in a public signature), the pub-module-hop
+//! external reachability (the publish-gated exemption), and the spans the
+//! diagnostic and its `--fix` suggestion anchor to. All of it is derived from
+//! the fact union — no config knowledge lives here; kind/allowlist/path
+//! filters and publish policy belong to the lint layer.
+
+use std::collections::BTreeMap;
+
+use wl_ir::Span;
+
+use super::assembly::{Assembly, CANDIDATE_KINDS, Category, Reach};
+
+/// How a candidate is used, unioned across every extracted config. Mirrors the
+/// syn lint's `Usage` vocabulary, plus the dispatch/export class the rustc
+/// engine can see and syn couldn't.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PubUsage {
+    /// A real (non-import) use-site in another crate under some config —
+    /// integration tests, benches, and sibling bins compile as their own
+    /// crates, so "keep it `pub`" cases land here exactly like the syn
+    /// sibling-target rule. Leave alone.
+    CrossCrate,
+    /// Reached only through dispatch or linker export (external/internal trait
+    /// dispatch, `#[no_mangle]`-style export roots). No direct edge to judge,
+    /// but provably not dead — leave alone. (This class retires the
+    /// `ffi_no_mangle_export` false positive syn couldn't avoid.)
+    DispatchReached,
+    /// Real use-sites exist but every one is in the owning crate — the
+    /// "tighten to `pub(crate)`" advice is valid in every config that saw it.
+    IntraCrate,
+    /// No reaching edge under any config — the "appears unused" verdict.
+    Unused,
+}
+
+/// One pub candidate with everything the lint needs to filter, classify, and
+/// anchor a diagnostic. Spans come from the first config (matrix order) that
+/// defines the item, so the primary config wins when it can see the def.
+#[derive(Debug)]
+pub struct PubCandidate {
+    /// Cross-config identity: the definition path `crate::module::…::name`.
+    pub id: String,
+    /// Owning crate (code form) — the leading `id` segment.
+    pub krate: String,
+    /// The item's own name — the trailing `id` segment.
+    pub name: String,
+    /// rustc `DefKind` in the shared vocabulary (`fn`/`struct`/…).
+    pub kind: String,
+    pub category: Category,
+    pub usage: PubUsage,
+    /// Whole-definition span (on-disk byte offsets; see [`wl_ir::Span`]).
+    pub span: Option<Span>,
+    /// Visibility-token span — the `--fix` tighten write surface.
+    pub vis_span: Option<Span>,
+    /// Named in a `pub` item's signature under some config: tightening would
+    /// not compile (E0446 / `private_interfaces`) — must stay `pub`.
+    pub signature_exposed: bool,
+    /// `pub`-module-hop reachable from outside the crate under some config —
+    /// the substrate for the publish-gated external-API exemption.
+    pub externally_reachable: bool,
+    /// Target of a `use`/`pub use` under some config: tightening or deleting
+    /// can break the re-export (E0364/E0365) — must stay `pub`.
+    pub reexport_target: bool,
+}
+
+/// The per-config fold of one identity: OR-accumulated over every
+/// `DefPathHash` key sharing the definition path (a `--tests` compile emits
+/// both the plain and `+test` cfg variants of a crate).
+#[derive(Default)]
+struct Fold {
+    cross: bool,
+    intra: bool,
+    dispatch: bool,
+    signature_exposed: bool,
+    externally_reachable: bool,
+    reexport_target: bool,
+}
+
+pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
+    let (_, primary) = &configs[0];
+    let members = &primary.crates;
+
+    // Union fold across configs, keyed by the cross-config identity. Def
+    // display fields (spans, kind, category) come from the first config that
+    // defines the identity — matrix order, primary first.
+    let mut folds: BTreeMap<String, Fold> = BTreeMap::new();
+    let mut display: BTreeMap<String, (&Assembly, String)> = BTreeMap::new();
+
+    for (_, assembly) in configs {
+        for (key, def) in &assembly.defs {
+            if !def.public
+                || def.synthetic
+                || !def.category.is_candidate()
+                || !CANDIDATE_KINDS.contains(&def.kind.as_str())
+                || !members.contains(&def.krate)
+            {
+                continue;
+            }
+            // A macro-generated def has no editable visibility token (its
+            // span is projected to the invocation site, display-only), so it
+            // is never an actionable unused-pub candidate. This also strips
+            // the `--test` harness's public `TestDescAndFn` const generated
+            // per `#[test]` fn, which shadows the (private) fn at the same
+            // path and would otherwise flood the verdict.
+            if def.span.as_ref().is_some_and(|s| s.from_expansion) {
+                continue;
+            }
+            let fold = folds.entry(def.path.clone()).or_default();
+            let (workspace_wide, intra_only) = assembly.degrees(key);
+            fold.cross |= workspace_wide > intra_only;
+            fold.intra |= intra_only > 0;
+            fold.dispatch |= matches!(
+                assembly.reach_of(key, def),
+                Reach::ExternalDispatch | Reach::InternalDispatch | Reach::ExportRoot
+            );
+            fold.signature_exposed |= assembly.exposed_in_public_signature(key);
+            fold.externally_reachable |= assembly.is_externally_reachable(key, def);
+            fold.reexport_target |= assembly.is_import_target(key);
+            display
+                .entry(def.path.clone())
+                .or_insert_with(|| (assembly, key.clone()));
+        }
+    }
+
+    folds
+        .into_iter()
+        .map(|(id, fold)| {
+            let (assembly, key) = &display[&id];
+            let def = &assembly.defs[key];
+            let usage = if fold.cross {
+                PubUsage::CrossCrate
+            } else if fold.dispatch {
+                PubUsage::DispatchReached
+            } else if fold.intra {
+                PubUsage::IntraCrate
+            } else {
+                PubUsage::Unused
+            };
+            PubCandidate {
+                krate: def.krate.clone(),
+                name: id.rsplit("::").next().unwrap_or(&id).to_string(),
+                kind: def.kind.clone(),
+                category: def.category,
+                usage,
+                span: def.span.clone(),
+                vis_span: def.vis_span.clone(),
+                signature_exposed: fold.signature_exposed,
+                externally_reachable: fold.externally_reachable,
+                reexport_target: fold.reexport_target,
+                id,
+            }
+        })
+        .collect()
+}

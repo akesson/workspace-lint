@@ -23,14 +23,13 @@ fn manifest_dir() -> PathBuf {
 }
 
 fn run_fix_fixture(name: &str) {
-    // Default fixtures declare unfetchable deps; skip the rust-analyzer pass.
-    run_fix_fixture_with(name, &["--no-deep"]);
+    run_fix_fixture_with(name, &["--no-deep"], &[]);
 }
 
 /// Like [`run_fix_fixture`] but with explicit extra `--fix` args. Deep fixtures
 /// pass `--scip-index <fixture>/index.scip` to verify the rust-analyzer-backed
 /// path hermetically (the committed index needs no rust-analyzer in CI).
-fn run_fix_fixture_with(name: &str, extra_args: &[&str]) {
+fn run_fix_fixture_with(name: &str, extra_args: &[&str], envs: &[(&str, &str)]) {
     let fixture = manifest_dir().join("tests/fixtures").join(name);
     let input = fixture.join("input");
     let expected = fixture.join("expected");
@@ -58,6 +57,9 @@ fn run_fix_fixture_with(name: &str, extra_args: &[&str]) {
     // `--scip-index <committed>` for the deep ones (hermetic, no rust-analyzer).
     let mut cmd = workspace_lint();
     cmd.current_dir(tmp.path()).arg("--fix");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
     for a in extra_args {
         // `--scip-index` paths are given relative to the fixture dir; make them
         // absolute so they resolve from the tempdir cwd.
@@ -151,5 +153,12 @@ fn fix_unused_pub() {
 /// rust-analyzer) is tightened to `pub(crate)`.
 #[test]
 fn fix_deep_unused_pub() {
-    run_fix_fixture_with("fix__deep_unused_pub", &["--scip-index=index.scip"]);
+    // The SCIP path exists to double-check the SYN backend's verdicts against
+    // rust-analyzer; the rustc engine retires it wholesale (deletion PR). Pin
+    // the fixture to the backend it verifies.
+    run_fix_fixture_with(
+        "fix__deep_unused_pub",
+        &["--scip-index=index.scip"],
+        &[("WL_SEMANTIC_BACKEND", "syn")],
+    );
 }

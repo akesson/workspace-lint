@@ -45,6 +45,16 @@ impl CfgSelector {
             cargo_args: vec!["--tests".into()],
         }
     }
+
+    /// The `--benches` configuration: bench targets. A default-harness bench
+    /// compiles in test mode (keyed `+test` like unit tests); a
+    /// `harness = false` bench compiles as a plain bin.
+    pub fn benches() -> Self {
+        Self {
+            id: "benches".into(),
+            cargo_args: vec!["--benches".into()],
+        }
+    }
 }
 
 /// What to extract: the target workspace, the config matrix (first entry is

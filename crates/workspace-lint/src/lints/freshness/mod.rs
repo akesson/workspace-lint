@@ -18,11 +18,11 @@ pub(crate) struct Freshness {
 }
 
 impl Freshness {
-    pub fn new(config: FreshnessConfig) -> Self {
+    pub(crate) fn new(config: FreshnessConfig) -> Self {
         Self { config }
     }
 
-    pub fn from_cli(glob: String, depends_on: String) -> Self {
+    pub(crate) fn from_cli(glob: String, depends_on: String) -> Self {
         Self::new(FreshnessConfig {
             rules: vec![FreshnessRule {
                 glob: GlobPattern::from_cli(&glob),

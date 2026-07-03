@@ -1,0 +1,17 @@
+error: pub fn `never_used` in crate `demo` appears unused — consider removing
+ --> <TMP>/crates/demo/src/lib.rs:10:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+help: tighten to `pub(crate)`
+  |
+10 - pub
+10 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+10 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[deny(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 1 error

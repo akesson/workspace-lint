@@ -93,14 +93,16 @@ impl EngineSection {
     /// Every accepted `configs` entry spelling (`tests` aliases `--tests`).
     /// The audit's "did you mean …?" candidates; kept next to
     /// [`Self::selector_for`] so the two can't drift.
-    pub const KNOWN: &'static [&'static str] = &["default", "--tests", "tests"];
+    pub(crate) const KNOWN: &'static [&'static str] =
+        &["default", "--tests", "tests", "--benches", "benches"];
 
     /// The engine selector one entry maps to; `None` for an unknown entry
     /// (already reported by the config audit).
-    pub fn selector_for(entry: &str) -> Option<wl_engine::CfgSelector> {
+    pub(crate) fn selector_for(entry: &str) -> Option<wl_engine::CfgSelector> {
         match entry {
             "default" => Some(wl_engine::CfgSelector::default_cfg()),
             "--tests" | "tests" => Some(wl_engine::CfgSelector::tests()),
+            "--benches" | "benches" => Some(wl_engine::CfgSelector::benches()),
             _ => None,
         }
     }
@@ -109,7 +111,7 @@ impl EngineSection {
     /// entries are skipped (the audit already flagged them). An empty result —
     /// an explicit `configs = []` or all entries unknown — falls back to the
     /// default config so extraction always has a primary.
-    pub fn selectors(&self) -> Vec<wl_engine::CfgSelector> {
+    pub(crate) fn selectors(&self) -> Vec<wl_engine::CfgSelector> {
         let mut out: Vec<wl_engine::CfgSelector> = self
             .configs
             .iter()
@@ -142,7 +144,7 @@ impl Config {
     /// Whether the config table a *policy* lint ([`LintId::requires_config`])
     /// needs is present. Non-policy lints need no table and always return
     /// `true`. Used by the config audit's "enabled but unconfigured" check.
-    pub fn has_table_for(&self, id: LintId) -> bool {
+    pub(crate) fn has_table_for(&self, id: LintId) -> bool {
         match id {
             LintId::FileSize => self.file_size.is_some(),
             LintId::CrateSize => self.crate_size.is_some(),
@@ -168,7 +170,7 @@ impl Config {
     /// The `config` / `unknown-lint` meta-floor applies at every *baseline*
     /// step, so neither a global nor a per-crate `default = "allow"` can hide a
     /// broken config — only an explicit per-lint entry can.
-    pub fn effective_level(&self, id: LintId, krate: Option<&str>) -> LintLevel {
+    pub(crate) fn effective_level(&self, id: LintId, krate: Option<&str>) -> LintLevel {
         if let Some(cc) = krate.and_then(|name| self.crates.get(name)) {
             if let Some(level) = cc.lints.overrides.get(&id) {
                 return *level;
@@ -183,7 +185,7 @@ impl Config {
     /// The `unused-deps` params for crate `name`: its per-crate section if
     /// present, else the global `[unused-deps]`, else defaults. Used by the
     /// registry to capture per-crate params in the lint instance.
-    pub fn unused_deps_overrides(&self) -> HashMap<String, UnusedDepsConfig> {
+    pub(crate) fn unused_deps_overrides(&self) -> HashMap<String, UnusedDepsConfig> {
         self.crates
             .iter()
             .filter_map(|(name, cc)| cc.unused_deps.clone().map(|c| (name.clone(), c)))
@@ -192,7 +194,7 @@ impl Config {
 
     /// The `unused-pub` params for each crate that declares a per-crate section
     /// (see [`Config::unused_deps_overrides`]).
-    pub fn unused_pub_overrides(&self) -> HashMap<String, UnusedPubConfig> {
+    pub(crate) fn unused_pub_overrides(&self) -> HashMap<String, UnusedPubConfig> {
         self.crates
             .iter()
             .filter_map(|(name, cc)| cc.unused_pub.clone().map(|c| (name.clone(), c)))

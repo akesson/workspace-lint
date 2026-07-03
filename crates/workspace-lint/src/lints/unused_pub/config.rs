@@ -29,7 +29,7 @@ pub(crate) enum KindFilter {
 }
 
 impl KindFilter {
-    pub fn to_item_kind(self) -> ItemKind {
+    pub(crate) fn to_item_kind(self) -> ItemKind {
         match self {
             KindFilter::Function => ItemKind::Fn,
             KindFilter::Struct => ItemKind::Struct,
@@ -41,6 +41,25 @@ impl KindFilter {
             KindFilter::Static => ItemKind::Static,
             KindFilter::Module => ItemKind::Module,
             KindFilter::Macro => ItemKind::Macro,
+        }
+    }
+
+    /// The rustc-IR backend's kind vocabulary (the extractor's stringified
+    /// `DefKind`). `Module` is accepted for config compatibility but matches
+    /// nothing — `mod` is a container, never an unused-pub candidate (same
+    /// outcome as the syn backend's `is_definition` pre-filter).
+    pub(crate) fn to_ir_kind(self) -> &'static str {
+        match self {
+            KindFilter::Function => "fn",
+            KindFilter::Struct => "struct",
+            KindFilter::Enum => "enum",
+            KindFilter::Union => "union",
+            KindFilter::Trait => "trait",
+            KindFilter::Type => "type",
+            KindFilter::Const => "const",
+            KindFilter::Static => "static",
+            KindFilter::Module => "mod",
+            KindFilter::Macro => "macro",
         }
     }
 }

@@ -19,6 +19,9 @@ pub struct FastModel {
     /// member `manifest_dir`s carry, so [`FastModel::crate_relative_path`]'s
     /// plain `strip_prefix` agrees by construction.
     root: PathBuf,
+    /// `cargo metadata`'s `target_directory` (absolute). Everything under it
+    /// is build-generated — never an author-editable lint surface.
+    target_directory: PathBuf,
     root_manifest: Manifest,
     /// Workspace members, sorted by name for deterministic iteration.
     members: Vec<CrateInfo>,
@@ -57,6 +60,7 @@ impl FastModel {
         // metadata call, so relative-path queries agree without leaning on
         // the canonicalization fallback (a caller root of `.` would).
         let root = metadata.workspace_root.as_std_path().to_path_buf();
+        let target_directory = metadata.target_directory.as_std_path().to_path_buf();
         let root_manifest = Manifest::load(root.join("Cargo.toml"))?;
         let mut members = metadata
             .workspace_packages()
@@ -102,6 +106,7 @@ impl FastModel {
         members.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Self {
             root,
+            target_directory,
             root_manifest,
             members,
         })
@@ -110,6 +115,14 @@ impl FastModel {
     /// Workspace root directory (absolute, from `cargo metadata`).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Cargo's target directory (absolute, from `cargo metadata`). A source
+    /// file under it — `OUT_DIR` content spliced via `include!`, dylint's
+    /// nested target — is build-generated, so lints must not anchor findings
+    /// (or propose fixes) there.
+    pub fn target_directory(&self) -> &Path {
+        &self.target_directory
     }
 
     /// Parsed root `Cargo.toml`. Carries the `[workspace.dependencies]`
@@ -122,6 +135,22 @@ impl FastModel {
     /// The workspace member crates, sorted by name.
     pub fn members(&self) -> &[CrateInfo] {
         &self.members
+    }
+
+    /// `krate`'s `publish` field with `publish.workspace = true` resolved
+    /// against the root manifest's `[workspace.package] publish`. (A root
+    /// that itself inherits is nonsensical; treated as absent.) Mirrors the
+    /// syn resolver's `resolved_publish` — the primitive behind the
+    /// publish-aware external-API exemption in `unused-pub`.
+    pub fn resolved_publish(&self, krate: &CrateInfo) -> super::manifest::Publish {
+        use super::manifest::Publish;
+        match krate.manifest().publish() {
+            Publish::Inherited => match self.root_manifest.workspace_package_publish() {
+                Publish::Inherited => Publish::Absent,
+                resolved => resolved,
+            },
+            other => other,
+        }
     }
 
     /// Look up a workspace member by its Cargo-form name (the value users

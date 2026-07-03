@@ -21,7 +21,11 @@ pub(crate) struct DiagnosticBuilder {
 }
 
 impl DiagnosticBuilder {
-    pub fn new(lint: &'static str, message: impl Into<String>, anchor: SilenceAnchor) -> Self {
+    pub(crate) fn new(
+        lint: &'static str,
+        message: impl Into<String>,
+        anchor: SilenceAnchor,
+    ) -> Self {
         Self {
             lint: Cow::Borrowed(lint),
             level: Level::Warn,
@@ -38,7 +42,7 @@ impl DiagnosticBuilder {
     // Test-only: production builds diagnostics at the default `Warn` and lets
     // `apply_lint_levels` rewrite the level; only tests set it at construction.
     #[allow(dead_code)]
-    pub fn level(mut self, level: Level) -> Self {
+    pub(crate) fn level(mut self, level: Level) -> Self {
         self.level = level;
         self
     }
@@ -46,33 +50,33 @@ impl DiagnosticBuilder {
     /// Set the level *and* mark it as lint-chosen, so the `[lints]` severity
     /// table won't override it. Used by lints with their own per-rule
     /// severity (currently `architecture`).
-    pub fn level_explicit(mut self, level: Level) -> Self {
+    pub(crate) fn level_explicit(mut self, level: Level) -> Self {
         self.level = level;
         self.level_is_explicit = true;
         self
     }
 
-    pub fn primary(mut self, span: Span) -> Self {
+    pub(crate) fn primary(mut self, span: Span) -> Self {
         self.primary = Some(span);
         self
     }
 
-    pub fn help(mut self, msg: impl Into<String>) -> Self {
+    pub(crate) fn help(mut self, msg: impl Into<String>) -> Self {
         self.helps.push(msg.into());
         self
     }
 
-    pub fn note(mut self, msg: impl Into<String>) -> Self {
+    pub(crate) fn note(mut self, msg: impl Into<String>) -> Self {
         self.notes.push(msg.into());
         self
     }
 
-    pub fn suggestion(mut self, s: super::Suggestion) -> Self {
+    pub(crate) fn suggestion(mut self, s: super::Suggestion) -> Self {
         self.suggestions.push(s);
         self
     }
 
-    pub fn build(self) -> Diagnostic {
+    pub(crate) fn build(self) -> Diagnostic {
         Diagnostic {
             lint: self.lint,
             level: self.level,

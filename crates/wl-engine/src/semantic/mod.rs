@@ -9,11 +9,13 @@
 mod assembly;
 mod deps;
 mod meta;
+mod pub_usage;
 mod union;
 
 pub use assembly::{Assembly, Category, DefInfo, Reach};
 pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
+pub use pub_usage::{PubCandidate, PubUsage};
 pub use union::{Lead, Retired, UnionVerdict};
 
 use std::path::Path;
@@ -102,6 +104,14 @@ impl SemanticModel {
     /// The cfg-matrix-unioned unused-pub verdict.
     pub fn union_verdict(&self) -> UnionVerdict {
         UnionVerdict::compute(&self.configs, Some(&self.meta))
+    }
+
+    /// Every pub candidate with its cross-config usage classification, spans,
+    /// and must-stay-`pub` guards — the query surface the ported `unused-pub`
+    /// lint filters and renders. Candidates are restricted to the primary
+    /// config's member crates; ordering is deterministic (by identity).
+    pub fn pub_candidates(&self) -> Vec<PubCandidate> {
+        pub_usage::compute(&self.configs)
     }
 
     /// The unused-deps verdict (declared deps vs the reference graph).

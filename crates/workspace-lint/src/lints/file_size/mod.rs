@@ -20,11 +20,11 @@ pub(crate) struct FileSize {
 }
 
 impl FileSize {
-    pub fn new(config: FileSizeConfig) -> Self {
+    pub(crate) fn new(config: FileSizeConfig) -> Self {
         Self { config }
     }
 
-    pub fn from_cli(glob: String, max_code_lines: usize) -> Self {
+    pub(crate) fn from_cli(glob: String, max_code_lines: usize) -> Self {
         Self::new(FileSizeConfig {
             rules: vec![FileSizeRule {
                 glob: GlobPattern::from_cli(&glob),

@@ -241,7 +241,57 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         c.expect_vis_text(it, "pub(crate)");
     });
 
-    // 11. Global invariant (load-bearing): nothing in the fragment references
+    // 11. (PR 10) `self_type`: an inherent-impl item links its nominal self
+    //     type by stable key — including from an impl block in a DIFFERENT
+    //     module (`def_path_str` renders that method at the impl's module, so
+    //     only the key link can recover the type). Trait-impl items carry
+    //     `trait_item` instead, never `self_type`.
+    {
+        let by_name = |name: &str| -> Option<&ItemFact> {
+            frag.items
+                .iter()
+                .find(|it| it.path.last().map(String::as_str) == Some(name))
+        };
+        let carrier_key = by_name("Carrier").map(|it| it.key.clone());
+        match carrier_key {
+            None => ck.failures.push("[Carrier] item not found".into()),
+            Some(carrier_key) => {
+                for method in ["same_module", "remote_method"] {
+                    match by_name(method) {
+                        None => ck.failures.push(format!("[{method}] item not found")),
+                        Some(it) => {
+                            let it = it.clone();
+                            ck.expect(
+                                it.self_type.as_deref() == Some(carrier_key.as_str()),
+                                &it,
+                                "self_type must be Carrier's key",
+                            );
+                            ck.expect(it.trait_item.is_none(), &it, "inherent: no trait_item");
+                        }
+                    }
+                }
+            }
+        }
+        // A derive-generated trait-impl assoc fn must NOT carry self_type.
+        let derived = frag.items.iter().find(|it| {
+            it.trait_item.is_some() && it.path.last().map(String::as_str) == Some("clone")
+        });
+        match derived {
+            None => ck
+                .failures
+                .push("[self_type] no trait-impl item to counter-check".into()),
+            Some(it) => {
+                let it = it.clone();
+                ck.expect(
+                    it.self_type.is_none(),
+                    &it,
+                    "trait-impl item must not carry self_type",
+                );
+            }
+        }
+    }
+
+    // 12. Global invariant (load-bearing): nothing in the fragment references
     //    gen.rs except the `make_pub_fn` macro definition itself (which genuinely
     //    lives there, is a `macro`, and is not from an expansion).
     for it in &frag.items {

@@ -67,3 +67,7 @@ pub fn exposes_probed() -> Probed {
 // on-disk byte-offset fidelity for spans in `\r\n` sources. Declared last so
 // the line-number assertions above stay put.
 mod crlf;
+
+// Inherent-impl probes (PR 10): `ItemFact::self_type`, incl. the
+// remote-module impl whose `def_path_str` rendering hides the type.
+mod inherent;

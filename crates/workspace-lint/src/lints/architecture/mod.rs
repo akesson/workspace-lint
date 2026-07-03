@@ -48,7 +48,7 @@ pub(crate) struct Architecture {
 }
 
 impl Architecture {
-    pub fn new(config: ArchitectureConfig) -> Self {
+    pub(crate) fn new(config: ArchitectureConfig) -> Self {
         Self { config }
     }
 }
