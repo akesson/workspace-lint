@@ -281,7 +281,7 @@ pub(crate) fn load() -> (Config, Vec<Diagnostic>) {
             "error: found both {STANDALONE_FILE} and [workspace.metadata.workspace-lint] in Cargo.toml — use only one"
         )),
         (false, None) => crate::util::fail(format!(
-            "error: no configuration found — create {STANDALONE_FILE} or add [workspace.metadata.workspace-lint] to Cargo.toml"
+            "error: no configuration found — run `workspace-lint init` to scaffold {STANDALONE_FILE}, or add [workspace.metadata.workspace-lint] to Cargo.toml"
         )),
         (true, None) => {
             let content = fs::read_to_string(STANDALONE_FILE).unwrap_or_else(|e| {
