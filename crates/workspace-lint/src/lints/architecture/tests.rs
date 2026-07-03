@@ -1,5 +1,10 @@
 use super::*;
 
+/// Segment-vec shorthand for the canonical paths the rule machinery judges.
+fn path(segments: &[&str]) -> Vec<String> {
+    segments.iter().map(|s| s.to_string()).collect()
+}
+
 fn rule(from: &[&str], deny: &[&str]) -> ArchitectureRule {
     ArchitectureRule {
         name: Some("test-rule".into()),
@@ -26,8 +31,8 @@ fn deny_pattern_matches_via_glob_form() {
     assert!(r.matches_from("apps-dashboard"));
     assert!(!r.matches_from("ui-shared"));
 
-    let denied = ResolvedPath::new(["data_models", "internal", "User"]);
-    let allowed = ResolvedPath::new(["data_models", "api", "User"]);
+    let denied = path(&["data_models", "internal", "User"]);
+    let allowed = path(&["data_models", "api", "User"]);
     assert!(r.denies(&denied));
     assert!(!r.denies(&allowed));
 }
@@ -37,8 +42,8 @@ fn exception_overrides_deny() {
     let mut rl = rule(&["apps-*"], &["sqlx::**"]);
     rl.exceptions = vec!["sqlx::query::Query".into()];
     let r = CompiledRule::compile(&rl).unwrap();
-    let denied = ResolvedPath::new(["sqlx", "Pool"]);
-    let exception = ResolvedPath::new(["sqlx", "query", "Query"]);
+    let denied = path(&["sqlx", "Pool"]);
+    let exception = path(&["sqlx", "query", "Query"]);
     assert!(r.denies(&denied) && !r.is_exception(&denied));
     assert!(r.denies(&exception) && r.is_exception(&exception));
 }
@@ -50,12 +55,12 @@ fn denies_via_prefix_when_trailing_method() {
     // tests every prefix and reports the shortest denied one — the type itself,
     // not the trailing method.
     let r = CompiledRule::compile(&rule(&["apps-*"], &["data-models::internal::**"])).unwrap();
-    let canonical = ResolvedPath::new(["data_models", "internal", "InternalUser", "new"]);
+    let canonical = path(&["data_models", "internal", "InternalUser", "new"]);
     let denied = canonical_prefixes(&canonical)
         .into_iter()
         .find(|p| r.denies(p));
     assert_eq!(
-        denied.map(|p| p.display().to_string()).as_deref(),
+        denied.map(|p| p.join("::")).as_deref(),
         Some("data_models::internal::InternalUser"),
         "a trailing-method path must match via its type prefix",
     );
@@ -72,7 +77,7 @@ fn exception_at_denied_prefix_exempts_call_site() {
     let mut rl = rule(&["apps-*"], &["data-models::internal::**"]);
     rl.exceptions = vec!["data-models::internal::PublicToken".into()];
     let r = CompiledRule::compile(&rl).unwrap();
-    let canonical = ResolvedPath::new(["data_models", "internal", "PublicToken", "issue"]);
+    let canonical = path(&["data_models", "internal", "PublicToken", "issue"]);
     let prefixes = canonical_prefixes(&canonical);
     let denied_idx = prefixes
         .iter()
@@ -95,14 +100,14 @@ fn exception_above_denied_prefix_does_not_exempt() {
     let mut rl = rule(&["apps-*"], &["data-models::internal::**"]);
     rl.exceptions = vec!["data-models::internal".into()];
     let r = CompiledRule::compile(&rl).unwrap();
-    let canonical = ResolvedPath::new(["data_models", "internal", "Secret", "new"]);
+    let canonical = path(&["data_models", "internal", "Secret", "new"]);
     let prefixes = canonical_prefixes(&canonical);
     let denied_idx = prefixes
         .iter()
         .position(|p| r.denies(p))
         .expect("a prefix matches the deny");
     assert_eq!(
-        prefixes[denied_idx].display().to_string(),
+        prefixes[denied_idx].join("::"),
         "data_models::internal::Secret",
         "shortest denied prefix is the type, not the ancestor module",
     );

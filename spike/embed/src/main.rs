@@ -204,15 +204,22 @@ fn expected_fragments(
             continue;
         }
         for t in &p.targets {
-            let name = t.name.replace('-', "_");
+            let mut name = t.name.replace('-', "_");
             // Compare kinds via Display (as wl-assemble does) so we don't couple
             // to cargo_metadata's enum representation.
             let mut is_compile_unit = false; // lib/bin/proc-macro (linted primary)
             let mut is_test_target = false; // integration test (only under --tests)
             for k in &t.kind {
                 match k.to_string().as_str() {
-                    "lib" | "rlib" | "dylib" | "cdylib" | "staticlib" | "proc-macro" | "bin" => {
+                    "lib" | "rlib" | "dylib" | "cdylib" | "staticlib" | "proc-macro" => {
                         is_compile_unit = true
+                    }
+                    // Bins carry the extractor's `@bin` infix (a package's bin
+                    // may share the lib's crate name) — sync with
+                    // `wl-engine::orchestrate::guard`.
+                    "bin" => {
+                        is_compile_unit = true;
+                        name = format!("{name}@bin");
                     }
                     "test" => is_test_target = true,
                     _ => {} // example/bench/custom-build — not compiled by check/--tests here

@@ -46,6 +46,9 @@ fn edge(from: &[&str], to: &[&str], to_key: &str, import: bool) -> RefEdge {
         in_signature: false,
         // The fixture edges model `pub use` re-exports wherever import=true.
         reexport: import,
+        glob: false,
+        alias: None,
+        span: None,
     }
 }
 
@@ -53,6 +56,7 @@ fn frag(name: &str, items: Vec<ItemFact>, references: Vec<RefEdge>) -> IrFragmen
     IrFragment {
         schema_version: SCHEMA_VERSION,
         crate_name: name.into(),
+        target_kind: "lib".into(),
         items,
         references,
     }

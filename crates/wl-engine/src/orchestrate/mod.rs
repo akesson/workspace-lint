@@ -38,7 +38,7 @@ impl CfgSelector {
     }
 
     /// The `--tests` configuration: unit-test harnesses + integration tests,
-    /// keyed `<crate>+test.json` by the extractor (`sess.opts.test`).
+    /// keyed `<crate>[@bin]+test.json` by the extractor (`sess.opts.test`).
     pub fn tests() -> Self {
         Self {
             id: "tests".into(),
@@ -258,6 +258,16 @@ impl Engine {
             return Ok(()); // guard skipped: unmodeled target-selection flag
         };
         let expected = targets.expected_fragments(&selector.cargo_args);
+        // A complete whole-workspace run must produce *exactly* `expected` —
+        // anything else in the dir is a leftover from a renamed crate, a
+        // removed target, or an older binary's fragment naming, and the loader
+        // reads every `*.json`, so a stale fragment would silently assemble
+        // dead code into every future run. Prune (only when unscoped: a
+        // package-filtered run legitimately shares the dir with siblings'
+        // fragments).
+        if packages.is_empty() {
+            prune_stale_fragments(ir_dir, &expected);
+        }
         let missing = guard::missing_fragments(ir_dir, &expected);
         if missing.is_empty() {
             return Ok(());
@@ -281,6 +291,26 @@ impl Engine {
             });
         }
         Ok(())
+    }
+}
+
+/// Delete `*.json` files in `ir_dir` that no complete run of the current
+/// binary would produce. Best-effort: a file that won't delete is at worst the
+/// same stale-fragment exposure that existed before pruning.
+fn prune_stale_fragments(ir_dir: &std::path::Path, expected: &std::collections::BTreeSet<String>) {
+    let Ok(entries) = std::fs::read_dir(ir_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !expected.contains(&name) {
+            eprintln!("wl-engine: pruning stale IR fragment {name}");
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 

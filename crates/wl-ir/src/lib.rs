@@ -36,6 +36,17 @@ pub struct IrFragment {
     /// Code-form crate name (hyphens → underscores) — the leading segment of
     /// every canonical path, matching the syn resolver's `ResolvedPath[0]`.
     pub crate_name: String,
+    /// Which cargo target this fragment was extracted from: `"lib"`, `"bin"`,
+    /// `"proc-macro"`, or `"test"` (integration test / bench). Cargo allows a
+    /// package's bin target to share the lib's crate name (`src/lib.rs` +
+    /// `src/main.rs`), so `crate_name` alone cannot key a fragment — without
+    /// this the bin fragment used to *clobber* the lib's on disk and lib-only
+    /// deps read as unused. Also the primary-units signal for the
+    /// `architecture` lint (test targets legitimately reach across layers).
+    /// `""` in pre-field fragments (unobservable in practice — the extractor
+    /// ships vendored in lockstep).
+    #[serde(default)]
+    pub target_kind: String,
     pub items: Vec<ItemFact>,
     /// Resolved reference edges harvested from this crate's HIR: a `from` local
     /// item *uses* a `to` def (local or cross-crate). This is the reference graph
@@ -121,6 +132,29 @@ pub struct RefEdge {
     /// test-mod `use super::*` shield a crate's whole root from the verdict.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reexport: bool,
+    /// For an `import` edge: `true` iff the declaration is a glob
+    /// (`use m::*`). The edge's `to` is the module both ways — this flag is
+    /// what distinguishes importing the module's *name* (`use a::m`) from
+    /// importing its *contents*, which the `architecture` lint judges
+    /// differently (a glob is tested as a representative child of the target,
+    /// so `deny = ["m::**"]` catches it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub glob: bool,
+    /// For a single-name `import` edge: the local binding name — differs from
+    /// the target's own name under `use a::B as C` (the architecture lint's
+    /// "imported locally as" rename note needs it; nothing else in the IR
+    /// records the alias). `None` for glob/list-stem imports and non-imports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    /// The use-site: where in `from`'s source this reference occurs. `None`
+    /// for lowered-signature-pass edges (no single HIR token) and dummy
+    /// spans. For a macro-generated reference this is the *invocation site*
+    /// (`Span::from_expansion` set). Kept **last** so the derived `Ord`
+    /// compares edge identity first; the extractor dedups on identity alone
+    /// and keeps the first (lowest) span — five calls to the same def are
+    /// still one edge, anchored at the earliest use-site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
 }
 
 /// A single resolved definition.
@@ -224,7 +258,7 @@ pub enum Visibility {
 /// that findings on generated code get no editable span; consumers key that off
 /// this flag (for whole-item spans) and off [`ItemFact::vis_span`] being `None`
 /// (for the tighten surface). `#[serde(default)]` keeps old fragments loadable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Span {
     pub file: String,
     pub lo: u32,

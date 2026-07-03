@@ -128,6 +128,8 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
     IrFragment {
         schema_version: wl_ir::SCHEMA_VERSION,
         crate_name: crate_code,
+        // Frozen driver: cargo target-kind detection not backported.
+        target_kind: String::new(),
         items,
         references,
     }
@@ -189,8 +191,12 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             external,
             import,
             in_signature,
-            // Frozen driver: `pub use` distinction not backported.
+            // Frozen driver: `pub use` / glob / alias / use-site-span not
+            // backported.
             reexport: false,
+            glob: false,
+            alias: None,
+            span: None,
         });
     }
 
@@ -463,7 +469,9 @@ fn span_to_ir(sm: &rustc_span::source_map::SourceMap, span: RustcSpan) -> Option
         return None;
     }
     // 1-based line of `lo` (same emit as the extractor dylib's copy).
-    let line = sf.lookup_line(sf.relative_position(lo)).map_or(0, |l| l + 1) as u32;
+    let line = sf
+        .lookup_line(sf.relative_position(lo))
+        .map_or(0, |l| l + 1) as u32;
     // ON-DISK byte offsets: rustc's positions are in CRLF/BOM-normalized
     // coordinates; consumers slice the raw file. See the extractor copy.
     Some(Span {

@@ -1,0 +1,13 @@
+# A package with BOTH a lib and a bin sharing the crate name `combo` — the
+# cargo default for `src/lib.rs` + `src/main.rs`. The two compilation units
+# used to race on one IR fragment filename (`combo.json`); the bin usually
+# won (it compiles after the lib it depends on), clobbering the lib's
+# references — and `provider`, used only by the lib, read as unused. The
+# `@bin` fragment infix keeps both units' facts.
+[package]
+name = "combo"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+provider = { path = "../provider" }

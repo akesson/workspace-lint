@@ -41,7 +41,7 @@ extern crate rustc_trait_selection;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
 use rustc_hir::intravisit::{self, Visitor};
-use rustc_hir::{Expr, ExprKind, HirId, Item, Path, QPath, UsePath};
+use rustc_hir::{Expr, ExprKind, HirId, Item, ItemKind, Node, Path, QPath, UseKind, UsePath};
 use rustc_lint::{LateContext, LateLintPass, LintStore};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitor};
@@ -187,9 +187,34 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
     IrFragment {
         schema_version: wl_ir::SCHEMA_VERSION,
         crate_name: crate_code,
+        target_kind: target_kind(tcx).to_string(),
         items,
         references,
     }
+}
+
+/// Which cargo target this compilation unit is. `rustc` alone can't tell: under
+/// `--test` every unit is an executable (`crate_types() == [Executable]`), so a
+/// bin's unit-test harness and the lib's are indistinguishable from the session
+/// options. Cargo's per-unit environment is the discriminator (verified
+/// empirically on a lib+bin+integration-test package, both configs):
+/// `CARGO_BIN_NAME` is set exactly for bin units — *including* their `--test`
+/// harnesses — and unset for lib, proc-macro, and integration-test units;
+/// `CARGO_TARGET_TMPDIR` is set only for integration tests and benches.
+fn target_kind(tcx: TyCtxt<'_>) -> &'static str {
+    if std::env::var_os("CARGO_BIN_NAME").is_some() {
+        return "bin";
+    }
+    if std::env::var_os("CARGO_TARGET_TMPDIR").is_some() {
+        return "test";
+    }
+    if tcx
+        .crate_types()
+        .contains(&rustc_session::config::CrateType::ProcMacro)
+    {
+        return "proc-macro";
+    }
+    "lib"
 }
 
 /// Harvest the crate's reference graph by walking the whole HIR and resolving
@@ -212,9 +237,50 @@ fn collect_references(tcx: TyCtxt<'_>, crate_code: &str) -> Vec<RefEdge> {
     tcx.hir_walk_toplevel_module(&mut collector);
     collector.collect_signature_projections();
     let mut edges = collector.edges;
+    // Dedup on edge *identity* (everything but the span), keeping the first
+    // (lowest) span: five calls to the same def are one edge, anchored at the
+    // earliest use-site. `span` is `RefEdge`'s last field, so the derived
+    // full-struct sort already groups identical identities span-ascending —
+    // deterministic across runs (byte-identity requirement).
     edges.sort();
-    edges.dedup();
+    edges.dedup_by(|later, first| edge_identity(later) == edge_identity(first));
     edges
+}
+
+/// An edge's identity — every field except the use-site span.
+#[allow(clippy::type_complexity)]
+fn edge_identity(
+    e: &RefEdge,
+) -> (
+    &[String],
+    &[String],
+    &str,
+    &str,
+    &str,
+    [bool; 5],
+    Option<&str>,
+) {
+    (
+        &e.from,
+        &e.to,
+        &e.from_key,
+        &e.to_key,
+        &e.to_kind,
+        [e.external, e.import, e.in_signature, e.reexport, e.glob],
+        e.alias.as_deref(),
+    )
+}
+
+/// The classification of one reference edge — how the name was reached, not
+/// where. `default()` is a plain body/path use-site.
+#[derive(Default, Clone)]
+struct EdgeFlags {
+    import: bool,
+    in_signature: bool,
+    reexport: bool,
+    glob: bool,
+    /// Single-name imports only: the local binding name (`use a::B as C` ⇒ `C`).
+    alias: Option<String>,
 }
 
 struct RefCollector<'a, 'tcx> {
@@ -239,36 +305,36 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
         if let ExpnKind::Macro(_, _) = data.kind
             && let Some(mac) = data.macro_def_id
         {
-            self.record(at, mac, false);
+            self.record(at, mac, span);
         }
     }
 
-    /// Record `enclosing-item-of(at) → to` as a use-site edge.
-    fn record(&mut self, at: HirId, to: DefId, import: bool) {
+    /// Record `enclosing-item-of(at) → to` as a use-site edge anchored at `span`.
+    fn record(&mut self, at: HirId, to: DefId, span: RustcSpan) {
         let from_id = self.tcx.hir_get_parent_item(at).to_def_id();
-        self.record_edge(from_id, to, import, false, false);
+        self.record_edge(from_id, to, Some(span), EdgeFlags::default());
     }
 
-    /// Record an import (`use`) edge; `reexport` iff the declaration is `pub`.
-    fn record_import(&mut self, at: HirId, to: DefId, reexport: bool) {
+    /// Record an import (`use`) edge with its declaration-shape metadata
+    /// (`reexport` iff the declaration is `pub`, `glob`/`alias` per `UseKind`).
+    fn record_import(&mut self, at: HirId, to: DefId, span: RustcSpan, flags: EdgeFlags) {
         let from_id = self.tcx.hir_get_parent_item(at).to_def_id();
-        self.record_edge(from_id, to, true, false, reexport);
+        self.record_edge(from_id, to, Some(span), flags);
     }
 
     /// Record `from_id → to`, skipping self-edges. Two flavours of self-edge:
     /// same-`DefId` (an item's own def in its signature/body — noise, not usage),
     /// and path-level (`def_path_str` renders an `impl T` block by its self-type,
     /// so a ref to `T` from inside its own impl collapses to from==to).
-    /// `in_signature` marks edges from the lowered-signature pass (the HIR walk
-    /// may emit the same reference unflagged; consumers of the flag are
+    /// `flags.in_signature` marks edges from the lowered-signature pass (the HIR
+    /// walk may emit the same reference unflagged; consumers of the flag are
     /// boolean, so the near-duplicate is harmless and keeps both provenances).
     fn record_edge(
         &mut self,
         from_id: DefId,
         to: DefId,
-        import: bool,
-        in_signature: bool,
-        reexport: bool,
+        span: Option<RustcSpan>,
+        flags: EdgeFlags,
     ) {
         // A path to a constructor or enum variant is a use of the owning ADT:
         // `let _ = Unit;` resolves to the unit-struct CTOR and `Status::Ok`
@@ -296,9 +362,12 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             to_key: def_key(self.tcx, to),
             to_kind: def_kind_str(self.tcx.def_kind(to)),
             external,
-            import,
-            in_signature,
-            reexport,
+            import: flags.import,
+            in_signature: flags.in_signature,
+            reexport: flags.reexport,
+            glob: flags.glob,
+            alias: flags.alias,
+            span: span.and_then(|s| span_to_ir(self.tcx.sess.source_map(), s)),
         });
     }
 
@@ -360,8 +429,18 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
                         .visit_with(&mut sig);
                 }
             }
+            // No use-site span: these come from the *lowered* signature, where
+            // a projection may have no single surface token at all.
             for to in sig.out {
-                self.record_edge(did, to, false, true, false);
+                self.record_edge(
+                    did,
+                    to,
+                    None,
+                    EdgeFlags {
+                        in_signature: true,
+                        ..EdgeFlags::default()
+                    },
+                );
             }
         }
     }
@@ -417,9 +496,37 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
             self.tcx.visibility(hir_id.owner.def_id.to_def_id()),
             ty::Visibility::Public
         );
+        // A glob (`use m::*`) resolves to the module def exactly like a plain
+        // `use a::m` does — only the owning item's `UseKind` tells them apart,
+        // and the architecture lint judges them differently (a glob imports the
+        // module's *contents*, tested as a representative child). A single-name
+        // use carries its local binding ident — the only record of a
+        // `use a::B as C` rename.
+        let (glob, alias) = match self.tcx.hir_node(hir_id) {
+            Node::Item(Item {
+                kind: ItemKind::Use(_, UseKind::Glob),
+                ..
+            }) => (true, None),
+            Node::Item(Item {
+                kind: ItemKind::Use(_, UseKind::Single(ident)),
+                ..
+            }) => (false, Some(ident.to_string())),
+            _ => (false, None),
+        };
         for res in path.res.present_items() {
             if let Some(to) = res.opt_def_id() {
-                self.record_import(hir_id, to, reexport);
+                self.record_import(
+                    hir_id,
+                    to,
+                    path.span,
+                    EdgeFlags {
+                        import: true,
+                        reexport,
+                        glob,
+                        alias: alias.clone(),
+                        ..EdgeFlags::default()
+                    },
+                );
             }
         }
     }
@@ -433,7 +540,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
 
     fn visit_path(&mut self, path: &Path<'tcx>, id: HirId) {
         if let Some(to) = path.res.opt_def_id() {
-            self.record(id, to, false);
+            self.record(id, to, path.span);
         }
         intravisit::walk_path(self, path);
     }
@@ -449,7 +556,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
             ExprKind::MethodCall(..) => {
                 let owner = self.tcx.hir_enclosing_body_owner(ex.hir_id);
                 if let Some(to) = self.tcx.typeck(owner).type_dependent_def_id(ex.hir_id) {
-                    self.record(ex.hir_id, to, false);
+                    self.record(ex.hir_id, to, ex.span);
                 }
             }
             ExprKind::Path(ref qpath @ QPath::TypeRelative(..)) => {
@@ -460,7 +567,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                     .qpath_res(qpath, ex.hir_id)
                     .opt_def_id()
                 {
-                    self.record(ex.hir_id, to, false);
+                    self.record(ex.hir_id, to, ex.span);
                 }
             }
             _ => {}
@@ -694,7 +801,6 @@ fn vis_span_to_ir(
     sm: &rustc_span::source_map::SourceMap,
     local_id: LocalDefId,
 ) -> Option<Span> {
-    use rustc_hir::Node;
     let vs = match tcx.hir_node_by_def_id(local_id) {
         Node::Item(it) => it.vis_span,
         Node::ImplItem(ii) => ii.vis_span()?,
@@ -713,8 +819,19 @@ fn write_fragment(fragment: &IrFragment, test_mode: bool) {
         eprintln!("WL-IR: create_dir_all({out_dir}) failed: {e}");
         return;
     }
+    // Cargo allows a package's bin to share the lib's crate name (`src/lib.rs`
+    // + `src/main.rs`), in BOTH configs: plain `check` compiles lib and bin,
+    // `--tests` compiles both unit-test harnesses. Un-infixed, the two units
+    // race on one filename and the loser's fragment is clobbered — lib-only
+    // deps then read as unused. Only bins get the infix (libs keep the bare
+    // name); integration tests already have unique crate names.
+    let kind_infix = if fragment.target_kind == "bin" {
+        "@bin"
+    } else {
+        ""
+    };
     let suffix = if test_mode { "+test" } else { "" };
-    let path = format!("{out_dir}/{}{suffix}.json", fragment.crate_name);
+    let path = format!("{out_dir}/{}{kind_infix}{suffix}.json", fragment.crate_name);
     // Write-then-rename so a fragment is only ever observed complete: two
     // workspace-lint processes may extract the same workspace concurrently
     // (their compiles serialize on cargo's lock, but a reader in one can

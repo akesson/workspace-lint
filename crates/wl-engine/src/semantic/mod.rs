@@ -12,7 +12,7 @@ mod meta;
 mod pub_usage;
 mod union;
 
-pub use assembly::{Assembly, Category, DefInfo, Reach};
+pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
 pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage};
@@ -114,6 +114,14 @@ impl SemanticModel {
         pub_usage::compute(&self.configs)
     }
 
+    /// Every reference out of `krate`'s primary-unit code under the
+    /// **primary config** (architecture rules govern production layering;
+    /// test cfg-variants and integration-test fragments are excluded), with
+    /// canonical targets and module attribution.
+    pub fn references_from(&self, krate: &str) -> Vec<ResolvedRef> {
+        self.primary().references_from(krate)
+    }
+
     /// The unused-deps verdict (declared deps vs the reference graph).
     pub fn deps_verdict(&self) -> DepsVerdict {
         DepsVerdict::compute(&self.configs, &self.meta)
@@ -154,7 +162,10 @@ fn load_fragments(dir: &Path) -> Result<Vec<IrFragment>, SemanticError> {
             dir: dir.to_path_buf(),
         });
     }
-    fragments.sort_by(|a, b| a.crate_name.cmp(&b.crate_name));
+    // `crate_name` alone can tie — a package's bin may share the lib's crate
+    // name — and read_dir order is OS-dependent, so break the tie on
+    // target_kind to keep assembly deterministic.
+    fragments.sort_by(|a, b| (&a.crate_name, &a.target_kind).cmp(&(&b.crate_name, &b.target_kind)));
     Ok(fragments)
 }
 

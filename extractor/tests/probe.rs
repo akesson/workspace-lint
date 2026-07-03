@@ -291,7 +291,131 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         }
     }
 
-    // 12. Global invariant (load-bearing): nothing in the fragment references
+    // 13. (PR 11) Fragment target kind: the probe compiles as a plain lib —
+    //     the cargo-env discriminator (`CARGO_BIN_NAME` / `CARGO_TARGET_TMPDIR`
+    //     both absent) must land on "lib".
+    if frag.target_kind == "lib" {
+        ck.passes += 1;
+        println!("PASS  fragment: target_kind == \"lib\"");
+    } else {
+        ck.failures.push(format!(
+            "[fragment] target_kind must be \"lib\", got {:?}",
+            frag.target_kind
+        ));
+    }
+
+    // 14. (PR 11) Use-site spans + glob discrimination on reference edges.
+    {
+        let edge =
+            |pred: &dyn Fn(&wl_ir::RefEdge) -> bool| frag.references.iter().find(|e| pred(e));
+        let last = |v: &[String]| v.last().cloned().unwrap_or_default();
+
+        // A glob import (`use super::globbed::*`) → module edge with glob=true,
+        // anchored at the `use` line.
+        let glob_line = line_of("use super::globbed::*");
+        match edge(&|e| e.import && last(&e.from) == "glob_user" && last(&e.to) == "globbed") {
+            None => ck
+                .failures
+                .push("[glob_user] missing import edge to `globbed`".into()),
+            Some(e) => {
+                let got = e.span.as_ref().map_or(0, |s| s.line);
+                if e.glob && got == glob_line {
+                    ck.passes += 1;
+                    println!("PASS  glob_user: glob import edge, span.line == use line");
+                } else {
+                    ck.failures.push(format!(
+                        "[glob_user] want glob=true span.line={glob_line}, \
+                         got glob={} span.line={got}",
+                        e.glob
+                    ));
+                }
+            }
+        }
+
+        // A named module import (`use super::globbed`) resolves to the SAME
+        // module def — glob must stay false (the discrimination this exists for).
+        match edge(&|e| e.import && last(&e.from) == "named_user" && last(&e.to) == "globbed") {
+            None => ck
+                .failures
+                .push("[named_user] missing import edge to `globbed`".into()),
+            Some(e) => {
+                if e.glob {
+                    ck.failures
+                        .push("[named_user] plain module import must have glob=false".into());
+                } else {
+                    ck.passes += 1;
+                    println!("PASS  named_user: named module import, glob == false");
+                }
+            }
+        }
+
+        // A renamed single import (`use … as renamed_target`) records the local
+        // binding — the only place the IR carries a `use a::B as C` alias.
+        match edge(&|e| e.import && last(&e.from) == "renamed_user" && last(&e.to) == "glob_target")
+        {
+            None => ck
+                .failures
+                .push("[renamed_user] missing import edge to `glob_target`".into()),
+            Some(e) => {
+                if e.alias.as_deref() == Some("renamed_target") {
+                    ck.passes += 1;
+                    println!("PASS  renamed_user: import alias == renamed_target");
+                } else {
+                    ck.failures.push(format!(
+                        "[renamed_user] want alias=Some(\"renamed_target\"), got {:?}",
+                        e.alias
+                    ));
+                }
+            }
+        }
+
+        // A body call site carries the use-site span (the architecture anchor).
+        let call_line = line_of("probe: use-site-anchor");
+        match edge(&|e| {
+            !e.import && last(&e.from) == "calls_glob_target" && last(&e.to) == "glob_target"
+        }) {
+            None => ck
+                .failures
+                .push("[calls_glob_target] missing call edge to `glob_target`".into()),
+            Some(e) => {
+                let got = e.span.as_ref().map_or(0, |s| s.line);
+                if got == call_line {
+                    ck.passes += 1;
+                    println!("PASS  calls_glob_target: call edge span.line == call line");
+                } else {
+                    ck.failures.push(format!(
+                        "[calls_glob_target] want span.line={call_line}, got {got}"
+                    ));
+                }
+            }
+        }
+
+        // A macro-invocation edge's span projects to the INVOCATION line and
+        // keeps the from_expansion marker (architecture classifies these).
+        let invoke_line = line_of("make_pub_fn!(from_cross_file_macro)");
+        match edge(&|e| last(&e.to) == "make_pub_fn") {
+            None => ck
+                .failures
+                .push("[macro edge] missing edge to `make_pub_fn`".into()),
+            Some(e) => {
+                let (got, from_exp) = e
+                    .span
+                    .as_ref()
+                    .map_or((0, false), |s| (s.line, s.from_expansion));
+                if got == invoke_line && from_exp {
+                    ck.passes += 1;
+                    println!("PASS  make_pub_fn: macro edge at invocation line, from_expansion");
+                } else {
+                    ck.failures.push(format!(
+                        "[macro edge] want span.line={invoke_line} from_expansion=true, \
+                         got line={got} from_expansion={from_exp}"
+                    ));
+                }
+            }
+        }
+    }
+
+    // 15. Global invariant (load-bearing): nothing in the fragment references
     //    gen.rs except the `make_pub_fn` macro definition itself (which genuinely
     //    lives there, is a `macro`, and is not from an expansion).
     for it in &frag.items {

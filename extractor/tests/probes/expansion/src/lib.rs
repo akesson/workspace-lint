@@ -71,3 +71,34 @@ mod crlf;
 // Inherent-impl probes (PR 10): `ItemFact::self_type`, incl. the
 // remote-module impl whose `def_path_str` rendering hides the type.
 mod inherent;
+
+// Use-site spans + glob discrimination (PR 11): the architecture lint anchors
+// its diagnostics at the referencing line, and must tell `use m::*` (imports
+// the module's *contents*) from `use a::m` (imports the module's *name*) —
+// both resolve to the same module def in HIR; only `UseKind` differs.
+pub mod globbed {
+    pub fn glob_target() -> u32 {
+        8
+    }
+}
+mod glob_user {
+    use super::globbed::*;
+
+    pub fn calls_glob_target() -> u32 {
+        glob_target() // probe: use-site-anchor
+    }
+}
+mod named_user {
+    use super::globbed;
+
+    pub fn calls_named() -> u32 {
+        globbed::glob_target()
+    }
+}
+mod renamed_user {
+    use super::globbed::glob_target as renamed_target;
+
+    pub fn calls_renamed() -> u32 {
+        renamed_target()
+    }
+}
