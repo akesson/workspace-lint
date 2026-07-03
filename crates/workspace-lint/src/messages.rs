@@ -1026,3 +1026,63 @@ mod tests {
         }
     }
 }
+
+/// The engine's preflight / failure texts — the other user-facing message
+/// surface. These print verbatim to stderr via `util::fail` (never through
+/// the diagnostic renderers), so they're audited here the same way the
+/// diagnostics are: read the snapshot, see exactly what the user sees.
+/// The remediation commands are load-bearing — a user without the pinned
+/// toolchain must be able to paste their way out.
+#[cfg(test)]
+mod engine_errors {
+    use wl_engine::EngineError;
+
+    #[test]
+    fn toolchain_missing() {
+        let e = EngineError::ToolchainMissing {
+            pin: "nightly-2026-04-16".into(),
+        };
+        insta::assert_snapshot!(e.to_string(), @r"
+        the full tier extracts IR inside a rustc build and needs the pinned toolchain
+
+        rustup toolchain install nightly-2026-04-16 --profile minimal \
+        --component rustc-dev --component llvm-tools-preview
+
+        hint: `--fast-only` runs the build-free lints without any toolchain
+        ");
+    }
+
+    #[test]
+    fn component_missing() {
+        let e = EngineError::ComponentMissing {
+            pin: "nightly-2026-04-16".into(),
+            component: "rustc-dev".into(),
+        };
+        insta::assert_snapshot!(e.to_string(), @r"
+        the pinned toolchain nightly-2026-04-16 is installed but misses the `rustc-dev` component
+
+        rustup component add rustc-dev --toolchain nightly-2026-04-16
+        ");
+    }
+
+    #[test]
+    fn dylint_link_missing() {
+        insta::assert_snapshot!(EngineError::DylintLinkMissing.to_string(), @r"
+        `dylint-link` is not on PATH — the extractor dylib links through it
+
+        cargo install dylint-link --locked
+        ");
+    }
+
+    /// The analyzed workspace failed to compile under a config. The cargo
+    /// diagnostics are replayed verbatim above this line (they ARE the
+    /// diagnosis); this is the trailer that names the failing config.
+    #[test]
+    fn workspace_compile_failure_names_the_config() {
+        let e = EngineError::Incomplete {
+            config: "tests".into(),
+            missing: vec!["demo+test.json".into()],
+        };
+        insta::assert_snapshot!(e.to_string(), @r#"IR incomplete under config `tests`: fragments still missing after a forced re-lint: ["demo+test.json"]"#);
+    }
+}
