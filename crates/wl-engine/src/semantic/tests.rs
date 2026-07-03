@@ -48,6 +48,7 @@ fn edge(from: &[&str], to: &[&str], to_key: &str, import: bool) -> RefEdge {
         reexport: import,
         glob: false,
         alias: None,
+        via: None,
         span: None,
     }
 }
@@ -356,6 +357,54 @@ fn deps_verdict_scopes_and_facades() {
         ["never_used"],
         "dev_helper exercised via the test target"
     );
+}
+
+/// Unused-deps: a re-export shim dep is credited through [`RefEdge::via`] —
+/// the resolved target defines the item in `std` (a sysroot crate outside
+/// every cargo closure), and only the written path root names the dep. An
+/// edge without `via` (the pre-`via` fragment shape, exercised through JSON
+/// to lock the serde default) must keep the dep flagged.
+#[test]
+fn deps_verdict_credits_reexport_shim_via_written_root() {
+    // Old-shape edge JSON (no `via` key): deserializes with via == None and
+    // does NOT credit the shim.
+    let old_shape: RefEdge = serde_json::from_str(
+        r#"{"from":["alpha","user"],"to":["std","time","Duration"],
+            "to_kind":"struct","external":true,"import":true}"#,
+    )
+    .unwrap();
+    assert_eq!(old_shape.via, None);
+    let m = model(vec![(
+        "default",
+        vec![frag("alpha", vec![], vec![old_shape])],
+    )]);
+    let v = m.deps_verdict();
+    let unused: Vec<&str> = v.crates[0].unused.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(
+        unused,
+        ["facade", "md_5", "never_used"],
+        "std edge credits nothing"
+    );
+
+    // Same edge with the written root recorded: `never_used` is the shim.
+    let mut shimmed = edge(
+        &["alpha", "user"],
+        &["std", "time", "Duration"],
+        "K_STD",
+        true,
+    );
+    shimmed.via = Some("never_used".into());
+    let m2 = model(vec![(
+        "default",
+        vec![frag("alpha", vec![], vec![shimmed])],
+    )]);
+    let v2 = m2.deps_verdict();
+    let unused2: Vec<&str> = v2.crates[0]
+        .unused
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(unused2, ["facade", "md_5"], "via credits the shim dep");
 }
 
 /// The loader rejects stale-schema fragments and empty dirs loudly.

@@ -1,0 +1,14 @@
+# Re-export-shim stub for the `via` probe (§16 in probe.rs): a dependency
+# whose public surface is (partly) another crate's items re-exported. The
+# probe asserts the extractor records the *written* crate root (`shim`) on
+# edges whose resolved target lives in std — the `web-time` FP class.
+[package]
+name = "probe-shim"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "shim"
+
+[workspace]

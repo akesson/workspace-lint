@@ -442,6 +442,72 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         }
     }
 
+    // 16. (gap fix) Written-root recording on re-export shims (`RefEdge::via`).
+    //     `shim` re-exports `std::time::Duration`: the resolved target lives in
+    //     core/std, so the edge's `to[0]` can never credit the dep — only the
+    //     recorded written root can (the `web-time` unused-deps FP class).
+    {
+        let edge =
+            |pred: &dyn Fn(&wl_ir::RefEdge) -> bool| frag.references.iter().find(|e| pred(e));
+        let last = |v: &[String]| v.last().cloned().unwrap_or_default();
+
+        // The `use shim::Duration` import edge: resolved into the std family,
+        // written root recorded.
+        match edge(&|e| e.import && last(&e.from) == "via_user" && last(&e.to) == "Duration") {
+            None => ck
+                .failures
+                .push("[via_user] missing import edge to `Duration`".into()),
+            Some(e) => {
+                let std_family = matches!(e.to.first().map(String::as_str), Some("std" | "core"));
+                if e.via.as_deref() == Some("shim") && std_family {
+                    ck.passes += 1;
+                    println!("PASS  via_user: shim import records via=shim, to[0] in std family");
+                } else {
+                    ck.failures.push(format!(
+                        "[via_user] want via=Some(\"shim\") to[0] in {{std,core}}, \
+                         got via={:?} to={:?}",
+                        e.via, e.to
+                    ));
+                }
+            }
+        }
+
+        // The `use shim::OwnItem` import edge: written root IS the defining
+        // crate — via must stay None.
+        match edge(&|e| e.import && last(&e.from) == "via_user" && last(&e.to) == "OwnItem") {
+            None => ck
+                .failures
+                .push("[via_user] missing import edge to `OwnItem`".into()),
+            Some(e) => {
+                if e.via.is_none() {
+                    ck.passes += 1;
+                    println!("PASS  via_user: direct shim import records via=None");
+                } else {
+                    ck.failures.push(format!(
+                        "[via_user] direct use must have via=None, got {:?}",
+                        e.via
+                    ));
+                }
+            }
+        }
+
+        // The fully-qualified code path `shim::Duration::from_secs(0)`: the
+        // non-`use` shape must record the written root too.
+        match edge(&|e| {
+            !e.import && last(&e.from) == "wait" && e.via.as_deref() == Some("shim")
+        }) {
+            None => ck.failures.push(
+                "[via_user::wait] missing non-import edge with via=shim \
+                 (fully-qualified path shape)"
+                    .into(),
+            ),
+            Some(_) => {
+                ck.passes += 1;
+                println!("PASS  via_user: fully-qualified code path records via=shim");
+            }
+        }
+    }
+
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());
     anyhow::ensure!(
         ck.failures.is_empty(),

@@ -258,6 +258,7 @@ fn edge_identity(
     &str,
     [bool; 5],
     Option<&str>,
+    Option<&str>,
 ) {
     (
         &e.from,
@@ -267,6 +268,7 @@ fn edge_identity(
         &e.to_kind,
         [e.external, e.import, e.in_signature, e.reexport, e.glob],
         e.alias.as_deref(),
+        e.via.as_deref(),
     )
 }
 
@@ -280,6 +282,10 @@ struct EdgeFlags {
     glob: bool,
     /// Single-name imports only: the local binding name (`use a::B as C` ⇒ `C`).
     alias: Option<String>,
+    /// The extern crate the written path routes through when it isn't the
+    /// defining crate (`use shim::Item` resolving through a re-export) — see
+    /// [`RefEdge::via`]. Computed by [`RefCollector::via_crate`].
+    via: Option<String>,
 }
 
 struct RefCollector<'a, 'tcx> {
@@ -366,8 +372,25 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             reexport: flags.reexport,
             glob: flags.glob,
             alias: flags.alias,
+            via: flags.via,
             span: span.and_then(|s| span_to_ir(self.tcx.sess.source_map(), s)),
         });
+    }
+
+    /// The extern crate the written path routes through: the first path
+    /// segment's *own* resolution, when it's another crate's root and that
+    /// crate differs from the one defining the final target. This is the
+    /// `use web_time::Instant` case — the whole-path res follows the shim's
+    /// `pub use std::time::*` to the def in `std`, and this segment is the
+    /// only record of which dependency the source actually names. `None` for
+    /// local roots (`crate`/`self`/`super`/module paths) and for direct uses
+    /// where the written root already is the defining crate.
+    fn via_crate(&self, segments: &[rustc_hir::PathSegment<'tcx>], to: DefId) -> Option<String> {
+        let seg_did = segments.first()?.res.opt_def_id()?;
+        if !seg_did.is_crate_root() || seg_did.krate == LOCAL_CRATE || seg_did.krate == to.krate {
+            return None;
+        }
+        Some(self.tcx.crate_name(seg_did.krate).as_str().replace('-', "_"))
     }
 
     /// Second pass over each item's *lowered* signature (`fn_sig`/`type_of` —
@@ -523,6 +546,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                         reexport,
                         glob,
                         alias: alias.clone(),
+                        via: self.via_crate(path.segments, to),
                         ..EdgeFlags::default()
                     },
                 );
@@ -539,7 +563,19 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
 
     fn visit_path(&mut self, path: &Path<'tcx>, id: HirId) {
         if let Some(to) = path.res.opt_def_id() {
-            self.record(id, to, path.span);
+            // Fully-qualified code paths (`shim::Item::call()`) carry the
+            // written crate root exactly like `use` paths do.
+            let via = self.via_crate(path.segments, to);
+            let from_id = self.tcx.hir_get_parent_item(id).to_def_id();
+            self.record_edge(
+                from_id,
+                to,
+                Some(path.span),
+                EdgeFlags {
+                    via,
+                    ..EdgeFlags::default()
+                },
+            );
         }
         intravisit::walk_path(self, path);
     }

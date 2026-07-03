@@ -1,0 +1,12 @@
+# A re-export shim modeled on the real `web-time`: on non-wasm targets its
+# entire surface is `std::time` re-exported. rustc resolves uses through it
+# to the std defs, so nothing in the reference graph's resolved targets ever
+# names this crate — only the written path root (`RefEdge::via`) does.
+[package]
+name = "web-time"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "web_time"

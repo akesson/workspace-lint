@@ -11,4 +11,8 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+[dependencies]
+# Re-export-shim stub for the `via` probe (§16) — see ../shim/Cargo.toml.
+shim = { package = "probe-shim", path = "../shim" }
+
 [workspace]

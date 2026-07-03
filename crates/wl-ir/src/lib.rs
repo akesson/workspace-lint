@@ -146,6 +146,17 @@ pub struct RefEdge {
     /// records the alias). `None` for glob/list-stem imports and non-imports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// The extern crate named by the path's first segment *as written*, when
+    /// it differs from the crate defining the resolved target: `use
+    /// shim::Item` where `shim` merely re-exports another crate's `Item`.
+    /// rustc name-resolution follows the re-export chain, so `to[0]` names
+    /// the *defining* crate (`std` for `web_time::Instant` on a non-wasm
+    /// target) — without this field a dependency used only through its
+    /// re-exports of another crate's items is invisible to `unused-deps`.
+    /// `None` when the written root is the defining crate, a local path, or
+    /// a keyword root (`crate`/`self`/`super`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
     /// The use-site: where in `from`'s source this reference occurs. `None`
     /// for lowered-signature-pass edges (no single HIR token) and dummy
     /// spans. For a macro-generated reference this is the *invocation site*
