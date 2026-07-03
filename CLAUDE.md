@@ -144,17 +144,24 @@ Two phases, forced by rustc's per-crate compilation model:
   crate's `LateLintPass` writes an `IrFragment` (defs + resolved reference
   edges, `wl-ir` schema) to `target/workspace-lint/ir/<config>/` under a
   canonical name (`<crate>[@bin][+test].json` — a package's bin may share the
-  lib's crate name). Cargo freshness keeps fragments valid without re-runs;
-  the **completeness guard** covers the one hole (`WL_IR_OUT` isn't in
-  cargo's fingerprint): expected-vs-present check, one forced re-lint (dylib
-  mtime bump), then a hard error. Whole-workspace runs also **prune** stale
-  fragments (renamed crates, older naming schemes) so they can't silently
-  assemble forever.
+  lib's crate name; build scripts emit references-only `<pkg>@build.json`,
+  package-keyed since every one is crate `build_script_build`). Members
+  compiled a second time as Build-mode host deps (another member's build.rs
+  or a proc-macro consumer) are skipped — their `DefPathHash` generation
+  differs and would clobber the Check-mode fragment. Cargo freshness keeps
+  fragments valid without re-runs; the **completeness guard** covers the one
+  hole (`WL_IR_OUT` isn't in cargo's fingerprint): expected-vs-present check,
+  one forced re-lint (dylib mtime bump), then a hard error. Build fragments
+  are enforced *across* the run's config dirs (a build unit compiles once per
+  shared target dir) and deduped newest-wins. Whole-workspace runs also
+  **prune** stale fragments (renamed crates, older naming schemes) so they
+  can't silently assemble forever.
 - **Phase 2 — assemble** (`wl-engine::semantic`): pure stable data work.
   Within a config, cross-crate join on `DefPathHash` (`ItemFact::key` ↔
-  `RefEdge::to_key` — display paths are NOT stable across crates); across
-  configs, union on `(crate, def_path)` (the hash is NOT stable across
-  configs — the two identities are duals). Derived indexes (reachability,
+  `RefEdge::to_key` — display paths are NOT stable across crates; build
+  fragments alone fall back to a display-path join, their Build-mode hash
+  generation never matching); across configs, union on `(crate, def_path)`
+  (the hash is NOT stable across configs — the two identities are duals). Derived indexes (reachability,
   re-export chains, signature exposure, dispatch, dep matrix) live here, not
   in the extractor: the emit vocabulary stays minimal ground facts, every
   derivation testable on stable.

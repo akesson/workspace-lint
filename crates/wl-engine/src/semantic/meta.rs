@@ -157,6 +157,16 @@ impl WorkspaceMeta {
             let mut has_lib = false;
             for t in &p.targets {
                 let tname = t.name.replace('-', "_");
+                // Every member's build script is crate `build_script_build`
+                // (the target name is `build-script-build`): mapping it into
+                // `target_owner` would hand ALL build fragments to whichever
+                // member iterated last, crediting build.rs references to that
+                // member's `[dependencies]` and masking true unused-deps
+                // findings. Build fragments deliberately have no owner here —
+                // `DepUsage::compute` skips them (build-deps stay unjudged).
+                if t.kind.iter().any(|k| k.to_string() == "custom-build") {
+                    continue;
+                }
                 meta.target_owner.insert(tname.clone(), pkg.clone());
                 // Compare kinds via Display so we don't couple to
                 // cargo_metadata's enum representation. A target may carry
@@ -169,7 +179,7 @@ impl WorkspaceMeta {
                         "test" | "example" | "bench" => {
                             meta.test_targets.insert(tname.clone());
                         }
-                        _ => {} // bin, custom-build (build.rs — not lint-passed)
+                        _ => {} // bin — owner-mapped above, nothing to classify
                     }
                 }
             }

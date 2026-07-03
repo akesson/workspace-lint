@@ -23,6 +23,15 @@ pub(super) struct TargetSet {
     compile_units: BTreeSet<String>,
     /// Integration-test targets: compiled (and linted) only under `--tests`.
     test_targets: BTreeSet<String>,
+    /// `<pkg>@build` stems for members with a build script — keyed by
+    /// *package* name (every build script's target is `build-script-build`).
+    /// Deliberately NOT part of [`TargetSet::expected_fragments`]: a build
+    /// unit compiles once per shared cargo target dir, so its fragment lands
+    /// only in whichever config's run first compiles it — enforcement is
+    /// satisfied by presence in ANY of the current run's config dirs
+    /// ([`missing_build_fragments`]), while every config's prune keep-set
+    /// includes these names so no dir's copy is swept.
+    build_units: BTreeSet<String>,
 }
 
 impl TargetSet {
@@ -91,6 +100,7 @@ impl TargetSet {
         let mut set = Self {
             compile_units: BTreeSet::new(),
             test_targets: BTreeSet::new(),
+            build_units: BTreeSet::new(),
         };
         for p in &md.packages {
             if !member_ids.contains(&p.id.to_string()) || !want_pkg(p.name.as_str()) {
@@ -115,7 +125,13 @@ impl TargetSet {
                         "test" => {
                             set.test_targets.insert(name.clone());
                         }
-                        _ => {} // example/bench/custom-build — never linted here
+                        // The extractor keys build fragments on the PACKAGE
+                        // (the target name is always `build-script-build`).
+                        "custom-build" => {
+                            set.build_units
+                                .insert(format!("{}@build", p.name.replace('-', "_")));
+                        }
+                        _ => {} // example/bench — never linted here
                     }
                 }
             }
@@ -150,6 +166,33 @@ pub(super) fn missing_fragments(ir_dir: &Path, expected: &BTreeSet<String>) -> V
     expected
         .iter()
         .filter(|name| !ir_dir.join(name).exists())
+        .cloned()
+        .collect()
+}
+
+impl TargetSet {
+    /// Build-fragment filenames (`<pkg>@build.json`) — the cross-config half
+    /// of the expected set (see the `build_units` field doc).
+    pub(super) fn build_fragments(&self) -> BTreeSet<String> {
+        self.build_units
+            .iter()
+            .map(|stem| format!("{stem}.json"))
+            .collect()
+    }
+}
+
+/// Build-fragment filenames present in NONE of the current run's config dirs.
+/// A dir that doesn't exist yet (a later config on a cold run) simply
+/// contributes nothing. Deliberately scans only the dirs the assembler will
+/// load — a copy in a stale, no-longer-configured sibling dir would pass an
+/// existence check but never reach assembly.
+pub(super) fn missing_build_fragments(
+    dirs: &[std::path::PathBuf],
+    names: &BTreeSet<String>,
+) -> Vec<String> {
+    names
+        .iter()
+        .filter(|name| !dirs.iter().any(|d| d.join(name).exists()))
         .cloned()
         .collect()
 }
@@ -229,6 +272,51 @@ mod tests {
         assert!(tests.contains("dogfood+test.json"), "{tests:?}");
         assert!(tests.iter().all(|f| f.ends_with("+test.json")));
         assert!(tests.len() > default.len());
+
+        // Build fragments are the cross-config half: package-keyed, config-
+        // independent, and NEVER in the per-config expected set (a build unit
+        // compiles once per shared target dir). This repo has exactly one
+        // build script: crates/wl-engine/build.rs (the extractor embedder).
+        let build = set.build_fragments();
+        assert_eq!(
+            build.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["wl_engine@build.json"]
+        );
+        assert!(!default.contains("wl_engine@build.json"));
+        assert!(!tests.contains("wl_engine@build.json"));
+    }
+
+    /// Build-fragment enforcement is satisfied by ANY current config dir, and
+    /// tolerates dirs that don't exist yet (a later config on a cold run).
+    #[test]
+    fn build_fragments_satisfied_across_config_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let default_dir = tmp.path().join("default");
+        let tests_dir = tmp.path().join("tests"); // never created
+        std::fs::create_dir_all(&default_dir).unwrap();
+        let names: BTreeSet<String> = ["wl_engine@build.json".to_string()].into();
+
+        let dirs = vec![default_dir.clone(), tests_dir];
+        assert_eq!(
+            missing_build_fragments(&dirs, &names),
+            vec!["wl_engine@build.json"]
+        );
+        std::fs::write(default_dir.join("wl_engine@build.json"), b"{}").unwrap();
+        assert!(missing_build_fragments(&dirs, &names).is_empty());
+    }
+
+    /// Scoped runs scope the build set with the same package filter.
+    #[test]
+    fn package_filter_scopes_build_fragments() {
+        let cfg = engine_cfg(vec![CfgSelector::default_cfg()]);
+        let with_build = TargetSet::discover(&repo_root(), &["wl-engine".to_string()], &cfg)
+            .unwrap()
+            .unwrap();
+        assert_eq!(with_build.build_fragments().len(), 1);
+        let without = TargetSet::discover(&repo_root(), &["wl-ir".to_string()], &cfg)
+            .unwrap()
+            .unwrap();
+        assert!(without.build_fragments().is_empty());
     }
 
     /// A package filter narrows the expected set to that crate's targets.

@@ -407,6 +407,84 @@ fn deps_verdict_credits_reexport_shim_via_written_root() {
     assert_eq!(unused2, ["facade", "md_5"], "via credits the shim dep");
 }
 
+/// Build a references-only build-script fragment (what the extractor emits
+/// for a `build_script_build` unit).
+fn build_frag(references: Vec<RefEdge>) -> IrFragment {
+    IrFragment {
+        schema_version: SCHEMA_VERSION,
+        crate_name: "build_script_build".into(),
+        target_kind: "build".into(),
+        items: Vec::new(),
+        references,
+    }
+}
+
+/// Build-fragment edges join by DISPLAY PATH, not key: the build script's
+/// deps compile in Build mode, whose `-Cmetadata` (hence `DefPathHash`
+/// generation) differs from the Check-mode units the defs came from. A
+/// path-joined use retires the lead; an edge to a path nothing defines is a
+/// no-op (never a false join); and the phantom `build_script_build` crate
+/// name stays out of the assembly's member set.
+#[test]
+fn build_fragment_edges_join_by_path_fallback() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K_CHECK", "fn", Some("mod"))],
+        vec![],
+    );
+    // Same def, referenced from a build script under its Build-mode key.
+    let build = build_frag(vec![
+        edge(
+            &["build_script_build", "main"],
+            &["alpha", "helper"],
+            "K_BUILD_MODE",
+            false,
+        ),
+        edge(
+            &["build_script_build", "main"],
+            &["alpha", "nonexistent"],
+            "K_NOWHERE",
+            false,
+        ),
+    ]);
+    let m = model(vec![("default", vec![alpha.clone(), build])]);
+    assert!(
+        lead_ids(&m.union_verdict()).is_empty(),
+        "build.rs use must retire the lead via the path join"
+    );
+
+    // Without the build fragment the same def is a lead (the control).
+    let m2 = model(vec![("default", vec![alpha])]);
+    assert_eq!(lead_ids(&m2.union_verdict()), ["alpha::helper"]);
+}
+
+/// Build fragments are excluded from the architecture substrate
+/// (`references_from`) and never credit `[dependencies]` (`DepUsage` finds no
+/// owner for `build_script_build` — build-deps stay unjudged).
+#[test]
+fn build_fragments_stay_out_of_architecture_and_deps() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K1", "fn", Some("mod"))],
+        vec![],
+    );
+    let build = build_frag(vec![edge(
+        &["build_script_build", "main"],
+        &["facade_core", "Thing"],
+        "K_EXT",
+        false,
+    )]);
+    let m = model(vec![("default", vec![alpha, build])]);
+    // Architecture: no crate is named `build_script_build`, and even asking
+    // for it returns nothing (the target-kind filter).
+    assert!(m.references_from("build_script_build").is_empty());
+    // Deps: the facade edge lives ONLY in the ownerless build fragment, so
+    // `facade` stays unused — a build.rs use must not credit [dependencies].
+    let v = m.deps_verdict();
+    let unused: Vec<&str> = v.crates[0].unused.iter().map(|d| d.name.as_str()).collect();
+    assert!(unused.contains(&"facade"), "{unused:?}");
+}
+
 /// The loader rejects stale-schema fragments and empty dirs loudly.
 #[test]
 fn loader_is_strict() {

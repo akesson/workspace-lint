@@ -103,20 +103,69 @@ impl<'tcx> LateLintPass<'tcx> for WlIrExtract {
     // The lift point: `cx.tcx` is the same `TyCtxt` the raw driver walked in
     // `after_analysis`. Everything below is `extract()` moved verbatim.
     fn check_crate(&mut self, cx: &LateContext<'tcx>) {
+        let tcx = cx.tcx;
         // A member's build script compiles as its own crate, and cargo names
-        // EVERY one `build_script_build` — so a workspace's build scripts would
-        // all collide on one fragment filename, and none is a lintable target.
-        // Skip them (deferred-gap ledger: keying on CARGO_PKG_NAME would let a
-        // future build-dep-usage analysis keep these).
-        if cx.tcx.crate_name(LOCAL_CRATE).as_str() == "build_script_build" {
+        // EVERY one `build_script_build` — so the fragment is keyed on the
+        // owning package (`CARGO_PKG_NAME`, set on every unit of the package)
+        // instead. References-only: build.rs edges are what make a crate
+        // consumed from build scripts count as used (unused-pub), while its
+        // defs are nothing any lint judges — emitting them would insert a
+        // phantom `build_script_build` member into the assembly's crate set.
+        if tcx.crate_name(LOCAL_CRATE).as_str() == "build_script_build" {
+            let Ok(pkg) = std::env::var("CARGO_PKG_NAME") else {
+                // No owning package identified — never write a colliding name.
+                return;
+            };
+            let mut fragment = extract(tcx);
+            fragment.target_kind = "build".to_string();
+            fragment.items = Vec::new();
+            write_fragment(&fragment, &format!("{}@build", pkg.replace('-', "_")));
             return;
         }
-        let fragment = extract(cx.tcx);
+        // A member consumed by a *run-requiring host unit* (another member's
+        // build script, or a proc-macro member) compiles a SECOND time under
+        // `cargo check`: a Build-mode rlib (`--emit=link`) alongside its
+        // primary metadata-only Check unit. Cargo hashes the compile mode
+        // into `-Cmetadata`, so the two copies carry different
+        // `StableCrateId`s — different `DefPathHash` generations. Letting the
+        // Build-mode copy write would race the Check-mode fragment on one
+        // filename, and when it wins, every Check-mode consumer edge misses
+        // the def keys (verified live: a member declared in both
+        // [dependencies] and [build-dependencies] read as unused). Skip it:
+        // the exemptions keep every wanted link-emitting unit — proc-macros
+        // (their primary shape), `--test` harnesses, bins, and integration
+        // tests/benches (`CARGO_TARGET_TMPDIR`).
+        let emits_link = tcx
+            .sess
+            .opts
+            .output_types
+            .contains_key(&rustc_session::config::OutputType::Exe);
+        let is_proc_macro = tcx
+            .crate_types()
+            .contains(&rustc_session::config::CrateType::ProcMacro);
+        if emits_link
+            && !is_proc_macro
+            && !tcx.sess.opts.test
+            && std::env::var_os("CARGO_BIN_NAME").is_none()
+            && std::env::var_os("CARGO_TARGET_TMPDIR").is_none()
+        {
+            return;
+        }
+        let fragment = extract(tcx);
         // `--test` mode compiles a distinct crate variant (cfg(test) on, #[test]
         // fns kept for the harness). It can coexist with the plain-lib build of
         // the same crate, which would race on one filename — so key the output on
         // it. Lets the fidelity oracle compare config-matched IRs (SPIKE §7/§10).
-        write_fragment(&fragment, cx.tcx.sess.opts.test);
+        // Bins get an infix for the same reason (a package's bin may share the
+        // lib's crate name — see `IrFragment::target_kind`).
+        let kind_infix = if fragment.target_kind == "bin" {
+            "@bin"
+        } else {
+            ""
+        };
+        let suffix = if tcx.sess.opts.test { "+test" } else { "" };
+        let stem = format!("{}{kind_infix}{suffix}", fragment.crate_name);
+        write_fragment(&fragment, &stem);
     }
 }
 
@@ -848,25 +897,16 @@ fn vis_span_to_ir(
     span_to_ir(sm, vs)
 }
 
-fn write_fragment(fragment: &IrFragment, test_mode: bool) {
+fn write_fragment(fragment: &IrFragment, file_stem: &str) {
     let out_dir = std::env::var("WL_IR_OUT").unwrap_or_else(|_| "target/wl-ir".to_string());
     if let Err(e) = std::fs::create_dir_all(&out_dir) {
         eprintln!("WL-IR: create_dir_all({out_dir}) failed: {e}");
         return;
     }
-    // Cargo allows a package's bin to share the lib's crate name (`src/lib.rs`
-    // + `src/main.rs`), in BOTH configs: plain `check` compiles lib and bin,
-    // `--tests` compiles both unit-test harnesses. Un-infixed, the two units
-    // race on one filename and the loser's fragment is clobbered — lib-only
-    // deps then read as unused. Only bins get the infix (libs keep the bare
-    // name); integration tests already have unique crate names.
-    let kind_infix = if fragment.target_kind == "bin" {
-        "@bin"
-    } else {
-        ""
-    };
-    let suffix = if test_mode { "+test" } else { "" };
-    let path = format!("{out_dir}/{}{kind_infix}{suffix}.json", fragment.crate_name);
+    // The stem is the caller's business: unit-kind disambiguation (`@bin`,
+    // `+test`, `@build`) lives in `check_crate`, next to the unit
+    // discrimination that decides it.
+    let path = format!("{out_dir}/{file_stem}.json");
     // Write-then-rename so a fragment is only ever observed complete: two
     // workspace-lint processes may extract the same workspace concurrently
     // (their compiles serialize on cargo's lock, but a reader in one can

@@ -213,7 +213,65 @@ impl Engine {
                 ir_dir,
             });
         }
+        // Build-script fragments get their own, cross-config completeness
+        // pass: a build unit compiles once per shared cargo target dir
+        // (identical flags under every config), so its fragment lands only in
+        // whichever config's run first compiled it — a per-config expectation
+        // would force a full re-lint of every later config on every cold run.
+        if let Some(ts) = targets.as_ref() {
+            self.ensure_build_fragments(cfg, &runs, &dylib, ts)?;
+            dedup_build_fragments(&runs, &ts.build_fragments());
+        }
         Ok(ExtractionRuns { runs, dylib })
+    }
+
+    /// Enforce build-fragment presence across the run's config dirs: missing
+    /// everywhere → one forced re-lint of the first config (the mtime bump
+    /// refreshes build units exactly like lib units — verified in the step-0
+    /// spike), then a hard error. Mirrors `run_config`'s per-config guard.
+    fn ensure_build_fragments(
+        &self,
+        cfg: &EngineConfig,
+        runs: &[ConfigRun],
+        dylib: &std::path::Path,
+        targets: &guard::TargetSet,
+    ) -> Result<(), EngineError> {
+        let names = targets.build_fragments();
+        if names.is_empty() {
+            return Ok(());
+        }
+        let dirs: Vec<std::path::PathBuf> = runs.iter().map(|r| r.ir_dir.clone()).collect();
+        let missing = guard::missing_build_fragments(&dirs, &names);
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let Some((first_selector, first_run)) = cfg.configs.first().zip(runs.first()) else {
+            return Ok(()); // no configs ran — nothing to enforce against
+        };
+        eprintln!(
+            "wl-engine: {} build-script fragment(s) missing from every config dir (cargo \
+             freshness skipped their lint pass): {missing:?} — forcing a re-lint",
+            missing.len(),
+        );
+        guard::force_relint(dylib).map_err(|source| EngineError::Io {
+            context: format!("bumping dylib mtime {}", dylib.display()),
+            source,
+        })?;
+        self.run_config(
+            first_selector,
+            &first_run.ir_dir,
+            dylib,
+            &cfg.packages,
+            Some(targets),
+        )?;
+        let still = guard::missing_build_fragments(&dirs, &names);
+        if !still.is_empty() {
+            return Err(EngineError::Incomplete {
+                config: first_selector.id.clone(),
+                missing: still,
+            });
+        }
+        Ok(())
     }
 
     /// One `dylint::run` under one config, then the completeness guard: an
@@ -266,7 +324,12 @@ impl Engine {
         // package-filtered run legitimately shares the dir with siblings'
         // fragments).
         if packages.is_empty() {
-            prune_stale_fragments(ir_dir, &expected);
+            // Build fragments live in whichever config dir first compiled
+            // them (see `ensure_build_fragments`) — every config's keep-set
+            // must include their names or the prune would sweep the one copy.
+            let mut keep = expected.clone();
+            keep.extend(targets.build_fragments());
+            prune_stale_fragments(ir_dir, &keep);
         }
         let missing = guard::missing_fragments(ir_dir, &expected);
         if missing.is_empty() {
@@ -310,6 +373,38 @@ fn prune_stale_fragments(ir_dir: &std::path::Path, expected: &std::collections::
         if !expected.contains(&name) {
             eprintln!("wl-engine: pruning stale IR fragment {name}");
             let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Keep exactly one copy of each build fragment across the run's config dirs.
+/// A forced re-lint under a later config duplicates them (the mtime bump
+/// recompiles build units into that config's dir too); afterwards, a build.rs
+/// edit refreshes only the copy in whichever config compiles first, leaving
+/// the duplicate permanently stale — and the loader unions every dir, so the
+/// stale copy would over-credit forever. Newest mtime wins; best-effort like
+/// the pruner.
+fn dedup_build_fragments(runs: &[ConfigRun], names: &std::collections::BTreeSet<String>) {
+    for name in names {
+        let mut copies: Vec<(std::path::PathBuf, std::time::SystemTime)> = runs
+            .iter()
+            .filter_map(|r| {
+                let path = r.ir_dir.join(name);
+                let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
+                Some((path, mtime))
+            })
+            .collect();
+        if copies.len() < 2 {
+            continue;
+        }
+        copies.sort_by_key(|(_, mtime)| *mtime);
+        let (_newest, stale) = copies.split_last().expect("len >= 2");
+        for (path, _) in stale {
+            eprintln!(
+                "wl-engine: dropping duplicate build fragment {}",
+                path.display()
+            );
+            let _ = std::fs::remove_file(path);
         }
     }
 }

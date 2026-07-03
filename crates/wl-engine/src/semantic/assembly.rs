@@ -195,7 +195,14 @@ pub struct Assembly {
 
 impl Assembly {
     pub fn build(fragments: Vec<IrFragment>) -> Self {
-        let crates: BTreeSet<String> = fragments.iter().map(|f| f.crate_name.clone()).collect();
+        // Build-script fragments are references-only carriers (`items` empty,
+        // crate name always `build_script_build`) — not crates of the
+        // assembly. Letting one in would insert a phantom member.
+        let crates: BTreeSet<String> = fragments
+            .iter()
+            .filter(|f| f.target_kind != "build")
+            .map(|f| f.crate_name.clone())
+            .collect();
 
         // 1) Global def index (keyed by the cross-crate-stable DefPathHash) +
         //    the trait→impls linkage + the module-visibility table (the
@@ -239,6 +246,28 @@ impl Assembly {
         //    only real use-sites — `!import` — so a `pub use` doesn't mask a
         //    dead name; `dep_matrix`/`referenced` (unused-deps, leaf proxy)
         //    count all cross-crate edges.
+        // Path→key fallback index for BUILD-fragment edges: a build script's
+        // dependencies compile in Build mode, whose `-Cmetadata` (hence
+        // `StableCrateId`, hence `DefPathHash` generation) differs from the
+        // Check-mode units the defs above were extracted from — a build
+        // edge's `to_key` never joins `defs` directly (verified live). Their
+        // `to` display path is rooted at the defining crate, so path equality
+        // is the join; indexed over lib-shaped fragments only (build deps can
+        // only be lib/proc-macro targets — excluding bin/test fragments
+        // avoids same-crate-name path collisions). Residual miss: a target
+        // rendered at a re-export path (the visible-parent behavior) doesn't
+        // join and degrades to the pre-build-fragment posture — the use goes
+        // unseen; never a false join onto an unrelated def.
+        let mut path_key: BTreeMap<String, String> = BTreeMap::new();
+        for frag in &fragments {
+            if !matches!(frag.target_kind.as_str(), "lib" | "proc-macro") {
+                continue;
+            }
+            for it in &frag.items {
+                path_key.insert(it.path.join("::"), it.key.clone());
+            }
+        }
+
         let mut in_degree = BTreeMap::new();
         let mut intra_degree = BTreeMap::new();
         let mut dep_matrix = BTreeMap::new();
@@ -249,15 +278,24 @@ impl Assembly {
         let mut reexporters: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for frag in &fragments {
             for e in &frag.references {
-                let Some(def) = defs.get(&e.to_key) else {
+                // The def key this edge lands on: the stable-key join, with
+                // the path fallback for build fragments (see `path_key`).
+                let key = if defs.contains_key(&e.to_key) {
+                    e.to_key.clone()
+                } else if frag.target_kind == "build"
+                    && let Some(k) = path_key.get(&e.to.join("::"))
+                {
+                    k.clone()
+                } else {
                     continue; // target outside the workspace, or not a tree item
                 };
+                let def = &defs[&key];
                 // Signature exposure: the target is named in a PUB item's
                 // signature (from-pub looked up via the def index; an unknown
                 // `from` — e.g. a body-nested def we don't emit — can't be a
                 // pub API surface, so it doesn't count).
                 if e.in_signature && defs.get(&e.from_key).is_some_and(|f| f.public) {
-                    signature_exposed.insert(e.to_key.clone());
+                    signature_exposed.insert(key.clone());
                 }
                 let from_crate = e.from.first().cloned().unwrap_or_default();
                 let cross = from_crate != def.krate;
@@ -273,17 +311,17 @@ impl Assembly {
                     // (E0364/E0365) or exposes it through the importing
                     // module; a plain `use` is neither.
                     if e.reexport {
-                        import_targets.insert(e.to_key.clone());
+                        import_targets.insert(key.clone());
                         reexporters
-                            .entry(e.to_key.clone())
+                            .entry(key.clone())
                             .or_default()
                             .push(e.from.join("::"));
                     }
                     continue; // import: not a use-site for unused-pub
                 }
-                *in_degree.entry(e.to_key.clone()).or_insert(0) += 1;
+                *in_degree.entry(key.clone()).or_insert(0) += 1;
                 if !cross {
-                    *intra_degree.entry(e.to_key.clone()).or_insert(0) += 1;
+                    *intra_degree.entry(key).or_insert(0) += 1;
                 }
             }
         }
@@ -389,9 +427,9 @@ impl Assembly {
     }
 
     /// Every reference out of `krate`'s **primary-unit** fragments (lib, bin,
-    /// proc-macro — never `"test"`: integration tests legitimately reach
-    /// across layers), with canonical targets and module attribution — the
-    /// `architecture` lint's substrate.
+    /// proc-macro — never `"test"` or `"build"`: integration tests and build
+    /// scripts legitimately reach across layers), with canonical targets and
+    /// module attribution — the `architecture` lint's substrate.
     ///
     /// Lowered-signature edges are skipped: every surface-visible signature
     /// type also flows through the HIR walk (which carries the use-site span
@@ -400,7 +438,7 @@ impl Assembly {
     pub fn references_from(&self, krate: &str) -> Vec<ResolvedRef> {
         let mut out = Vec::new();
         for frag in &self.fragments {
-            if frag.crate_name != krate || frag.target_kind == "test" {
+            if frag.crate_name != krate || matches!(frag.target_kind.as_str(), "test" | "build") {
                 continue;
             }
             for e in &frag.references {

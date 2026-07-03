@@ -1,0 +1,8 @@
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+[engine]
+configs = ["default"]

@@ -1,0 +1,13 @@
+# Build-dependency stub for the build-script probe (§17 in probe.rs): the
+# probe crate's build.rs calls into it, and the probe asserts the build unit
+# emits a references-only `probe_expansion@build.json` fragment.
+[package]
+name = "probe-buildstub"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "buildstub"
+
+[workspace]

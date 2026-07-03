@@ -21,7 +21,13 @@ use serde::{Deserialize, Serialize};
 /// mismatch always means a stale cache or a hand-mixed fragment dir — never a
 /// supported configuration. Pre-versioning fragments deserialize as `0` and
 /// are rejected the same way.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// History: 2 — build-script units emit fragments (`target_kind: "build"`,
+/// `<pkg>@build.json`). An old binary reading a shared ir dir containing them
+/// would credit build.rs references to `[dependencies]` (its `target_owner`
+/// maps `build_script_build` onto an arbitrary member) and prune-thrash the
+/// new filenames — silently-misleading, the documented bump trigger.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.json`. Phase 2 assembles these.
@@ -37,14 +43,15 @@ pub struct IrFragment {
     /// every canonical path, matching the syn resolver's `ResolvedPath[0]`.
     pub crate_name: String,
     /// Which cargo target this fragment was extracted from: `"lib"`, `"bin"`,
-    /// `"proc-macro"`, or `"test"` (integration test / bench). Cargo allows a
-    /// package's bin target to share the lib's crate name (`src/lib.rs` +
+    /// `"proc-macro"`, `"test"` (integration test / bench), or `"build"` (a
+    /// member's build script — references-only, `items` empty). Cargo allows
+    /// a package's bin target to share the lib's crate name (`src/lib.rs` +
     /// `src/main.rs`), so `crate_name` alone cannot key a fragment — without
     /// this the bin fragment used to *clobber* the lib's on disk and lib-only
     /// deps read as unused. Also the primary-units signal for the
-    /// `architecture` lint (test targets legitimately reach across layers).
-    /// `""` in pre-field fragments (unobservable in practice — the extractor
-    /// ships vendored in lockstep).
+    /// `architecture` lint (test and build targets legitimately reach across
+    /// layers). `""` in pre-field fragments (unobservable in practice — the
+    /// extractor ships vendored in lockstep).
     #[serde(default)]
     pub target_kind: String,
     pub items: Vec<ItemFact>,
