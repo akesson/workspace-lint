@@ -962,7 +962,7 @@ fn full_item_span(
 /// (`#[macro_use]`, …), so we take only the two safe cases: doc comments (the
 /// E0585-orphan hazard the deletion must cover) and `Unparsed` tool/custom
 /// attributes. A skipped attribute is rare on a deletion candidate and, at
-/// worst, is left in place — never mis-deleted.
+/// worst, is left in place — never deleted in error.
 fn safe_attr_span(a: &rustc_hir::Attribute) -> Option<RustcSpan> {
     if let Some(s) = a.is_doc_comment() {
         return Some(s);
