@@ -91,6 +91,15 @@ jobs:
           key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
+      # Build the dylint driver + extractor dylib once, serially, before the
+      # suite fans out: on a cold driver cache every concurrent test process
+      # otherwise starts its own full driver build (dylint has no cross-process
+      # lock — each builds in a tempdir and atomically renames), and N
+      # simultaneous rustc-interface builds plus fixture compiles exhaust the
+      # runner (observed as a SIGBUS in one extraction on ubuntu). Doubles as
+      # the dogfood run.
+      - name: Warm the extraction engine
+        run: cargo run -q -p workspace-lint --locked
       - run: cargo nextest run --workspace --locked
       # Semantic-lint fixtures (architecture / unused-deps / unused-pub) must
       # `cargo check` offline: the rustc-driver engine those lints are being
@@ -114,11 +123,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+      # Coverage runs the full suite, and the suite runs the full tier (dogfood
+      # + unused-deps cases extract IR) — same provisioning as the test matrix.
+      - name: Install pinned nightly (+ rustc-dev) for the extraction engine
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-04-16
+          components: rustc-dev, llvm-tools-preview
+      - name: Restore stable as default
+        run: rustup default stable
+      - name: Install dylint-link
+        run: cargo install dylint-link --locked
+      - name: Cache dylint driver
+        uses: actions/cache@v4
+        with:
+          path: ~/.dylint_drivers
+          key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-crap
       - uses: Swatinem/rust-cache@v2
+      # Build the dylint driver + extractor dylib BEFORE llvm-cov exports its
+      # instrumentation RUSTFLAGS: on a driver-cache miss dylint builds the
+      # driver with the inherited env, and a driver instrumented on the pinned
+      # nightly would emit profraw that stable's llvm-profdata can't merge.
+      # (Doubles as the dogfood run for this job.)
+      - name: Warm the extraction engine outside coverage flags
+        run: cargo run -q -p workspace-lint --locked
       - name: Generate coverage
         run: cargo cov
       - name: Score complexity-weighted coverage

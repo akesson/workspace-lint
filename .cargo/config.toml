@@ -2,13 +2,15 @@
 cov = "llvm-cov --workspace --lcov --output-path lcov.info"
 cov-html = "llvm-cov --workspace --open"
 cov-summary = "llvm-cov --workspace --summary-only"
-# `spike/` and `corpus/` are `exclude`d from the workspace (see root Cargo.toml),
-# so `cargo cov` never instruments them and they carry no lcov entry — scoring
-# them as 0%-covered would blow up CRAP. Keep the CRAP scope == the coverage scope.
+# `spike/`, `corpus/`, and `extractor/` are `exclude`d from the workspace (see
+# root Cargo.toml), so `cargo cov` never instruments them and they carry no
+# lcov entry — scoring them as 0%-covered would blow up CRAP. Keep the CRAP
+# scope == the coverage scope. (The extractor compiles only on its pinned
+# nightly; its correctness gate is the probe suite in `extractor/tests`.)
 #
 # String form, not array form: cargo merges configs from every `.cargo/` on the
 # path from cwd to root, and ARRAY values concatenate across levels while
 # STRING values override. A worktree nested inside the checkout (e.g.
 # `.claude/worktrees/<name>`) sees this file twice, and the array form doubled
 # the argv (`crap --lcov … crap --lcov …`), breaking `cargo cov-crap` there.
-cov-crap = "crap --lcov lcov.info --exclude **/tests/** --exclude **/tests.rs --exclude **/tools/** --exclude spike/** --exclude corpus/** --allow *::fmt"
+cov-crap = "crap --lcov lcov.info --exclude **/tests/** --exclude **/tests.rs --exclude **/tools/** --exclude spike/** --exclude corpus/** --exclude extractor/** --allow *::fmt"

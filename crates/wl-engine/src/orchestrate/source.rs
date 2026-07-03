@@ -85,6 +85,17 @@ pub(super) fn build_dylib(package_dir: &Path) -> Result<PathBuf, EngineError> {
         // its own builds — find_dylib below and dylint's dep-info fingerprint
         // both key on this path.
         .env_remove("CARGO_TARGET_DIR")
+        // The dylib is an internal pinned artifact: the invoker's build flags
+        // must not reach it. Concretely, `cargo llvm-cov` (the CRAP CI job)
+        // exports `-C instrument-coverage` — a dylib instrumented on the
+        // *pinned nightly* emits profraw the invoker's stable `llvm-profdata`
+        // may not merge. Any other inherited RUSTFLAGS would just vary the
+        // fingerprint and force spurious rebuilds of a build the user never
+        // asked to configure.
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_BUILD_RUSTFLAGS")
+        .env_remove("LLVM_PROFILE_FILE")
         .output()
         .map_err(|source| EngineError::Io {
             context: format!("spawning cargo build in {}", package_dir.display()),
