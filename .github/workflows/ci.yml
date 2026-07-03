@@ -77,13 +77,36 @@ jobs:
       - name: Restore stable as default
         run: rustup default stable
         shell: bash
+      # dylint-link has no prebuilt binaries — `cargo install` compiles it
+      # from source every run (~1.3 min on the Windows runner). Cache the
+      # binary on its pinned version; keep that pin in lockstep with the
+      # `dylint` version in Cargo.lock.
+      - name: Cache dylint-link
+        id: cache-dylint-link
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/dylint-link*
+          key: ${{ runner.os }}-dylint-link-6.0.1
       - name: Install dylint-link
-        run: cargo install dylint-link --locked
+        if: steps.cache-dylint-link.outputs.cache-hit != 'true'
+        run: cargo install dylint-link --version 6.0.1 --locked
       - name: Cache dylint driver
         uses: actions/cache@v4
         with:
           path: ~/.dylint_drivers
           key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
+      # The engine materializes the vendored extractor and builds its dylib
+      # under ~/.cache/workspace-lint (`ExtractorSource::vendored`) — a path
+      # neither rust-cache nor the driver cache covers, so every run paid a
+      # from-scratch dylib build inside the warm step. A stale restore-key
+      # hit is safe by design: materialization is content-compared and
+      # self-healing, and cargo freshness rebuilds only what changed.
+      - name: Cache vendored extractor build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/workspace-lint
+          key: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-${{ hashFiles('extractor/**', 'crates/wl-ir/**') }}
+          restore-keys: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
       # Build the dylint driver + extractor dylib once, serially, before the
@@ -127,13 +150,27 @@ jobs:
           components: rustc-dev, llvm-tools-preview
       - name: Restore stable as default
         run: rustup default stable
+      # Same cached provisioning as the test matrix (see the comments there).
+      - name: Cache dylint-link
+        id: cache-dylint-link
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/dylint-link*
+          key: ${{ runner.os }}-dylint-link-6.0.1
       - name: Install dylint-link
-        run: cargo install dylint-link --locked
+        if: steps.cache-dylint-link.outputs.cache-hit != 'true'
+        run: cargo install dylint-link --version 6.0.1 --locked
       - name: Cache dylint driver
         uses: actions/cache@v4
         with:
           path: ~/.dylint_drivers
           key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
+      - name: Cache vendored extractor build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/workspace-lint
+          key: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-${{ hashFiles('extractor/**', 'crates/wl-ir/**') }}
+          restore-keys: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@v2
         with:
