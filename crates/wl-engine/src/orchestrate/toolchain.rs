@@ -77,6 +77,42 @@ mod tests {
         assert!(e.to_string().contains("cargo install dylint-link --locked"));
     }
 
+    /// `EngineError::remediation` must name the exact command the `Display`
+    /// text shows — the CLI offers to *run* the former while the user *reads*
+    /// the latter, so drift between them would execute something the user
+    /// never saw. Both texts wrap commands over lines with `\`, so compare
+    /// whitespace-collapsed.
+    #[test]
+    fn remediation_argv_matches_display_text() {
+        let provisionable = [
+            EngineError::ToolchainMissing {
+                pin: "nightly-2026-04-16".into(),
+            },
+            EngineError::ComponentMissing {
+                pin: "nightly-2026-04-16".into(),
+                component: "rustc-dev".into(),
+            },
+            EngineError::DylintLinkMissing,
+        ];
+        for e in provisionable {
+            let argv = e.remediation().expect("preflight errors are provisionable");
+            let command = argv.join(" ");
+            let display: String = e
+                .to_string()
+                .replace('\\', " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                display.contains(&command),
+                "Display text must show the remediation command verbatim:\n  {command}\nnot found in:\n  {display}"
+            );
+        }
+
+        // Not provisionable: rustup itself is a shell pipe from the network.
+        assert!(EngineError::RustupMissing.remediation().is_none());
+    }
+
     #[test]
     fn dylint_link_probe_uses_path_scan() {
         // `cargo` is guaranteed to be on PATH in any environment running this

@@ -7,6 +7,7 @@ mod fix;
 mod git;
 mod lints;
 mod messages;
+mod provision;
 mod suggest;
 mod suppress;
 mod util;
@@ -398,7 +399,11 @@ fn run_single_check(
 /// dylint extraction per config → Phase-2 assembly. Loud-fail on error,
 /// mirroring [`load_fast_model`], but printing the error `Display` verbatim —
 /// the `EngineError` toolchain variants carry the full rustup remediation
-/// text, which must reach the user unwrapped and untruncated.
+/// text, which must reach the user unwrapped and untruncated. On an
+/// interactive terminal, provisionable preflight failures (missing pinned
+/// toolchain / component / dylint-link) are first offered as a one-keypress
+/// install-and-retry ([`provision::Provisioner`]); each stage repairs at most
+/// once, so the loop is bounded by the number of preflight checks.
 ///
 /// NOTE (deferred): today extraction runs before any lint, so an extraction
 /// failure aborts the run before the fast-tier lints report. Reordering so
@@ -408,17 +413,24 @@ fn load_semantic_model(configs: Vec<wl_engine::CfgSelector>) -> wl_engine::Seman
     let root = std::path::absolute(".")
         .unwrap_or_else(|e| util::fail(format!("failed to resolve the workspace root: {e}")));
     let engine = wl_engine::Engine::new(wl_engine::ExtractorSource::vendored());
-    let runs = engine
-        .extract(&wl_engine::EngineConfig {
-            workspace_root: root.clone(),
-            configs,
-            packages: vec![],
-            // Relative on purpose: `Engine::extract` enters the workspace
-            // root, so the per-config IR dirs land under the target dir of
-            // the linted workspace (stable across runs — warm-cache friendly).
-            ir_root: std::path::PathBuf::from("target/workspace-lint/ir"),
-        })
-        .unwrap_or_else(|e| util::fail(e));
+    let engine_config = wl_engine::EngineConfig {
+        workspace_root: root.clone(),
+        configs,
+        packages: vec![],
+        // Relative on purpose: `Engine::extract` enters the workspace
+        // root, so the per-config IR dirs land under the target dir of
+        // the linted workspace (stable across runs — warm-cache friendly).
+        ir_root: std::path::PathBuf::from("target/workspace-lint/ir"),
+    };
+    let mut provisioner = provision::Provisioner::new();
+    let runs = loop {
+        match engine.extract(&engine_config) {
+            Ok(runs) => break runs,
+            // Returning at all means a remediation ran successfully → retry;
+            // every other path exits inside.
+            Err(e) => provisioner.repair_or_fail(&e),
+        }
+    };
     wl_engine::SemanticModel::load(&runs, &root).unwrap_or_else(|e| util::fail(e))
 }
 

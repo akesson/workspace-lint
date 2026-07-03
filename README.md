@@ -21,7 +21,8 @@ compiler's own answer, seeing through macro expansions, re-export chains,
 `#[cfg]` variants, trait dispatch, and type inference. The trade is
 explicit: **the workspace must compile** for the semantic tier, and a
 pinned nightly toolchain must be installed (the tool prints the exact
-install commands if it isn't). `--fast-only` runs just the build-free tier
+install commands if it isn't — and offers to run them on an interactive
+terminal). `--fast-only` runs just the build-free tier
 — no toolchain, no compile. See [The semantic engine](#the-semantic-engine).
 
 ## Installation
@@ -454,6 +455,11 @@ rustup toolchain install <pin> --profile minimal \
     --component rustc-dev --component llvm-tools-preview
 cargo install dylint-link --locked
 ```
+
+On an interactive terminal the tool offers to run each of those for you
+(`proceed? [y/N]`) and continues the run once they succeed — provisioning
+a new machine is one keypress. Without a terminal (CI, pipes) it never
+prompts and fails with the commands above.
 
 Your own code never compiles on that nightly — it is the *extractor's*
 build toolchain; your workspace compiles on whatever toolchain cargo would
