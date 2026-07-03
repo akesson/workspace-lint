@@ -53,7 +53,7 @@ fn main() {
             {
                 expand::run(ec);
             }
-            let (mut diagnostics, fast, mut ran) = run_all(&config, cli.fast_only);
+            let (mut diagnostics, fast, semantic, mut ran) = run_all(&config, cli.fast_only);
             // Config-audit findings (below) are produced on every default
             // run, so expects for `config` are always judgeable here.
             ran.insert(LintId::Config);
@@ -77,6 +77,21 @@ fn main() {
             // place users can act on; drop findings anchored in it before
             // suppression so they never consume an `expect!` or skew stale-expect.
             drop_generated_anchored(fast.as_ref(), &mut diagnostics);
+            // Under `--fix`, converge unused-pub deletions in one pass: deleting
+            // a dead item frees whatever it solely reached. The cascade replaces
+            // the plain unused-pub findings with the converged set and emits the
+            // import surgery that keeps the tree compiling. Runs *before*
+            // suppression so its findings (some newly `Unused` this pass) flow
+            // through directive filtering + stale-expect accounting normally;
+            // its own removal decisions consult a non-mutating suppression query
+            // so an `expect!`-silenced item — and its callees — stay intact.
+            let mut trimmed_imports = false;
+            if cli.fix
+                && ran.contains(&LintId::UnusedPub)
+                && let (Some(fm), Some(sm)) = (fast.as_ref(), semantic.as_ref())
+            {
+                trimmed_imports = run_unused_pub_cascade(&config, fm, sm, &mut diagnostics);
+            }
             // Suppression filters by directives and appends `stale-expect` /
             // `unknown-lint` findings; leveling runs last so the appended ones
             // are leveled too and `allow`-ed lints are dropped from the final
@@ -85,6 +100,12 @@ fn main() {
             apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
             if cli.fix {
                 fix::run(&diagnostics);
+                if trimmed_imports {
+                    eprintln!(
+                        "note: `--fix` trimmed `use` imports left dangling by deleted items; \
+                         run `cargo fmt` to tidy the result"
+                    );
+                }
             }
             report_and_exit(diagnostics, format);
         }
@@ -331,13 +352,51 @@ fn apply_suppression(
     diagnostics.extend(unknown);
 }
 
+/// The `--fix` unused-pub cascade: replace the plain unused-pub findings with
+/// the transitively-converged set and append the import surgery. Builds a
+/// read-only [`suppress::SuppressionMap`] so an `expect!`/`allow!`-silenced
+/// deletion never seeds a removal (its callees stay live) — the map is scanned
+/// again by [`apply_suppression`] for the real filtering, a cheap re-scan paid
+/// only under `--fix`.
+/// Returns `true` when the cascade emitted import surgery — the caller prints a
+/// `cargo fmt` hint after applying, since trimming `use` leaves valid but
+/// unformatted residue (collapsed blank lines, single-element `{…}` groups).
+fn run_unused_pub_cascade(
+    config: &config::Config,
+    fast: &FastModel,
+    semantic: &wl_engine::SemanticModel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let directives_list = directives::scan_with_model(fast);
+    let map = suppress::SuppressionMap::from_directives(directives_list);
+    let suppressed = |d: &Diagnostic| map.would_suppress(d);
+
+    let global = config.unused_pub.clone().unwrap_or_default();
+    let per_crate = config.unused_pub_overrides();
+    let result = lints::unused_pub::cascade::run(&global, &per_crate, fast, semantic, &suppressed);
+
+    // The cascade output is the authoritative unused-pub picture — swap it in
+    // for the plain-check findings, then add the dangling-`use` deletions.
+    let unused_pub_id = LintId::UnusedPub.id();
+    let did_surgery = !result.surgery.is_empty();
+    diagnostics.retain(|d| d.lint != unused_pub_id);
+    diagnostics.extend(result.diagnostics);
+    diagnostics.extend(result.surgery);
+    did_surgery
+}
+
 /// The default run's lint pipeline. The returned [`LintId`] set records which
 /// lints actually ran (post-`--fast-only`, post-`allow`) — the staleness
 /// domain for `expect` directives.
 fn run_all(
     config: &config::Config,
     fast_only: bool,
-) -> (Vec<Diagnostic>, Option<FastModel>, HashSet<LintId>) {
+) -> (
+    Vec<Diagnostic>,
+    Option<FastModel>,
+    Option<wl_engine::SemanticModel>,
+    HashSet<LintId>,
+) {
     let mut registry = lints::registry(config);
     // `--fast-only` runs only the build-free lints: a semantic lint is
     // *skipped* — not invoked without its model (its `check` rightly demands
@@ -370,7 +429,9 @@ fn run_all(
     };
     let ran: HashSet<LintId> = registry.iter().map(|l| l.id()).collect();
     let diagnostics: Vec<Diagnostic> = registry.iter().flat_map(|l| l.check(&cx)).collect();
-    (diagnostics, fast, ran)
+    // `cx`'s borrow of `semantic` ends here (its last use above), so `semantic`
+    // can be moved out for the `--fix` cascade the caller runs.
+    (diagnostics, fast, semantic, ran)
 }
 
 fn run_single_check(

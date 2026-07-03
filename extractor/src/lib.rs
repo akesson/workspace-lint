@@ -225,6 +225,7 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
             self_type: self_type_key(tcx, def_id),
             visibility,
             span: span_to_ir(sm, tcx.def_span(def_id)),
+            full_span: full_item_span(tcx, sm, local_id),
             vis_span: vis_span_to_ir(tcx, sm, local_id),
             attrs: export_attrs(tcx, local_id),
         });
@@ -335,6 +336,12 @@ struct EdgeFlags {
     /// defining crate (`use shim::Item` resolving through a re-export) — see
     /// [`RefEdge::via`]. Computed by [`RefCollector::via_crate`].
     via: Option<String>,
+    /// Single-name import leaves only: the enclosing `use …;` declaration span
+    /// and this leaf's own written span — see [`RefEdge::decl_span`] /
+    /// [`RefEdge::elem_span`]. `None` on every non-import and on glob/list-stem
+    /// `use` nodes (no single deletable leaf).
+    decl_span: Option<RustcSpan>,
+    elem_span: Option<RustcSpan>,
 }
 
 struct RefCollector<'a, 'tcx> {
@@ -409,6 +416,7 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
         if from == to_path {
             return;
         }
+        let sm = self.tcx.sess.source_map();
         self.edges.push(RefEdge {
             from,
             to: to_path,
@@ -422,7 +430,9 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             glob: flags.glob,
             alias: flags.alias,
             via: flags.via,
-            span: span.and_then(|s| span_to_ir(self.tcx.sess.source_map(), s)),
+            span: span.and_then(|s| span_to_ir(sm, s)),
+            decl_span: flags.decl_span.and_then(|s| span_to_ir(sm, s)),
+            elem_span: flags.elem_span.and_then(|s| span_to_ir(sm, s)),
         });
     }
 
@@ -573,17 +583,38 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
         // module's *contents*, tested as a representative child). A single-name
         // use carries its local binding ident — the only record of a
         // `use a::B as C` rename.
-        let (glob, alias) = match self.tcx.hir_node(hir_id) {
+        //
+        // For a `Single` leaf we also capture the two `--fix` deletion surfaces
+        // (empirically pinned by `probe.rs` §18 — rustc's use-tree lowering is
+        // not obvious here):
+        //
+        //  - `decl_span` = the leaf item's own span. For a **standalone**
+        //    `use a::b;` this is the whole statement (the delete surface); for a
+        //    **brace-list** leaf rustc collapses it to just the leaf, so it
+        //    equals `elem_span`. That equality IS the brace discriminator the
+        //    lint uses: `decl_span ⊋ elem_span` ⇒ whole-statement delete;
+        //    `decl_span == elem_span` ⇒ excise the leaf in place.
+        //  - `elem_span` = the leaf as written — `path.span` (which rustc makes
+        //    *brace-relative*: `b::c` in `use a::{b::c, d}`, not `a::b::c`)
+        //    extended through the binding ident, so it covers `B as C`. The
+        //    intra-brace excision surface.
+        //
+        // rustc lowers each brace-list leaf to its own `Single` item, so
+        // `visit_use` fires once per leaf and both spans are per-leaf-correct.
+        // Globs and list-stems have no single deletable leaf → both stay `None`.
+        let (glob, alias, decl_span, binding_span) = match self.tcx.hir_node(hir_id) {
             Node::Item(Item {
                 kind: ItemKind::Use(_, UseKind::Glob),
                 ..
-            }) => (true, None),
+            }) => (true, None, None, None),
             Node::Item(Item {
                 kind: ItemKind::Use(_, UseKind::Single(ident)),
+                span: decl,
                 ..
-            }) => (false, Some(ident.to_string())),
-            _ => (false, None),
+            }) => (false, Some(ident.to_string()), Some(*decl), Some(ident.span)),
+            _ => (false, None, None, None),
         };
+        let elem_span = binding_span.map(|b| path.span.to(b));
         for res in path.res.present_items() {
             if let Some(to) = res.opt_def_id() {
                 self.record_import(
@@ -596,6 +627,8 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                         glob,
                         alias: alias.clone(),
                         via: self.via_crate(path.segments, to),
+                        decl_span,
+                        elem_span,
                         ..EdgeFlags::default()
                     },
                 );
@@ -895,6 +928,49 @@ fn vis_span_to_ir(
         return None;
     }
     span_to_ir(sm, vs)
+}
+
+/// The whole-item deletion surface ([`ItemFact::full_span`]): the item
+/// *including its body* (`span_with_body`) extended over its leading doc
+/// comments and attributes, so a `--fix` deletion removes the item cleanly —
+/// no orphaned `{ … }` block, no dangling `///`. `def_span` (what
+/// [`ItemFact::span`] carries) is only the signature and would leave the body.
+/// `None` for a macro-generated item (the span projects to the invocation, not
+/// an editable surface).
+fn full_item_span(
+    tcx: TyCtxt<'_>,
+    sm: &rustc_span::source_map::SourceMap,
+    local_id: LocalDefId,
+) -> Option<Span> {
+    let hir_id = tcx.local_def_id_to_hir_id(local_id);
+    let body = tcx.hir_span_with_body(hir_id);
+    // `Span::to` encloses both operands, so folding over the attribute spans
+    // extends `body` leftward to the earliest doc comment / attribute.
+    let full = tcx
+        .hir_attrs(hir_id)
+        .iter()
+        .filter_map(safe_attr_span)
+        .fold(body, |acc, s| acc.to(s));
+    if full.from_expansion() {
+        return None;
+    }
+    span_to_ir(sm, full)
+}
+
+/// An attribute's source span, or `None` when it can't be retrieved.
+/// `Attribute::span()` *panics* on most built-in `Parsed` attrs
+/// (`#[macro_use]`, …), so we take only the two safe cases: doc comments (the
+/// E0585-orphan hazard the deletion must cover) and `Unparsed` tool/custom
+/// attributes. A skipped attribute is rare on a deletion candidate and, at
+/// worst, is left in place — never mis-deleted.
+fn safe_attr_span(a: &rustc_hir::Attribute) -> Option<RustcSpan> {
+    if let Some(s) = a.is_doc_comment() {
+        return Some(s);
+    }
+    match a {
+        rustc_hir::Attribute::Unparsed(u) => Some(u.span),
+        _ => None,
+    }
 }
 
 fn write_fragment(fragment: &IrFragment, file_stem: &str) {

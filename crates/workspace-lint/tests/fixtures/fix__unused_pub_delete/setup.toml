@@ -1,0 +1,5 @@
+# auto-delete only fires when the file is git-tracked and clean (the deletion's
+# backup is `git checkout`). Init a repo + commit the input so the staged
+# tempdir is clean before `--fix` runs.
+[git]
+init = true

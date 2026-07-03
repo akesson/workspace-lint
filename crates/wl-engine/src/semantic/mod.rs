@@ -12,7 +12,7 @@ mod meta;
 mod pub_usage;
 mod union;
 
-pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
+pub use assembly::{Assembly, Category, DefInfo, Reach, RemovalSet, ResolvedRef};
 pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage};
@@ -53,6 +53,29 @@ pub enum SemanticError {
 pub struct SemanticModel {
     configs: Vec<(String, Assembly)>,
     meta: WorkspaceMeta,
+}
+
+/// One `use`-declaration leaf left dangling by a cascade deletion: its target
+/// item is being removed, so the import must go too or the build breaks
+/// (E0432). The unused-pub `--fix` import-surgery surface
+/// ([`SemanticModel::dangling_imports`]).
+#[derive(Debug, Clone)]
+pub struct DanglingImport {
+    /// The leaf item's own span (workspace-relative file, on-disk byte range).
+    /// For a **standalone** `use a::b;` this is the whole statement — the
+    /// delete surface. For a **brace-list** leaf rustc collapses it to the
+    /// leaf, so it equals `elem`; that equality is the brace discriminator the
+    /// lint keys on (`decl == elem` ⇒ excise in place, else delete statement).
+    pub decl: wl_ir::Span,
+    /// The leaf as written (`b`, `b::c`, or `B as C`) — the intra-brace
+    /// excision surface. Covers the whole brace entry, nested path and rename
+    /// included.
+    pub elem: wl_ir::Span,
+    /// A `pub use` re-export: excising it can break a downstream name
+    /// (E0364/E0365). Surgery skips it — and the target should never be a
+    /// deletion candidate anyway (the candidate filter guards re-export
+    /// targets), so this is belt-and-braces.
+    pub reexport: bool,
 }
 
 impl SemanticModel {
@@ -112,6 +135,83 @@ impl SemanticModel {
     /// config's member crates; ordering is deterministic (by identity).
     pub fn pub_candidates(&self) -> Vec<PubCandidate> {
         pub_usage::compute(&self.configs)
+    }
+
+    /// [`pub_candidates`](Self::pub_candidates) recomputed as if every def in
+    /// `removed` had been deleted — the unused-pub `--fix` cascade substrate.
+    /// Deleting an item drops its outgoing edges, so a callee it solely reached
+    /// re-classifies as `Unused` in the *same* pass. The cfg-matrix union is
+    /// preserved (removal is simulated per config, then unioned exactly as the
+    /// base verdict is), so an item still used under *any* configured
+    /// `[engine] configs` entry stays alive. Returns candidates whose own
+    /// identity is in `removed` too (they read `Unused`); the caller dedups.
+    pub fn pub_candidates_excluding(&self, removed: &RemovalSet) -> Vec<PubCandidate> {
+        if removed.is_empty() {
+            return self.pub_candidates();
+        }
+        pub_usage::compute_excluding(&self.configs, removed)
+    }
+
+    /// Identities that must NOT be auto-deleted because a `use` naming them
+    /// can't be excised: the declaration lives in a **macro expansion**
+    /// (`decl_span.from_expansion`), so deleting the item would dangle an
+    /// import no edit can reach (E0432). The cascade excludes these from its
+    /// removable seeds up front, avoiding a mid-run un-delete ripple. (A
+    /// `pub use` re-export target is already guarded at the candidate filter.)
+    pub fn import_excision_blocked(&self) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for (_, asm) in &self.configs {
+            for frag in asm.fragments() {
+                for e in &frag.references {
+                    if !e.import {
+                        continue;
+                    }
+                    let blocked = e.decl_span.as_ref().is_some_and(|d| d.from_expansion);
+                    if blocked && let Some(def) = asm.def_for_edge(e) {
+                        out.insert(def.path.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Every `use`-declaration leaf whose target is one of the `removed` defs —
+    /// the imports a cascade deletion leaves dangling (E0432 if not also
+    /// removed). Unioned across configs and deduped by (file, decl, elem); the
+    /// unused-pub `--fix` import-surgery surface. Macro-generated and
+    /// `pub use` leaves are surfaced but flagged for the lint to skip.
+    pub fn dangling_imports(&self, removed: &RemovalSet) -> Vec<DanglingImport> {
+        use std::collections::HashSet;
+        let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+        let mut out = Vec::new();
+        for (_, asm) in &self.configs {
+            for frag in asm.fragments() {
+                for e in &frag.references {
+                    if !e.import {
+                        continue;
+                    }
+                    let (Some(decl), Some(elem)) = (&e.decl_span, &e.elem_span) else {
+                        continue;
+                    };
+                    let Some(def) = asm.def_for_edge(e) else {
+                        continue;
+                    };
+                    if !removed.contains_id(&def.path) {
+                        continue;
+                    }
+                    if !seen.insert((decl.file.clone(), decl.lo, elem.lo)) {
+                        continue;
+                    }
+                    out.push(DanglingImport {
+                        decl: decl.clone(),
+                        elem: elem.clone(),
+                        reexport: e.reexport,
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// Every reference out of `krate`'s primary-unit code under the

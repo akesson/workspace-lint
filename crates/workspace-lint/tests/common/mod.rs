@@ -432,14 +432,16 @@ pub fn normalize_stderr(stderr: &str, tmp: &Path) -> String {
 }
 
 /// Every regular file under `root`, as paths relative to `root`, sorted — for
-/// tree-equality comparison (`fix_fixtures.rs`). Prunes `target/` directories
-/// and any file whose name is in `exclude_files` (e.g. `["Cargo.lock"]`, a
-/// `cargo metadata` side-effect that isn't part of the user-visible workspace
-/// state under test).
+/// tree-equality comparison (`fix_fixtures.rs`). Prunes the same VCS/build
+/// directories as [`COPY_PRUNE_DIRS`] (`.git`, `_git`, `target`) plus any file
+/// whose name is in `exclude_files` (e.g. `["Cargo.lock"]`, a `cargo metadata`
+/// side-effect that isn't part of the user-visible workspace state under test).
 ///
-/// Note the deliberate split from [`COPY_PRUNE_DIRS`]: *copying* prunes VCS/build
-/// dirs, *comparing* prunes a build side-effect file. They are different concerns
-/// and must never share one list.
+/// The `.git` prune matters for a fixture whose `setup.toml` does `[git] init`
+/// (auto-delete needs a clean repo): the staged tempdir then carries a `.git/`
+/// whose commit hashes are non-deterministic — never a comparison target. The
+/// dir-prune list is shared with copying; only the *file* exclusion differs
+/// (comparing drops the generated `Cargo.lock`, copying keeps everything else).
 pub fn walk_files(root: &Path, exclude_files: &[&str]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if !root.is_dir() {
@@ -455,7 +457,7 @@ pub fn walk_files(root: &Path, exclude_files: &[&str]) -> Vec<PathBuf> {
             let path = entry.path();
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             if path.is_dir() {
-                if name == "target" {
+                if COPY_PRUNE_DIRS.contains(&name) {
                     continue;
                 }
                 stack.push(path);

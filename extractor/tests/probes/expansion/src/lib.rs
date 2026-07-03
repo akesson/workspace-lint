@@ -119,3 +119,58 @@ mod via_user {
         OwnItem
     }
 }
+
+/// A documented, attributed fn — the delete surface must swallow the doc
+/// comment AND the outer attributes, or a `--fix` delete orphans them
+/// (E0585 / E0658).
+#[inline]
+#[allow(clippy::let_and_return)]
+pub fn attributed() -> u32 {
+    5
+}
+
+// Brace-list surgery surface (unused-pub `--fix` deletes dangling `use`
+// leaves). Two leaves lowered from one declaration must share a `decl_span`
+// (the whole `use …;`) yet carry distinct `elem_span`s (the leaf as written,
+// physically inside the braces). A brace-list alias leaf must span
+// `aliased_src as al`.
+pub mod listed {
+    pub fn first() -> u32 {
+        1
+    }
+    pub fn second() -> u32 {
+        2
+    }
+    pub fn aliased_src() -> u32 {
+        3
+    }
+}
+mod list_user {
+    use super::listed::{first, second};
+    use super::listed::{aliased_src as al};
+
+    pub fn uses() -> u32 {
+        first() + second() + al()
+    }
+}
+
+// Nested-path-inside-a-brace (`use a::{b::c, d}`) — the form a naive
+// last-segment `elem_span` would delete wrongly (leaving `b::`). The leaf's
+// written span must cover the whole brace entry `deep::buried`.
+pub mod nested {
+    pub mod deep {
+        pub fn buried() -> u32 {
+            7
+        }
+    }
+    pub fn shallow() -> u32 {
+        8
+    }
+}
+mod nested_user {
+    use super::nested::{deep::buried, shallow};
+
+    pub fn uses() -> u32 {
+        buried() + shallow()
+    }
+}

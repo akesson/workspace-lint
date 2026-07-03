@@ -27,7 +27,15 @@ use serde::{Deserialize, Serialize};
 /// would credit build.rs references to `[dependencies]` (its `target_owner`
 /// maps `build_script_build` onto an arbitrary member) and prune-thrash the
 /// new filenames — silently-misleading, the documented bump trigger.
-pub const SCHEMA_VERSION: u32 = 2;
+/// 3 — the unused-pub `--fix` cascade's write surfaces: import edges gained
+/// [`RefEdge::decl_span`] / [`RefEdge::elem_span`] (delete dangling `use`s /
+/// excise brace-list leaves) and [`ItemFact::full_span`] (the whole-item delete
+/// surface — `def_span` alone is only the signature, so a pre-3 fragment would
+/// delete a function's header and orphan its body). A pre-3 fragment carries
+/// none of them, so the fix would silently skip the import cleanup or leave a
+/// broken `use`/body — the misleading-absence the bump forces a re-extract to
+/// close.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.json`. Phase 2 assembles these.
@@ -167,12 +175,30 @@ pub struct RefEdge {
     /// The use-site: where in `from`'s source this reference occurs. `None`
     /// for lowered-signature-pass edges (no single HIR token) and dummy
     /// spans. For a macro-generated reference this is the *invocation site*
-    /// (`Span::from_expansion` set). Kept **last** so the derived `Ord`
-    /// compares edge identity first; the extractor dedups on identity alone
-    /// and keeps the first (lowest) span — five calls to the same def are
-    /// still one edge, anchored at the earliest use-site.
+    /// (`Span::from_expansion` set). Kept ahead of the two import-only spans so
+    /// the derived `Ord` compares edge identity, then the use-site, first; the
+    /// extractor dedups on identity alone (see `edge_identity`) and keeps the
+    /// first (lowest) span — five calls to the same def are still one edge,
+    /// anchored at the earliest use-site.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    /// For an `import` edge: the span of the **whole `use …;` declaration** the
+    /// leaf belongs to (the enclosing HIR `use` item). Every leaf lowered from
+    /// one source declaration shares it, so it is the grouping key the
+    /// unused-pub `--fix` uses to tell a sole-leaf import (delete the whole
+    /// statement) from a brace-list leaf (excise just the leaf). `None` for
+    /// non-import edges and macro-generated `use`s (no editable declaration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decl_span: Option<Span>,
+    /// For an `import` edge: the span of **this leaf as written** — the final
+    /// path segment through any `as`-rename binding (`b` in `use a::{b, c}`,
+    /// `B as C` in `use a::B as C`). The intra-brace write surface: excising it
+    /// (plus one adjacent separator) removes the leaf while leaving live
+    /// siblings — including ones importing out-of-workspace items the assembler
+    /// never sees. `None` for non-import edges, globs (no single leaf), and
+    /// macro-generated `use`s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elem_span: Option<Span>,
 }
 
 /// A single resolved definition.
@@ -225,7 +251,20 @@ pub struct ItemFact {
     /// synthetic defs (the `--test` harness `main`, etc.). For a macro-generated
     /// item this is the *invocation site* (`Span::from_expansion` set) — good for
     /// "generated here" display, **not** an editable surface. See [`Span`].
+    ///
+    /// This is rustc's `def_span` — the **signature/header** span (`pub fn f()
+    /// -> T`, `pub struct S`), the natural diagnostic-anchor line. It is NOT
+    /// the deletion surface: deleting it would orphan a function's body. Use
+    /// [`Self::full_span`] to remove the whole item.
     pub span: Option<Span>,
+    /// The **whole-item** span for the unused-pub `--fix` deletion surface:
+    /// leading doc comments and attributes through the closing brace of the
+    /// body (`span_with_body`, extended over the item's attribute spans).
+    /// Deleting this leaves no orphaned body block or dangling doc comment.
+    /// `None` for synthetic/macro-generated defs (no editable surface — same
+    /// condition as [`Self::span`] being `None` or from-expansion).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_span: Option<Span>,
     /// Byte range of the visibility token (`pub` / `pub(crate)` / `pub(in path)`)
     /// — the `--fix` *tighten* write surface, mirroring syn's `vis_byte_range`
     /// but also present for the restricted forms syn can't capture. `None` when

@@ -125,6 +125,10 @@ pub struct DefInfo {
     /// The whole-definition span (on-disk byte offsets — see [`wl_ir::Span`]).
     /// `None` exactly when `synthetic`.
     pub span: Option<wl_ir::Span>,
+    /// The whole-**item** span — attrs/doc through the body — for the
+    /// unused-pub `--fix` deletion surface (see [`wl_ir::ItemFact::full_span`]).
+    /// `None` when there is no editable surface (synthetic / macro-generated).
+    pub full_span: Option<wl_ir::Span>,
     /// The visibility-token span — the `--fix` tighten write surface. `None`
     /// when there is no independently editable token (private, trait-forced,
     /// macro-generated); see [`wl_ir::ItemFact::vis_span`].
@@ -140,6 +144,82 @@ pub(crate) struct CandReach {
     pub(crate) krate: String,
     pub(crate) category: Category,
     pub(crate) kind: String,
+}
+
+/// A set of def identities (crate-rooted display paths) to treat as deleted
+/// when the unused-pub `--fix` cascade recomputes degrees. Matching is
+/// **segment-wise prefix**, not string prefix, so removing `crate::a` drops
+/// `crate::a`'s own edges and those of body-nested defs it owns
+/// (`crate::a::{closure}`) but never a sibling `crate::ab`.
+#[derive(Default)]
+pub struct RemovalSet {
+    segs: Vec<Vec<String>>,
+    ids: std::collections::HashSet<String>,
+}
+
+impl RemovalSet {
+    /// Build from cross-config identities (`PubCandidate::id` / `DefInfo::path`).
+    pub fn new<I, S>(ids: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ids: std::collections::HashSet<String> =
+            ids.into_iter().map(|id| id.as_ref().to_string()).collect();
+        let segs = ids
+            .iter()
+            .map(|id| id.split("::").map(str::to_string).collect())
+            .collect();
+        Self { segs, ids }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// Exact identity membership — the import index asks "is *this* import's
+    /// target one of the removed defs?" (a dangling import names its target
+    /// exactly, not an ancestor).
+    pub fn contains_id(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+
+    /// Does some removed identity equal `from` or a proper ancestor of it
+    /// (segment-wise)? `from` is an edge's enclosing-item path.
+    fn covers(&self, from: &[String]) -> bool {
+        self.segs
+            .iter()
+            .any(|r| from.len() >= r.len() && from[..r.len()] == r[..])
+    }
+}
+
+/// The removal-sensitive indexes recomputed by [`Assembly::refold_excluding`] —
+/// the degree source [`super::pub_usage::compute`] reads instead of the
+/// prebuilt maps when a cascade removal set is in effect.
+pub(super) struct RemovalOverlay {
+    in_degree: BTreeMap<String, usize>,
+    intra_degree: BTreeMap<String, usize>,
+    signature_exposed: BTreeSet<String>,
+}
+
+impl RemovalOverlay {
+    pub(super) fn view(&self) -> DegreeView<'_> {
+        DegreeView {
+            in_degree: &self.in_degree,
+            intra_degree: &self.intra_degree,
+            signature_exposed: &self.signature_exposed,
+        }
+    }
+}
+
+/// A borrowed view of the three removal-sensitive indexes — either the
+/// prebuilt maps ([`Assembly::degree_view`]) or a recomputed
+/// [`RemovalOverlay`]. The degree source [`super::pub_usage::compute`] reads,
+/// so the same fold serves both the plain and the cascade paths.
+pub(super) struct DegreeView<'a> {
+    pub(super) in_degree: &'a BTreeMap<String, usize>,
+    pub(super) intra_degree: &'a BTreeMap<String, usize>,
+    pub(super) signature_exposed: &'a BTreeSet<String>,
 }
 
 /// The kinds the unused-pub verdict judges. Widened from the spike's
@@ -191,6 +271,11 @@ pub struct Assembly {
     /// `mod` def path (joined) → is-public, for the pub-module-hop
     /// reachability judgement.
     module_vis: BTreeMap<String, bool>,
+    /// Display-path → stable key, over lib/proc-macro fragments only — the
+    /// build-fragment edge join fallback (see the fold in [`Assembly::build`]).
+    /// Retained so [`Assembly::refold_excluding`] can re-run the same join when
+    /// the unused-pub `--fix` cascade recomputes degrees with items removed.
+    path_key: BTreeMap<String, String>,
 }
 
 impl Assembly {
@@ -232,6 +317,7 @@ impl Assembly {
                         export_root: !it.attrs.is_empty(),
                         self_type: it.self_type.clone(),
                         span: it.span.clone(),
+                        full_span: it.full_span.clone(),
                         vis_span: it.vis_span.clone(),
                     },
                 );
@@ -370,6 +456,7 @@ impl Assembly {
             import_targets,
             reexporters,
             module_vis,
+            path_key,
         }
     }
 
@@ -385,7 +472,21 @@ impl Assembly {
     /// no Rust referrer possible). Module-level and inherent-impl items carry
     /// no `trait_item`, so they fall through to Direct-or-Unreached.
     pub fn reach_of(&self, key: &str, def: &DefInfo) -> Reach {
-        if self.in_degree.contains_key(key) {
+        self.reach_with(key, def, &self.in_degree)
+    }
+
+    /// [`Assembly::reach_of`] against an explicit in-degree map — the
+    /// unused-pub `--fix` cascade passes a [`RemovalOverlay`]'s recomputed
+    /// in-degree so a def whose only referrers were deleted this pass reads as
+    /// `Unreached` (dispatch reachability follows too: a trait item loses its
+    /// `InternalDispatch` when its last dispatcher is removed).
+    pub(super) fn reach_with(
+        &self,
+        key: &str,
+        def: &DefInfo,
+        in_degree: &BTreeMap<String, usize>,
+    ) -> Reach {
+        if in_degree.contains_key(key) {
             return Reach::Direct;
         }
         if def.export_root {
@@ -395,11 +496,84 @@ impl Assembly {
             if !self.defs.contains_key(ti) {
                 return Reach::ExternalDispatch; // trait defined outside the workspace
             }
-            if self.in_degree.contains_key(ti) {
+            if in_degree.contains_key(ti) {
                 return Reach::InternalDispatch; // internal trait method is dispatched
             }
         }
         Reach::Unreached
+    }
+
+    /// Borrow the prebuilt removal-sensitive indexes — the no-removal degree
+    /// source for [`super::pub_usage::compute`].
+    pub(super) fn degree_view(&self) -> DegreeView<'_> {
+        DegreeView {
+            in_degree: &self.in_degree,
+            intra_degree: &self.intra_degree,
+            signature_exposed: &self.signature_exposed,
+        }
+    }
+
+    /// Recompute the removal-sensitive indexes (`in_degree`, `intra_degree`,
+    /// `signature_exposed`) as if every def matched by `removed` had been
+    /// deleted: its **outgoing** edges vanish, so a callee it solely reached
+    /// drops to zero in-degree. Everything else the verdict reads
+    /// (`module_vis`, `reexporters`, `import_targets`, `impls_of`, `defs`) is
+    /// invariant under item deletion — a deletion candidate is, by
+    /// construction, never a module, a `pub use` target, or referenced by a
+    /// surviving item — so those are reused unchanged. The one-pass cascade
+    /// substrate; see [`super::SemanticModel::pub_candidates_excluding`].
+    pub(super) fn refold_excluding(&self, removed: &RemovalSet) -> RemovalOverlay {
+        let mut in_degree = BTreeMap::new();
+        let mut intra_degree = BTreeMap::new();
+        let mut signature_exposed = BTreeSet::new();
+        for frag in &self.fragments {
+            for e in &frag.references {
+                // The removed item's own use-sites disappear with it.
+                if removed.covers(&e.from) {
+                    continue;
+                }
+                let key = if self.defs.contains_key(&e.to_key) {
+                    e.to_key.clone()
+                } else if frag.target_kind == "build"
+                    && let Some(k) = self.path_key.get(&e.to.join("::"))
+                {
+                    k.clone()
+                } else {
+                    continue;
+                };
+                if e.in_signature && self.defs.get(&e.from_key).is_some_and(|f| f.public) {
+                    signature_exposed.insert(key.clone());
+                }
+                if e.import {
+                    continue; // imports never count toward the use-site degree
+                }
+                let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
+                *in_degree.entry(key.clone()).or_insert(0) += 1;
+                if from_crate == self.defs[&key].krate {
+                    *intra_degree.entry(key).or_insert(0) += 1;
+                }
+            }
+        }
+        RemovalOverlay {
+            in_degree,
+            intra_degree,
+            signature_exposed,
+        }
+    }
+
+    /// Resolve an edge's target to the def it lands on — the same `to_key` join
+    /// (with the build-fragment path fallback) the reverse-index fold uses.
+    /// `None` when the target is outside the workspace or not a tree item. The
+    /// import-index substrate ([`super::SemanticModel::dangling_imports`]).
+    pub(super) fn def_for_edge(&self, e: &wl_ir::RefEdge) -> Option<&DefInfo> {
+        if let Some(def) = self.defs.get(&e.to_key) {
+            return Some(def);
+        }
+        // Build-mode path fallback: `path_key` only holds lib/proc-macro defs,
+        // so this is a no-op for edges that already key-joined.
+        self.path_key
+            .get(&e.to.join("::"))
+            .and_then(|k| self.defs.get(k))
     }
 
     /// Is `key`'s def named in some **pub** item's signature (an
@@ -415,15 +589,6 @@ impl Assembly {
     /// re-export guard.
     pub fn is_import_target(&self, key: &str) -> bool {
         self.import_targets.contains(key)
-    }
-
-    /// `(workspace-wide, intra-crate-only)` real-use in-degrees of `key`.
-    /// A cross-crate use-site exists iff the first exceeds the second.
-    pub(super) fn degrees(&self, key: &str) -> (usize, usize) {
-        (
-            self.in_degree.get(key).copied().unwrap_or(0),
-            self.intra_degree.get(key).copied().unwrap_or(0),
-        )
     }
 
     /// Every reference out of `krate`'s **primary-unit** fragments (lib, bin,

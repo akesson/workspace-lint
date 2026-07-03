@@ -217,13 +217,25 @@ publish-hint-threshold = 3
 | `kinds` | Item kinds to check: `function` (alias `fn`), `struct`, `enum`, `union`, `trait`, `type`, `const`, `static`, `module` (alias `mod`), `macro`. Omit (empty) to check all kinds. An unrecognized kind is a config error. |
 | `exclude-paths` | Glob patterns for source file paths to skip. |
 | `suppress-intra-crate` | When `true`, report only items unused *anywhere* and drop the "used only inside the crate, consider `pub(crate)`" findings. Default `false`. |
-| `auto-delete` | When `true`, the fix for an item that's unused everywhere becomes deletion instead of `pub(crate)` narrowing — but only when the containing file is git-tracked and clean (git is the backup). Dirty or untracked files downgrade the suggestion so `--fix` skips it. Default `false`. |
+| `auto-delete` | When `true`, the fix for an item that's unused everywhere becomes whole-item deletion (doc comment through body) instead of `pub(crate)` narrowing — but only when the containing file is git-tracked and clean (git is the backup). Dirty or untracked files downgrade the suggestion so `--fix` skips it. Deletion cascades in one pass (see below). Default `false`. |
 | `assume-all-public` | When `true`, treat *every* crate as having an external public API (skip library-public items regardless of `publish`). The conservative pre-publish-aware behavior. Default `false`. |
 | `publish-hint-threshold` | Emit the "set `publish = true`" hint once a workspace-internal crate reaches this many findings. `0` disables it. Default `3`. |
 
 Any of these options can be set per-crate via
 [`[crates.<name>.unused-pub]`](#per-crate-configuration), which wholesale-replaces
 the global `[unused-pub]` for that crate.
+
+**One-pass cascade (`auto-delete`).** Deleting a dead item frees whatever it
+solely reached, so a single `workspace-lint --fix` run converges the *entire*
+dead chain — no commit-and-rerun between layers. When a removal leaves a `use`
+dangling, the import is trimmed in the same pass: a multi-name list keeps its
+live leaves (`use m::{a, b}` → `use m::{b}`) and a fully-dead list is dropped
+whole, so the tree still compiles (no `E0432`). An item stays alive if *any*
+`[engine] configs` entry uses it (the config matrix is unioned), if an `expect!`
+/ `allow!` silences it, or if the only `use` naming it is macro-generated (no
+editable surface). Surgery leaves valid but unformatted residue (collapsed blank
+lines, single-element `{…}` groups), so `--fix` prints a `cargo fmt` hint when it
+trims imports.
 
 ### architecture
 

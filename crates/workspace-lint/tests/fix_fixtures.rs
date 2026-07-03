@@ -137,6 +137,17 @@ fn fix_unused_pub() {
 }
 
 #[test]
+fn fix_unused_pub_delete() {
+    // `auto-delete` + the one-pass cascade: a 3-deep dead chain crossing a
+    // module boundary (`dead_a` → `helper` → `inner::extra::inner_dead`) is
+    // removed whole-item in a single run, the `use inner::{helper, kept}` list
+    // is trimmed to `{kept}`, and the live cross-crate API stays `pub`. The
+    // `[git] init` setup makes the tree clean so the deletions are
+    // MachineApplicable; the blessed `expected/` tree is a compiling workspace.
+    run_fix_fixture("fix__unused_pub_delete");
+}
+
+#[test]
 fn fix_stale_expect() {
     // The stale `expect` directive is injected via setup.toml's `[[append]]`
     // (kept out of the committed input/ so dogfood stays green); `--fix`

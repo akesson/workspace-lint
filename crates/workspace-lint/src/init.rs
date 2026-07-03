@@ -46,6 +46,13 @@ centralized-deps = "deny"
 # unused-deps = "allow"
 # unused-pub  = "allow"
 
+# unused-pub deletion: with `auto-delete`, `--fix` REMOVES a truly-unused `pub`
+# item (instead of only narrowing it to `pub(crate)`), cascading through the
+# whole dead chain in one pass and trimming any `use` left dangling. Only
+# git-clean files are touched — the deletion's backup is `git checkout`.
+# [unused-pub]
+# auto-delete = true
+
 # --- Policy lints: uncomment a rules table to enable. (Enabling a policy lint
 # --- in [lints] without its rules table is itself a `config` finding.) ---
 
