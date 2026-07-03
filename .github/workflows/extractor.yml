@@ -53,8 +53,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # The custom linker the dylib needs (extractor/.cargo/config.toml).
+      # No prebuilt binaries exist, so cache the compiled binary keyed on its
+      # pinned version (lockstep with the `dylint` version in Cargo.lock).
+      - name: Cache dylint-link
+        id: cache-dylint-link
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/dylint-link*
+          key: ${{ runner.os }}-dylint-link-6.0.1
       - name: Install dylint-link
-        run: cargo install dylint-link --locked
+        if: steps.cache-dylint-link.outputs.cache-hit != 'true'
+        run: cargo install dylint-link --version 6.0.1 --locked
 
       # dylint builds its driver once per toolchain into ~/.dylint_drivers —
       # the slowest step of a cold probe test; cache it on the pin.
@@ -63,6 +72,17 @@ jobs:
         with:
           path: ~/.dylint_drivers
           key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
+
+      # The dylib + probe suite build into extractor/target — the package is
+      # workspace-excluded, so no other cache covers that dir. Keyed on the
+      # extractor lockfile; cargo freshness handles source-only changes on a
+      # restore-key hit.
+      - name: Cache extractor target
+        uses: actions/cache@v4
+        with:
+          path: extractor/target
+          key: ${{ runner.os }}-extractor-target-nightly-2026-04-16-${{ hashFiles('extractor/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-extractor-target-nightly-2026-04-16-
 
       - name: Build extractor dylib
         working-directory: extractor
