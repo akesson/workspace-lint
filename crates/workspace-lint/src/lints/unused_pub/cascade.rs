@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use wl_engine::fast::FastModel;
 use wl_engine::semantic::{RemovalSet, SemanticModel};
 
-use crate::diagnostic::{Applicability, Diagnostic};
+use wl_diagnostic::{Applicability, Diagnostic};
 
 use super::config::UnusedPubConfig;
 use super::ir::findings;

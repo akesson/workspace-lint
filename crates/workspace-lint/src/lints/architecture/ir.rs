@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use wl_engine::fast::{CrateInfo, FastModel};
 use wl_engine::semantic::{ResolvedRef, SemanticModel};
 
-use crate::diagnostic::Diagnostic;
+use wl_diagnostic::Diagnostic;
 
 use super::{
     Anchor, ArchitectureConfig, CompiledRule, RefKind, build_diagnostic, canonical_prefixes,

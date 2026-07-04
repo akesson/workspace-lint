@@ -8,8 +8,8 @@ mod types;
 
 pub(crate) use types::{GlobPattern, Globs, LintLevel, LintLevels};
 
-use crate::diagnostic::Diagnostic;
 use crate::lints::LintId;
+use wl_diagnostic::Diagnostic;
 use wl_engine::fast::FastModel;
 
 // Per-lint config structs live next to their lint impls under `crate::lints`.

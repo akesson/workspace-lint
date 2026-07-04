@@ -1,6 +1,5 @@
 mod cli;
 mod config;
-mod diagnostic;
 mod directives;
 mod expand;
 mod fix;
@@ -18,9 +17,9 @@ use std::collections::HashSet;
 use std::io;
 
 use cli::{CheckRule, Cli, Commands};
-use diagnostic::Diagnostic;
-use diagnostic::render::{Format, render};
 use lints::{LintContext, LintId};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::render::{Format, render};
 use wl_engine::fast::FastModel;
 
 fn main() {
@@ -238,7 +237,7 @@ fn crate_dirs(fast: Option<&FastModel>) -> Vec<CrateDir> {
 /// (root) relative form is skipped so it can't match every path.
 fn owning_crate<'a>(
     crate_dirs: &'a [CrateDir],
-    anchor: &diagnostic::SilenceAnchor,
+    anchor: &wl_diagnostic::SilenceAnchor,
 ) -> Option<&'a str> {
     let file = anchor.file()?;
     crate_dirs

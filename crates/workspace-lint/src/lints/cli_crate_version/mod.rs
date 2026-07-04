@@ -2,9 +2,9 @@ use fs_err as fs;
 use regex::Regex;
 use std::process::Command;
 
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_workspace;
 use crate::lints::{Lint, LintContext, LintId};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::at_workspace;
 
 pub mod config;
 #[cfg(test)]

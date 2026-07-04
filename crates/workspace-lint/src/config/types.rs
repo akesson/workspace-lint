@@ -6,10 +6,10 @@ use globset::Glob;
 use serde::{Deserialize, de};
 use std::collections::HashMap;
 
-use crate::diagnostic::Level;
 use crate::lints::LintId;
+use wl_diagnostic::Level;
 
-/// A configured lint level. Unlike [`crate::diagnostic::Level`] (which only
+/// A configured lint level. Unlike [`wl_diagnostic::Level`] (which only
 /// describes an *emitted* diagnostic) this carries `Allow`, the off state:
 /// an `Allow`-ed lint never runs and its diagnostics are dropped before
 /// rendering.

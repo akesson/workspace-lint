@@ -9,7 +9,7 @@
 use std::io::{self, Write};
 
 use super::display_path;
-use crate::diagnostic::{Diagnostic, SilenceAnchor};
+use crate::{Diagnostic, SilenceAnchor};
 
 pub(crate) fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<()> {
     for d in diagnostics {
@@ -66,8 +66,8 @@ fn escape_data(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::Level;
-    use crate::diagnostic::builder::{at_file, at_line, at_workspace};
+    use crate::Level;
+    use crate::builder::{at_file, at_line, at_workspace};
 
     fn render_one(d: &Diagnostic) -> String {
         let mut buf = Vec::new();

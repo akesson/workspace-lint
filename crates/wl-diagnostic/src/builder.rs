@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::{Diagnostic, Level, SilenceAnchor, Span};
 
-pub(crate) struct DiagnosticBuilder {
+pub struct DiagnosticBuilder {
     lint: Cow<'static, str>,
     level: Level,
     message: String,
@@ -41,6 +41,7 @@ impl DiagnosticBuilder {
 
     // Test-only: production builds diagnostics at the default `Warn` and lets
     // `apply_lint_levels` rewrite the level; only tests set it at construction.
+    // (`level_explicit` is the production path for lint-chosen severities.)
     #[allow(dead_code)]
     pub(crate) fn level(mut self, level: Level) -> Self {
         self.level = level;
@@ -50,7 +51,7 @@ impl DiagnosticBuilder {
     /// Set the level *and* mark it as lint-chosen, so the `[lints]` severity
     /// table won't override it. Used by lints with their own per-rule
     /// severity (currently `architecture`).
-    pub(crate) fn level_explicit(mut self, level: Level) -> Self {
+    pub fn level_explicit(mut self, level: Level) -> Self {
         self.level = level;
         self.level_is_explicit = true;
         self
@@ -61,22 +62,22 @@ impl DiagnosticBuilder {
         self
     }
 
-    pub(crate) fn help(mut self, msg: impl Into<String>) -> Self {
+    pub fn help(mut self, msg: impl Into<String>) -> Self {
         self.helps.push(msg.into());
         self
     }
 
-    pub(crate) fn note(mut self, msg: impl Into<String>) -> Self {
+    pub fn note(mut self, msg: impl Into<String>) -> Self {
         self.notes.push(msg.into());
         self
     }
 
-    pub(crate) fn suggestion(mut self, s: super::Suggestion) -> Self {
+    pub fn suggestion(mut self, s: super::Suggestion) -> Self {
         self.suggestions.push(s);
         self
     }
 
-    pub(crate) fn build(self) -> Diagnostic {
+    pub fn build(self) -> Diagnostic {
         Diagnostic {
             lint: self.lint,
             level: self.level,
@@ -92,12 +93,12 @@ impl DiagnosticBuilder {
 }
 
 /// Build a diagnostic anchored at the workspace root.
-pub(crate) fn at_workspace(lint: &'static str, message: impl Into<String>) -> DiagnosticBuilder {
+pub fn at_workspace(lint: &'static str, message: impl Into<String>) -> DiagnosticBuilder {
     DiagnosticBuilder::new(lint, message, SilenceAnchor::Workspace)
 }
 
 /// Build a diagnostic anchored at a single crate.
-pub(crate) fn at_crate(
+pub fn at_crate(
     lint: &'static str,
     message: impl Into<String>,
     manifest_dir: impl Into<PathBuf>,
@@ -112,7 +113,7 @@ pub(crate) fn at_crate(
 }
 
 /// Build a diagnostic anchored at a whole file.
-pub(crate) fn at_file(
+pub fn at_file(
     lint: &'static str,
     message: impl Into<String>,
     file: impl Into<PathBuf>,
@@ -123,7 +124,7 @@ pub(crate) fn at_file(
 }
 
 /// Build a diagnostic anchored at a single line.
-pub(crate) fn at_line(
+pub fn at_line(
     lint: &'static str,
     message: impl Into<String>,
     file: impl Into<PathBuf>,
@@ -152,7 +153,7 @@ pub(crate) fn at_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::Applicability;
+    use crate::Applicability;
 
     #[test]
     fn at_workspace_has_workspace_anchor_and_no_primary() {

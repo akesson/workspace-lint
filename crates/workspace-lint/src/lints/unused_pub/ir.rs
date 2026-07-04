@@ -35,9 +35,9 @@ use wl_engine::semantic::{Category, PubCandidate, PubUsage, SemanticModel};
 use wl_engine::wl_ir;
 
 use crate::config::GlobPattern;
-use crate::diagnostic::builder::{at_crate, at_line};
-use crate::diagnostic::{Applicability, Diagnostic, PubVerdict};
 use crate::lints::LintId;
+use wl_diagnostic::builder::{at_crate, at_line};
+use wl_diagnostic::{Applicability, Diagnostic, PubVerdict};
 
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
@@ -311,13 +311,13 @@ fn build_diagnostic(
 ///    still has residual blind spots (configs outside the matrix), so the
 ///    suggestion is shown but not auto-applied.
 fn apply_structural_fix(
-    builder: crate::diagnostic::builder::DiagnosticBuilder,
+    builder: wl_diagnostic::builder::DiagnosticBuilder,
     cand: &PubCandidate,
     auto_delete: bool,
     file: &Path,
     span: &wl_ir::Span,
     verdict: PubVerdict,
-) -> (crate::diagnostic::builder::DiagnosticBuilder, bool) {
+) -> (wl_diagnostic::builder::DiagnosticBuilder, bool) {
     // The deletion surface is the WHOLE item (attrs/doc through body) — `span`
     // is rustc's `def_span`, only the signature, so deleting it would orphan a
     // function's body. `full_span` falls back to `span` only for the
@@ -346,7 +346,7 @@ fn build_tighten_suggestion(
     cand: &PubCandidate,
     file: &Path,
     verdict: PubVerdict,
-) -> Option<crate::diagnostic::Suggestion> {
+) -> Option<wl_diagnostic::Suggestion> {
     let span = cand.span.as_ref()?;
     let vis = cand.vis_span.as_ref()?;
     if vis.from_expansion {
@@ -362,8 +362,8 @@ fn build_tighten_suggestion(
         src.get(vis.lo as usize..vis.hi as usize)
             .map(str::to_string)
     });
-    Some(crate::diagnostic::Suggestion {
-        span: crate::diagnostic::Span {
+    Some(wl_diagnostic::Suggestion {
+        span: wl_diagnostic::Span {
             file: file.to_path_buf(),
             line_start: span.line,
             line_end: span.line,
@@ -389,7 +389,7 @@ pub(super) fn pick_deletion_fix(
     file: &Path,
     span: &wl_ir::Span,
     verdict: PubVerdict,
-) -> Option<(crate::diagnostic::Suggestion, Option<String>)> {
+) -> Option<(wl_diagnostic::Suggestion, Option<String>)> {
     if !auto_delete || verdict != PubVerdict::Unused {
         return None;
     }
@@ -402,10 +402,10 @@ pub(super) fn pick_deletion_fix(
 
 pub(super) enum DeleteOutcome {
     /// Git-tracked-clean: emit a MachineApplicable deletion suggestion.
-    Apply(crate::diagnostic::Suggestion),
+    Apply(wl_diagnostic::Suggestion),
     /// Tracked-but-dirty or untracked: emit MaybeIncorrect so `--fix` passes
     /// over it, plus a reason note for the user.
-    Skip(crate::diagnostic::Suggestion, String),
+    Skip(wl_diagnostic::Suggestion, String),
     /// File can't be read, degenerate range, etc. Fall back to the
     /// visibility-narrowing path.
     Unavailable,
@@ -438,8 +438,8 @@ pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcom
     } else {
         Applicability::MaybeIncorrect
     };
-    let suggestion = crate::diagnostic::Suggestion {
-        span: crate::diagnostic::Span {
+    let suggestion = wl_diagnostic::Suggestion {
+        span: wl_diagnostic::Span {
             file: file.to_path_buf(),
             line_start: span.line,
             line_end: span.line,

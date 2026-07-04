@@ -39,10 +39,10 @@ use wl_engine::fast::{DeclaredDep, DepSection, FastModel, Manifest};
 use wl_engine::semantic::{DepUsage, SemanticModel};
 
 use super::UnusedDepsConfig;
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_crate;
-use crate::diagnostic::{Applicability, Span, Suggestion};
 use crate::lints::LintId;
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::at_crate;
+use wl_diagnostic::{Applicability, Span, Suggestion};
 
 pub(super) fn check(
     global: &UnusedDepsConfig,
@@ -93,7 +93,7 @@ pub(super) fn check(
         // matches the crate-anchored diagnostic shape.
         let manifest_dir_rel = fast.crate_relative_path(&krate.manifest_dir);
         let manifest_path_rel = fast.crate_relative_path(manifest.path());
-        let cargo_path_str = crate::diagnostic::render::display_path(&manifest_path_rel);
+        let cargo_path_str = wl_diagnostic::render::display_path(&manifest_path_rel);
         let mut builder = at_crate(
             lint_id,
             format!(

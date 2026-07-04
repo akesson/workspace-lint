@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::config::{GlobPattern, Globs};
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_file;
 use crate::lints::{Lint, LintContext, LintId};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::at_file;
 
 pub mod config;
 #[cfg(test)]
@@ -88,7 +88,7 @@ fn check_with_root(config: &FreshnessConfig, root: &Path) -> Vec<Diagnostic> {
                 // identical on Windows (the renderer normalizes the anchor path,
                 // but not text embedded in the message). Shared with the other
                 // path-rendering lints.
-                let rel_str = crate::diagnostic::render::display_path(&rel);
+                let rel_str = wl_diagnostic::render::display_path(&rel);
                 diagnostics.push(
                     at_file(
                         lint_id,

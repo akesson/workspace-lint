@@ -37,7 +37,7 @@ mod shipped_source;
 pub(crate) use lints_id::LintId;
 
 use crate::config::{Config, LintLevel};
-use crate::diagnostic::Diagnostic;
+use wl_diagnostic::Diagnostic;
 use wl_engine::fast::FastModel;
 
 /// Object-safe trait every check implements. Lints are owned `Box<dyn Lint>`

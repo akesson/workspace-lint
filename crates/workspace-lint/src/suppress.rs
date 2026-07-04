@@ -8,9 +8,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
 use crate::directives::{Directive, DirectiveKind, DirectiveOrigin};
 use crate::lints::LintId;
+use wl_diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
 
 pub(crate) const STALE_EXPECT_LINT: &str = LintId::StaleExpect.id();
 
@@ -318,11 +318,11 @@ pub(crate) fn apply(map: &mut SuppressionMap, diagnostics: &mut Vec<Diagnostic>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::Applicability;
-    use crate::diagnostic::builder::{at_crate, at_file, at_line as build_at_line, at_workspace};
     use crate::directives::{DirectiveKind, DirectiveOrigin};
     use std::path::PathBuf;
     use tempfile::TempDir;
+    use wl_diagnostic::Applicability;
+    use wl_diagnostic::builder::{at_crate, at_file, at_line as build_at_line, at_workspace};
 
     /// The "every lint ran" set — the staleness domain of a full default run,
     /// which is what most of these tests model.
@@ -705,7 +705,7 @@ mod tests {
 
     /// Apply a suggestion's byte-range deletion to `content` and return the
     /// result — the same replace the `--fix` applier performs.
-    fn apply_deletion(content: &str, sug: &crate::diagnostic::Suggestion) -> String {
+    fn apply_deletion(content: &str, sug: &wl_diagnostic::Suggestion) -> String {
         let mut fixed = content.to_string();
         fixed.replace_range(sug.span.byte_start as usize..sug.span.byte_end as usize, "");
         fixed

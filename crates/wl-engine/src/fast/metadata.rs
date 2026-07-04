@@ -307,6 +307,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "wl-diagnostic",
                 "wl-engine",
                 "wl-ir",
                 "workspace-lint",

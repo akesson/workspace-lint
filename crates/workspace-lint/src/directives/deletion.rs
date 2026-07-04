@@ -17,7 +17,7 @@ use std::path::Path;
 use fs_err as fs;
 
 use super::{DirectiveOrigin, directive_regex, parse_workspace_lint_directive};
-use crate::diagnostic::{Applicability, Span, Suggestion};
+use wl_diagnostic::{Applicability, Span, Suggestion};
 
 /// Build the whole-line deletion suggestion for the stale `expect` directive at
 /// `origin`, or `None` (leaving the diagnostic help-only) when the file can't

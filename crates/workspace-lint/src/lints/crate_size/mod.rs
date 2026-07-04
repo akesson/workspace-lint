@@ -4,9 +4,9 @@ use tokei::{Config as TokeiConfig, Languages};
 use wl_engine::fast::FastModel;
 
 use crate::config::GlobPattern;
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_crate;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::at_crate;
 
 pub mod config;
 #[cfg(test)]

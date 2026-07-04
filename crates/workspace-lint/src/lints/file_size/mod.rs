@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use tokei::{Config as TokeiConfig, Languages};
 
 use crate::config::GlobPattern;
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_file;
 use crate::lints::shipped_source;
 use crate::lints::{Lint, LintContext, LintId};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::at_file;
 
 pub mod config;
 #[cfg(test)]

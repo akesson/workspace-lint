@@ -7,9 +7,9 @@
 
 use std::path::Path;
 
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_workspace;
 use crate::lints::{Lint, LintContext, LintId};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::at_workspace;
 
 #[cfg(test)]
 mod tests;

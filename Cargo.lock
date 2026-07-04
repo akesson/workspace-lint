@@ -2718,6 +2718,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wl-diagnostic"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "wl-engine"
 version = "0.1.0"
 dependencies = [
@@ -2762,6 +2770,7 @@ dependencies = [
  "tempfile",
  "tokei",
  "toml 1.1.2+spec-1.1.0",
+ "wl-diagnostic",
  "wl-engine",
 ]
 

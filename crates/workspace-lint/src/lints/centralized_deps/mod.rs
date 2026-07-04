@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use wl_engine::fast::toml_edit::Item;
 use wl_engine::fast::{DepSection, FastModel, Manifest};
 
-use crate::diagnostic::builder::at_crate;
-use crate::diagnostic::{Applicability, Diagnostic, Span, Suggestion};
 use crate::lints::{Lint, LintContext, LintId, Requirements};
+use wl_diagnostic::builder::at_crate;
+use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion};
 
 #[cfg(test)]
 mod tests;
@@ -89,7 +89,7 @@ pub(crate) fn check(fast: &FastModel) -> Vec<Diagnostic> {
             // same diagnostic text as Linux/macOS (snapshot fixtures lock it in).
             let manifest_path_rel = fast.crate_relative_path(manifest.path());
             let manifest_dir_rel = fast.crate_relative_path(&krate.manifest_dir);
-            let cargo_path_str = crate::diagnostic::render::display_path(&manifest_path_rel);
+            let cargo_path_str = wl_diagnostic::render::display_path(&manifest_path_rel);
             let mut builder = at_crate(
                 lint_id,
                 format!(

@@ -23,8 +23,8 @@ use std::path::Path;
 
 use wl_engine::semantic::DanglingImport;
 
-use crate::diagnostic::{Applicability, Diagnostic, Span, Suggestion, builder::at_line};
 use crate::lints::LintId;
+use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion, builder::at_line};
 
 /// Build the coalesced import-deletion diagnostics for a cascade's dangling
 /// imports. `root` joins the workspace-relative span files. Imports that can't

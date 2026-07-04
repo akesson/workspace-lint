@@ -118,7 +118,7 @@ fn parses_rust_comment_directive_as_line_anchor() {
 fn rust_comment_directive_suppresses_item_below_via_lookback() {
     // End-to-end: the comment on line 1 must suppress an unused-pub finding
     // anchored at the item on line 2 (the suppress.rs lookback window).
-    use crate::diagnostic::builder::at_line;
+    use wl_diagnostic::builder::at_line;
     let tmp = TempDir::new().unwrap();
     write(
         tmp.path(),

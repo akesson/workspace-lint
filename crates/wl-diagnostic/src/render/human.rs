@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 
 use super::display_path;
-use crate::diagnostic::{Diagnostic, Level, SilenceAnchor};
+use crate::{Diagnostic, Level, SilenceAnchor};
 
 /// Run-scoped dedup so a lint's explanatory boilerplate prints once instead of
 /// once per finding. The `= help:` lines and per-finding suggestions are real,
@@ -48,10 +48,9 @@ pub(crate) fn write(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Resu
     Ok(())
 }
 
-/// Render a single diagnostic in isolation (no cross-diagnostic dedup). Used by
-/// the message-surface snapshots and unit tests; the multi-diagnostic path goes
-/// through [`write`], which shares one [`RenderState`] across the run.
-#[cfg(test)]
+/// Render a single diagnostic in isolation (no cross-diagnostic dedup). Reached
+/// via [`super::render_one`]; the multi-diagnostic path goes through [`write`],
+/// which shares one [`RenderState`] across the run.
 pub(crate) fn write_one(d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
     write_one_stateful(d, &mut RenderState::default(), out)
 }
@@ -118,10 +117,7 @@ fn location_line(d: &Diagnostic) -> Option<String> {
     }
 }
 
-fn write_suggestion_block(
-    s: &crate::diagnostic::Suggestion,
-    out: &mut dyn Write,
-) -> io::Result<()> {
+fn write_suggestion_block(s: &crate::Suggestion, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "help: {}", s.message)?;
     writeln!(out, "  |")?;
     if s.replacement.is_empty() {
@@ -148,7 +144,7 @@ fn write_suggestion_block(
 /// prints in full; a multi-line span prints its first line plus a `…`
 /// continuation so a large item (e.g. an `unused-pub` deletion) doesn't dump
 /// dozens of lines. Without captured text we fall back to a bare `…`.
-fn write_removed(s: &crate::diagnostic::Suggestion, out: &mut dyn Write) -> io::Result<()> {
+fn write_removed(s: &crate::Suggestion, out: &mut dyn Write) -> io::Result<()> {
     match s.original.as_deref() {
         Some(text) if !text.contains('\n') => writeln!(out, "{} - {text}", s.span.line_start),
         Some(text) => {
@@ -183,7 +179,7 @@ fn write_summary(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<
         .iter()
         .flat_map(|d| &d.suggestions)
         .filter(|s| {
-            s.applicability == crate::diagnostic::Applicability::MachineApplicable
+            s.applicability == crate::Applicability::MachineApplicable
                 && s.span.byte_end > s.span.byte_start
         })
         .count();
@@ -215,7 +211,7 @@ fn plural(n: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::builder::{at_file, at_workspace};
+    use crate::builder::{at_file, at_workspace};
 
     fn render_one(d: &Diagnostic) -> String {
         let mut buf = Vec::new();

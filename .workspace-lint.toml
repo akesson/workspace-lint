@@ -85,3 +85,13 @@ ignore = [
 # APIs aren't flagged; the `workspace-lint` binary publishes no API, so its
 # `pub` items are checked as workspace-internal (as before).
 [unused-pub]
+# `wl_diagnostic::render::render_one` renders a single diagnostic without the
+# run summary; its only in-workspace callers are the binary's message-surface
+# snapshot tests (`messages.rs` / `messages_quality.rs`). The engine can't see
+# that use: under the `--tests` config a member's cfg(test) code links against
+# the cfg-OFF build of `wl-diagnostic`, but cargo freshness means only the
+# cfg-ON (`+test`) fragment is re-extracted there, so the referrer's DefPathHash
+# never matches a captured def and the item reads as unused. Allowlisted (matches
+# the def-path `cand.id`) so this engine blind spot for test-only cross-crate use
+# of an unpublished crate can't fail the dogfood.
+allowlist = ["wl_diagnostic::render::render_one"]

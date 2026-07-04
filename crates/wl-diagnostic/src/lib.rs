@@ -18,7 +18,7 @@ pub mod render;
 /// override per-diagnostic levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Level {
+pub enum Level {
     Warn,
     Deny,
 }
@@ -34,7 +34,7 @@ impl Level {
 
 /// Confidence in a suggested fix. Mirrors `rustc::lint::Applicability`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Applicability {
+pub enum Applicability {
     MachineApplicable,
     MaybeIncorrect,
     // We never emit these two, but keep the enum a 1:1 mirror of
@@ -59,7 +59,7 @@ impl Applicability {
 /// Pointer at a region of source. Carries everything needed by the three
 /// renderers and by `--fix`'s byte-range applier.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Span {
+pub struct Span {
     pub file: PathBuf,
     pub line_start: u32,
     pub line_end: u32,
@@ -89,7 +89,7 @@ impl Span {
 
 /// Concrete suggested rewrite. `MachineApplicable` ones drive `--fix`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Suggestion {
+pub struct Suggestion {
     pub span: Span,
     pub message: String,
     pub replacement: String,
@@ -106,11 +106,11 @@ pub(crate) struct Suggestion {
 /// The engine's usage verdict for an `unused-pub` finding — selects the fix
 /// shape. (`CrossCrate` items never produce a fix, so they're absent here.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PubVerdict {
+pub enum PubVerdict {
     /// Zero referrers found under any config → the fix deletes the item
     /// (when `auto-delete` opted in; tighten otherwise).
     Unused,
-    /// Only same-crate referrers found → the fix tightens to `pub(crate)`.
+    /// Only same-crate referrers found → the fix tightens to `pub`.
     IntraCrate,
 }
 
@@ -121,7 +121,7 @@ pub(crate) enum PubVerdict {
 /// `Line ⊂ File ⊂ Crate ⊂ Workspace`: a directive at a wider scope silences
 /// every diagnostic at a narrower one inside it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum SilenceAnchor {
+pub enum SilenceAnchor {
     Line { file: PathBuf, line: u32 },
     File { file: PathBuf },
     Crate { manifest_dir: PathBuf },
@@ -138,7 +138,7 @@ impl SilenceAnchor {
     /// (notably `unused-pub`) anchor with the resolver's *absolute* paths, so a
     /// directive on `crates/x/src/lib.rs` must still contain a diagnostic on
     /// `/abs/…/crates/x/src/lib.rs`.
-    pub(crate) fn contains(&self, other: &SilenceAnchor) -> bool {
+    pub fn contains(&self, other: &SilenceAnchor) -> bool {
         match (self, other) {
             (SilenceAnchor::Workspace, _) => true,
             (SilenceAnchor::Crate { manifest_dir }, SilenceAnchor::Crate { manifest_dir: o }) => {
@@ -168,14 +168,14 @@ impl SilenceAnchor {
     /// Two anchor file paths name the same file despite possibly differing
     /// bases: equal, or one is a whole-component suffix of the other (a
     /// workspace-relative path vs the resolver's absolute one).
-    pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    pub fn same_file(a: &Path, b: &Path) -> bool {
         a == b || a.ends_with(b) || b.ends_with(a)
     }
 
     /// Returns the file the anchor refers to, if any. Used by renderers that
     /// need a `file:line:col` even for `Crate`/`Workspace` anchors (falls back
     /// to the manifest path).
-    pub(crate) fn file(&self) -> Option<&Path> {
+    pub fn file(&self) -> Option<&Path> {
         match self {
             SilenceAnchor::Line { file, .. } | SilenceAnchor::File { file } => Some(file),
             SilenceAnchor::Crate { manifest_dir } => Some(manifest_dir),
@@ -186,7 +186,7 @@ impl SilenceAnchor {
 
 /// One emitted finding. Every check produces these; renderers consume them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Diagnostic {
+pub struct Diagnostic {
     pub lint: Cow<'static, str>,
     pub level: Level,
     pub message: String,
@@ -215,7 +215,7 @@ impl Diagnostic {
 
     /// Kebab-case form suitable for the comment directive
     /// (`# workspace-lint: allow(<this>)`).
-    pub(crate) fn lint_short(&self) -> &str {
+    pub fn lint_short(&self) -> &str {
         self.lint
             .strip_prefix("workspace-lint::")
             .unwrap_or(&self.lint)

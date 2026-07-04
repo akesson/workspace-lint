@@ -19,6 +19,7 @@ strip-ansi-escapes = { workspace = true }
 syn = { workspace = true }
 tokei = { workspace = true }
 toml = { workspace = true }
+wl-diagnostic = { path = "../wl-diagnostic" }
 wl-engine = { path = "../wl-engine" }
 
 [dev-dependencies]

@@ -12,10 +12,10 @@
 
 use wl_engine::fast::{CrateInfo, FastModel, Module};
 
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::{at_file, at_line};
-use crate::diagnostic::render::display_path;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::{at_file, at_line};
+use wl_diagnostic::render::display_path;
 
 pub(crate) struct ModuleTree;
 

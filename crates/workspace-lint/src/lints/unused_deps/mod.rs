@@ -11,8 +11,8 @@
 
 use std::collections::HashMap;
 
-use crate::diagnostic::Diagnostic;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
+use wl_diagnostic::Diagnostic;
 
 pub mod config;
 mod ir;

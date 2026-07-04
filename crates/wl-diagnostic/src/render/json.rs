@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use serde::Serialize;
 
 use super::display_path;
-use crate::diagnostic::{Applicability, Diagnostic, SilenceAnchor, Span, Suggestion};
+use crate::{Applicability, Diagnostic, SilenceAnchor, Span, Suggestion};
 
 #[derive(Serialize)]
 struct OutDiagnostic {
@@ -157,8 +157,8 @@ fn suggestion_to_child(s: &Suggestion) -> OutChild {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::Level;
-    use crate::diagnostic::builder::{at_file, at_workspace};
+    use crate::Level;
+    use crate::builder::{at_file, at_workspace};
 
     fn render_one(d: &Diagnostic) -> serde_json::Value {
         let mut buf = Vec::new();

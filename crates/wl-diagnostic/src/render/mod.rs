@@ -20,7 +20,7 @@ pub mod json;
 /// editor jump-to-file on rustc-JSON, and the human `file:line:col` header
 /// that gets copy-pasted into terminals. Backslashes from Windows
 /// `Path::display()` would break those — so normalize at the render boundary.
-pub(crate) fn display_path(p: &Path) -> String {
+pub fn display_path(p: &Path) -> String {
     let s = p.display().to_string();
     if std::path::MAIN_SEPARATOR == '\\' {
         s.replace('\\', "/")
@@ -31,7 +31,7 @@ pub(crate) fn display_path(p: &Path) -> String {
 
 /// Output format selected by the `--message-format` flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum Format {
+pub enum Format {
     #[default]
     Human,
     Json,
@@ -39,7 +39,7 @@ pub(crate) enum Format {
 }
 
 impl Format {
-    pub(crate) fn parse(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         match s {
             "human" => Ok(Self::Human),
             "json" => Ok(Self::Json),
@@ -54,7 +54,7 @@ impl Format {
 /// Render every diagnostic plus the trailing summary (for `human`) to a
 /// writer. Returns the number of `Deny`-level diagnostics, which the caller
 /// uses to set the process exit code.
-pub(crate) fn render(
+pub fn render(
     format: Format,
     diagnostics: &[Diagnostic],
     out: &mut dyn Write,
@@ -69,6 +69,18 @@ pub(crate) fn render(
         Format::Github => github::write(diagnostics, out)?,
     }
     Ok(deny_count)
+}
+
+/// Render a single diagnostic in isolation, in the given format, with no
+/// run-level summary. The [`render`] batch entry is what production uses; this
+/// is the per-diagnostic entry the binary's message-surface snapshot tests
+/// exercise one diagnostic at a time.
+pub fn render_one(format: Format, d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
+    match format {
+        Format::Human => human::write_one(d, out),
+        Format::Json => json::write(std::slice::from_ref(d), out),
+        Format::Github => github::write_one(d, out),
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +128,7 @@ mod tests {
 
     #[test]
     fn render_counts_deny_diagnostics() {
-        use crate::diagnostic::{Level, builder::at_workspace};
+        use crate::{Level, builder::at_workspace};
         let diags = vec![
             at_workspace("workspace-lint::a", "x").build(),
             at_workspace("workspace-lint::b", "x")

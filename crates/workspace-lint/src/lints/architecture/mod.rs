@@ -35,9 +35,9 @@ use std::path::PathBuf;
 use globset::{Glob, GlobMatcher};
 
 use crate::config::LintLevel;
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::{at_crate, at_line};
 use crate::lints::{Lint, LintContext, LintId, Requirements};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::{at_crate, at_line};
 
 pub mod config;
 mod ir;

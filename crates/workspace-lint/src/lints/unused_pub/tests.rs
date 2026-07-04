@@ -18,8 +18,8 @@ fn glob_set_matches_canonical_path_patterns() {
 
 // --- the deletion path ---
 
-use crate::diagnostic::PubVerdict;
 use crate::lints::unused_pub::ir;
+use wl_diagnostic::PubVerdict;
 
 fn ir_span(lo: u32, hi: u32) -> wl_engine::wl_ir::Span {
     wl_engine::wl_ir::Span {
@@ -92,7 +92,7 @@ fn ir_pick_deletion_fix_gates() {
         ir::pick_deletion_fix(true, &file, &ir_span(0, 16), PubVerdict::Unused).expect("Some");
     assert_eq!(
         sugg.applicability,
-        crate::diagnostic::Applicability::MaybeIncorrect
+        wl_diagnostic::Applicability::MaybeIncorrect
     );
     assert!(note.is_some());
 }

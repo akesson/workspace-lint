@@ -26,8 +26,8 @@
 use std::collections::HashMap;
 
 use crate::config::GlobPattern;
-use crate::diagnostic::Diagnostic;
 use crate::lints::{Lint, LintContext, LintId, Requirements};
+use wl_diagnostic::Diagnostic;
 
 /// Number of unused-pub findings an internal crate must accumulate before we
 /// emit the one-time `publish = true` hint. Used when the config leaves
