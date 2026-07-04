@@ -20,11 +20,12 @@ use wl_engine::fast::FastModel;
 use crate::config;
 use wl_lints::util;
 
-/// The commented starter written by `init`. Everything except the single
-/// `[lints]` escalation is commented out, so the emitted file audits clean:
-/// enabling a *policy* lint without its rules table would itself draw a
-/// `config` finding, and the on-by-default structural lints need no entry. The
-/// `init` test `default_config_is_self_clean` pins this invariant.
+/// The commented starter written by `init`. Only the `[lints]` escalation and
+/// the `[engine]` matrix are active; everything else is commented out, so the
+/// emitted file audits clean: enabling a *policy* lint without its rules table
+/// would itself draw a `config` finding, and the on-by-default structural lints
+/// need no entry. The `init` test `default_config_is_self_clean` pins this
+/// invariant.
 const DEFAULT_CONFIG: &str = r#"# workspace-lint configuration.
 # Docs: https://github.com/akesson/workspace-lint
 #
@@ -83,10 +84,11 @@ centralized-deps = "deny"
 # from = ["domain-*"]
 # deny = ["*::infra::*"]
 
-# --- Semantic engine matrix (one `cargo check` per entry; verdicts unioned).
-# --- Add "--tests" so test-gated usage and dev-dependencies are judged too.
-# [engine]
-# configs = ["default", "--tests"]
+# --- Semantic engine matrix: one `cargo check` per entry, verdicts unioned.
+# "--tests" also judges test-gated usage and dev-dependencies; it costs a second
+# compile pass, so drop it to just "default" if you want a single, faster run.
+[engine]
+configs = ["default", "--tests"]
 "#;
 
 /// Scaffold [`DEFAULT_CONFIG`] into the cwd. See the module docs for the guard

@@ -359,8 +359,9 @@ workspace-lint init
 
 Writes a commented starter `.workspace-lint.toml` in the current directory. It
 enables the batteries-included structural lints, escalates `centralized-deps` to
-`deny`, and includes ready-to-uncomment blocks for every policy lint and the
-engine matrix.
+`deny`, activates the engine matrix at `["default", "--tests"]` (so test-gated
+usage and dev-dependencies are judged — drop `"--tests"` for a single, faster
+pass), and includes ready-to-uncomment blocks for every policy lint.
 
 `init` must be run at the **workspace root**: the root `Cargo.toml` must declare
 a `[workspace]` table and the current directory must be that root (not a member
