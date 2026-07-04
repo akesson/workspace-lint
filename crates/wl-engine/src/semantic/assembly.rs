@@ -8,9 +8,11 @@
 //! 0/215 cross-crate (see `wl_ir::RefEdge`). Lifted from the spike assembler.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use wl_ir::{IrFragment, Visibility};
+use wl_ir::{IrFragment, RefEdge, Visibility};
 
+use super::join::IdentityIndex;
 use super::meta::WorkspaceMeta;
 
 /// How a def relates to the unused-pub verdict — derived from `parent_kind` +
@@ -276,10 +278,34 @@ pub struct Assembly {
     /// Retained so [`Assembly::refold_excluding`] can re-run the same join when
     /// the unused-pub `--fix` cascade recomputes degrees with items removed.
     path_key: BTreeMap<String, String>,
+    /// The global (all-configs) key → identity index, for resolving an edge
+    /// whose target was extracted only under another config (see
+    /// [`Assembly::resolve_key`]).
+    ids: Arc<IdentityIndex>,
+    /// Cross-config identity → **this** config's key for it — the landing half
+    /// of the global join (mirrors `path_key`'s shape). A global-index hit is
+    /// translated through here to a local def before its use-site is counted,
+    /// so every degree stays keyed by a def in `defs`. First fragment wins;
+    /// deterministic because `load_fragments` sorts.
+    id_key: BTreeMap<String, String>,
+}
+
+/// The eight edge-derived indexes produced by one pass of
+/// [`Assembly::fold_edges`] — the reverse index the reachability verdicts read.
+#[derive(Default)]
+struct EdgeFold {
+    in_degree: BTreeMap<String, usize>,
+    intra_degree: BTreeMap<String, usize>,
+    dep_matrix: BTreeMap<(String, String), usize>,
+    referenced: BTreeSet<String>,
+    import_edges: usize,
+    signature_exposed: BTreeSet<String>,
+    import_targets: BTreeSet<String>,
+    reexporters: BTreeMap<String, Vec<String>>,
 }
 
 impl Assembly {
-    pub fn build(fragments: Vec<IrFragment>) -> Self {
+    pub(super) fn build(fragments: Vec<IrFragment>, ids: Arc<IdentityIndex>) -> Self {
         // Build-script fragments are references-only carriers (`items` empty,
         // crate name always `build_script_build`) — not crates of the
         // assembly. Letting one in would insert a phantom member.
@@ -291,10 +317,12 @@ impl Assembly {
 
         // 1) Global def index (keyed by the cross-crate-stable DefPathHash) +
         //    the trait→impls linkage + the module-visibility table (the
-        //    pub-module-hop substrate).
+        //    pub-module-hop substrate) + `id_key` (identity → this config's
+        //    key, the landing map for a cross-config global-join hit).
         let mut defs = BTreeMap::new();
         let mut impls_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut module_vis = BTreeMap::new();
+        let mut id_key: BTreeMap<String, String> = BTreeMap::new();
         for frag in &fragments {
             for it in &frag.items {
                 let category = Category::of(it.parent_kind.as_deref(), &it.trait_item);
@@ -304,6 +332,9 @@ impl Assembly {
                 if it.kind == "mod" {
                     module_vis.insert(it.path.join("::"), it.visibility == Visibility::Public);
                 }
+                id_key
+                    .entry(it.path.join("::"))
+                    .or_insert_with(|| it.key.clone());
                 defs.insert(
                     it.key.clone(),
                     DefInfo {
@@ -324,26 +355,18 @@ impl Assembly {
             }
         }
 
-        // 2) Reverse index: union every fragment's forward edges onto the def
-        //    `to_key` identifies. An edge whose target isn't a known def (std/
-        //    third-party, or a ctor/variant we don't emit) is ignored.
-        //
-        //    Two edge policies: `in_degree`/`intra_degree` (unused-pub) count
-        //    only real use-sites — `!import` — so a `pub use` doesn't mask a
-        //    dead name; `dep_matrix`/`referenced` (unused-deps, leaf proxy)
-        //    count all cross-crate edges.
-        // Path→key fallback index for BUILD-fragment edges: a build script's
+        // 2) Path→key fallback index for BUILD-fragment edges: a build script's
         // dependencies compile in Build mode, whose `-Cmetadata` (hence
         // `StableCrateId`, hence `DefPathHash` generation) differs from the
         // Check-mode units the defs above were extracted from — a build
-        // edge's `to_key` never joins `defs` directly (verified live). Their
-        // `to` display path is rooted at the defining crate, so path equality
-        // is the join; indexed over lib-shaped fragments only (build deps can
-        // only be lib/proc-macro targets — excluding bin/test fragments
-        // avoids same-crate-name path collisions). Residual miss: a target
-        // rendered at a re-export path (the visible-parent behavior) doesn't
-        // join and degrades to the pre-build-fragment posture — the use goes
-        // unseen; never a false join onto an unrelated def.
+        // edge's `to_key` never joins `defs` directly, nor the global index
+        // (Build-mode units are never extracted). Their `to` display path is
+        // rooted at the defining crate, so path equality is the join; indexed
+        // over lib-shaped fragments only (build deps can only be lib/proc-macro
+        // targets — excluding bin/test fragments avoids same-crate-name path
+        // collisions). Residual miss: a target rendered at a re-export path
+        // (the visible-parent behavior) doesn't join and degrades to the
+        // pre-build-fragment posture — the use goes unseen; never a false join.
         let mut path_key: BTreeMap<String, String> = BTreeMap::new();
         for frag in &fragments {
             if !matches!(frag.target_kind.as_str(), "lib" | "proc-macro") {
@@ -354,63 +377,29 @@ impl Assembly {
             }
         }
 
-        let mut in_degree = BTreeMap::new();
-        let mut intra_degree = BTreeMap::new();
-        let mut dep_matrix = BTreeMap::new();
-        let mut referenced = BTreeSet::new();
-        let mut import_edges = 0usize;
-        let mut signature_exposed = BTreeSet::new();
-        let mut import_targets = BTreeSet::new();
-        let mut reexporters: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for frag in &fragments {
-            for e in &frag.references {
-                // The def key this edge lands on: the stable-key join, with
-                // the path fallback for build fragments (see `path_key`).
-                let key = if defs.contains_key(&e.to_key) {
-                    e.to_key.clone()
-                } else if frag.target_kind == "build"
-                    && let Some(k) = path_key.get(&e.to.join("::"))
-                {
-                    k.clone()
-                } else {
-                    continue; // target outside the workspace, or not a tree item
-                };
-                let def = &defs[&key];
-                // Signature exposure: the target is named in a PUB item's
-                // signature (from-pub looked up via the def index; an unknown
-                // `from` — e.g. a body-nested def we don't emit — can't be a
-                // pub API surface, so it doesn't count).
-                if e.in_signature && defs.get(&e.from_key).is_some_and(|f| f.public) {
-                    signature_exposed.insert(key.clone());
-                }
-                let from_crate = e.from.first().cloned().unwrap_or_default();
-                let cross = from_crate != def.krate;
-                if cross {
-                    *dep_matrix
-                        .entry((from_crate, def.krate.clone()))
-                        .or_insert(0) += 1;
-                    referenced.insert(def.krate.clone());
-                }
-                if e.import {
-                    import_edges += 1;
-                    // Only a `pub use` (re-export) pins its target `pub`
-                    // (E0364/E0365) or exposes it through the importing
-                    // module; a plain `use` is neither.
-                    if e.reexport {
-                        import_targets.insert(key.clone());
-                        reexporters
-                            .entry(key.clone())
-                            .or_default()
-                            .push(e.from.join("::"));
-                    }
-                    continue; // import: not a use-site for unused-pub
-                }
-                *in_degree.entry(key.clone()).or_insert(0) += 1;
-                if !cross {
-                    *intra_degree.entry(key).or_insert(0) += 1;
-                }
-            }
-        }
+        // 3) Reverse index: fold every fragment's forward edges onto the def
+        //    each resolves to. `fold_edges` reads `defs`/`ids`/`id_key`/
+        //    `path_key`, so build the assembly with those in place and the
+        //    edge-derived maps empty, then fold into them.
+        let mut asm = Assembly {
+            fragments,
+            crates,
+            defs,
+            in_degree: BTreeMap::new(),
+            intra_degree: BTreeMap::new(),
+            dep_matrix: BTreeMap::new(),
+            referenced: BTreeSet::new(),
+            import_edges: 0,
+            impls_of,
+            signature_exposed: BTreeSet::new(),
+            import_targets: BTreeSet::new(),
+            reexporters: BTreeMap::new(),
+            module_vis,
+            path_key,
+            ids,
+            id_key,
+        };
+        let mut fold = asm.fold_edges(None);
 
         // A glob re-export (`pub use m::*`) resolves to the MODULE def, but
         // it re-exports every public def directly under it — expand so the
@@ -419,22 +408,23 @@ impl Assembly {
         // `pub use m::*` here; expanding both over-approximates toward
         // suppression — the safe direction. Plain `use` never lands in
         // `reexporters`, so a test-mod `use super::*` expands nothing.)
-        let module_imports: Vec<(String, Vec<String>)> = reexporters
+        let module_imports: Vec<(String, Vec<String>)> = fold
+            .reexporters
             .iter()
-            .filter(|(key, _)| defs.get(*key).is_some_and(|d| d.kind == "mod"))
-            .map(|(key, importers)| (defs[key].path.clone(), importers.clone()))
+            .filter(|(key, _)| asm.defs.get(*key).is_some_and(|d| d.kind == "mod"))
+            .map(|(key, importers)| (asm.defs[key].path.clone(), importers.clone()))
             .collect();
         for (mod_path, importers) in module_imports {
             let prefix = format!("{mod_path}::");
-            for (child_key, child) in &defs {
+            for (child_key, child) in &asm.defs {
                 if child.public
                     && child
                         .path
                         .strip_prefix(prefix.as_str())
                         .is_some_and(|rest| !rest.contains("::"))
                 {
-                    import_targets.insert(child_key.clone());
-                    reexporters
+                    fold.import_targets.insert(child_key.clone());
+                    fold.reexporters
                         .entry(child_key.clone())
                         .or_default()
                         .extend(importers.iter().cloned());
@@ -442,22 +432,99 @@ impl Assembly {
             }
         }
 
-        Assembly {
-            fragments,
-            crates,
-            defs,
-            in_degree,
-            intra_degree,
-            dep_matrix,
-            referenced,
-            import_edges,
-            impls_of,
-            signature_exposed,
-            import_targets,
-            reexporters,
-            module_vis,
-            path_key,
+        asm.in_degree = fold.in_degree;
+        asm.intra_degree = fold.intra_degree;
+        asm.dep_matrix = fold.dep_matrix;
+        asm.referenced = fold.referenced;
+        asm.import_edges = fold.import_edges;
+        asm.signature_exposed = fold.signature_exposed;
+        asm.import_targets = fold.import_targets;
+        asm.reexporters = fold.reexporters;
+        asm
+    }
+
+    /// The def key an edge lands on, resolved through the whole join: the local
+    /// exact hash join first (the fast path — target extracted in this config);
+    /// then the **global** hash join, translated to this config's own key for
+    /// the same identity (the target was extracted only under another config —
+    /// a `+test`/bench/integration edge to a dependency's plain rlib carries
+    /// that plain generation, and cargo freshness leaves it only in the primary
+    /// dir); then, for build fragments (`path_fallback`), the display-path
+    /// fallback. `None` when no config extracted the target (std/third-party,
+    /// or a ctor/variant we don't emit).
+    fn resolve_key(&self, e: &RefEdge, path_fallback: bool) -> Option<&str> {
+        if let Some((k, _)) = self.defs.get_key_value(&e.to_key) {
+            return Some(k.as_str());
         }
+        if let Some(id) = self.ids.identity_of(&e.to_key)
+            && let Some(k) = self.id_key.get(id)
+        {
+            return Some(k.as_str());
+        }
+        if path_fallback && let Some(k) = self.path_key.get(&e.to.join("::")) {
+            return Some(k.as_str());
+        }
+        None
+    }
+
+    /// One pass over every fragment's forward edges, folded onto the def each
+    /// [`resolve_key`](Self::resolve_key)s to — the reverse index the
+    /// reachability verdicts read. An edge whose target no config extracted is
+    /// ignored.
+    ///
+    /// `removed` (the unused-pub `--fix` cascade) drops the outgoing edges of
+    /// any def it segment-covers, so a callee that def solely reached falls to
+    /// zero in-degree; the build pass passes `None`. Two edge policies:
+    /// `in_degree`/`intra_degree` count only real use-sites (`!import`) so a
+    /// `pub use` can't mask a dead name; `dep_matrix`/`referenced` count every
+    /// cross-crate edge (importing B's item is a use of B).
+    fn fold_edges(&self, removed: Option<&RemovalSet>) -> EdgeFold {
+        let mut f = EdgeFold::default();
+        for frag in &self.fragments {
+            let build = frag.target_kind == "build";
+            for e in &frag.references {
+                // The removed item's own use-sites disappear with it.
+                if removed.is_some_and(|r| r.covers(&e.from)) {
+                    continue;
+                }
+                let Some(key) = self.resolve_key(e, build) else {
+                    continue; // target outside the workspace, or not a tree item
+                };
+                let def = &self.defs[key];
+                // Signature exposure: the target is named in a PUB item's
+                // signature (`from_key` is this fragment's own def — always a
+                // local key; an unknown `from` can't be a pub API surface).
+                if e.in_signature && self.defs.get(&e.from_key).is_some_and(|d| d.public) {
+                    f.signature_exposed.insert(key.to_string());
+                }
+                let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
+                let cross = from_crate != def.krate;
+                if cross {
+                    *f.dep_matrix
+                        .entry((from_crate.to_string(), def.krate.clone()))
+                        .or_insert(0) += 1;
+                    f.referenced.insert(def.krate.clone());
+                }
+                if e.import {
+                    f.import_edges += 1;
+                    // Only a `pub use` (re-export) pins its target `pub`
+                    // (E0364/E0365) or exposes it through the importing module.
+                    if e.reexport {
+                        f.import_targets.insert(key.to_string());
+                        f.reexporters
+                            .entry(key.to_string())
+                            .or_default()
+                            .push(e.from.join("::"));
+                    }
+                    continue; // import: not a use-site for unused-pub
+                }
+                *f.in_degree.entry(key.to_string()).or_insert(0) += 1;
+                if !cross {
+                    *f.intra_degree.entry(key.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        f
     }
 
     pub(super) fn fragments(&self) -> &[IrFragment] {
@@ -480,6 +547,12 @@ impl Assembly {
     /// in-degree so a def whose only referrers were deleted this pass reads as
     /// `Unreached` (dispatch reachability follows too: a trait item loses its
     /// `InternalDispatch` when its last dispatcher is removed).
+    ///
+    /// The dispatch lookups stay **local** (`self.defs` / `in_degree`, not the
+    /// global cross-config index): a global miss falls through to
+    /// `ExternalDispatch` = reached, the sound (never-a-false-lead) direction,
+    /// and trait-impl items are judged but never *flagged* by the lint anyway;
+    /// the identity union already ORs in the primary config's dispatch verdict.
     pub(super) fn reach_with(
         &self,
         key: &str,
@@ -522,58 +595,25 @@ impl Assembly {
     /// construction, never a module, a `pub use` target, or referenced by a
     /// surviving item — so those are reused unchanged. The one-pass cascade
     /// substrate; see [`super::SemanticModel::pub_candidates_excluding`].
+    ///
+    /// Shares [`Assembly::fold_edges`] with the build pass (so the cross-config
+    /// global join applies to the cascade too); the fold's deletion-invariant
+    /// outputs (`dep_matrix`, import maps, …) are recomputed and discarded here.
     pub(super) fn refold_excluding(&self, removed: &RemovalSet) -> RemovalOverlay {
-        let mut in_degree = BTreeMap::new();
-        let mut intra_degree = BTreeMap::new();
-        let mut signature_exposed = BTreeSet::new();
-        for frag in &self.fragments {
-            for e in &frag.references {
-                // The removed item's own use-sites disappear with it.
-                if removed.covers(&e.from) {
-                    continue;
-                }
-                let key = if self.defs.contains_key(&e.to_key) {
-                    e.to_key.clone()
-                } else if frag.target_kind == "build"
-                    && let Some(k) = self.path_key.get(&e.to.join("::"))
-                {
-                    k.clone()
-                } else {
-                    continue;
-                };
-                if e.in_signature && self.defs.get(&e.from_key).is_some_and(|f| f.public) {
-                    signature_exposed.insert(key.clone());
-                }
-                if e.import {
-                    continue; // imports never count toward the use-site degree
-                }
-                let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
-                *in_degree.entry(key.clone()).or_insert(0) += 1;
-                if from_crate == self.defs[&key].krate {
-                    *intra_degree.entry(key).or_insert(0) += 1;
-                }
-            }
-        }
+        let f = self.fold_edges(Some(removed));
         RemovalOverlay {
-            in_degree,
-            intra_degree,
-            signature_exposed,
+            in_degree: f.in_degree,
+            intra_degree: f.intra_degree,
+            signature_exposed: f.signature_exposed,
         }
     }
 
-    /// Resolve an edge's target to the def it lands on — the same `to_key` join
-    /// (with the build-fragment path fallback) the reverse-index fold uses.
+    /// Resolve an edge's target to the def it lands on — the full join
+    /// ([`Assembly::resolve_key`], build-fragment path fallback enabled).
     /// `None` when the target is outside the workspace or not a tree item. The
     /// import-index substrate ([`super::SemanticModel::dangling_imports`]).
-    pub(super) fn def_for_edge(&self, e: &wl_ir::RefEdge) -> Option<&DefInfo> {
-        if let Some(def) = self.defs.get(&e.to_key) {
-            return Some(def);
-        }
-        // Build-mode path fallback: `path_key` only holds lib/proc-macro defs,
-        // so this is a no-op for edges that already key-joined.
-        self.path_key
-            .get(&e.to.join("::"))
-            .and_then(|k| self.defs.get(k))
+    pub(super) fn def_for_edge(&self, e: &RefEdge) -> Option<&DefInfo> {
+        self.resolve_key(e, true).and_then(|k| self.defs.get(k))
     }
 
     /// Is `key`'s def named in some **pub** item's signature (an

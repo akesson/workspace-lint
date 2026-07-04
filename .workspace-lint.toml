@@ -85,14 +85,10 @@ ignore = [
 # libraries here (workspace-lint-marker, wl-ir) set `publish = true`, so their
 # APIs aren't flagged; the `workspace-lint` binary publishes no API, so its
 # `pub` items are checked as workspace-internal (as before).
+# Cross-config note: an item used cross-crate only from another crate's test
+# code (e.g. `wl_diagnostic::render::render_one`, called only by the binary's
+# message-surface snapshot tests) is now seen correctly — the assembler's hash
+# join is global across `[engine] configs`, so a `+test`-unit edge to a
+# dependency's plain rlib resolves to the def the primary config extracted (see
+# `wl-engine/src/semantic/join.rs`). No allowlist entry is needed for it.
 [unused-pub]
-# `wl_diagnostic::render::render_one` renders a single diagnostic without the
-# run summary; its only in-workspace callers are the binary's message-surface
-# snapshot tests (`messages.rs` / `messages_quality.rs`). The engine can't see
-# that use: under the `--tests` config a member's cfg(test) code links against
-# the cfg-OFF build of `wl-diagnostic`, but cargo freshness means only the
-# cfg-ON (`+test`) fragment is re-extracted there, so the referrer's DefPathHash
-# never matches a captured def and the item reads as unused. Allowlisted (matches
-# the def-path `cand.id`) so this engine blind spot for test-only cross-crate use
-# of an unpublished crate can't fail the dogfood.
-allowlist = ["wl_diagnostic::render::render_one"]

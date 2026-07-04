@@ -899,3 +899,201 @@ fn pub_candidates_guards_and_export_roots() {
     assert_eq!(re.name, "reexported");
     assert_eq!(re.kind, "fn");
 }
+
+// --- the cross-config global hash join (a `+test`/bench/integration edge to a
+//     dependency's PLAIN rlib, whose def the referring config never extracted) ---
+
+/// The regression this fix exists for: a member's `+test` unit calls a
+/// sibling's plain def, but under `--tests` the sibling's plain lib is
+/// cargo-fresh — its fragment lives only in the primary dir, so the edge
+/// carries the plain-generation key the tests config never extracted. The
+/// per-config join drops it (reads `Unused`); the global index resolves it
+/// (translating to the tests config's own key for the identity), crediting the
+/// cross-crate use, and the union credits the config that proved it.
+#[test]
+fn cross_config_global_join_resolves_test_only_use() {
+    // default: alpha's plain lib (K_PLAIN) + beta (a member, no test code yet).
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "render_one"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    let beta_default = frag("beta", vec![], vec![]);
+    // --tests: alpha recompiled as its own test harness (a DIFFERENT key for
+    // the same identity), and beta's test code calls `alpha::render_one` — but
+    // the edge targets alpha's PLAIN key (test units link plain rlibs), which
+    // the tests dir never extracted.
+    let alpha_tests = frag(
+        "alpha",
+        vec![item(
+            &["alpha", "render_one"],
+            "K_TESTGEN",
+            "fn",
+            Some("mod"),
+        )],
+        vec![],
+    );
+    let beta_tests = frag(
+        "beta",
+        vec![],
+        vec![edge(
+            &["beta", "tests", "snapshot"],
+            &["alpha", "render_one"],
+            "K_PLAIN",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default, beta_default]),
+        ("tests", vec![alpha_tests, beta_tests]),
+    ]);
+    let usage_of = |id: &str| {
+        m.pub_candidates()
+            .into_iter()
+            .find(|c| c.id == id)
+            .map(|c| c.usage)
+            .unwrap()
+    };
+    assert_eq!(
+        usage_of("alpha::render_one"),
+        PubUsage::CrossCrate,
+        "the plain-generation test edge must resolve via the global join"
+    );
+    // The union retires the primary-config lead and credits `tests`.
+    let v = m.union_verdict();
+    assert!(lead_ids(&v).is_empty());
+    assert_eq!(v.retired.len(), 1);
+    assert_eq!(v.retired[0].id, "alpha::render_one");
+    assert_eq!(v.retired[0].saved_by, "tests");
+}
+
+/// Same global join, but the referrer is an integration-test crate (a
+/// non-member): its edge to a member's plain def resolves cross-crate, and it
+/// contributes no candidate of its own.
+#[test]
+fn cross_config_global_join_credits_integration_test_crate() {
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    let alpha_tests = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K_TESTGEN", "fn", Some("mod"))],
+        vec![],
+    );
+    let it_crate = frag(
+        "alpha_it",
+        vec![],
+        vec![edge(&["alpha_it"], &["alpha", "helper"], "K_PLAIN", false)],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default]),
+        ("tests", vec![alpha_tests, it_crate]),
+    ]);
+    let cands = m.pub_candidates();
+    let usage = cands
+        .iter()
+        .find(|c| c.id == "alpha::helper")
+        .map(|c| c.usage)
+        .unwrap();
+    assert_eq!(usage, PubUsage::CrossCrate);
+    assert!(
+        cands.iter().all(|c| c.krate == "alpha"),
+        "the integration-test crate is a non-member: no candidate of its own"
+    );
+}
+
+/// The cascade inherits the global join: a cross-config use keeps a def alive
+/// until its (test) referrer is removed, then it frees; an unrelated removal
+/// leaves the credit intact.
+#[test]
+fn cascade_respects_cross_config_global_join() {
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    let beta_default = frag(
+        "beta",
+        vec![item(&["beta", "driver"], "K_DRV", "fn", Some("mod"))],
+        vec![],
+    );
+    let alpha_tests = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K_TESTGEN", "fn", Some("mod"))],
+        vec![],
+    );
+    // beta's test code calls alpha::helper via the plain (default-gen) key.
+    let beta_tests = frag(
+        "beta",
+        vec![item(&["beta", "driver"], "K_DRV2", "fn", Some("mod"))],
+        vec![edge(
+            &["beta", "driver"],
+            &["alpha", "helper"],
+            "K_PLAIN",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default, beta_default]),
+        ("tests", vec![alpha_tests, beta_tests]),
+    ]);
+    assert_eq!(
+        usage_map(&m.pub_candidates())["alpha::helper"],
+        PubUsage::CrossCrate
+    );
+    // Removing the cross-config referrer frees helper (the refold re-runs the
+    // global join, then drops the removed item's edges).
+    let after = usage_map(&m.pub_candidates_excluding(&RemovalSet::new(["beta::driver"])));
+    assert_eq!(
+        after["alpha::helper"],
+        PubUsage::Unused,
+        "helper freed once its only (test) referrer is removed"
+    );
+    // An unrelated removal keeps the global-join credit.
+    let after2 = usage_map(&m.pub_candidates_excluding(&RemovalSet::new(["alpha::other"])));
+    assert_eq!(after2["alpha::helper"], PubUsage::CrossCrate);
+}
+
+/// `def_for_edge` (the import-surgery substrate) resolves a `use` in a `+test`
+/// unit naming a sibling's plain def, so removing that def surfaces the import
+/// as dangling. (Here the target's `+test` fragment is in the tests config, so
+/// the display-path fallback also covers it; the value is guarding that the
+/// cross-config test import is found at all.)
+#[test]
+fn dangling_imports_resolve_cross_config() {
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    let alpha_tests = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K_TESTGEN", "fn", Some("mod"))],
+        vec![],
+    );
+    // beta's test unit: `use alpha::helper;` written against the plain key.
+    let beta_tests = frag(
+        "beta",
+        vec![],
+        vec![import_edge(
+            &["beta", "tests"],
+            &["alpha", "helper"],
+            "K_PLAIN",
+            false,
+            100,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default]),
+        ("tests", vec![alpha_tests, beta_tests]),
+    ]);
+    let dangling = m.dangling_imports(&RemovalSet::new(["alpha::helper"]));
+    assert_eq!(
+        dangling.len(),
+        1,
+        "the cross-config test import must resolve and dangle"
+    );
+    assert_eq!(dangling[0].elem.lo, 100);
+}
