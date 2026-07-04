@@ -5,10 +5,11 @@
 //! while `dylint::run` still returns Ok. A fresh crate's *existing* fragment
 //! is still valid (its inputs are unchanged), so the guard is a pure
 //! existence check against the fragment set a complete run must produce.
-//! Ported from the spike embed (`spike/embed/src/main.rs`), where the
-//! mechanism was verified: bumping the dylib mtime invalidates exactly the
-//! workspace members' lint units (dylint dep-info-tracks the dylib per
-//! primary-package unit) — registry deps stay fresh.
+//! Ported from the spike embed (`spike/embed/src/main.rs`). The re-lint
+//! force lever — invalidating exactly the workspace members' lint units,
+//! registry deps staying fresh — lives in the `relink` module: the dylib
+//! reaches dylint through an mtime-keyed path, so a mtime bump changes the
+//! `DYLINT_LIBS` value every member unit env-dep-tracks.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -215,30 +216,6 @@ pub(super) fn missing_build_fragments(
         .filter(|name| !dirs.iter().any(|d| d.join(name).exists()))
         .cloned()
         .collect()
-}
-
-/// Force the next `dylint::run` to re-lint every workspace member by bumping
-/// the lint dylib's mtime (dylint fingerprints the dylib into each
-/// primary-package unit's dep-info).
-///
-/// The dylib is shared across concurrent workspace-lint processes (one cache
-/// per binary version), so the handle must not conflict with a simultaneous
-/// `LoadLibraryExW`/`dlopen` in another process's driver. On Windows a
-/// write-class handle (`append`) makes that load fail with a sharing
-/// violation; `FILE_WRITE_ATTRIBUTES`-only access is sufficient for
-/// `set_modified` and invisible to the loader. Unix has no such conflict.
-pub(super) fn force_relint(dylib: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    let f = {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-        std::fs::OpenOptions::new()
-            .access_mode(FILE_WRITE_ATTRIBUTES)
-            .open(dylib)?
-    };
-    #[cfg(not(windows))]
-    let f = std::fs::OpenOptions::new().append(true).open(dylib)?;
-    f.set_modified(std::time::SystemTime::now())
 }
 
 #[cfg(test)]

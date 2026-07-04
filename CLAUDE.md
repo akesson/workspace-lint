@@ -173,7 +173,14 @@ Two phases, forced by rustc's per-crate compilation model:
   differs and would clobber the Check-mode fragment. Cargo freshness keeps
   fragments valid without re-runs; the **completeness guard** covers the one
   hole (`WL_IR_OUT` isn't in cargo's fingerprint): expected-vs-present check,
-  one forced re-lint (dylib mtime bump), then a hard error. Build fragments
+  one forced re-lint, then a hard error. The re-lint force lever is a dylib
+  *generation* bump (`orchestrate/relink.rs`): the dylib reaches dylint via
+  an mtime-keyed hard-link path, so a mtime bump changes the `DYLINT_LIBS`
+  value every member unit env-dep-tracks — including units whose dep-info
+  lost the dylib *file*-dep by recompiling as a non-primary unit (dylint's
+  driver only file-deps the dylib when `CARGO_PRIMARY_PACKAGE` is set, e.g.
+  a `test = false` lib under `--tests`; a plain mtime bump alone bricked
+  such workspaces). Build fragments
   are enforced *across* the run's config dirs (a build unit compiles once per
   shared target dir) and deduped newest-wins. Whole-workspace runs also
   **prune** stale fragments (renamed crates, older naming schemes) so they

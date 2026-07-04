@@ -11,6 +11,7 @@
 //! directory (dylint checks the CWD workspace).
 
 mod guard;
+mod relink;
 mod source;
 mod toolchain;
 
@@ -142,7 +143,10 @@ pub enum EngineError {
 
     #[error(
         "IR incomplete under config `{config}`: fragments still missing after a forced \
-         re-lint: {missing:?}"
+         re-lint: {missing:?}\n\
+         \n\
+         hint: if this persists, delete `target/dylint` in the analyzed workspace to \
+         reset the engine's build cache"
     )]
     Incomplete {
         config: String,
@@ -223,7 +227,7 @@ impl Engine {
     pub fn extract(&self, cfg: &EngineConfig) -> Result<ExtractionRuns, EngineError> {
         toolchain::preflight(Self::pinned_toolchain())?;
         let package_dir = self.source.materialize()?;
-        let dylib = source::build_dylib(&package_dir)?;
+        let dylib = relink::RelinkedDylib::new(source::build_dylib(&package_dir)?);
 
         // The guard's target set comes from cargo metadata on the target
         // workspace — computed before the chdir (explicit manifest path).
@@ -253,18 +257,22 @@ impl Engine {
             self.ensure_build_fragments(cfg, &runs, &dylib, ts)?;
             dedup_build_fragments(&runs, &ts.build_fragments());
         }
-        Ok(ExtractionRuns { runs, dylib })
+        Ok(ExtractionRuns {
+            runs,
+            dylib: dylib.canonical().to_path_buf(),
+        })
     }
 
     /// Enforce build-fragment presence across the run's config dirs: missing
-    /// everywhere → one forced re-lint of the first config (the mtime bump
-    /// refreshes build units exactly like lib units — verified in the step-0
-    /// spike), then a hard error. Mirrors `run_config`'s per-config guard.
+    /// everywhere → one forced re-lint of the first config (the generation
+    /// bump refreshes build units exactly like lib units — verified in the
+    /// step-0 spike), then a hard error. Mirrors `run_config`'s per-config
+    /// guard.
     fn ensure_build_fragments(
         &self,
         cfg: &EngineConfig,
         runs: &[ConfigRun],
-        dylib: &std::path::Path,
+        dylib: &relink::RelinkedDylib,
         targets: &guard::TargetSet,
     ) -> Result<(), EngineError> {
         let names = targets.build_fragments();
@@ -284,8 +292,8 @@ impl Engine {
              freshness skipped their lint pass): {missing:?} — forcing a re-lint",
             missing.len(),
         );
-        guard::force_relint(dylib).map_err(|source| EngineError::Io {
-            context: format!("bumping dylib mtime {}", dylib.display()),
+        dylib.bump().map_err(|source| EngineError::Io {
+            context: format!("bumping dylib mtime {}", dylib.canonical().display()),
             source,
         })?;
         self.run_config(
@@ -308,13 +316,14 @@ impl Engine {
     /// One `dylint::run` under one config, then the completeness guard: an
     /// expected fragment can be missing because `WL_IR_OUT` is not in cargo's
     /// fingerprint (the SPIKE §11 caching gotcha — a "fresh" crate's lint pass
-    /// never runs). On a miss, bump the dylib mtime (invalidates exactly the
-    /// workspace members' lint units) and re-run once.
+    /// never runs). On a miss, bump the dylib generation (invalidates exactly
+    /// the workspace members' lint units — see the `relink` module) and
+    /// re-run once.
     fn run_config(
         &self,
         selector: &CfgSelector,
         ir_dir: &std::path::Path,
-        dylib: &std::path::Path,
+        dylib: &relink::RelinkedDylib,
         packages: &[String],
         targets: Option<&guard::TargetSet>,
     ) -> Result<(), EngineError> {
@@ -328,9 +337,12 @@ impl Engine {
         // compile errors ARE the diagnosis). dylint appends, so truncate
         // between runs.
         let log = ir_dir.with_extension("log");
-        let opts = dylint_opts(dylib, packages, &selector.cargo_args, &log);
         let run = |what: &str| {
             let _ = std::fs::write(&log, b"");
+            // Derive the dylib path per invocation: after a bump, the re-run
+            // must hand dylint the NEW generation path or the `DYLINT_LIBS`
+            // env-dep channel never fires.
+            let opts = dylint_opts(&dylib.current(), packages, &selector.cargo_args, &log);
             dylint::run(&opts).map_err(|source| {
                 if let Ok(captured) = std::fs::read_to_string(&log) {
                     eprint!("{captured}");
@@ -372,8 +384,8 @@ impl Engine {
             missing.len(),
             selector.id,
         );
-        guard::force_relint(dylib).map_err(|source| EngineError::Io {
-            context: format!("bumping dylib mtime {}", dylib.display()),
+        dylib.bump().map_err(|source| EngineError::Io {
+            context: format!("bumping dylib mtime {}", dylib.canonical().display()),
             source,
         })?;
         run("forced re-lint")?;
@@ -409,7 +421,7 @@ fn prune_stale_fragments(ir_dir: &std::path::Path, expected: &std::collections::
 }
 
 /// Keep exactly one copy of each build fragment across the run's config dirs.
-/// A forced re-lint under a later config duplicates them (the mtime bump
+/// A forced re-lint under a later config duplicates them (the generation bump
 /// recompiles build units into that config's dir too); afterwards, a build.rs
 /// edit refreshes only the copy in whichever config compiles first, leaving
 /// the duplicate permanently stale — and the loader unions every dir, so the
