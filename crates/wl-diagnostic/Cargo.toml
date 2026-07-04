@@ -1,0 +1,15 @@
+[package]
+name = "wl-diagnostic"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+repository = "https://github.com/akesson/workspace-lint"
+# Internal contract crate: the diagnostic vocabulary (Diagnostic/Span/…) plus
+# the three renderers, shared by `wl-lints` and the `workspace-lint` binary.
+# Not published; `publish = false` keeps its `pub` API judged workspace-internally
+# by the deny-level `unused-pub` dogfood (same posture as `wl-engine`).
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

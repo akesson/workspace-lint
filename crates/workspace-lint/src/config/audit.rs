@@ -11,10 +11,10 @@
 //! Truly-unusable *values* (an uncompilable glob, a bad level string) still
 //! fail fast at deserialize time — they never reach here.
 
-use crate::diagnostic::Diagnostic;
-use crate::diagnostic::builder::at_file;
-use crate::lints::LintId;
 use crate::suggest::closest;
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::builder::at_file;
+use wl_lints::LintId;
 
 use super::Config;
 

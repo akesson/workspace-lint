@@ -12,8 +12,8 @@
 use std::collections::HashSet;
 use std::io::{BufRead, IsTerminal, Write};
 
-use crate::util;
 use wl_engine::EngineError;
+use wl_lints::util;
 
 /// One extraction attempt's provisioning state: which repairs already ran.
 pub(crate) struct Provisioner {

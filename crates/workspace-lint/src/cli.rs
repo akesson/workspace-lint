@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 
 use crate::config::{ExpandConfig, ExpandRule};
-use crate::lints::Lint;
-use crate::lints::{
+use wl_lints::Lint;
+use wl_lints::{
     centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion,
     crate_size::CrateSize,
@@ -211,7 +211,7 @@ impl CheckRule {
     ) -> ExpandConfig {
         ExpandConfig {
             rules: vec![ExpandRule {
-                command: split_command(&command),
+                command: wl_lints::util::split_command(&command),
                 glob,
                 marker,
                 auto_stage,
@@ -220,21 +220,10 @@ impl CheckRule {
     }
 }
 
-/// Split a CLI `--command` string into argv using shell-like quoting, so
-/// `--command "tool --flag 'a b'"` survives args with spaces (the old naive
-/// whitespace split mangled them). Exits with a clear message on unbalanced
-/// quotes.
-pub(crate) fn split_command(command: &str) -> Vec<String> {
-    shell_words::split(command).unwrap_or_else(|e| {
-        eprintln!("error: could not parse --command `{command}`: {e}");
-        std::process::exit(2);
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lints::LintId;
+    use wl_lints::LintId;
 
     #[test]
     fn into_lint_centralized_deps() {

@@ -19,8 +19,8 @@
 
 use std::path::PathBuf;
 
-use crate::diagnostic::builder::{at_crate, at_file, at_line, at_workspace};
-use crate::diagnostic::{Applicability, Diagnostic, Span, Suggestion};
+use wl_diagnostic::builder::{at_crate, at_file, at_line, at_workspace};
+use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion};
 
 /// Every distinct diagnostic the tool can emit, in a fixed order. The order
 /// here is what the snapshot tests assert against, so think of this as the
@@ -422,7 +422,7 @@ mod quality_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::render::{github, human, json};
+    use wl_diagnostic::render::{Format, render_one};
 
     // -------------------------------------------------------------------------
     // HUMAN renderer — clippy-style text. Reviewer scrolls this section to
@@ -434,7 +434,7 @@ mod tests {
 
         fn render(d: &Diagnostic) -> String {
             let mut buf = Vec::new();
-            human::write_one(d, &mut buf).unwrap();
+            render_one(Format::Human, d, &mut buf).unwrap();
             String::from_utf8(buf).unwrap()
         }
 
@@ -850,7 +850,7 @@ mod tests {
         /// rust-analyzer / CI tools consume.
         fn render(d: &Diagnostic) -> String {
             let mut buf = Vec::new();
-            json::write(std::slice::from_ref(d), &mut buf).unwrap();
+            render_one(Format::Json, d, &mut buf).unwrap();
             String::from_utf8(buf).unwrap().trim_end().to_string()
         }
 
@@ -1005,7 +1005,7 @@ mod tests {
 
         fn render(d: &Diagnostic) -> String {
             let mut buf = Vec::new();
-            github::write_one(d, &mut buf).unwrap();
+            render_one(Format::Github, d, &mut buf).unwrap();
             String::from_utf8(buf).unwrap()
         }
 
@@ -1132,10 +1132,10 @@ mod tests {
             // Severity flip — the only non-message variation worth covering
             // for the GitHub renderer.
             let d = at_workspace("workspace-lint::cli-crate-version", "blocking")
-                .level(crate::diagnostic::Level::Deny)
+                .level_explicit(wl_diagnostic::Level::Deny)
                 .build();
             let mut buf = Vec::new();
-            github::write_one(&d, &mut buf).unwrap();
+            render_one(Format::Github, &d, &mut buf).unwrap();
             let s = String::from_utf8(buf).unwrap();
             insta::assert_snapshot!(s, @"::error file=Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Acli-crate-version::blocking");
         }

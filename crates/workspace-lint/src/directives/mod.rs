@@ -10,13 +10,13 @@
 //! anchor are contained by a directive's anchor are suppressed before being
 //! rendered.
 
-use crate::diagnostic::SilenceAnchor;
 use fs_err as fs;
 use ignore::WalkBuilder;
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use wl_diagnostic::SilenceAnchor;
 use wl_engine::fast::FastModel;
 
 mod deletion;

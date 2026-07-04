@@ -1,0 +1,35 @@
+[package]
+name = "wl-lints"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+repository = "https://github.com/akesson/workspace-lint"
+# Internal library: every lint implementation plus the `Lint` trait vocabulary
+# and the shared config primitives (`LintLevel`/`GlobPattern`/…). The
+# `workspace-lint` binary owns config *loading* and the registry (the
+# composition root that binds lints to a `Config`). Not published; `publish =
+# false` keeps its `pub` API judged workspace-internally by the deny-level
+# `unused-pub` dogfood.
+publish = false
+
+[dependencies]
+# `KindFilter` derives `clap::ValueEnum` — one enum serves both the `unused-pub`
+# `kinds` config field and the CLI `--kinds` flag, so their accepted spellings
+# (incl. the `fn`/`mod` aliases) can't drift.
+clap = { workspace = true }
+fs-err = { workspace = true }
+globset = { workspace = true }
+ignore = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+shell-words = { workspace = true }
+strip-ansi-escapes = { workspace = true }
+syn = { workspace = true }
+tokei = { workspace = true }
+toml = { workspace = true }
+wl-diagnostic = { path = "../wl-diagnostic" }
+wl-engine = { path = "../wl-engine" }
+
+[dev-dependencies]
+insta = { workspace = true }
+tempfile = { workspace = true }

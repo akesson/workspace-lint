@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 use fs_err as fs;
 
-use crate::diagnostic::{Applicability, Diagnostic, Suggestion};
+use wl_diagnostic::{Applicability, Diagnostic, Suggestion};
 
 /// Apply machine-applicable structural suggestions to disk. Returns the count
 /// of files modified. The `byte_end > byte_start` filter excludes the
@@ -193,9 +193,10 @@ fn normalize_eol<'a>(s: &'a str, eol: &str) -> Cow<'a, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostic::{Diagnostic, Level, SilenceAnchor, Span};
     use std::borrow::Cow;
     use tempfile::TempDir;
+    use wl_diagnostic::builder::at_file;
+    use wl_diagnostic::{Diagnostic, Level, SilenceAnchor, Span};
 
     fn structural_diag(path: &std::path::Path, span: Span, replacement: &str) -> Diagnostic {
         Diagnostic {
@@ -235,17 +236,7 @@ mod tests {
         let original = "pub fn x() {}\n";
         std::fs::write(&p, original).unwrap();
 
-        let d = Diagnostic {
-            lint: Cow::Borrowed("workspace-lint::file-size"),
-            level: Level::Warn,
-            message: "file too big".into(),
-            primary: Some(Span::file_anchor(p.clone())),
-            helps: vec![],
-            notes: vec![],
-            suggestions: vec![],
-            silence_anchor: SilenceAnchor::File { file: p.clone() },
-            level_is_explicit: false,
-        };
+        let d = at_file("workspace-lint::file-size", "file too big", p.clone()).build();
 
         let modified = run(&[d]);
         assert_eq!(modified, 0);

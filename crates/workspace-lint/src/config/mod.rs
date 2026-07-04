@@ -4,24 +4,26 @@ use std::collections::HashMap;
 use std::path::Path;
 
 mod audit;
-mod types;
 
-pub(crate) use types::{GlobPattern, Globs, LintLevel, LintLevels};
+// The strongly-typed config primitives now live in `wl-lints` (shared with the
+// per-lint config structs); re-export the two the binary's `Config` needs so
+// the rest of it keeps referring to `crate::config::…`.
+pub(crate) use wl_lints::config::{LintLevel, LintLevels};
 
-use crate::diagnostic::Diagnostic;
-use crate::lints::LintId;
+use wl_diagnostic::Diagnostic;
 use wl_engine::fast::FastModel;
+use wl_lints::LintId;
 
-// Per-lint config structs live next to their lint impls under `crate::lints`.
-// `Config` re-exports them so the top-level TOML schema (the user-facing
+// Per-lint config structs live next to their lint impls in `wl-lints`. `Config`
+// re-exports them so the top-level TOML schema (the user-facing
 // `.workspace-lint.toml`) is unchanged.
-pub(crate) use crate::lints::architecture::ArchitectureConfig;
-pub(crate) use crate::lints::cli_crate_version::CliCrateVersionConfig;
-pub(crate) use crate::lints::crate_size::CrateSizeConfig;
-pub(crate) use crate::lints::file_size::FileSizeConfig;
-pub(crate) use crate::lints::freshness::FreshnessConfig;
-pub(crate) use crate::lints::unused_deps::UnusedDepsConfig;
-pub(crate) use crate::lints::unused_pub::UnusedPubConfig;
+pub(crate) use wl_lints::architecture::ArchitectureConfig;
+pub(crate) use wl_lints::cli_crate_version::CliCrateVersionConfig;
+pub(crate) use wl_lints::crate_size::CrateSizeConfig;
+pub(crate) use wl_lints::file_size::FileSizeConfig;
+pub(crate) use wl_lints::freshness::FreshnessConfig;
+pub(crate) use wl_lints::unused_deps::UnusedDepsConfig;
+pub(crate) use wl_lints::unused_pub::UnusedPubConfig;
 
 #[derive(Deserialize, Default)]
 pub(crate) struct Config {
@@ -277,15 +279,15 @@ pub(crate) fn load() -> (Config, Vec<Diagnostic>) {
     let cargo_metadata = read_cargo_metadata();
 
     match (standalone_exists, cargo_metadata) {
-        (true, Some(_)) => crate::util::fail(format!(
+        (true, Some(_)) => wl_lints::util::fail(format!(
             "error: found both {STANDALONE_FILE} and [workspace.metadata.workspace-lint] in Cargo.toml — use only one"
         )),
-        (false, None) => crate::util::fail(format!(
+        (false, None) => wl_lints::util::fail(format!(
             "error: no configuration found — run `workspace-lint init` to scaffold {STANDALONE_FILE}, or add [workspace.metadata.workspace-lint] to Cargo.toml"
         )),
         (true, None) => {
             let content = fs::read_to_string(STANDALONE_FILE).unwrap_or_else(|e| {
-                crate::util::fail(format!("failed to read {STANDALONE_FILE}: {e}"))
+                wl_lints::util::fail(format!("failed to read {STANDALONE_FILE}: {e}"))
             });
             let config = parse_config(&content, STANDALONE_FILE);
             let diags = audit::audit(&content, STANDALONE_FILE, &config);
@@ -319,8 +321,9 @@ pub(crate) fn try_load() -> Option<Config> {
 }
 
 fn parse_config(toml_str: &str, source: &str) -> Config {
-    toml::from_str(toml_str)
-        .unwrap_or_else(|e| crate::util::fail(format!("failed to parse config from {source}: {e}")))
+    toml::from_str(toml_str).unwrap_or_else(|e| {
+        wl_lints::util::fail(format!("failed to parse config from {source}: {e}"))
+    })
 }
 
 /// Extract the `[workspace.metadata.workspace-lint]` section from raw Cargo.toml content,

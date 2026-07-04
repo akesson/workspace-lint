@@ -118,7 +118,7 @@ fn parses_rust_comment_directive_as_line_anchor() {
 fn rust_comment_directive_suppresses_item_below_via_lookback() {
     // End-to-end: the comment on line 1 must suppress an unused-pub finding
     // anchored at the item on line 2 (the suppress.rs lookback window).
-    use crate::diagnostic::builder::at_line;
+    use wl_diagnostic::builder::at_line;
     let tmp = TempDir::new().unwrap();
     write(
         tmp.path(),
@@ -129,7 +129,7 @@ fn rust_comment_directive_suppresses_item_below_via_lookback() {
     let mut map = crate::suppress::SuppressionMap::from_directives(directives);
     let d = at_line("workspace-lint::unused-pub", "unused", "src/lib.rs", 2).build();
     assert!(map.is_suppressed(&d));
-    let ran = crate::lints::LintId::ALL.iter().copied().collect();
+    let ran = wl_lints::LintId::ALL.iter().copied().collect();
     assert!(map.stale_expects(&ran, tmp.path()).is_empty());
 }
 

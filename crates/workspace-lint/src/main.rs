@@ -1,27 +1,29 @@
 mod cli;
 mod config;
-mod diagnostic;
 mod directives;
 mod expand;
 mod fix;
-mod git;
 mod init;
-mod lints;
+// The message-surface catalog is a test fixture (every distinct diagnostic next
+// to its rendered output) with no production caller — `scenarios()` is consumed
+// only by the snapshot tests and the registry-coverage guard. Gate it out of
+// shipped builds so it doesn't count against `crate-size`.
+#[cfg(test)]
 mod messages;
 mod provision;
+mod registry;
 mod suggest;
 mod suppress;
-mod util;
 
 use clap::Parser;
 use std::collections::HashSet;
 use std::io;
 
 use cli::{CheckRule, Cli, Commands};
-use diagnostic::Diagnostic;
-use diagnostic::render::{Format, render};
-use lints::{LintContext, LintId};
+use wl_diagnostic::Diagnostic;
+use wl_diagnostic::render::{Format, render};
 use wl_engine::fast::FastModel;
+use wl_lints::{LintContext, LintId, git, util};
 
 fn main() {
     let cli = Cli::parse();
@@ -117,7 +119,7 @@ fn main() {
             // rendered here, so drop them.
             let (config, _) = config::load();
             if let Some(ref fc) = config.freshness {
-                lints::freshness::mark_done(fc);
+                wl_lints::freshness::mark_done(fc);
             }
         }
         Some(Commands::Check { rule }) => {
@@ -238,7 +240,7 @@ fn crate_dirs(fast: Option<&FastModel>) -> Vec<CrateDir> {
 /// (root) relative form is skipped so it can't match every path.
 fn owning_crate<'a>(
     crate_dirs: &'a [CrateDir],
-    anchor: &diagnostic::SilenceAnchor,
+    anchor: &wl_diagnostic::SilenceAnchor,
 ) -> Option<&'a str> {
     let file = anchor.file()?;
     crate_dirs
@@ -373,7 +375,8 @@ fn run_unused_pub_cascade(
 
     let global = config.unused_pub.clone().unwrap_or_default();
     let per_crate = config.unused_pub_overrides();
-    let result = lints::unused_pub::cascade::run(&global, &per_crate, fast, semantic, &suppressed);
+    let result =
+        wl_lints::unused_pub::cascade::run(&global, &per_crate, fast, semantic, &suppressed);
 
     // The cascade output is the authoritative unused-pub picture — swap it in
     // for the plain-check findings, then add the dangling-`use` deletions.
@@ -397,7 +400,7 @@ fn run_all(
     Option<wl_engine::SemanticModel>,
     HashSet<LintId>,
 ) {
-    let mut registry = lints::registry(config);
+    let mut registry = registry::registry(config);
     // `--fast-only` runs only the build-free lints: a semantic lint is
     // *skipped* — not invoked without its model (its `check` rightly demands
     // one) and not silently degraded to a weaker analysis.

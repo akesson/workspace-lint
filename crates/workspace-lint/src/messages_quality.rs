@@ -7,8 +7,8 @@
 //! more scenarios land.
 
 use super::*;
-use crate::diagnostic::Applicability;
-use crate::diagnostic::render::{github, human, json};
+use wl_diagnostic::Applicability;
+use wl_diagnostic::render::{Format, render_one};
 
 fn scenarios_iter() -> impl Iterator<Item = (&'static str, Diagnostic)> {
     scenarios().into_iter()
@@ -38,7 +38,7 @@ fn warn_or_higher_carries_at_least_one_help() {
     for (name, d) in scenarios_iter() {
         let needs_help = matches!(
             d.level,
-            crate::diagnostic::Level::Warn | crate::diagnostic::Level::Deny
+            wl_diagnostic::Level::Warn | wl_diagnostic::Level::Deny
         );
         if needs_help {
             assert!(
@@ -137,15 +137,15 @@ fn no_double_spaces_or_edge_whitespace() {
 fn cross_format_consistency() {
     for (name, d) in scenarios_iter() {
         let mut human_buf = Vec::new();
-        human::write_one(&d, &mut human_buf).unwrap();
+        render_one(Format::Human, &d, &mut human_buf).unwrap();
         let human_out = String::from_utf8(human_buf).unwrap();
 
         let mut json_buf = Vec::new();
-        json::write(std::slice::from_ref(&d), &mut json_buf).unwrap();
+        render_one(Format::Json, &d, &mut json_buf).unwrap();
         let json_out = String::from_utf8(json_buf).unwrap();
 
         let mut gh_buf = Vec::new();
-        github::write_one(&d, &mut gh_buf).unwrap();
+        render_one(Format::Github, &d, &mut gh_buf).unwrap();
         let gh_out = String::from_utf8(gh_buf).unwrap();
 
         let short_lint = d
