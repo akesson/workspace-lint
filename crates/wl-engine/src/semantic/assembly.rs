@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use wl_ir::{IrFragment, RefEdge, Visibility};
 
-use super::join::IdentityIndex;
+use super::join::{ForeignReach, IdentityIndex};
 use super::meta::WorkspaceMeta;
+use super::removal::{DegreeView, RemovalOverlay, RemovalSet};
 
 /// How a def relates to the unused-pub verdict — derived from `parent_kind` +
 /// `trait_item` (both rustc-emitted, no text heuristic).
@@ -148,82 +149,6 @@ pub(crate) struct CandReach {
     pub(crate) kind: String,
 }
 
-/// A set of def identities (crate-rooted display paths) to treat as deleted
-/// when the unused-pub `--fix` cascade recomputes degrees. Matching is
-/// **segment-wise prefix**, not string prefix, so removing `crate::a` drops
-/// `crate::a`'s own edges and those of body-nested defs it owns
-/// (`crate::a::{closure}`) but never a sibling `crate::ab`.
-#[derive(Default)]
-pub struct RemovalSet {
-    segs: Vec<Vec<String>>,
-    ids: std::collections::HashSet<String>,
-}
-
-impl RemovalSet {
-    /// Build from cross-config identities (`PubCandidate::id` / `DefInfo::path`).
-    pub fn new<I, S>(ids: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ids: std::collections::HashSet<String> =
-            ids.into_iter().map(|id| id.as_ref().to_string()).collect();
-        let segs = ids
-            .iter()
-            .map(|id| id.split("::").map(str::to_string).collect())
-            .collect();
-        Self { segs, ids }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
-    }
-
-    /// Exact identity membership — the import index asks "is *this* import's
-    /// target one of the removed defs?" (a dangling import names its target
-    /// exactly, not an ancestor).
-    pub fn contains_id(&self, id: &str) -> bool {
-        self.ids.contains(id)
-    }
-
-    /// Does some removed identity equal `from` or a proper ancestor of it
-    /// (segment-wise)? `from` is an edge's enclosing-item path.
-    fn covers(&self, from: &[String]) -> bool {
-        self.segs
-            .iter()
-            .any(|r| from.len() >= r.len() && from[..r.len()] == r[..])
-    }
-}
-
-/// The removal-sensitive indexes recomputed by [`Assembly::refold_excluding`] —
-/// the degree source [`super::pub_usage::compute`] reads instead of the
-/// prebuilt maps when a cascade removal set is in effect.
-pub(super) struct RemovalOverlay {
-    in_degree: BTreeMap<String, usize>,
-    intra_degree: BTreeMap<String, usize>,
-    signature_exposed: BTreeSet<String>,
-}
-
-impl RemovalOverlay {
-    pub(super) fn view(&self) -> DegreeView<'_> {
-        DegreeView {
-            in_degree: &self.in_degree,
-            intra_degree: &self.intra_degree,
-            signature_exposed: &self.signature_exposed,
-        }
-    }
-}
-
-/// A borrowed view of the three removal-sensitive indexes — either the
-/// prebuilt maps ([`Assembly::degree_view`]) or a recomputed
-/// [`RemovalOverlay`]. The degree source [`super::pub_usage::compute`] reads,
-/// so the same fold serves both the plain and the cascade paths.
-pub(super) struct DegreeView<'a> {
-    pub(super) in_degree: &'a BTreeMap<String, usize>,
-    pub(super) intra_degree: &'a BTreeMap<String, usize>,
-    pub(super) signature_exposed: &'a BTreeSet<String>,
-}
-
 /// The kinds the unused-pub verdict judges. Widened from the spike's
 /// `fn|struct|enum|trait|type` narrowing (migration PR 4): const/static/macro/
 /// union pub items are candidates too — the per-lint `kinds` config filters at
@@ -288,9 +213,15 @@ pub struct Assembly {
     /// so every degree stays keyed by a def in `defs`. First fragment wins;
     /// deterministic because `load_fragments` sorts.
     id_key: BTreeMap<String, String>,
+    /// Reach this config's edges credit to identities it has **no def for** —
+    /// the defining crate wasn't extracted here at all (harness flag off:
+    /// `[lib] test = false` / `bench = false`), so the global join has no
+    /// landing key. See [`ForeignReach`]; the union and per-candidate
+    /// classification OR these in.
+    pub(super) foreign_reach: BTreeMap<String, ForeignReach>,
 }
 
-/// The eight edge-derived indexes produced by one pass of
+/// The edge-derived indexes produced by one pass of
 /// [`Assembly::fold_edges`] — the reverse index the reachability verdicts read.
 #[derive(Default)]
 struct EdgeFold {
@@ -302,6 +233,7 @@ struct EdgeFold {
     signature_exposed: BTreeSet<String>,
     import_targets: BTreeSet<String>,
     reexporters: BTreeMap<String, Vec<String>>,
+    foreign_reach: BTreeMap<String, ForeignReach>,
 }
 
 impl Assembly {
@@ -398,6 +330,7 @@ impl Assembly {
             path_key,
             ids,
             id_key,
+            foreign_reach: BTreeMap::new(),
         };
         let mut fold = asm.fold_edges(None);
 
@@ -440,6 +373,7 @@ impl Assembly {
         asm.signature_exposed = fold.signature_exposed;
         asm.import_targets = fold.import_targets;
         asm.reexporters = fold.reexporters;
+        asm.foreign_reach = fold.foreign_reach;
         asm
     }
 
@@ -488,7 +422,13 @@ impl Assembly {
                     continue;
                 }
                 let Some(key) = self.resolve_key(e, build) else {
-                    continue; // target outside the workspace, or not a tree item
+                    // No landing def anywhere local — but if the GLOBAL index
+                    // knows the target, this config never extracted its crate
+                    // (harness flag off) and the reach is recorded at identity
+                    // level. A genuine out-of-workspace target isn't in the
+                    // index and stays ignored.
+                    self.fold_foreign(e, &mut f);
+                    continue;
                 };
                 let def = &self.defs[key];
                 // Signature exposure: the target is named in a PUB item's
@@ -525,6 +465,29 @@ impl Assembly {
             }
         }
         f
+    }
+
+    /// Credit an edge whose target the global index knows but this config has
+    /// no def for (see [`ForeignReach`]). Mirrors the fold's own policies:
+    /// signature exposure gated on a pub `from`, imports discounted from the
+    /// use-site reach, cross/intra split by crate name.
+    fn fold_foreign(&self, e: &RefEdge, f: &mut EdgeFold) {
+        let Some(id) = self.ids.identity_of(&e.to_key) else {
+            return;
+        };
+        let fr = f.foreign_reach.entry(id.to_string()).or_default();
+        if e.in_signature && self.defs.get(&e.from_key).is_some_and(|d| d.public) {
+            fr.signature_exposed = true;
+        }
+        if e.import {
+            return; // import: not a use-site for unused-pub
+        }
+        let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
+        if from_crate == id.split("::").next().unwrap_or_default() {
+            fr.intra = true;
+        } else {
+            fr.cross = true;
+        }
     }
 
     pub(super) fn fragments(&self) -> &[IrFragment] {
@@ -583,6 +546,7 @@ impl Assembly {
             in_degree: &self.in_degree,
             intra_degree: &self.intra_degree,
             signature_exposed: &self.signature_exposed,
+            foreign_reach: &self.foreign_reach,
         }
     }
 
@@ -605,6 +569,7 @@ impl Assembly {
             in_degree: f.in_degree,
             intra_degree: f.intra_degree,
             signature_exposed: f.signature_exposed,
+            foreign_reach: f.foreign_reach,
         }
     }
 
@@ -614,6 +579,18 @@ impl Assembly {
     /// import-index substrate ([`super::SemanticModel::dangling_imports`]).
     pub(super) fn def_for_edge(&self, e: &RefEdge) -> Option<&DefInfo> {
         self.resolve_key(e, true).and_then(|k| self.defs.get(k))
+    }
+
+    /// The cross-config identity an edge's target resolves to: through the def
+    /// join when a landing def exists, else the global index alone (the
+    /// foreign case — see [`ForeignReach`]). Lets the import surgery see a
+    /// `use` of a removed item even from a config that never extracted the
+    /// defining crate.
+    pub(super) fn target_identity(&self, e: &RefEdge) -> Option<&str> {
+        match self.def_for_edge(e) {
+            Some(def) => Some(def.path.as_str()),
+            None => self.ids.identity_of(&e.to_key),
+        }
     }
 
     /// Is `key`'s def named in some **pub** item's signature (an

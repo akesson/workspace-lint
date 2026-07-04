@@ -54,3 +54,29 @@ impl IdentityIndex {
         self.identity_of.get(key).map(String::as_str)
     }
 }
+
+/// Usage bits a config's edges credit to an identity **it has no def for**:
+/// the referring config never extracted the defining crate at all — a target
+/// with its harness flag off (`[lib] test = false` under `--tests`,
+/// `bench = false` under `--benches`) compiles nothing of that crate, so the
+/// global-join hit has no local key to translate onto. The fold records the
+/// reach at identity level instead, and the union / per-candidate
+/// classification layers OR it in (the identity is always defined by whichever
+/// config the global index learned it from).
+#[derive(Default, Clone, Copy)]
+pub(super) struct ForeignReach {
+    /// A real (non-import) use-site in a crate other than the defining one.
+    pub(super) cross: bool,
+    /// A real use-site in the defining crate itself (name-matched, like the
+    /// fold's own cross/intra split).
+    pub(super) intra: bool,
+    /// Named in a PUB item's signature — the must-stay-`pub` guard.
+    pub(super) signature_exposed: bool,
+}
+
+impl ForeignReach {
+    /// Does this credit count as reach (a real use-site somewhere)?
+    pub(super) fn reached(&self) -> bool {
+        self.cross || self.intra
+    }
+}

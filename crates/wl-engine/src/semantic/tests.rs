@@ -1056,6 +1056,114 @@ fn cascade_respects_cross_config_global_join() {
     assert_eq!(after2["alpha::helper"], PubUsage::CrossCrate);
 }
 
+/// The foreign-reach channel: a config can reference a crate it never
+/// extracted at all — `[lib] bench = false` means `--benches` compiles only
+/// the bench target (the plain lib is cargo-fresh), so the benches dir holds
+/// NO fragment of the defining crate and the global join has no landing key.
+/// The reach is credited at identity level instead, classifying CrossCrate
+/// and retiring the union lead with correct attribution.
+#[test]
+fn foreign_reach_credits_unextracted_target_crate() {
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "measured"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    // The benches config: ONLY the bench crate's fragment — no alpha at all.
+    let bench = frag(
+        "lookup",
+        vec![],
+        vec![edge(
+            &["lookup", "main"],
+            &["alpha", "measured"],
+            "K_PLAIN",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default]),
+        ("benches", vec![bench]),
+    ]);
+    let usage = m
+        .pub_candidates()
+        .into_iter()
+        .find(|c| c.id == "alpha::measured")
+        .map(|c| c.usage)
+        .unwrap();
+    assert_eq!(
+        usage,
+        PubUsage::CrossCrate,
+        "the bench edge must credit the identity despite no local def"
+    );
+    let v = m.union_verdict();
+    assert!(lead_ids(&v).is_empty());
+    assert_eq!(v.retired.len(), 1);
+    assert_eq!(v.retired[0].id, "alpha::measured");
+    assert_eq!(v.retired[0].saved_by, "benches");
+}
+
+/// The cascade recomputes foreign reach: removing the foreign referrer frees
+/// the target in the same pass; an unrelated removal keeps the credit.
+#[test]
+fn cascade_recomputes_foreign_reach() {
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "measured"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    let bench = frag(
+        "lookup",
+        vec![],
+        vec![edge(
+            &["lookup", "runner"],
+            &["alpha", "measured"],
+            "K_PLAIN",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default]),
+        ("benches", vec![bench]),
+    ]);
+    let after = usage_map(&m.pub_candidates_excluding(&RemovalSet::new(["lookup::runner"])));
+    assert_eq!(
+        after["alpha::measured"],
+        PubUsage::Unused,
+        "freed once its only (foreign) referrer is removed"
+    );
+    let after2 = usage_map(&m.pub_candidates_excluding(&RemovalSet::new(["alpha::other"])));
+    assert_eq!(after2["alpha::measured"], PubUsage::CrossCrate);
+}
+
+/// Import surgery sees a `use` of a removed item even from a config that
+/// never extracted the defining crate (`target_identity`'s foreign branch).
+#[test]
+fn dangling_imports_resolve_foreign_config() {
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "measured"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    let bench = frag(
+        "lookup",
+        vec![],
+        vec![import_edge(
+            &["lookup"],
+            &["alpha", "measured"],
+            "K_PLAIN",
+            false,
+            300,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default]),
+        ("benches", vec![bench]),
+    ]);
+    let dangling = m.dangling_imports(&RemovalSet::new(["alpha::measured"]));
+    assert_eq!(dangling.len(), 1, "the foreign-config import must dangle");
+    assert_eq!(dangling[0].elem.lo, 300);
+}
+
 /// `def_for_edge` (the import-surgery substrate) resolves a `use` in a `+test`
 /// unit naming a sibling's plain def, so removing that def surfaces the import
 /// as dangling. (Here the target's `+test` fragment is in the tests config, so

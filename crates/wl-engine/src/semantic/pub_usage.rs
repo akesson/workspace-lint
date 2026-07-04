@@ -15,7 +15,8 @@ use std::collections::BTreeMap;
 
 use wl_ir::Span;
 
-use super::assembly::{Assembly, CANDIDATE_KINDS, Category, DegreeView, Reach, RemovalSet};
+use super::assembly::{Assembly, CANDIDATE_KINDS, Category, Reach};
+use super::removal::{DegreeView, RemovalSet};
 
 /// How a candidate is used, unioned across every extracted config. Mirrors the
 /// syn lint's `Usage` vocabulary, plus the dispatch/export class the rustc
@@ -119,6 +120,14 @@ fn compute_impl(
 ) -> Vec<PubCandidate> {
     let (_, primary) = &configs[0];
     let members = &primary.crates;
+    let prebuilt: Vec<DegreeView>;
+    let views: &[DegreeView] = match overlay_views {
+        Some(vs) => vs,
+        None => {
+            prebuilt = configs.iter().map(|(_, a)| a.degree_view()).collect();
+            &prebuilt
+        }
+    };
 
     // Union fold across configs, keyed by the cross-config identity. Def
     // display fields (spans, kind, category) come from the first config that
@@ -127,14 +136,7 @@ fn compute_impl(
     let mut display: BTreeMap<String, (&Assembly, String)> = BTreeMap::new();
 
     for (ci, (_, assembly)) in configs.iter().enumerate() {
-        let prebuilt;
-        let view: &DegreeView = match overlay_views {
-            Some(vs) => &vs[ci],
-            None => {
-                prebuilt = assembly.degree_view();
-                &prebuilt
-            }
-        };
+        let view = &views[ci];
         for (key, def) in &assembly.defs {
             if !def.public
                 || def.synthetic
@@ -168,6 +170,20 @@ fn compute_impl(
             display
                 .entry(def.path.clone())
                 .or_insert_with(|| (assembly, key.clone()));
+        }
+    }
+
+    // Foreign reach: a config that never extracted the defining crate at all
+    // (harness flag off) credits the identity directly — merged after the main
+    // fold so it only ever ORs into identities some config actually defines
+    // (a foreign-only identity has no display def and no candidate anyway).
+    for view in views {
+        for (id, fr) in view.foreign_reach {
+            if let Some(fold) = folds.get_mut(id.as_str()) {
+                fold.cross |= fr.cross;
+                fold.intra |= fr.intra;
+                fold.signature_exposed |= fr.signature_exposed;
+            }
         }
     }
 

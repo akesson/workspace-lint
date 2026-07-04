@@ -179,11 +179,19 @@ Two phases, forced by rustc's per-crate compilation model:
   **prune** stale fragments (renamed crates, older naming schemes) so they
   can't silently assemble forever.
 - **Phase 2 — assemble** (`wl-engine::semantic`): pure stable data work.
-  Within a config, cross-crate join on `DefPathHash` (`ItemFact::key` ↔
-  `RefEdge::to_key` — display paths are NOT stable across crates; build
-  fragments alone fall back to a display-path join, their Build-mode hash
-  generation never matching); across configs, union on `(crate, def_path)`
-  (the hash is NOT stable across configs — the two identities are duals). Derived indexes (reachability,
+  Cross-crate join on `DefPathHash` (`ItemFact::key` ↔ `RefEdge::to_key` —
+  display paths are NOT stable across crates), **global across configs**
+  (`join.rs`: the config dirs share one cargo target dir — one compilation
+  universe — so a `+test`/bench unit's edge to a dependency's *plain* rlib,
+  a generation cargo freshness leaves only in the primary dir, resolves by
+  exact hash and is translated onto the referring config's own def for that
+  identity; if the referring config never extracted the target crate at all —
+  `test`/`bench = false` targets — the reach is credited at identity level,
+  `ForeignReach`). Build fragments alone fall back to a display-path join,
+  their Build-mode hash generation never being extracted anywhere. Across
+  configs, verdicts union on the `(crate, def_path)` identity (hash and
+  identity are duals: the hash is exact within the universe, the identity
+  stable across re-extraction). Derived indexes (reachability,
   re-export chains, signature exposure, dispatch, dep matrix) live here, not
   in the extractor: the emit vocabulary stays minimal ground facts, every
   derivation testable on stable.
