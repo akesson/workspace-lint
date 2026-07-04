@@ -58,11 +58,20 @@ impl UnionVerdict {
             .collect();
 
         // Union of reached identities across ALL configs (any crate — a test
-        // crate referencing a member is real usage of that member).
+        // crate referencing a member is real usage of that member). Foreign
+        // reach counts too: a config that never extracted the defining crate
+        // (harness flag off) credits the identity directly.
         let mut used: BTreeSet<&str> = BTreeSet::new();
         for (_, cands) in &per {
             for (id, c) in cands {
                 if c.reached {
+                    used.insert(id.as_str());
+                }
+            }
+        }
+        for (_, asm) in configs {
+            for (id, fr) in &asm.foreign_reach {
+                if fr.reached() {
                     used.insert(id.as_str());
                 }
             }
@@ -93,16 +102,25 @@ impl UnionVerdict {
             })
             .collect();
 
-        // Retired: a primary-config lead used under another config.
+        // Retired: a primary-config lead used under another config (via its
+        // candidate reach or its foreign reach — index-aligned with `per`).
         let primary_cands = &per[0].1;
         let mut retired = Vec::new();
         for (id, c) in primary_cands {
             if members.contains(&c.krate) && !c.reached && used.contains(id.as_str()) {
                 let saved_by = per
                     .iter()
+                    .enumerate()
                     .skip(1)
-                    .find(|(_, cs)| cs.get(id).map(|x| x.reached).unwrap_or(false))
-                    .map(|(n, _)| (*n).to_string())
+                    .find(|(i, (_, cs))| {
+                        cs.get(id).map(|x| x.reached).unwrap_or(false)
+                            || configs[*i]
+                                .1
+                                .foreign_reach
+                                .get(id)
+                                .is_some_and(|fr| fr.reached())
+                    })
+                    .map(|(_, (n, _))| (*n).to_string())
                     .unwrap_or_else(|| "?".to_string());
                 retired.push(Retired {
                     id: id.clone(),

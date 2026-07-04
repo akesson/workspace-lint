@@ -1198,6 +1198,10 @@ mod engine_errors {
             config: "tests".into(),
             missing: vec!["demo+test.json".into()],
         };
-        insta::assert_snapshot!(e.to_string(), @r#"IR incomplete under config `tests`: fragments still missing after a forced re-lint: ["demo+test.json"]"#);
+        insta::assert_snapshot!(e.to_string(), @r#"
+        IR incomplete under config `tests`: fragments still missing after a forced re-lint: ["demo+test.json"]
+
+        hint: if this persists, delete `target/dylint` in the analyzed workspace to reset the engine's build cache
+        "#);
     }
 }

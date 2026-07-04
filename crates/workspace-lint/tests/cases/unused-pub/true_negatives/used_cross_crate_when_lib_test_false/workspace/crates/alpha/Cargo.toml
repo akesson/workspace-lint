@@ -1,0 +1,12 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+
+# The differentiator vs `used_cross_crate_from_test_mod`: with `test = false`
+# the `--tests` config does not build alpha as a test harness, so the tests IR
+# dir holds no `alpha` fragment at all — beta's test-mod reference can only be
+# credited through the engine's foreign-reach channel. (The completeness guard
+# must also not expect `alpha+test.json`: cargo will never build that unit.)
+[lib]
+test = false

@@ -5,10 +5,11 @@
 //! while `dylint::run` still returns Ok. A fresh crate's *existing* fragment
 //! is still valid (its inputs are unchanged), so the guard is a pure
 //! existence check against the fragment set a complete run must produce.
-//! Ported from the spike embed (`spike/embed/src/main.rs`), where the
-//! mechanism was verified: bumping the dylib mtime invalidates exactly the
-//! workspace members' lint units (dylint dep-info-tracks the dylib per
-//! primary-package unit) — registry deps stay fresh.
+//! Ported from the spike embed (`spike/embed/src/main.rs`). The re-lint
+//! force lever — invalidating exactly the workspace members' lint units,
+//! registry deps staying fresh — lives in the `relink` module: the dylib
+//! reaches dylint through an mtime-keyed path, so a mtime bump changes the
+//! `DYLINT_LIBS` value every member unit env-dep-tracks.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -21,7 +22,16 @@ use super::{EngineConfig, EngineError};
 pub(super) struct TargetSet {
     /// lib / bin / proc-macro targets: linted in every config.
     compile_units: BTreeSet<String>,
+    /// The subset of `compile_units` that `--tests` builds as cfg(test)
+    /// harnesses — targets with the manifest `test` flag on (the default).
+    /// A `[lib] test = false` lib compiles under `--tests` only in plain
+    /// mode (as a dependency), which is cargo-fresh from the default config —
+    /// expecting its `+test` fragment would force a futile re-lint and then
+    /// hard-error every run.
+    harnessed: BTreeSet<String>,
     /// Integration-test targets: compiled (and linted) only under `--tests`.
+    /// Also gated on the `test` flag — `test = false` opts a target out of
+    /// `--tests` entirely.
     test_targets: BTreeSet<String>,
     /// `<pkg>@build` stems for members with a build script — keyed by
     /// *package* name (every build script's target is `build-script-build`).
@@ -99,6 +109,7 @@ impl TargetSet {
 
         let mut set = Self {
             compile_units: BTreeSet::new(),
+            harnessed: BTreeSet::new(),
             test_targets: BTreeSet::new(),
             build_units: BTreeSet::new(),
         };
@@ -114,6 +125,9 @@ impl TargetSet {
                     match k.to_string().as_str() {
                         "lib" | "rlib" | "dylib" | "cdylib" | "staticlib" | "proc-macro" => {
                             set.compile_units.insert(name.clone());
+                            if t.test {
+                                set.harnessed.insert(name.clone());
+                            }
                         }
                         // Bins carry the extractor's `@bin` infix: a package's
                         // bin may share the lib's crate name (`src/lib.rs` +
@@ -121,8 +135,11 @@ impl TargetSet {
                         // collide on one fragment filename.
                         "bin" => {
                             set.compile_units.insert(format!("{name}@bin"));
+                            if t.test {
+                                set.harnessed.insert(format!("{name}@bin"));
+                            }
                         }
-                        "test" => {
+                        "test" if t.test => {
                             set.test_targets.insert(name.clone());
                         }
                         // The extractor keys build fragments on the PACKAGE
@@ -145,11 +162,15 @@ impl TargetSet {
     /// compiled under `--tests` (unit-test harnesses of lib/bin/proc-macro AND
     /// integration tests, all with `sess.opts.test` — a bin's harness keeps
     /// the `@bin` infix, since the sibling lib harness shares its crate name).
+    /// Only `harnessed` targets flip to `+test`: `--tests` selects by the
+    /// manifest `test` flag, so a `test = false` target never compiles in
+    /// test mode (its cross-crate uses are still credited — the assembler's
+    /// foreign-reach channel covers configs that lack the defining crate).
     pub(super) fn expected_fragments(&self, cargo_args: &[String]) -> BTreeSet<String> {
         let tests = cargo_args.iter().any(|a| a == "--tests");
         let mut expected = BTreeSet::new();
         if tests {
-            for name in self.compile_units.iter().chain(&self.test_targets) {
+            for name in self.harnessed.iter().chain(&self.test_targets) {
                 expected.insert(format!("{name}+test.json"));
             }
         } else {
@@ -195,30 +216,6 @@ pub(super) fn missing_build_fragments(
         .filter(|name| !dirs.iter().any(|d| d.join(name).exists()))
         .cloned()
         .collect()
-}
-
-/// Force the next `dylint::run` to re-lint every workspace member by bumping
-/// the lint dylib's mtime (dylint fingerprints the dylib into each
-/// primary-package unit's dep-info).
-///
-/// The dylib is shared across concurrent workspace-lint processes (one cache
-/// per binary version), so the handle must not conflict with a simultaneous
-/// `LoadLibraryExW`/`dlopen` in another process's driver. On Windows a
-/// write-class handle (`append`) makes that load fail with a sharing
-/// violation; `FILE_WRITE_ATTRIBUTES`-only access is sufficient for
-/// `set_modified` and invisible to the loader. Unix has no such conflict.
-pub(super) fn force_relint(dylib: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    let f = {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-        std::fs::OpenOptions::new()
-            .access_mode(FILE_WRITE_ATTRIBUTES)
-            .open(dylib)?
-    };
-    #[cfg(not(windows))]
-    let f = std::fs::OpenOptions::new().append(true).open(dylib)?;
-    f.set_modified(std::time::SystemTime::now())
 }
 
 #[cfg(test)]
@@ -345,6 +342,27 @@ mod tests {
             TargetSet::discover(&repo_root(), &[], &cfg)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    /// A `test = false` target is expected under the default config but never
+    /// under `--tests` (cargo won't build its harness — expecting it would
+    /// force a futile re-lint, then hard-error).
+    #[test]
+    fn unharnessed_targets_not_expected_under_tests() {
+        let set = TargetSet {
+            compile_units: ["alpha".to_string(), "beta".to_string()].into(),
+            harnessed: ["beta".to_string()].into(), // alpha: [lib] test = false
+            test_targets: BTreeSet::new(),
+            build_units: BTreeSet::new(),
+        };
+        let default = set.expected_fragments(&[]);
+        assert!(default.contains("alpha.json") && default.contains("beta.json"));
+        let tests = set.expected_fragments(&["--tests".to_string()]);
+        assert_eq!(
+            tests.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["beta+test.json"],
+            "only the harnessed unit flips to +test"
         );
     }
 

@@ -1,21 +1,27 @@
 //! Phase 2: the semantic model — plain stable code over the extracted IR.
 //!
 //! Assembles per-config [`wl_ir::IrFragment`] sets into the workspace-global
-//! view the semantic lints query: within each config a cross-crate join on
-//! `DefPathHash`, across configs a union on the `(crate, def_path)` identity
-//! (SPIKE §7 — neither key is stable on both axes, hence the two levels).
-//! Verdict-producing queries return data; rendering belongs to the lints.
+//! view the semantic lints query: a cross-crate join on `DefPathHash` that is
+//! **global across configs** (the config dirs share one cargo target dir, so a
+//! hash names the same def everywhere — see the `join` module), then a
+//! union on the `(crate, def_path)` identity to reduce the config matrix to a
+//! verdict (SPIKE §7 — the hash is stable across configs, the identity across
+//! crates, hence the two levels). Verdict-producing queries return data;
+//! rendering belongs to the lints.
 
 mod assembly;
 mod deps;
+mod join;
 mod meta;
 mod pub_usage;
+mod removal;
 mod union;
 
-pub use assembly::{Assembly, Category, DefInfo, Reach, RemovalSet, ResolvedRef};
+pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
 pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage};
+pub use removal::RemovalSet;
 pub use union::{Lead, Retired, UnionVerdict};
 
 use std::path::Path;
@@ -100,10 +106,14 @@ impl SemanticModel {
             !configs.is_empty(),
             "SemanticModel::assemble needs at least the primary config"
         );
+        // The global hash join: one index over ALL configs' defs, shared by
+        // every per-config assembly so a `+test`/bench/integration edge can
+        // resolve a target extracted only into another config's dir.
+        let ids = join::IdentityIndex::build(&configs);
         Ok(Self {
             configs: configs
                 .into_iter()
-                .map(|(id, frags)| (id, Assembly::build(frags)))
+                .map(|(id, frags)| (id, Assembly::build(frags, std::sync::Arc::clone(&ids))))
                 .collect(),
             meta,
         })
@@ -167,8 +177,8 @@ impl SemanticModel {
                         continue;
                     }
                     let blocked = e.decl_span.as_ref().is_some_and(|d| d.from_expansion);
-                    if blocked && let Some(def) = asm.def_for_edge(e) {
-                        out.insert(def.path.clone());
+                    if blocked && let Some(id) = asm.target_identity(e) {
+                        out.insert(id.to_string());
                     }
                 }
             }
@@ -194,10 +204,10 @@ impl SemanticModel {
                     let (Some(decl), Some(elem)) = (&e.decl_span, &e.elem_span) else {
                         continue;
                     };
-                    let Some(def) = asm.def_for_edge(e) else {
+                    let Some(id) = asm.target_identity(e) else {
                         continue;
                     };
-                    if !removed.contains_id(&def.path) {
+                    if !removed.contains_id(id) {
                         continue;
                     }
                     if !seen.insert((decl.file.clone(), decl.lo, elem.lo)) {
