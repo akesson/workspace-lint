@@ -2749,6 +2749,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "wl-lints"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fs-err",
+ "globset",
+ "ignore",
+ "insta",
+ "regex",
+ "serde",
+ "shell-words",
+ "strip-ansi-escapes",
+ "syn",
+ "tempfile",
+ "tokei",
+ "toml 1.1.2+spec-1.1.0",
+ "wl-diagnostic",
+ "wl-engine",
+]
+
+[[package]]
 name = "workspace-lint"
 version = "0.1.0"
 dependencies = [
@@ -2764,14 +2785,13 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "shell-words",
  "strip-ansi-escapes",
  "syn",
  "tempfile",
- "tokei",
  "toml 1.1.2+spec-1.1.0",
  "wl-diagnostic",
  "wl-engine",
+ "wl-lints",
 ]
 
 [[package]]

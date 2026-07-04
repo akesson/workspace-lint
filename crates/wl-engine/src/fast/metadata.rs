@@ -310,6 +310,7 @@ mod tests {
                 "wl-diagnostic",
                 "wl-engine",
                 "wl-ir",
+                "wl-lints",
                 "workspace-lint",
                 "workspace-lint-marker",
             ]

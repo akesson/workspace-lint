@@ -3,24 +3,22 @@ mod config;
 mod directives;
 mod expand;
 mod fix;
-mod git;
 mod init;
-mod lints;
 mod messages;
 mod provision;
+mod registry;
 mod suggest;
 mod suppress;
-mod util;
 
 use clap::Parser;
 use std::collections::HashSet;
 use std::io;
 
 use cli::{CheckRule, Cli, Commands};
-use lints::{LintContext, LintId};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::render::{Format, render};
 use wl_engine::fast::FastModel;
+use wl_lints::{LintContext, LintId, git, util};
 
 fn main() {
     let cli = Cli::parse();
@@ -116,7 +114,7 @@ fn main() {
             // rendered here, so drop them.
             let (config, _) = config::load();
             if let Some(ref fc) = config.freshness {
-                lints::freshness::mark_done(fc);
+                wl_lints::freshness::mark_done(fc);
             }
         }
         Some(Commands::Check { rule }) => {
@@ -372,7 +370,8 @@ fn run_unused_pub_cascade(
 
     let global = config.unused_pub.clone().unwrap_or_default();
     let per_crate = config.unused_pub_overrides();
-    let result = lints::unused_pub::cascade::run(&global, &per_crate, fast, semantic, &suppressed);
+    let result =
+        wl_lints::unused_pub::cascade::run(&global, &per_crate, fast, semantic, &suppressed);
 
     // The cascade output is the authoritative unused-pub picture — swap it in
     // for the plain-check findings, then add the dangling-`use` deletions.
@@ -396,7 +395,7 @@ fn run_all(
     Option<wl_engine::SemanticModel>,
     HashSet<LintId>,
 ) {
-    let mut registry = lints::registry(config);
+    let mut registry = registry::registry(config);
     // `--fast-only` runs only the build-free lints: a semantic lint is
     // *skipped* — not invoked without its model (its `check` rightly demands
     // one) and not silently degraded to a weaker analysis.

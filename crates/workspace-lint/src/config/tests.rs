@@ -1,5 +1,6 @@
 use super::*;
-use crate::lints::unused_pub::KindFilter;
+use wl_lints::config::GlobPattern;
+use wl_lints::unused_pub::KindFilter;
 
 fn parse(toml: &str) -> Config {
     toml::from_str(toml).expect("config should parse")
@@ -10,8 +11,18 @@ fn audit_of(toml: &str) -> Vec<Diagnostic> {
     audit::audit(toml, ".workspace-lint.toml", &config)
 }
 
-fn globs(patterns: &[GlobPattern]) -> Vec<&str> {
-    patterns.iter().map(|g| g.as_str()).collect()
+/// Assert a parsed glob list matches `expected`, in order. Compares through
+/// `GlobPattern`'s public `PartialEq<&str>` (its raw-text accessor is
+/// crate-private to `wl-lints`).
+fn assert_globs(patterns: &[GlobPattern], expected: &[&str]) {
+    assert_eq!(
+        patterns.len(),
+        expected.len(),
+        "glob count mismatch: {patterns:?} vs {expected:?}"
+    );
+    for (p, e) in patterns.iter().zip(expected) {
+        assert!(*p == *e, "glob mismatch: {p:?} != {e:?}");
+    }
 }
 
 #[test]
@@ -76,11 +87,11 @@ exclude-paths = ["generated/**"]
 
     let cs_rules = config.crate_size.unwrap().rules;
     assert_eq!(cs_rules[0].glob, "crates/*");
-    assert_eq!(globs(cs_rules[0].include.as_ref().unwrap()), ["*.rs"]);
+    assert_globs(cs_rules[0].include.as_ref().unwrap(), &["*.rs"]);
 
     let fr_rules = config.freshness.unwrap().rules;
     assert_eq!(fr_rules[0].glob, "**/CLAUDE.md");
-    assert_eq!(globs(&fr_rules[0].depends_on.0), ["**/*.rs"]);
+    assert_globs(&fr_rules[0].depends_on.0, &["**/*.rs"]);
 
     let ex_rules = config.expand.unwrap().rules;
     assert_eq!(ex_rules[0].command, &["mise", "tasks"]);
@@ -93,7 +104,7 @@ exclude-paths = ["generated/**"]
 
     let up = config.unused_pub.unwrap();
     assert_eq!(up.exclude_crates, &["api", "sdk"]);
-    assert_eq!(globs(&up.allowlist), ["*Error", "main"]);
+    assert_globs(&up.allowlist, &["*Error", "main"]);
     assert_eq!(up.kinds, vec![KindFilter::Function, KindFilter::Struct]);
 }
 
@@ -172,13 +183,13 @@ fn freshness_depends_on_accepts_string_or_list() {
         .freshness
         .unwrap()
         .rules;
-    assert_eq!(globs(&one[0].depends_on.0), ["**/*.rs"]);
+    assert_globs(&one[0].depends_on.0, &["**/*.rs"]);
 
     let many = parse("[[freshness.rules]]\nglob = \"a\"\ndepends-on = [\"x\", \"y\"]\n")
         .freshness
         .unwrap()
         .rules;
-    assert_eq!(globs(&many[0].depends_on.0), ["x", "y"]);
+    assert_globs(&many[0].depends_on.0, &["x", "y"]);
 }
 
 #[test]

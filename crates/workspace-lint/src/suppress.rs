@@ -9,8 +9,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::directives::{Directive, DirectiveKind, DirectiveOrigin};
-use crate::lints::LintId;
 use wl_diagnostic::{Diagnostic, SilenceAnchor, builder::at_line};
+use wl_lints::LintId;
 
 pub(crate) const STALE_EXPECT_LINT: &str = LintId::StaleExpect.id();
 

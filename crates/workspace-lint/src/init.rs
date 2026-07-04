@@ -8,7 +8,7 @@
 //! looks for it (`config::load` reads `.workspace-lint.toml` from the cwd), and
 //! keeps `workspace-lint`'s config genuinely workspace-scoped.
 //!
-//! Every guard fails loudly through [`crate::util::fail`] (exit code 2, the
+//! Every guard fails loudly through [`wl_lints::util::fail`] (exit code 2, the
 //! operational-error code) — a misdirected `init` is an operator mistake, not a
 //! lint finding.
 
@@ -18,7 +18,7 @@ use fs_err as fs;
 use wl_engine::fast::FastModel;
 
 use crate::config;
-use crate::util;
+use wl_lints::util;
 
 /// The commented starter written by `init`. Everything except the single
 /// `[lints]` escalation is commented out, so the emitted file audits clean:
