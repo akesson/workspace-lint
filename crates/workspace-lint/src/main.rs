@@ -4,6 +4,11 @@ mod directives;
 mod expand;
 mod fix;
 mod init;
+// The message-surface catalog is a test fixture (every distinct diagnostic next
+// to its rendered output) with no production caller — `scenarios()` is consumed
+// only by the snapshot tests and the registry-coverage guard. Gate it out of
+// shipped builds so it doesn't count against `crate-size`.
+#[cfg(test)]
 mod messages;
 mod provision;
 mod registry;

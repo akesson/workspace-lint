@@ -18,11 +18,23 @@ options. This file covers the internal architecture.
 
 ## Workspace layout
 
-Four crates under `crates/` (`members = ["crates/*"]`), plus the excluded
+Six crates under `crates/` (`members = ["crates/*"]`), plus the excluded
 nightly `extractor/` package:
 
-- **`workspace-lint`** — the binary. All lints, config loading, the diagnostic
-  pipeline, and renderers. This is where ~all work happens.
+- **`workspace-lint`** — the binary. The diagnostic pipeline, config loading,
+  and `registry.rs` (the composition root that binds enabled lints to a loaded
+  `Config`). Thin now that lints and the diagnostic types have moved out.
+- **`wl-lints`** — every lint implementation (one `<name>/` dir each), the
+  `Lint` trait / `LintId` / `LintContext` vocabulary, the config *primitives*
+  (`config.rs`: `LintLevel` / `GlobPattern` / …) and per-lint `*Config` structs,
+  and the shared `git` (the `GIT_*`-scrub chokepoint) and `util` helpers. The
+  binary's `Config` re-exports the per-lint config structs so the TOML schema is
+  unchanged; the *registry* stays in the binary (it's where lint impls meet
+  config loading).
+- **`wl-diagnostic`** — the diagnostic vocabulary (`Diagnostic` / `Span` /
+  `SilenceAnchor` / `Suggestion`), the `DiagnosticBuilder`, and the three
+  renderers (`human` / `json` / `github`). A leaf crate consumed by both
+  `wl-lints` and the binary pipeline.
 - **`wl-engine`** — stable library: both tiers' data layer. `fast/` is the
   build-free `FastModel` (cargo metadata, manifests, a lean syntactic module
   walker); `semantic/` assembles extracted IR fragments into the
@@ -36,6 +48,12 @@ nightly `extractor/` package:
   nightly Dylint `LateLintPass` that walks `TyCtxt` and emits IR fragments.
   Ships vendored inside the binary; its gate is the probe suite in
   `extractor/tests`.
+
+Strict layering: `workspace-lint` → `wl-lints` → {`wl-diagnostic`, `wl-engine`}.
+`wl-lints` and `wl-diagnostic` are `publish = false`, so the deny-level
+`unused-pub` dogfood judges their `pub` APIs workspace-internally (which is why
+a helper reachable only from another crate's *test* code needs an allowlist
+entry — see the `render_one` note in `.workspace-lint.toml`).
 
 `workspace-lint-marker` and `wl-ir` are published; CI gates them with
 `cargo publish --dry-run`.
@@ -89,10 +107,11 @@ Always review the diff before committing a blessed change.
    `Cargo.toml`. Loading both is an error. Returns `(Config, Vec<Diagnostic>)`:
    the second is config-validation findings (`config` / `unknown-lint`) from
    `config::audit`, merged into the stream. The `config` module is a directory:
-   `config/mod.rs` (schema + loading), `config/types.rs` (`LintLevel`,
-   `LintLevels`, `GlobPattern`, `Globs`), `config/audit.rs` (the raw-TOML key
-   audit).
-2. **`run_all`** → `lints::registry(config)` builds `Vec<Box<dyn Lint>>`. A lint
+   `config/mod.rs` (schema + loading), `config/audit.rs` (the raw-TOML key
+   audit); the strongly-typed primitives (`LintLevel`, `LintLevels`,
+   `GlobPattern`, `Globs`) live in `wl_lints::config` and are re-exported by
+   `config/mod.rs`.
+2. **`run_all`** → `registry::registry(config)` builds `Vec<Box<dyn Lint>>`. A lint
    is enabled iff its effective level (`[lints]` override → `default` → built-in
    `warn`) isn't `allow`, and — for `LintId::requires_config` (policy) lints —
    its config table is present. Structural lints are on by default. Each lint
@@ -120,16 +139,19 @@ Always review the diff before committing a blessed change.
 6. **`report_and_exit`** — `human` → stderr, `json`/`github` → stdout. Exit 1 iff
    any surviving diagnostic is `Deny`.
 
-The `Lint` trait, `Requirements`, `LintContext`, and `registry` all live in
-`lints/mod.rs`. `LintId` (the canonical list of every lint name, its
-`workspace-lint::<kebab>` id, and short name) lives in `lints/lints_id.rs` and is
-the single source of truth tying lints to config keys, snapshots, and fixtures.
+The `Lint` trait, `Requirements`, and `LintContext` live in `wl-lints`'s
+`lib.rs`; `registry` (+ `level_on`) is the binary's `registry.rs`, the
+composition root that binds them to a `Config`. `LintId` (the canonical list of
+every lint name, its `workspace-lint::<kebab>` id, and short name) lives in
+`wl-lints/src/lints_id.rs` and is the single source of truth tying lints to
+config keys, snapshots, and fixtures.
 
-`Diagnostic` (`diagnostic/mod.rs`) mirrors rustc's `DiagnosticSpan` so JSON output
-is consumable by rust-analyzer unmodified. Build diagnostics with the grain-matched
-helpers in `diagnostic/builder.rs` (`at_workspace` / `at_crate` / `at_file` /
-`at_line`) so the `SilenceAnchor` — where the "silence with:" hint points — is
-correct. Renderers are in `diagnostic/render/{human,json,github}.rs`.
+`Diagnostic` (the `wl-diagnostic` crate) mirrors rustc's `DiagnosticSpan` so JSON
+output is consumable by rust-analyzer unmodified. Build diagnostics with the
+grain-matched helpers in `wl_diagnostic::builder` (`at_workspace` / `at_crate` /
+`at_file` / `at_line`) so the `SilenceAnchor` — where the "silence with:" hint
+points — is correct. Renderers are in `wl_diagnostic::render::{human,json,github}`;
+`render_one` renders a single diagnostic (used by the message-surface tests).
 
 ## The engine (semantic tier)
 
@@ -182,17 +204,21 @@ keys). Verified cadence: a ~10-week jump needed exactly one edit.
 
 ## Adding a new lint
 
-(From `lints/mod.rs` and `lints/lints_id.rs` — keep these in sync or tests fail.)
+(Spans `wl-lints` and the binary — keep them in sync or tests fail. The trait
+lives in `wl-lints/src/lib.rs`, the registry in the binary's `registry.rs`.)
 
-1. Create `lints/<name>/{mod.rs,config.rs,tests.rs}` implementing `Lint`.
-2. Add a `LintId` variant + wire its `id()`/`short()` arms and `LintId::ALL`
-   (kept alphabetical-by-id; asserted by a test).
-3. Add one line in `lints::registry` gating it on its config block.
-4. Add a scenario in `messages::scenarios()` (the registry-coverage test asserts
-   every `LintId::ALL` variant has one).
+1. Create `crates/wl-lints/src/<name>/{mod.rs,config.rs,tests.rs}` implementing
+   `Lint`. Export the lint struct + its constructor and (if any) `*Config` `pub`
+   so the registry can reach them; keep internal helpers `pub(crate)`.
+2. Add a `LintId` variant in `wl-lints/src/lints_id.rs` + wire its `id()`/`short()`
+   arms and `LintId::ALL` (kept alphabetical-by-id; asserted by a test).
+3. Add one line in the binary's `registry::registry` gating it on its config
+   block (and re-export its `*Config` from `config/mod.rs` if it has one).
+4. Add a scenario in the binary's `messages::scenarios()` (the registry-coverage
+   test in `registry.rs` asserts every `LintId::ALL` variant has one).
 5. Add fixtures under `tests/cases/<name>/`, and — if the lint emits a
    `MachineApplicable` structural fix — a `tests/fixtures/fix__<name>/` dir and
-   list the variant in `FIXTURABLE_LINTS`.
+   list the variant in `FIXTURABLE_LINTS` (in the binary's `registry.rs`).
 
 ## Testing model
 
@@ -241,8 +267,8 @@ root `.workspace-lint.toml` carries explanatory comments for every `ignore` /
   (paste the directive the diagnostic prints).
 - All workspace crates use `workspace = true` deps (enforced by the
   `centralized-deps` lint, on for this repo).
-- **Never `Command::new("git")` directly** — spawn git via `git::command` (src)
-  or `common::git` (tests). Both scrub the repo-pinning `GIT_*` environment:
+- **Never `Command::new("git")` directly** — spawn git via `wl_lints::git::command`
+  (src) or `common::git` (tests). Both scrub the repo-pinning `GIT_*` environment:
   git exports an absolute `GIT_DIR` to hooks in linked worktrees, and an
   unscrubbed child git operates on the *invoker's* repository (this once let
   the test suite, run by the pre-push hook, commit fixture trees onto the

@@ -48,14 +48,15 @@ glob = "crates/*"
 # TOML fixtures) is skipped, and so is test code — the `tests/`/`benches/`/
 # `examples/` dev-target trees and in-file `#[cfg(test)]` items / `#[test]`
 # fns (a crate-size budget is about maintained product code, not the test
-# mass that dwarfs it — see `lints::shipped_source`, shared with `file-size`).
-# workspace-lint is the binding crate (all lints, config, pipeline, renderers
-# live here), so it grows as lints do: the one-pass unused-pub auto-delete
-# cascade (cascade.rs + surgery.rs + the deletion-planning surface) took it just
-# over 6k. Bumped to 6300 with modest headroom — still tight enough to trip on
-# the next feature. If it keeps climbing, `lints/` is the natural extraction
-# candidate (a `wl-lints` crate), not a higher ceiling.
-max-code-lines = 6300
+# mass that dwarfs it — see `wl_lints::shipped_source`, shared with `file-size`).
+# The binary used to be the binding crate and grew past 6k as lints piled up;
+# it was split into `wl-lints` (every lint impl) and `wl-diagnostic` (the
+# diagnostic vocabulary + renderers), leaving the binary as just the pipeline +
+# config + registry (~2.1k). `wl-engine` (~3.1k) is now the largest crate, so
+# the ceiling sits at 3500 — enough headroom for a modest addition anywhere,
+# tight enough that the next real growth spurt trips it and prompts the next
+# extraction rather than a higher ceiling.
+max-code-lines = 3500
 
 # The rustc engine's config matrix (one `cargo check` compile per entry; the
 # verdict unions across them). `--tests` is load-bearing for `unused-deps`:
