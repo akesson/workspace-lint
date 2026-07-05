@@ -710,6 +710,50 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         }
     }
 
+    // 20. Proc-macro entry points carry the `proc_macro` export attr — the
+    //     assembler's `Reach::ExportRoot` substrate (LeaveDates validation
+    //     2026-07-05: without the root, the synthesized `_DECLS` registration
+    //     edge reads as intra-crate usage and `--fix` narrows the entry fn, a
+    //     hard compile error). Second dylint run, own lint-target probe crate
+    //     (`proc-macro = true` can't share ../expansion's lib).
+    {
+        std::env::set_current_dir(manifest_dir.join("tests/probes/procmacro"))?;
+        dylint::run(&opts)?;
+        let frag_path = ir_out.path().join("probe_procmacro.json");
+        let pm: IrFragment = serde_json::from_str(&std::fs::read_to_string(&frag_path)?)?;
+        pm.check_schema().map_err(anyhow::Error::msg)?;
+        let attr_of = |name: &str| -> Option<bool> {
+            pm.items
+                .iter()
+                .find(|it| it.path.last().is_some_and(|s| s == name))
+                .map(|it| it.attrs.iter().any(|a| a == "proc_macro"))
+        };
+        for entry in ["probe_derive", "probe_bang", "probe_attr"] {
+            match attr_of(entry) {
+                Some(true) => {
+                    ck.passes += 1;
+                    println!("PASS  {entry}: attrs carry proc_macro");
+                }
+                Some(false) => ck
+                    .failures
+                    .push(format!("[{entry}] attrs must carry proc_macro")),
+                None => ck.failures.push(format!("[{entry}] item not found")),
+            }
+        }
+        // Negative control: a plain (private — proc-macro crates can export
+        // nothing else) fn must not carry the attr. Absent-from-fragment is
+        // fine too; wrongly attributed is the only failure.
+        match attr_of("plain_helper") {
+            Some(true) => ck
+                .failures
+                .push("[plain_helper] must NOT carry proc_macro (per-item root)".into()),
+            _ => {
+                ck.passes += 1;
+                println!("PASS  plain_helper: no proc_macro attr");
+            }
+        }
+    }
+
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());
     anyhow::ensure!(
         ck.failures.is_empty(),

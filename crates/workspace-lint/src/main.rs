@@ -101,12 +101,12 @@ fn main() {
             apply_suppression(fast.as_ref(), ran, &mut diagnostics);
             apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
             if cli.fix {
-                fix::run(&diagnostics);
-                if trimmed_imports {
-                    eprintln!(
-                        "note: `--fix` trimmed `use` imports left dangling by deleted items; \
-                         run `cargo fmt` to tidy the result"
-                    );
+                let summary = fix::run(&diagnostics);
+                // Any applied fix can leave fmt-relevant residue (a
+                // `pub`→`pub(crate)` rewrite alone can push a line past the
+                // width limit), deletions especially so.
+                if trimmed_imports || summary.deleted_any || summary.modified > 0 {
+                    eprintln!("note: run `cargo fmt` to tidy the fixed files");
                 }
             }
             report_and_exit(diagnostics, format);

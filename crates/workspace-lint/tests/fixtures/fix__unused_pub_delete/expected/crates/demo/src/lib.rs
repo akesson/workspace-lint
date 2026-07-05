@@ -6,4 +6,3 @@ use inner::{kept};
 pub fn public_entry() -> u32 {
     kept()
 }
-

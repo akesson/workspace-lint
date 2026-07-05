@@ -29,10 +29,20 @@ use fs_err as fs;
 
 use wl_diagnostic::{Applicability, Diagnostic, Suggestion};
 
-/// Apply machine-applicable structural suggestions to disk. Returns the count
-/// of files modified. The `byte_end > byte_start` filter excludes the
-/// degenerate zero-width silence-hint suggestion from structural fixes.
-pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
+/// What a `--fix` pass did — the caller keys follow-up hints on it.
+#[derive(Default)]
+pub(crate) struct FixSummary {
+    /// Files actually rewritten.
+    pub(crate) modified: usize,
+    /// Some applied suggestion was a deletion (empty replacement) — the
+    /// residue may be valid-but-unformatted, worth a `cargo fmt` hint.
+    pub(crate) deleted_any: bool,
+}
+
+/// Apply machine-applicable structural suggestions to disk. The
+/// `byte_end > byte_start` filter excludes the degenerate zero-width
+/// silence-hint suggestion from structural fixes.
+pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
     let mut structural_count = 0usize;
     let mut candidates: Vec<Suggestion> = Vec::new();
     for d in diagnostics {
@@ -48,7 +58,7 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
 
     if candidates.is_empty() {
         eprintln!("workspace-lint --fix: no structural fixes available");
-        return 0;
+        return FixSummary::default();
     }
 
     eprintln!(
@@ -61,10 +71,25 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
         by_file.entry(s.span.file.clone()).or_default().push(s);
     }
 
-    let mut modified_count = 0;
+    // Never write into a file git does not track: gitignored/generated files
+    // (a build.rs output reached via `include!`) have no `git checkout`
+    // backup, and untracked sources are someone's work in progress. Outside a
+    // repo (fixture tempdirs) everything counts as writable.
+    let skipped = drop_untracked_files(&mut by_file);
+    if skipped > 0 {
+        eprintln!(
+            "workspace-lint --fix: skipped {skipped} fix{} in untracked or gitignored files",
+            if skipped == 1 { "" } else { "es" }
+        );
+    }
+
+    let mut summary = FixSummary::default();
     for (path, suggestions) in by_file {
         match apply_to_file(&path, &suggestions) {
-            Ok(true) => modified_count += 1,
+            Ok(true) => {
+                summary.modified += 1;
+                summary.deleted_any |= suggestions.iter().any(|s| s.replacement.is_empty());
+            }
             Ok(false) => {}
             Err(e) => {
                 eprintln!("warning: failed to fix {}: {e}", path.display());
@@ -72,15 +97,65 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> usize {
         }
     }
 
-    if modified_count > 0 {
+    if summary.modified > 0 {
         eprintln!(
-            "workspace-lint --fix: modified {modified_count} file{}",
-            if modified_count == 1 { "" } else { "s" }
+            "workspace-lint --fix: modified {} file{}",
+            summary.modified,
+            if summary.modified == 1 { "" } else { "s" }
         );
     } else {
         eprintln!("workspace-lint --fix: no files modified");
     }
-    modified_count
+    summary
+}
+
+/// Remove entries for files git does not track (one batched `git ls-files`
+/// over the whole set), returning the number of suggestions dropped. Outside
+/// a git repository — fixture tempdirs — nothing is dropped, mirroring
+/// `ensure_clean_for_fix`'s not-a-repo posture.
+fn drop_untracked_files(by_file: &mut BTreeMap<std::path::PathBuf, Vec<Suggestion>>) -> usize {
+    if by_file.is_empty() {
+        return 0;
+    }
+    let repo_probe = wl_lints::git::command(std::path::Path::new("."))
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output();
+    match repo_probe {
+        Ok(out) if out.status.success() => {}
+        _ => return 0, // not a repo (or no git) — apply everything
+    }
+    let mut ls = wl_lints::git::command(std::path::Path::new("."));
+    ls.args(["ls-files", "-z", "--"]);
+    for path in by_file.keys() {
+        ls.arg(path);
+    }
+    let Ok(out) = ls.output() else { return 0 };
+    if !out.status.success() {
+        return 0;
+    }
+    // Lint anchors are mixed relative/absolute and `ls-files` prints
+    // cwd-relative paths — normalize both sides to absolute (no symlink
+    // resolution; both sides resolve against the same cwd) before comparing.
+    let tracked: std::collections::BTreeSet<std::path::PathBuf> =
+        String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .filter_map(|p| std::path::absolute(p).ok())
+            .collect();
+    let mut skipped = 0usize;
+    by_file.retain(|path, suggestions| {
+        // Skip only on positive evidence — an unnormalizable path stays in.
+        let untracked = std::path::absolute(path).is_ok_and(|abs| !tracked.contains(&abs));
+        if untracked {
+            skipped += suggestions.len();
+            eprintln!(
+                "workspace-lint --fix: skipping `{}` (untracked or gitignored — no git backup)",
+                path.display()
+            );
+        }
+        !untracked
+    });
+    skipped
 }
 
 fn apply_to_file(
@@ -99,27 +174,39 @@ fn apply_to_file(
         return Ok(false);
     }
 
-    // Sort by byte offset descending so earlier offsets stay valid as we
-    // mutate from the back. `line_start` is the tiebreaker for deterministic
-    // behavior when two suggestions share a byte_start.
-    let mut ordered: Vec<&Suggestion> = to_apply;
-    ordered.sort_by(|a, b| {
-        b.span
-            .byte_start
-            .cmp(&a.span.byte_start)
-            .then(b.span.line_start.cmp(&a.span.line_start))
-    });
+    // Pure deletions may legitimately overlap (adjacent deleted items share
+    // their blank-separator run, an EOF deletion reaches back over it) —
+    // union them into disjoint ranges. Rewrites must not overlap anything:
+    // if a lint ever emits such a pair, the right call is to fix the lint,
+    // not silently corrupt the file.
+    let mut deletions: Vec<(usize, usize)> = Vec::new();
+    let mut rewrites: Vec<&Suggestion> = Vec::new();
+    for s in to_apply {
+        if s.replacement.is_empty() {
+            deletions.push((s.span.byte_start as usize, s.span.byte_end as usize));
+        } else {
+            rewrites.push(s);
+        }
+    }
+    deletions.sort_unstable();
+    let deletions =
+        deletions
+            .into_iter()
+            .fold(Vec::<(usize, usize)>::new(), |mut merged, (lo, hi)| {
+                match merged.last_mut() {
+                    Some((_, mhi)) if lo <= *mhi => *mhi = (*mhi).max(hi),
+                    _ => merged.push((lo, hi)),
+                }
+                merged
+            });
 
-    // Reject overlapping replacement ranges — the apply order assumes
-    // non-overlapping mutations from the tail of the file forward. If a
-    // lint ever emits overlapping suggestions for one file, the right
-    // call is to fix the lint, not silently corrupt the file.
-    let mut replacements: Vec<(usize, usize)> = ordered
+    let mut ranges: Vec<(usize, usize)> = rewrites
         .iter()
         .map(|s| (s.span.byte_start as usize, s.span.byte_end as usize))
+        .chain(deletions.iter().copied())
         .collect();
-    replacements.sort();
-    for w in replacements.windows(2) {
+    ranges.sort_unstable();
+    for w in ranges.windows(2) {
         let (a, b) = (&w[0], &w[1]);
         if a.1 > b.0 {
             return Err(format!(
@@ -132,12 +219,35 @@ fn apply_to_file(
         }
     }
 
+    // Apply by descending byte offset so earlier offsets stay valid as we
+    // mutate from the back. `line_start` is the tiebreaker for deterministic
+    // behavior when two rewrites share a byte_start.
+    let mut ops: Vec<(usize, usize, Cow<'_, str>)> = rewrites
+        .iter()
+        .map(|s| {
+            (
+                s.span.byte_start as usize,
+                s.span.byte_end as usize,
+                normalize_eol(&s.replacement, eol),
+            )
+        })
+        .chain(deletions.iter().map(|&(lo, hi)| (lo, hi, Cow::from(""))))
+        .collect();
+    ops.sort_by_key(|op| std::cmp::Reverse(op.0));
     let mut fixed = source.clone();
-    for s in ordered {
-        let replacement = normalize_eol(&s.replacement, eol);
-        let start = s.span.byte_start as usize;
-        let end = s.span.byte_end as usize;
-        fixed.replace_range(start..end, &replacement);
+    for (start, end, replacement) in ops {
+        fixed.replace_range(start..end, replacement.as_ref());
+    }
+
+    // A deletion run that reached EOF turns the blank separator above it into
+    // trailing blank lines — fmt-dirty residue only visible here, after
+    // adjacent deletions merged. Trim to exactly one final newline.
+    if !deletions.is_empty() && !fixed.is_empty() {
+        let body = fixed.trim_end_matches(['\n', '\r', ' ', '\t']);
+        if !body.is_empty() && body.len() + eol.len() < fixed.len() {
+            fixed.truncate(body.len());
+            fixed.push_str(eol);
+        }
     }
 
     if fixed != source {
@@ -222,7 +332,7 @@ mod tests {
 
     #[test]
     fn fix_with_no_diagnostics_is_a_noop() {
-        let modified = run(&[]);
+        let modified = run(&[]).modified;
         assert_eq!(modified, 0);
     }
 
@@ -238,7 +348,7 @@ mod tests {
 
         let d = at_file("workspace-lint::file-size", "file too big", p.clone()).build();
 
-        let modified = run(&[d]);
+        let modified = run(&[d]).modified;
         assert_eq!(modified, 0);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
     }
@@ -325,7 +435,7 @@ mod tests {
             byte_end: 10,
         };
         let d = structural_diag(&p, span, "pub(crate)");
-        let modified = run(std::slice::from_ref(&d));
+        let modified = run(std::slice::from_ref(&d)).modified;
         assert_eq!(modified, 0, "no-op fix should not touch the file");
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
@@ -358,6 +468,34 @@ mod tests {
         b.span.byte_end = 8;
         let err = apply_to_file(&p, &[a, b]).unwrap_err();
         assert!(err.to_string().contains("overlapping"));
+    }
+
+    #[test]
+    fn fix_merges_overlapping_deletions() {
+        // Adjacent deleted items legitimately share their blank-separator run
+        // (an EOF deletion reaches back over it) — pure deletions union
+        // instead of refusing. A rewrite overlapping a deletion still refuses.
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("lib.rs");
+        std::fs::write(&p, "fn a() {}\n\nfn b() {}\n").unwrap();
+        let del = |lo: u32, hi: u32| Suggestion {
+            span: Span {
+                file: p.clone(),
+                line_start: 1,
+                line_end: 1,
+                col_start: 1,
+                col_end: 1,
+                byte_start: lo,
+                byte_end: hi,
+            },
+            message: "delete".into(),
+            replacement: String::new(),
+            applicability: Applicability::MachineApplicable,
+            original: None,
+        };
+        // fn a + separator [0,11) overlaps separator + fn b [10,21).
+        assert!(apply_to_file(&p, &[del(0, 11), del(10, 21)]).unwrap());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "");
     }
 
     #[test]

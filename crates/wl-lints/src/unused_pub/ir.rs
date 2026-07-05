@@ -334,6 +334,22 @@ fn apply_structural_fix(
     let builder = build_tighten_suggestion(cand, file, verdict)
         .into_iter()
         .fold(builder, |b, s| b.suggestion(s));
+    // `pub(crate)` compiles but trips `dead_code` on the plain build — say
+    // why `--fix` won't apply it.
+    let builder = if verdict == PubVerdict::IntraCrate && cand.test_only {
+        builder.note(
+            "every use-site is test/bench cfg-gated: `pub(crate)` would trip `dead_code` \
+             on the non-test build — gate the item `#[cfg(test)]`, move it into test code, \
+             or delete it",
+        )
+    } else if verdict == PubVerdict::IntraCrate && cand.dead_members {
+        builder.note(
+            "this trait declares members nothing calls: `pub(crate)` un-exempts it from \
+             `dead_code`, which will flag them — remove the unused members first",
+        )
+    } else {
+        builder
+    };
     (builder, false)
 }
 
@@ -353,6 +369,14 @@ fn build_tighten_suggestion(
         return None; // the token lives in a macro definition — not editable
     }
     let applicability = match verdict {
+        // Reached only from test/bench cfg-gated code, or a trait with
+        // never-called members: the narrow compiles but trips `dead_code` on
+        // the plain build — shown, never machine-applied (the data-common
+        // `is_days`/`fraction` and ChronoExt clusters from the 2026-07-05
+        // LeaveDates validation).
+        PubVerdict::IntraCrate if cand.test_only || cand.dead_members => {
+            Applicability::MaybeIncorrect
+        }
         PubVerdict::IntraCrate => Applicability::MachineApplicable,
         PubVerdict::Unused => Applicability::MaybeIncorrect,
     };
@@ -420,6 +444,14 @@ pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcom
     if start >= end {
         return DeleteOutcome::Unavailable;
     }
+    // The extractor's `full_span` covers doc comments but NOT every attribute:
+    // `#[cfg(...)]` is stripped from HIR in the unit where the item survives,
+    // and an attribute-macro (`#[tracing::instrument]`) is consumed before HIR
+    // exists — deleting the span as-is orphans those attrs onto whatever
+    // follows (a syntax error before `}`, a silent re-target otherwise). Outer
+    // attributes bind to the item below them, so extending the deletion
+    // backward over contiguous `#[…]` blocks (and doc lines) is always sound.
+    start = extend_over_preceding_attrs(&source, start);
     // Eat the item's leading indentation (horizontal whitespace back to the
     // line start) so a deleted nested item leaves no orphaned indent. Safe: it
     // only crosses spaces/tabs, never a newline or another item's text.
@@ -433,6 +465,13 @@ pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcom
     if end < source.len() && source.as_bytes()[end] == b'\n' {
         end += 1;
     }
+    // Also consume whole blank lines below the item: the item's surrounding
+    // blank separators would otherwise stack into fmt-dirty residue
+    // (`cargo fmt --check` fails on the fixed tree). The blank ABOVE survives
+    // as the neighbors' separator; when a deletion run reaches EOF, the
+    // applier trims the then-trailing blank lines (only it can see the merged
+    // picture across adjacent deletions).
+    end = eat_blank_lines(&source, end);
     let applicability = if is_file_clean_in_git(file) {
         Applicability::MachineApplicable
     } else {
@@ -464,6 +503,113 @@ pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcom
                 file.display()
             ),
         )
+    }
+}
+
+/// Extend a deletion's start backward over the contiguous stack of outer
+/// attributes (`#[…]`, multiline OK, string literals skipped) and doc-comment
+/// lines directly above it. Inner attributes (`#![…]`) bind to the enclosing
+/// module, never the item — the scanner refuses them. On any ambiguity the
+/// scanner stops: the fallback is today's behavior (attr left in place).
+pub(super) fn extend_over_preceding_attrs(source: &str, mut start: usize) -> usize {
+    let bytes = source.as_bytes();
+    loop {
+        // Probe backward over whitespace to the last non-ws char.
+        let mut i = start;
+        while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i == 0 {
+            return start;
+        }
+        if bytes[i - 1] == b']' {
+            match match_attr_backward(source, i) {
+                Some(hash) => {
+                    start = hash;
+                    continue;
+                }
+                None => return start,
+            }
+        }
+        // A doc-comment line directly above (`///` — sugar for a doc attr;
+        // usually already inside `full_span`, but a macro-consumed item can
+        // lose it too). Consume the whole line and keep walking.
+        let line_start = source[..i].rfind('\n').map_or(0, |p| p + 1);
+        if source[line_start..i].trim_start().starts_with("///") {
+            start = line_start;
+            continue;
+        }
+        return start;
+    }
+}
+
+/// Backward-match one attribute block: `end` is the index just past a `]`;
+/// returns the index of the opening `#` when the bracket run balances to an
+/// OUTER `#[`. String literals are skipped (a `]` or `[` inside `"…"` is
+/// text), with backslash-parity escape handling. `None` on inner attrs
+/// (`#![`), unbalanced brackets, or any construct the scanner doesn't model
+/// (e.g. raw strings) — never a wrong match, just no extension.
+fn match_attr_backward(source: &str, end: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    let mut i = end;
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b'"' => {
+                // Skip backward to the opening quote (an unescaped `"`).
+                loop {
+                    i = source[..i].rfind('"')?;
+                    let backslashes = source[..i]
+                        .bytes()
+                        .rev()
+                        .take_while(|&b| b == b'\\')
+                        .count();
+                    if backslashes % 2 == 0 {
+                        break;
+                    }
+                }
+                // A raw string's hash fence (`r#"…"#`) would leave a stray
+                // `#` here and the bracket math can't be trusted — bail.
+                if i > 0 && bytes[i - 1] == b'#' {
+                    return None;
+                }
+            }
+            b']' => depth += 1,
+            b'[' => {
+                depth -= 1;
+                if depth == 0 {
+                    return match i.checked_sub(1) {
+                        // `#![…]` is an inner attribute — not the item's.
+                        Some(h) if bytes[h] == b'!' => None,
+                        Some(h) if bytes[h] == b'#' => Some(h),
+                        _ => None,
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Consume whole whitespace-only lines starting at `end` (which sits at a
+/// line start after the deletion ate its trailing newline).
+pub(super) fn eat_blank_lines(source: &str, end: usize) -> usize {
+    eat_blank_lines_bytes(source.as_bytes(), end)
+}
+
+pub(super) fn eat_blank_lines_bytes(bytes: &[u8], mut end: usize) -> usize {
+    loop {
+        let mut i = end;
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r') {
+            i += 1;
+        }
+        if i < bytes.len() && bytes[i] == b'\n' {
+            end = i + 1;
+        } else {
+            return end;
+        }
     }
 }
 

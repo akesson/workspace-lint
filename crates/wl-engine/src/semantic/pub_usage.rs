@@ -72,6 +72,15 @@ pub struct PubCandidate {
     /// Target of a `use`/`pub use` under some config: tightening or deleting
     /// can break the re-export (E0364/E0365) — must stay `pub`.
     pub reexport_target: bool,
+    /// `IntraCrate` reached ONLY outside the primary config (`--tests` /
+    /// `--benches` cfg-gated code): `pub(crate)` still compiles, but the item
+    /// is dead code on the plain build — `-D warnings` gates reject the
+    /// narrowed tree, so the fix must not be machine-applied.
+    pub test_only: bool,
+    /// A trait with a member no primary-config edge reaches: narrowing
+    /// un-exempts the trait from rustc `dead_code`, which then flags the
+    /// never-called members — same `-D warnings` consequence, same gating.
+    pub dead_members: bool,
 }
 
 /// The per-config fold of one identity: OR-accumulated over every
@@ -81,10 +90,15 @@ pub struct PubCandidate {
 struct Fold {
     cross: bool,
     intra: bool,
+    /// Intra reach seen in the PRIMARY config (matrix index 0) — its absence
+    /// while `intra` holds means every use-site is test/bench cfg-gated.
+    intra_primary: bool,
     dispatch: bool,
     signature_exposed: bool,
     externally_reachable: bool,
     reexport_target: bool,
+    /// See [`PubCandidate::dead_members`] — primary-config judgement.
+    dead_members: bool,
 }
 
 pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
@@ -160,6 +174,12 @@ fn compute_impl(
             let intra_only = view.intra_degree.get(key).copied().unwrap_or(0);
             fold.cross |= workspace_wide > intra_only;
             fold.intra |= intra_only > 0;
+            if ci == 0 {
+                fold.intra_primary |= intra_only > 0;
+                if def.kind == "trait" {
+                    fold.dead_members |= assembly.has_unreached_trait_member(key, view.in_degree);
+                }
+            }
             fold.dispatch |= matches!(
                 assembly.reach_with(key, def, view.in_degree),
                 Reach::ExternalDispatch | Reach::InternalDispatch | Reach::ExportRoot
@@ -213,6 +233,8 @@ fn compute_impl(
                 signature_exposed: fold.signature_exposed,
                 externally_reachable: fold.externally_reachable,
                 reexport_target: fold.reexport_target,
+                test_only: fold.intra && !fold.intra_primary && !fold.cross,
+                dead_members: fold.dead_members,
                 id,
             }
         })

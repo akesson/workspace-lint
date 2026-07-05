@@ -849,6 +849,17 @@ fn export_attrs(tcx: TyCtxt<'_>, local_id: LocalDefId) -> Vec<String> {
     if find_attr!(attrs, AttributeKind::Used { .. }) {
         out.push("used".to_string());
     }
+    // Proc-macro entry points are export roots too: their visibility is
+    // forced (`functions tagged with #[proc_macro_derive] must be pub`) and
+    // their only in-crate referrer is the compiler-synthesized `_DECLS`
+    // registration — without this root the unused-pub verdict reads that
+    // phantom edge as "only used inside the crate" and narrows illegally.
+    if find_attr!(attrs, AttributeKind::ProcMacro(_))
+        || find_attr!(attrs, AttributeKind::ProcMacroDerive { .. })
+        || find_attr!(attrs, AttributeKind::ProcMacroAttribute(_))
+    {
+        out.push("proc_macro".to_string());
+    }
     out
 }
 

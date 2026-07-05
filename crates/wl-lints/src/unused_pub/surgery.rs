@@ -82,7 +82,11 @@ fn deletion_range(src: &[u8], d: &DanglingImport) -> Option<Range> {
     let (lo, hi) = if braced {
         leaf_range(src, elo, ehi)
     } else {
-        (dlo, eat_trailing_newline(src, dhi))
+        // Whole statement: the newline plus any following blank lines — the
+        // same fmt-clean policy as item deletion (a `use` block at the top of
+        // a file must not leave a leading blank line behind).
+        let hi = eat_trailing_newline(src, dhi);
+        (dlo, super::ir::eat_blank_lines_bytes(src, hi))
     };
     Some((lo as u32, hi as u32, d.decl.line))
 }

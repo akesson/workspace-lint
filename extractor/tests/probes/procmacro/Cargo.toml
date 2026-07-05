@@ -1,0 +1,18 @@
+# Proc-macro-entry probe (LeaveDates validation 2026-07-05): the three entry
+# attributes must land in `ItemFact::attrs` as `proc_macro` so the assembler
+# roots them (`Reach::ExportRoot`). Without the root, the compiler-synthesized
+# `_DECLS` registration edge reads as "only used inside the crate" and the
+# unused-pub `--fix` narrows the entry fn — a hard compile error
+# ("functions tagged with `#[proc_macro_derive]` must be `pub`").
+# A *lint target*, not a workspace member — own empty `[workspace]` table,
+# same pattern as ../expansion. Assertions live in extractor/tests/probe.rs.
+[package]
+name = "probe-procmacro"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+proc-macro = true
+
+[workspace]

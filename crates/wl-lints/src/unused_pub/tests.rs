@@ -78,6 +78,102 @@ fn ir_outcome(o: &ir::DeleteOutcome) -> &'static str {
     }
 }
 
+// --- deletion surface: preceding attributes (LeaveDates 2026-07-05) ---
+// `full_span` can't see cfg-stripped or macro-consumed attributes; the
+// deletion extends over them lexically or they'd be orphaned onto the next
+// item (syntax error before `}`, silent re-target otherwise).
+
+/// Extension measured from the item-start offset within `src` (the `pub`).
+fn extended_start(src: &str) -> usize {
+    ir::extend_over_preceding_attrs(src, src.find("pub fn").unwrap())
+}
+
+#[test]
+fn attr_extension_single_attr() {
+    let src = "#[cfg(test)]\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), 0);
+}
+
+#[test]
+fn attr_extension_stacked_attrs_and_blank_line() {
+    let src = "fn keep() {}\n\n#[inline]\n#[cfg(test)]\n\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), src.find("#[inline]").unwrap());
+}
+
+#[test]
+fn attr_extension_multiline_attr() {
+    let src = "fn keep() {}\n#[tracing::instrument(\n    level = \"debug\",\n    skip(x),\n)]\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), src.find("#[tracing").unwrap());
+}
+
+#[test]
+fn attr_extension_bracket_inside_string() {
+    let src = "fn keep() {}\n#[doc = \"has ] and [ inside\"]\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), src.find("#[doc").unwrap());
+}
+
+#[test]
+fn attr_extension_escaped_quote_inside_string() {
+    let src = "fn keep() {}\n#[doc = \"say \\\"]hi\\\"\"]\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), src.find("#[doc").unwrap());
+}
+
+#[test]
+fn attr_extension_never_consumes_inner_attr() {
+    let src = "#![allow(dead_code)]\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), src.find("pub fn").unwrap());
+}
+
+#[test]
+fn attr_extension_stops_at_plain_code() {
+    let src = "fn keep() {}\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), src.find("pub fn").unwrap());
+}
+
+#[test]
+fn attr_extension_consumes_doc_lines() {
+    let src = "fn keep() {}\n/// docs\n#[cfg(test)]\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), src.find("/// docs").unwrap());
+}
+
+#[test]
+fn attr_extension_bails_on_raw_string_fence() {
+    // `r#"…"#` breaks the backward bracket math — no extension, attr stays
+    // (today's behavior; never a wrong wider deletion).
+    let src = "fn keep() {}\n#[doc = r#\"raw ] here\"#]\npub fn gone() {}\n";
+    assert_eq!(extended_start(src), src.find("pub fn").unwrap());
+}
+
+#[test]
+fn blank_line_eating_below_item() {
+    let src = "fn a() {}\n\n\nfn b() {}\n";
+    // `end` sits after "fn a() {}\n" — the two blank lines are consumed.
+    assert_eq!(ir::eat_blank_lines(src, 10), 12);
+    // No blanks → unchanged.
+    assert_eq!(ir::eat_blank_lines("fn a() {}\nfn b() {}\n", 10), 10);
+}
+
+#[test]
+fn ir_delete_suggestion_includes_attrs_and_blank_lines() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("lib.rs");
+    let src = "fn keep() {}\n\n#[cfg(test)]\npub fn gone() {}\n\nfn tail() {}\n";
+    std::fs::write(&file, src).unwrap();
+    let lo = src.find("pub fn").unwrap() as u32;
+    let hi = (src.find("gone() {}").unwrap() + "gone() {}".len()) as u32;
+    match ir::delete_suggestion(&file, &ir_span(lo, hi)) {
+        ir::DeleteOutcome::Skip(s, _) => {
+            let mut fixed = src.to_string();
+            fixed.replace_range(s.span.byte_start as usize..s.span.byte_end as usize, "");
+            assert_eq!(
+                fixed, "fn keep() {}\n\nfn tail() {}\n",
+                "attr deleted with the item, one blank separator survives"
+            );
+        }
+        other => panic!("expected Skip, got {}", ir_outcome(&other)),
+    }
+}
+
 #[test]
 fn ir_pick_deletion_fix_gates() {
     let dir = TempDir::new().unwrap();

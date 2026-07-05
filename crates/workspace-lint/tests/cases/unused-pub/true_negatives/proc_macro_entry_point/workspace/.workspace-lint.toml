@@ -1,0 +1,15 @@
+[unused-pub]
+# A `#[proc_macro_derive]` entry point nobody in the workspace invokes. Its
+# visibility is forced ("functions tagged with #[proc_macro_derive] must be
+# pub") and its only in-crate referrer is the compiler-synthesized `_DECLS`
+# registration — the entry must be an export root, or that phantom edge reads
+# as "only used inside the crate" and --fix narrows it into a hard compile
+# error. (LeaveDates 2026-07-05: `derive_into_hashmap` — the fixed tree could
+# not even be re-linted.)
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["default"]

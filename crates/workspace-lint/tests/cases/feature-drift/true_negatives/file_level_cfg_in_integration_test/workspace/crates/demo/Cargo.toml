@@ -1,0 +1,14 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `integration-test` is gated ONLY by the integration test's file-level inner
+# attribute (`#![cfg(feature = "integration-test")]` in tests/it.rs) — the
+# canonical way to feature-gate a whole test target. feature-drift must
+# harvest `syn::File::attrs`, not just item-level attributes.
+integration-test = []
