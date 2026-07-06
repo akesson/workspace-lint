@@ -32,6 +32,8 @@ fn item(path: &[&str], key: &str, kind: &str, parent: Option<&str>) -> ItemFact 
         full_span: span(),
         vis_span: None,
         attrs: Vec::new(),
+        self_kind: None,
+        self_copy: None,
     }
 }
 
@@ -51,6 +53,7 @@ fn edge_ext(from: &[&str], to: &[&str], to_key: &str, import: bool, external: bo
         external,
         import,
         in_signature: false,
+        receiver_resolved: false,
         // The fixture edges model `pub use` re-exports wherever import=true.
         reexport: import,
         glob: false,
@@ -1251,7 +1254,7 @@ fn unextracted_generation_reexport_path_resolves_by_suffix() {
 fn dangling_imports_second_order_last_user_removed() {
     let lib = frag(
         "lib",
-        vec![item(&["lib", "Theme"], "K_THM", "struct", Some("mod"))],
+        vec![item(&["lib", "Theme"], "K_THEME", "struct", Some("mod"))],
         vec![],
     );
     let app = frag(
@@ -1261,8 +1264,8 @@ fn dangling_imports_second_order_last_user_removed() {
             item(&["app", "keeper"], "K_KPR", "fn", Some("mod")),
         ],
         vec![
-            import_edge(&["app"], &["lib", "Theme"], "K_THM", true, 100),
-            edge(&["app", "user"], &["lib", "Theme"], "K_THM", false),
+            import_edge(&["app"], &["lib", "Theme"], "K_THEME", true, 100),
+            edge(&["app", "user"], &["lib", "Theme"], "K_THEME", false),
         ],
     );
     let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
@@ -1276,9 +1279,12 @@ fn dangling_imports_second_order_last_user_removed() {
 
     // A surviving user keeps the import alive…
     let mut app_kept = app.clone();
-    app_kept
-        .references
-        .push(edge(&["app", "keeper"], &["lib", "Theme"], "K_THM", false));
+    app_kept.references.push(edge(
+        &["app", "keeper"],
+        &["lib", "Theme"],
+        "K_THEME",
+        false,
+    ));
     let m = model(vec![("default", vec![lib.clone(), app_kept])]);
     assert!(
         m.dangling_imports(&RemovalSet::new(["app::user"]))
@@ -1296,7 +1302,13 @@ fn dangling_imports_second_order_last_user_removed() {
             item(&["app", "keeper"], "K_KPR", "fn", Some("mod")),
         ],
         // The import is pre-dangling: no real edge to Theme at all.
-        vec![import_edge(&["app"], &["lib", "Theme"], "K_THM", true, 100)],
+        vec![import_edge(
+            &["app"],
+            &["lib", "Theme"],
+            "K_THEME",
+            true,
+            100,
+        )],
     );
     let m = model(vec![("default", vec![lib, app_unrelated])]);
     assert!(
@@ -1342,6 +1354,675 @@ fn dangling_imports_second_order_trait_method_users() {
         m.dangling_imports(&RemovalSet::new(["app::other"]))
             .is_empty(),
         "caller survives — the member call keeps the trait import (prefix credit)"
+    );
+}
+
+/// Second-order dangling through inherent-impl members: `def_path_str` renders
+/// a remote impl at the *impl's* module, so a `Type::method` call never shares
+/// the imported type's path prefix — the member's `self_type` key is the only
+/// linkage back to the import (the missed-workspace-trim class from the
+/// 2026-07-05 LeaveDates validation).
+#[test]
+fn dangling_imports_second_order_inherent_method_via_self_type() {
+    let mut member = item(
+        // The impl lives in `lib::styles`, not under `lib::Widget` — the
+        // rendering that defeats a pure path-prefix probe.
+        &["lib", "styles", "<impl lib::Widget>", "paint"],
+        "K_M",
+        "fn",
+        Some("impl"),
+    );
+    member.self_type = Some("K_TY".into());
+    let lib = frag(
+        "lib",
+        vec![
+            item(&["lib", "Widget"], "K_TY", "struct", Some("mod")),
+            member,
+        ],
+        vec![],
+    );
+    let app = frag(
+        "app",
+        vec![item(&["app", "user"], "K_USR", "fn", Some("mod"))],
+        vec![
+            import_edge(&["app"], &["lib", "Widget"], "K_TY", false, 100),
+            edge(
+                &["app", "user"],
+                &["lib", "styles", "<impl lib::Widget>", "paint"],
+                "K_M",
+                false,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
+    assert_eq!(
+        m.dangling_imports(&RemovalSet::new(["app::user"])).len(),
+        1,
+        "the only `Widget::paint` caller is removed — the type import dangles"
+    );
+    assert!(
+        m.dangling_imports(&RemovalSet::new(["app::other"]))
+            .is_empty(),
+        "caller survives — the member call credits the self type"
+    );
+}
+
+/// Second-order dangling of an OUT-OF-WORKSPACE import (`use anyhow::Context`):
+/// the target resolves to no def and no identity, so it is tracked under its
+/// display-path pseudo-identity — dangling exactly when every real reference
+/// under that path came from a removed def, kept by any survivor, and never
+/// flagged without a removed user (causality gate).
+#[test]
+fn dangling_imports_second_order_external_target() {
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_USR", "fn", Some("mod")),
+            item(&["app", "keeper"], "K_KPR", "fn", Some("mod")),
+        ],
+        vec![
+            import_edge(&["app"], &["anyhow", "Context"], "K_EXT_TR", false, 200),
+            // A method call lands on the trait member — the prefix probe
+            // covers it, exactly like workspace trait imports.
+            edge(
+                &["app", "user"],
+                &["anyhow", "Context", "context"],
+                "K_EXT_M",
+                false,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![app.clone()])]);
+    assert_eq!(
+        m.dangling_imports(&RemovalSet::new(["app::user"])).len(),
+        1,
+        "the only `.context()` caller is removed — the external import dangles"
+    );
+
+    let mut app_kept = app.clone();
+    app_kept.references.push(edge(
+        &["app", "keeper"],
+        &["anyhow", "Context", "context"],
+        "K_EXT_M",
+        false,
+    ));
+    let m = model(vec![("default", vec![app_kept])]);
+    assert!(
+        m.dangling_imports(&RemovalSet::new(["app::user"]))
+            .is_empty(),
+        "keeper still calls `.context()` — the import stays"
+    );
+
+    // Pre-existing unused external import + unrelated removal: not ours.
+    let app_pre = frag(
+        "app",
+        vec![item(&["app", "keeper"], "K_KPR", "fn", Some("mod"))],
+        vec![import_edge(
+            &["app"],
+            &["anyhow", "Context"],
+            "K_EXT_TR",
+            false,
+            200,
+        )],
+    );
+    let m = model(vec![("default", vec![app_pre])]);
+    assert!(
+        m.dangling_imports(&RemovalSet::new(["app::keeper"]))
+            .is_empty(),
+        "no removed user — the pre-existing unused import is the author's"
+    );
+}
+
+/// A same-crate `use super::*` glob for the fixtures below: references in
+/// `from`'s module may resolve through imports in module `to`.
+fn glob_edge(from: &[&str], to: &[&str]) -> RefEdge {
+    let mut e = edge(from, to, "K_NOJOIN", true);
+    e.glob = true;
+    e.reexport = false;
+    e
+}
+
+/// The second-order check is scoped to the importing **module**: rustc judges
+/// each `use` statement by its own module, so a nested `#[cfg(test)] mod`
+/// with its *own* explicit import of the name resolves there — its uses
+/// cannot keep the outer import alive (the `parse_f32` / `TimeView` residue
+/// classes from the 2026-07-06 delete-mode re-validation).
+#[test]
+fn dangling_imports_second_order_scoped_to_importing_module() {
+    let lib = frag(
+        "lib",
+        vec![item(&["lib", "Theme"], "K_THEME", "struct", Some("mod"))],
+        vec![],
+    );
+    // Outer import + removed user at the crate root; a nested `tests` module
+    // with its own import and a surviving user.
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_USR", "fn", Some("mod")),
+            item(&["app", "tests"], "K_MOD", "mod", Some("mod")),
+            item(&["app", "tests", "t"], "K_T", "fn", Some("mod")),
+        ],
+        vec![
+            import_edge(&["app"], &["lib", "Theme"], "K_THEME", true, 100),
+            import_edge(&["app", "tests"], &["lib", "Theme"], "K_THEME", true, 500),
+            edge(&["app", "user"], &["lib", "Theme"], "K_THEME", false),
+            edge(&["app", "tests", "t"], &["lib", "Theme"], "K_THEME", false),
+        ],
+    );
+    let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::user"]));
+    assert_eq!(
+        dangling.len(),
+        1,
+        "the test module resolves Theme through its own import — the outer one dangles"
+    );
+    assert_eq!(
+        dangling[0].elem.lo, 100,
+        "the OUTER leaf is the dangling one"
+    );
+
+    // Remove the test fn instead: the nested module's own import dangles,
+    // the outer import is kept by its surviving root user.
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::tests::t"]));
+    assert_eq!(dangling.len(), 1);
+    assert_eq!(
+        dangling[0].elem.lo, 500,
+        "the NESTED leaf is the dangling one"
+    );
+}
+
+/// `use super::*` bridges module scopes: a test module *without* its own
+/// import resolves the name through the parent's import, so its surviving
+/// uses must keep that import (deleting it would break `super::*`
+/// resolution) — and its removed uses must dangle it. An explicit own import
+/// beats the glob (rustc prefers the explicit binding), flipping both.
+#[test]
+fn dangling_imports_glob_reimport_bridges_module_scopes() {
+    let lib = frag(
+        "lib",
+        vec![item(&["lib", "Theme"], "K_THEME", "struct", Some("mod"))],
+        vec![],
+    );
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_USR", "fn", Some("mod")),
+            item(&["app", "tests"], "K_MOD", "mod", Some("mod")),
+            item(&["app", "tests", "t"], "K_T", "fn", Some("mod")),
+        ],
+        vec![
+            import_edge(&["app"], &["lib", "Theme"], "K_THEME", true, 100),
+            glob_edge(&["app", "tests"], &["app"]),
+            edge(&["app", "user"], &["lib", "Theme"], "K_THEME", false),
+            edge(&["app", "tests", "t"], &["lib", "Theme"], "K_THEME", false),
+        ],
+    );
+    let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
+    assert!(
+        m.dangling_imports(&RemovalSet::new(["app::user"]))
+            .is_empty(),
+        "the test fn reaches the outer import via `use super::*` — it stays"
+    );
+    assert_eq!(
+        m.dangling_imports(&RemovalSet::new(["app::user", "app::tests::t"]))
+            .len(),
+        1,
+        "both users (one via the glob) removed — the outer import dangles"
+    );
+
+    // Adding an explicit import in the test module re-routes its resolution:
+    // the glob no longer reaches the outer import, which dangles again.
+    let mut app_own = app.clone();
+    app_own.references.push(import_edge(
+        &["app", "tests"],
+        &["lib", "Theme"],
+        "K_THEME",
+        true,
+        500,
+    ));
+    let m = model(vec![("default", vec![lib, app_own])]);
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::user"]));
+    assert_eq!(
+        dangling.len(),
+        1,
+        "explicit beats glob — the test module's uses no longer shield the outer import"
+    );
+    assert_eq!(dangling[0].elem.lo, 100);
+}
+
+/// Span-less `in_signature` edges are lowered-type projections, not source
+/// name-resolutions: `static N: GlobalSignal<T>` normalizes through `Signal`
+/// without the source ever writing it, and rustc's `unused_imports` never
+/// sees such a "use" (the `Signal` residue class from the 2026-07-06
+/// delete-mode re-validation). They must not shield an import.
+#[test]
+fn dangling_imports_ignore_lowered_signature_edges() {
+    let lib = frag(
+        "lib",
+        vec![item(&["lib", "Signal"], "K_SIG", "struct", Some("mod"))],
+        vec![],
+    );
+    let mut sig_edge = edge(&["app", "NOTICES"], &["lib", "Signal"], "K_SIG", false);
+    sig_edge.in_signature = true;
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_USR", "fn", Some("mod")),
+            item(&["app", "NOTICES"], "K_NOT", "static", Some("mod")),
+        ],
+        vec![
+            import_edge(&["app"], &["lib", "Signal"], "K_SIG", true, 100),
+            edge(&["app", "user"], &["lib", "Signal"], "K_SIG", false),
+            sig_edge,
+        ],
+    );
+    let m = model(vec![("default", vec![lib, app])]);
+    assert_eq!(
+        m.dangling_imports(&RemovalSet::new(["app::user"])).len(),
+        1,
+        "the surviving lowered-signature edge is not a source use — the import dangles"
+    );
+}
+
+/// Receiver-based resolutions bypass imports: an inherent `.time()` call
+/// resolves from the receiver's type, never through `use …::TimeView;` — so
+/// a surviving method call must not shield the import once its written users
+/// are removed (the `TimeView` residue class from the 2026-07-06 delete-mode
+/// re-validation). A *written* `TimeView::assoc` path does shield; a *trait*
+/// method call shields its trait's import (the trait must be in scope).
+#[test]
+fn dangling_imports_inherent_method_calls_do_not_shield() {
+    // TimeView + an inherent method in the type's own module (renders under
+    // the type, so the prefix probe would match it without the flag).
+    let lib = frag(
+        "lib",
+        vec![
+            item(&["lib", "TimeView"], "K_TV", "struct", Some("mod")),
+            item(&["lib", "TimeView", "time"], "K_TM", "fn", Some("impl")),
+        ],
+        vec![],
+    );
+    let mut call = edge(
+        &["app", "keeper"],
+        &["lib", "TimeView", "time"],
+        "K_TM",
+        false,
+    );
+    call.receiver_resolved = true;
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_USR", "fn", Some("mod")),
+            item(&["app", "keeper"], "K_KPR", "fn", Some("mod")),
+        ],
+        vec![
+            import_edge(&["app"], &["lib", "TimeView"], "K_TV", true, 100),
+            // the written user (struct literal / `TimeView::assoc` path)
+            edge(&["app", "user"], &["lib", "TimeView"], "K_TV", false),
+            // the surviving `.time()` call
+            call.clone(),
+        ],
+    );
+    let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
+    assert_eq!(
+        m.dangling_imports(&RemovalSet::new(["app::user"])).len(),
+        1,
+        "keeper's `.time()` never resolved through the import — it dangles"
+    );
+
+    // The same edge as a WRITTEN `TimeView::time` path keeps the import.
+    let mut app_written = app.clone();
+    for e in &mut app_written.references {
+        e.receiver_resolved = false;
+    }
+    let m = model(vec![("default", vec![lib, app_written])]);
+    assert!(
+        m.dangling_imports(&RemovalSet::new(["app::user"]))
+            .is_empty(),
+        "a written `TimeView::time` path resolves through the import — it stays"
+    );
+}
+
+/// The trait-member exception to the receiver-resolution rule: `.shout()`
+/// only resolves with `use lib::StrExt;` in scope, so a surviving trait
+/// method call must keep the trait import even though it is receiver-based.
+#[test]
+fn dangling_imports_trait_method_calls_do_shield() {
+    let lib = frag(
+        "lib",
+        vec![
+            item(&["lib", "StrExt"], "K_TR", "trait", Some("mod")),
+            item(&["lib", "StrExt", "shout"], "K_M", "fn", Some("trait")),
+        ],
+        vec![],
+    );
+    let mut call = edge(
+        &["app", "keeper"],
+        &["lib", "StrExt", "shout"],
+        "K_M",
+        false,
+    );
+    call.receiver_resolved = true;
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_USR", "fn", Some("mod")),
+            item(&["app", "keeper"], "K_KPR", "fn", Some("mod")),
+        ],
+        vec![
+            import_edge(&["app"], &["lib", "StrExt"], "K_TR", true, 300),
+            edge(&["app", "user"], &["lib", "StrExt"], "K_TR", false),
+            call,
+        ],
+    );
+    let m = model(vec![("default", vec![lib, app])]);
+    assert!(
+        m.dangling_imports(&RemovalSet::new(["app::user"]))
+            .is_empty(),
+        "keeper's `.shout()` needs StrExt in scope — the trait import stays"
+    );
+}
+
+// --- the clippy-unmask guard (narrowing strips `avoid-breaking-exported-api`) ---
+
+fn method(
+    path: &[&str],
+    key: &str,
+    self_type: Option<&str>,
+    self_kind: &str,
+    self_copy: Option<bool>,
+) -> ItemFact {
+    let mut it = item(path, key, "fn", Some("impl"));
+    it.self_type = self_type.map(String::from);
+    it.self_kind = Some(self_kind.into());
+    it.self_copy = self_copy;
+    it
+}
+
+fn unmask_of(m: &SemanticModel, id: &str) -> Option<(String, String)> {
+    m.pub_candidates()
+        .into_iter()
+        .find(|c| c.id == id)
+        .unwrap_or_else(|| panic!("no candidate {id}"))
+        .narrow_unmask
+        .map(|u| (u.lint.to_string(), u.member))
+}
+
+/// `wrong_self_convention`: an `is_*` method taking `self` by value on a
+/// non-`Copy` type violates clippy's table — narrowing the type (or the
+/// method itself) would unmask it. On a `Copy` type, by-value `self`
+/// satisfies the reference slot and the guard stays quiet.
+#[test]
+fn narrow_unmask_replays_wrong_self_convention() {
+    let mk = |copy: bool| {
+        frag(
+            "alpha",
+            vec![
+                item(&["alpha", "Widget"], "K_W", "struct", Some("mod")),
+                method(
+                    &["alpha", "Widget", "is_open"],
+                    "K_IO",
+                    Some("K_W"),
+                    "value",
+                    Some(copy),
+                ),
+            ],
+            vec![],
+        )
+    };
+    let m = model(vec![("default", vec![mk(false)])]);
+    let hit = ("wrong_self_convention".to_string(), "is_open".to_string());
+    assert_eq!(unmask_of(&m, "alpha::Widget").as_ref(), Some(&hit));
+    assert_eq!(unmask_of(&m, "alpha::Widget::is_open").as_ref(), Some(&hit));
+
+    let m = model(vec![("default", vec![mk(true)])]);
+    assert_eq!(unmask_of(&m, "alpha::Widget"), None, "Copy satisfies is_*");
+
+    // A conforming method never trips the guard.
+    let ok = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "Widget"], "K_W", "struct", Some("mod")),
+            method(
+                &["alpha", "Widget", "is_open"],
+                "K_IO",
+                Some("K_W"),
+                "ref",
+                Some(false),
+            ),
+        ],
+        vec![],
+    );
+    let m = model(vec![("default", vec![ok])]);
+    assert_eq!(unmask_of(&m, "alpha::Widget"), None);
+}
+
+/// `len_without_is_empty`: a pub `len(&self)` with no `is_empty` sibling
+/// unmasks; adding the sibling clears it.
+#[test]
+fn narrow_unmask_replays_len_without_is_empty() {
+    let lenful = |with_is_empty: bool| {
+        let mut items = vec![
+            item(&["alpha", "List"], "K_L", "struct", Some("mod")),
+            method(
+                &["alpha", "List", "len"],
+                "K_LEN",
+                Some("K_L"),
+                "ref",
+                Some(false),
+            ),
+        ];
+        if with_is_empty {
+            items.push(method(
+                &["alpha", "List", "is_empty"],
+                "K_IE",
+                Some("K_L"),
+                "ref",
+                Some(false),
+            ));
+        }
+        frag("alpha", items, vec![])
+    };
+    let m = model(vec![("default", vec![lenful(false)])]);
+    assert_eq!(
+        unmask_of(&m, "alpha::List"),
+        Some(("len_without_is_empty".to_string(), "len".to_string()))
+    );
+    let m = model(vec![("default", vec![lenful(true)])]);
+    assert_eq!(unmask_of(&m, "alpha::List"), None);
+}
+
+/// Trait declarations guard through their members too: `to_*` on a trait item
+/// expects `&self` (the `Copy`-by-value row is inherent-only).
+#[test]
+fn narrow_unmask_covers_trait_decl_members() {
+    let mut to_px = item(&["alpha", "Px", "to_px"], "K_TP", "fn", Some("trait"));
+    to_px.self_kind = Some("value".into());
+    let tr = frag(
+        "alpha",
+        vec![item(&["alpha", "Px"], "K_T", "trait", Some("mod")), to_px],
+        vec![],
+    );
+    let m = model(vec![("default", vec![tr])]);
+    assert_eq!(
+        unmask_of(&m, "alpha::Px"),
+        Some(("wrong_self_convention".to_string(), "to_px".to_string()))
+    );
+}
+
+/// The dead-field narrow guard (the `CacheLock.path` case from the 2026-07-06
+/// re-validation): a type with a field no READ edge reaches gates its tighten
+/// — rustc `dead_code` exempts a `pub` type's fields but not a `pub(crate)`
+/// one's. A field read lifts the gate; underscore-prefixed fields are exempt
+/// like rustc exempts them.
+#[test]
+fn narrowing_type_with_unread_field_is_gated() {
+    let mk = |field_name: &str, with_read: bool| {
+        let field_path = ["alpha", "CacheLock", field_name];
+        let mut refs = vec![edge(
+            &["alpha", "user"],
+            &["alpha", "CacheLock"],
+            "K_S",
+            false,
+        )];
+        if with_read {
+            refs.push(edge(&["alpha", "user"], &field_path, "K_F", false));
+        }
+        frag(
+            "alpha",
+            vec![
+                item(&["alpha", "CacheLock"], "K_S", "struct", Some("mod")),
+                item(&field_path, "K_F", "field", Some("other")),
+                item(&["alpha", "user"], "K_U", "fn", Some("mod")),
+            ],
+            refs,
+        )
+    };
+    let dead_fields = |m: &SemanticModel| {
+        m.pub_candidates()
+            .into_iter()
+            .find(|c| c.id == "alpha::CacheLock")
+            .unwrap()
+            .dead_fields
+    };
+    let m = model(vec![("default", vec![mk("path", false)])]);
+    assert!(dead_fields(&m), "write-only field gates the narrow");
+    let m = model(vec![("default", vec![mk("path", true)])]);
+    assert!(!dead_fields(&m), "a read lifts the gate");
+    let m = model(vec![("default", vec![mk("_file", false)])]);
+    assert!(!dead_fields(&m), "underscore fields are dead_code-exempt");
+}
+
+// --- private collateral: the second-order dead code a cascade strands ---
+
+fn private_item(path: &[&str], key: &str, kind: &str, parent: Option<&str>) -> ItemFact {
+    let mut it = item(path, key, kind, parent);
+    it.visibility = Visibility::Restricted("crate".into());
+    it
+}
+
+/// A private helper whose only caller is removed is a collateral orphan —
+/// but a surviving caller, or no prior caller at all (causality: pre-existing
+/// dead code is the author's, likely `#[allow]`ed or cfg-shifted), keeps it out.
+#[test]
+fn private_orphans_causality_gated() {
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_U", "fn", Some("mod")),
+            item(&["app", "keeper"], "K_K", "fn", Some("mod")),
+            private_item(&["app", "helper"], "K_H", "fn", Some("mod")),
+        ],
+        vec![edge(&["app", "user"], &["app", "helper"], "K_H", false)],
+    );
+    let m = model(vec![("default", vec![app.clone()])]);
+    let orphans = m.private_orphans(&RemovalSet::new(["app::user"]));
+    assert_eq!(
+        orphans.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+        ["app::helper"],
+        "last caller removed — the private helper is stranded"
+    );
+
+    let mut app_kept = app.clone();
+    app_kept
+        .references
+        .push(edge(&["app", "keeper"], &["app", "helper"], "K_H", false));
+    let m = model(vec![("default", vec![app_kept])]);
+    assert!(
+        m.private_orphans(&RemovalSet::new(["app::user"]))
+            .is_empty(),
+        "a surviving caller keeps the helper"
+    );
+
+    // Pre-existing dead private code: no edge before the removal either.
+    let app_pre = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_U", "fn", Some("mod")),
+            private_item(&["app", "helper"], "K_H", "fn", Some("mod")),
+        ],
+        vec![],
+    );
+    let m = model(vec![("default", vec![app_pre])]);
+    assert!(
+        m.private_orphans(&RemovalSet::new(["app::user"]))
+            .is_empty(),
+        "never used before the removal — not our collateral"
+    );
+}
+
+/// The guards: ADTs stay (deleting one orphans its `impl` blocks), pub defs
+/// are the cascade's own domain, and a use-site in ANY config keeps the def.
+#[test]
+fn private_orphans_guards_and_config_union() {
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_U", "fn", Some("mod")),
+            private_item(&["app", "Cfg"], "K_S", "struct", Some("mod")),
+            private_item(&["app", "helper"], "K_H", "fn", Some("mod")),
+        ],
+        vec![
+            edge(&["app", "user"], &["app", "Cfg"], "K_S", false),
+            edge(&["app", "user"], &["app", "helper"], "K_H", false),
+        ],
+    );
+    // Under --tests, a surviving test fn also calls the helper.
+    let mut app_tests = app.clone();
+    app_tests.references.push(edge(
+        &["app", "tests", "check"],
+        &["app", "helper"],
+        "K_H",
+        false,
+    ));
+    let m = model(vec![
+        ("default", vec![app.clone()]),
+        ("tests", vec![app_tests]),
+    ]);
+    assert!(
+        m.private_orphans(&RemovalSet::new(["app::user"]))
+            .is_empty(),
+        "struct is kind-guarded; helper stays alive via the tests config"
+    );
+
+    // Without the tests-config caller, only the fn falls out — never the ADT.
+    let m = model(vec![("default", vec![app])]);
+    let orphans = m.private_orphans(&RemovalSet::new(["app::user"]));
+    assert_eq!(
+        orphans.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+        ["app::helper"]
+    );
+}
+
+/// A stranded helper's own callees strand transitively once the helper joins
+/// the removal set — the engine half of the cascade loop.
+#[test]
+fn private_orphans_chain_through_removed_helpers() {
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "user"], "K_U", "fn", Some("mod")),
+            private_item(&["app", "helper"], "K_H", "fn", Some("mod")),
+            private_item(&["app", "inner"], "K_I", "fn", Some("mod")),
+        ],
+        vec![
+            edge(&["app", "user"], &["app", "helper"], "K_H", false),
+            edge(&["app", "helper"], &["app", "inner"], "K_I", false),
+        ],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let first = m.private_orphans(&RemovalSet::new(["app::user"]));
+    assert_eq!(
+        first.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+        ["app::helper"],
+        "inner is still held by helper in round one"
+    );
+    let second = m.private_orphans(&RemovalSet::new(["app::user", "app::helper"]));
+    assert_eq!(
+        second.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+        ["app::helper", "app::inner"],
+        "with helper removed, inner strands too"
     );
 }
 

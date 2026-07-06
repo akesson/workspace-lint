@@ -160,6 +160,18 @@ fn fix_unused_pub_delete_attrs() {
 }
 
 #[test]
+fn fix_unused_pub_collateral() {
+    // The cascade's second-order surfaces (LeaveDates 2026-07-05 follow-ups):
+    // deleting `dead` strands the private `helper` → `inner` chain (rustc
+    // `dead_code` on the fixed tree), which is deleted as collateral; its
+    // out-of-workspace import (`use std::fmt::Write;`) is trimmed via the
+    // display-path pseudo-identity; and excising the last leaf of
+    // `use util::{gadget}` (gadget survives — the app bin uses it) collapses
+    // the whole statement instead of leaving `use util::{};`.
+    run_fix_fixture("fix__unused_pub_collateral");
+}
+
+#[test]
 fn fix_stale_expect() {
     // The stale `expect` directive is injected via setup.toml's `[[append]]`
     // (kept out of the committed input/ so dogfood stays green); `--fix`

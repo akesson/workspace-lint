@@ -68,7 +68,8 @@ pub enum Reach {
 }
 
 /// One resolved reference out of a crate's primary-unit code — what
-/// [`Assembly::references_from`] returns and the `architecture` lint judges.
+/// [`Assembly::references_from`](super::Assembly::references_from) returns
+/// and the `architecture` lint judges.
 /// `to_path` is canonical: the target's *definition* path for workspace defs
 /// (re-export chains resolved), the display path as-referenced otherwise.
 #[derive(Debug, Clone)]
@@ -123,6 +124,11 @@ pub struct DefInfo {
     /// when there is no independently editable token (private, trait-forced,
     /// macro-generated); see [`wl_ir::ItemFact::vis_span`].
     pub vis_span: Option<wl_ir::Span>,
+    /// For an assoc fn: how it takes `self` (see [`wl_ir::ItemFact::self_kind`]).
+    pub self_kind: Option<String>,
+    /// For an impl-block assoc fn: the self type's `Copy`-ness (see
+    /// [`wl_ir::ItemFact::self_copy`]).
+    pub self_copy: Option<bool>,
 }
 
 /// One candidate def as the cfg-matrix union sees it: reduced to its

@@ -229,6 +229,44 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             })
             .build(),
         ),
+        // unused-pub: a tighten the clippy-unmask guard downgraded — narrowing
+        // would strip clippy's `avoid-breaking-exported-api` exemption and a
+        // style lint would fire on the fixed tree, so the fix is shown but
+        // never machine-applied.
+        (
+            "unused_pub_tighten_unmask",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub struct `Rect` in crate `mycrate` is only used inside the crate",
+                PathBuf::from("crates/mycrate/src/geometry.rs"),
+                11,
+            )
+            .help("consider `pub(crate)` to tighten visibility")
+            .note(
+                "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
+            )
+            .note(
+                "`pub(crate)` would unmask clippy `wrong_self_convention` on `is_wide` (clippy exempts exported items via `avoid-breaking-exported-api`) — resolve that first or narrow by hand",
+            )
+            .build(),
+        ),
+        // unused-pub: private collateral — a private helper whose last user
+        // is deleted in the same `--fix` pass (rustc `dead_code` would flag
+        // it on the fixed tree), deleted alongside its users.
+        (
+            "unused_pub_private_collateral",
+            at_line(
+                "workspace-lint::unused-pub",
+                "private fn `helper` in crate `mycrate` loses its last user in this `--fix`",
+                PathBuf::from("crates/mycrate/src/lib.rs"),
+                21,
+            )
+            .help("deleting it too — rustc `dead_code` would flag it on the fixed tree")
+            .note(
+                "transitively dead: the only item(s) that referenced it are also deleted by this `--fix`",
+            )
+            .build(),
+        ),
         // unused-pub: crate-level hint nudging `publish = true` for an internal
         // crate that accumulated several findings.
         (
@@ -677,6 +715,39 @@ mod tests {
         }
 
         #[test]
+        fn unused_pub_tighten_unmask() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_unmask")), @r"
+            warning: pub struct `Rect` in crate `mycrate` is only used inside the crate
+             --> crates/mycrate/src/geometry.rs:11:1
+              |
+              = help: consider `pub(crate)` to tighten visibility
+              = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+              = note: `pub(crate)` would unmask clippy `wrong_self_convention` on `is_wide` (clippy exempts exported items via `avoid-breaking-exported-api`) — resolve that first or narrow by hand
+            help: if intentional, silence with:
+              |
+            11 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
+        fn unused_pub_private_collateral() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_private_collateral")), @r"
+            warning: private fn `helper` in crate `mycrate` loses its last user in this `--fix`
+             --> crates/mycrate/src/lib.rs:21:1
+              |
+              = help: deleting it too — rustc `dead_code` would flag it on the fixed tree
+              = note: transitively dead: the only item(s) that referenced it are also deleted by this `--fix`
+            help: if intentional, silence with:
+              |
+            21 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
         fn stale_expect() {
             insta::assert_snapshot!(render(&scenario("stale_expect")), @r"
             warning: expect directive for `file-size` did not match any diagnostic
@@ -992,6 +1063,16 @@ mod tests {
         fn unused_pub_publish_hint() {
             insta::assert_snapshot!(render(&scenario("unused_pub_publish_hint")), @r##"{"level":"warning","message":"crate `mycrate` has 3 public items unused within the workspace","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"if `mycrate` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt)","spans":[]},{"level":"note","message":"workspace-lint treats a crate as workspace-internal unless it declares `publish = true` (or a registry); see the unused-pub docs","spans":[]}],"rendered":null}"##);
         }
+
+        #[test]
+        fn unused_pub_tighten_unmask() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_unmask")), @r#"{"level":"warning","message":"pub struct `Rect` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/geometry.rs","byte_start":0,"byte_end":0,"line_start":11,"line_end":11,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/geometry.rs","byte_start":0,"byte_end":0,"line_start":11,"line_end":11,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"`pub(crate)` would unmask clippy `wrong_self_convention` on `is_wide` (clippy exempts exported items via `avoid-breaking-exported-api`) — resolve that first or narrow by hand","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
+        fn unused_pub_private_collateral() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_private_collateral")), @r#"{"level":"warning","message":"private fn `helper` in crate `mycrate` loses its last user in this `--fix`","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":21,"line_end":21,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":21,"line_end":21,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"deleting it too — rustc `dead_code` would flag it on the fixed tree","spans":[]},{"level":"note","message":"transitively dead: the only item(s) that referenced it are also deleted by this `--fix`","spans":[]}],"rendered":null}"#);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1075,6 +1156,16 @@ mod tests {
         #[test]
         fn unused_pub_publish_hint() {
             insta::assert_snapshot!(render(&scenario("unused_pub_publish_hint")), @"::warning file=crates/mycrate/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Aunused-pub::crate `mycrate` has 3 public items unused within the workspace");
+        }
+
+        #[test]
+        fn unused_pub_tighten_unmask() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_unmask")), @"::warning file=crates/mycrate/src/geometry.rs,line=11,col=1,title=workspace-lint%3A%3Aunused-pub::pub struct `Rect` in crate `mycrate` is only used inside the crate");
+        }
+
+        #[test]
+        fn unused_pub_private_collateral() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_private_collateral")), @"::warning file=crates/mycrate/src/lib.rs,line=21,col=1,title=workspace-lint%3A%3Aunused-pub::private fn `helper` in crate `mycrate` loses its last user in this `--fix`");
         }
 
         #[test]

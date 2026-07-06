@@ -141,7 +141,16 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
                 it,
                 "derive span must be from expansion",
             );
-            ck.expect_span_file_ends(it, "lib.rs");
+            // The invocation-site policy: the span lands in whichever probe
+            // file WROTE the `#[derive(…)]` (lib.rs, inherent.rs), never a
+            // macro-definition file.
+            ck.expect(
+                it.span
+                    .as_ref()
+                    .is_some_and(|s| s.file.ends_with("lib.rs") || s.file.ends_with("inherent.rs")),
+                it,
+                "derive span must map to the deriving probe file",
+            );
             ck.expect(
                 it.vis_span.is_none(),
                 it,
@@ -289,6 +298,102 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
                 );
             }
         }
+    }
+
+    // 12. (clippy-unmask guard) `self_kind` / `self_copy`: an assoc fn's
+    //     receiver classification and its self type's `Copy`-ness — the
+    //     substrate the stable side replays clippy's `wrong_self_convention`
+    //     table against before `--fix` narrows an item out of
+    //     `avoid-breaking-exported-api`. Non-assoc defs carry neither.
+    {
+        let by_name = |name: &str| -> Option<&ItemFact> {
+            frag.items
+                .iter()
+                .find(|it| it.path.last().map(String::as_str) == Some(name))
+        };
+        let expect_self =
+            |ck: &mut Checker, name: &str, kind: &str, copy: Option<bool>| match by_name(name) {
+                None => ck.failures.push(format!("[{name}] item not found")),
+                Some(it) => {
+                    let it = it.clone();
+                    ck.expect(
+                        it.self_kind.as_deref() == Some(kind) && it.self_copy == copy,
+                        &it,
+                        "self_kind/self_copy must match the written receiver",
+                    );
+                }
+            };
+        expect_self(&mut ck, "same_module", "ref", Some(false));
+        expect_self(&mut ck, "is_heavy", "value", Some(false));
+        expect_self(&mut ck, "to_units", "value", Some(true));
+        match by_name("Carrier") {
+            None => ck.failures.push("[Carrier] item not found".into()),
+            Some(it) => {
+                let it = it.clone();
+                ck.expect(
+                    it.self_kind.is_none() && it.self_copy.is_none(),
+                    &it,
+                    "non-assoc defs carry no self_kind/self_copy",
+                );
+            }
+        }
+        // Field facts + field-READ edges (the dead-field narrow guard's
+        // substrate): `Carrier.value` is a field def, and `self.value` in
+        // `same_module` emits a read edge to it.
+        let field = frag.items.iter().find(|it| {
+            it.kind == "field" && it.path.ends_with(&["Carrier".into(), "value".into()])
+        });
+        match field {
+            None => ck
+                .failures
+                .push("[Carrier::value] field fact not emitted".into()),
+            Some(it) => {
+                let key = it.key.clone();
+                let read = frag
+                    .references
+                    .iter()
+                    .any(|e| e.to_key == key && !e.import && e.receiver_resolved);
+                if read {
+                    ck.passes += 1;
+                    println!("PASS  Carrier::value: field fact + receiver-resolved read edge");
+                } else {
+                    ck.failures.push(
+                        "[Carrier::value] no receiver-resolved read edge to the field".into(),
+                    );
+                }
+            }
+        }
+        // `receiver_resolved` use-site discrimination (`call_shapes`): the
+        // method CALL `c.same_module()` is receiver-based (`true`); the
+        // written `Chip::to_units(chip)` path resolves the type by name
+        // (`false`). The dangling-import check keys on exactly this split.
+        let from_calls = |name: &str| {
+            frag.references.iter().find(|e| {
+                e.from.last().map(String::as_str) == Some("call_shapes")
+                    && e.to.last().map(String::as_str) == Some(name)
+                    && !e.import
+            })
+        };
+        let mut expect_receiver = |name: &str, want: bool, msg: &str| match from_calls(name) {
+            None => ck
+                .failures
+                .push(format!("[call_shapes] missing edge to {name}")),
+            Some(e) if e.receiver_resolved == want => {
+                ck.passes += 1;
+                println!("PASS  call_shapes→{name}: {msg}");
+            }
+            Some(_) => ck.failures.push(format!("call_shapes→{name}: {msg}")),
+        };
+        expect_receiver(
+            "same_module",
+            true,
+            "a method call is receiver-resolved (no written path)",
+        );
+        expect_receiver(
+            "to_units",
+            false,
+            "a written `Chip::to_units` path is NOT receiver-resolved",
+        );
     }
 
     // 13. (PR 11) Fragment target kind: the probe compiles as a plain lib —
@@ -493,9 +598,7 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
 
         // The fully-qualified code path `shim::Duration::from_secs(0)`: the
         // non-`use` shape must record the written root too.
-        match edge(&|e| {
-            !e.import && last(&e.from) == "wait" && e.via.as_deref() == Some("shim")
-        }) {
+        match edge(&|e| !e.import && last(&e.from) == "wait" && e.via.as_deref() == Some("shim")) {
             None => ck.failures.push(
                 "[via_user::wait] missing non-import edge with via=shim \
                  (fully-qualified path shape)"
@@ -543,9 +646,11 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
                     ));
                 }
                 // The build.rs call into the stub is a real (non-import) edge.
-                match bfrag.references.iter().find(|e| {
-                    !e.import && e.to.last().map(String::as_str) == Some("build_helper")
-                }) {
+                match bfrag
+                    .references
+                    .iter()
+                    .find(|e| !e.import && e.to.last().map(String::as_str) == Some("build_helper"))
+                {
                     Some(e) if e.to.first().map(String::as_str) == Some("buildstub") => {
                         ck.passes += 1;
                         println!("PASS  build fragment: edge to buildstub::build_helper");

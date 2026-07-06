@@ -51,7 +51,17 @@ pub struct Assembly {
     /// most call sites, so the fold credits every member edge to the parent
     /// trait too (an extension trait imported cross-crate purely for method
     /// syntax must stay `pub`).
-    trait_parent: BTreeMap<String, String>,
+    pub(super) trait_parent: BTreeMap<String, String>,
+    /// Owner key (inherent-impl self type, or trait declaration) → its assoc
+    /// **fn** member keys — the member enumeration behind the clippy-unmask
+    /// guard (`super::clippy_guard`). Trait-*impl* methods are absent by
+    /// construction (their conventions are the trait's, and clippy skips
+    /// them too).
+    pub(super) assoc_members: BTreeMap<String, Vec<String>>,
+    /// ADT key → its field keys (underscore-prefixed fields excluded, as
+    /// rustc `dead_code` excludes them) — the dead-field narrow guard's
+    /// enumeration ([`Assembly::has_unread_field`]).
+    pub(super) fields_of: BTreeMap<String, Vec<String>>,
     /// Keys that are the target of a `pub use` re-export
     /// (`RefEdge::reexport`). Tightening or deleting such a def can break the
     /// re-export (E0364/E0365), so the unused-pub port suppresses these — the
@@ -161,6 +171,8 @@ impl Assembly {
                         span: it.span.clone(),
                         full_span: it.full_span.clone(),
                         vis_span: it.vis_span.clone(),
+                        self_kind: it.self_kind.clone(),
+                        self_copy: it.self_copy,
                     },
                 );
             }
@@ -209,6 +221,8 @@ impl Assembly {
         //    each resolves to. `fold_edges` reads `defs`/`ids`/`id_key`/
         //    `path_key`, so build the assembly with those in place and the
         //    edge-derived maps empty, then fold into them.
+        let assoc_members = super::clippy_guard::assoc_members_index(&defs, &trait_parent);
+        let fields_of = super::clippy_guard::fields_of_index(&defs, &id_key);
         let mut asm = Assembly {
             fragments,
             crates,
@@ -219,6 +233,8 @@ impl Assembly {
             referenced: BTreeSet::new(),
             import_edges: 0,
             impls_of,
+            assoc_members,
+            fields_of,
             trait_parent,
             signature_exposed: BTreeSet::new(),
             import_targets: BTreeSet::new(),
@@ -294,7 +310,7 @@ impl Assembly {
     /// lib-shaped fragments, so a hit is the def itself; a target rendered at
     /// a re-export path just misses and degrades to the identity fold —
     /// toward exemption, never a false lead.
-    fn resolve_key(&self, e: &RefEdge) -> Option<&str> {
+    pub(super) fn resolve_key(&self, e: &RefEdge) -> Option<&str> {
         if let Some((k, _)) = self.defs.get_key_value(&e.to_key) {
             return Some(k.as_str());
         }
@@ -547,6 +563,17 @@ impl Assembly {
         self.resolve_key(e).and_then(|k| self.defs.get(k))
     }
 
+    /// Is `id` (a `::`-joined display path) a module in this config? The
+    /// scope-boundary test of the dangling-import check: a `use` statement's
+    /// reach ends at its enclosing module, so the reference scope-chain walk
+    /// stops at the nearest prefix this returns `true` for.
+    pub(super) fn is_module(&self, id: &str) -> bool {
+        self.id_key
+            .get(id)
+            .and_then(|k| self.defs.get(k))
+            .is_some_and(|d| d.kind == "mod")
+    }
+
     /// The cross-config identity an edge's target resolves to: through the def
     /// join when a landing def exists, else the global index alone (the
     /// foreign case — see [`ForeignReach`]). Lets the import surgery see a
@@ -736,25 +763,6 @@ impl Assembly {
     /// diagnostics that explain what the cross-crate join changed.
     pub fn intra_degree(&self, key: &str) -> usize {
         self.intra_degree.get(key).copied().unwrap_or(0)
-    }
-
-    /// Does `trait_key`'s trait declare a member no edge reaches under
-    /// `in_degree`? Narrowing such a trait to `pub(crate)` un-exempts it from
-    /// rustc's `dead_code`, which then flags the never-called members — a
-    /// `-D warnings` failure on the narrowed tree (the ChronoExt
-    /// `checked_sub_signed`/`set_time` cluster from the 2026-07-05 LeaveDates
-    /// validation). Members reached only via dispatch still carry edges to
-    /// their decl (type-dependent resolution), so a zero-degree member really
-    /// is dead weight.
-    pub(super) fn has_unreached_trait_member(
-        &self,
-        trait_key: &str,
-        in_degree: &BTreeMap<String, usize>,
-    ) -> bool {
-        self.trait_parent
-            .iter()
-            .filter(|(_, tk)| tk.as_str() == trait_key)
-            .any(|(member, _)| !in_degree.contains_key(member))
     }
 
     /// The impl-item keys implementing a trait item (dispatch linkage).

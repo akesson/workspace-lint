@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use wl_ir::Span;
 
 use super::assembly::{Assembly, CANDIDATE_KINDS, Category, Reach};
+use super::clippy_guard::NarrowUnmask;
 use super::removal::{DegreeView, RemovalSet};
 
 /// How a candidate is used, unioned across every extracted config. Mirrors the
@@ -81,6 +82,14 @@ pub struct PubCandidate {
     /// un-exempts the trait from rustc `dead_code`, which then flags the
     /// never-called members — same `-D warnings` consequence, same gating.
     pub dead_members: bool,
+    /// A type with a field no primary-config READ edge reaches: narrowing
+    /// un-exempts its fields from rustc `dead_code`, which flags write-only
+    /// fields — same `-D warnings` consequence, same gating.
+    pub dead_fields: bool,
+    /// Narrowing would activate a clippy lint the item's exported status
+    /// currently suppresses (`avoid-breaking-exported-api`) — same
+    /// `-D warnings` consequence, same gating. See [`NarrowUnmask`].
+    pub narrow_unmask: Option<NarrowUnmask>,
 }
 
 /// The per-config fold of one identity: OR-accumulated over every
@@ -99,6 +108,8 @@ struct Fold {
     reexport_target: bool,
     /// See [`PubCandidate::dead_members`] — primary-config judgement.
     dead_members: bool,
+    /// See [`PubCandidate::dead_fields`] — primary-config judgement.
+    dead_fields: bool,
 }
 
 pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
@@ -179,6 +190,9 @@ fn compute_impl(
                 if def.kind == "trait" {
                     fold.dead_members |= assembly.has_unreached_trait_member(key, view.in_degree);
                 }
+                if matches!(def.kind.as_str(), "struct" | "enum" | "union") {
+                    fold.dead_fields |= assembly.has_unread_field(key, view.in_degree);
+                }
             }
             fold.dispatch |= matches!(
                 assembly.reach_with(key, def, view.in_degree),
@@ -227,6 +241,7 @@ fn compute_impl(
                 kind: def.kind.clone(),
                 category: def.category,
                 usage,
+                narrow_unmask: assembly.narrow_unmask(key, def),
                 span: def.span.clone(),
                 full_span: def.full_span.clone(),
                 vis_span: def.vis_span.clone(),
@@ -235,6 +250,7 @@ fn compute_impl(
                 reexport_target: fold.reexport_target,
                 test_only: fold.intra && !fold.intra_primary && !fold.cross,
                 dead_members: fold.dead_members,
+                dead_fields: fold.dead_fields,
                 id,
             }
         })

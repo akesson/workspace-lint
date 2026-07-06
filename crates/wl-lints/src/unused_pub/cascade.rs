@@ -19,12 +19,15 @@
 use std::collections::{HashMap, HashSet};
 
 use wl_engine::fast::FastModel;
-use wl_engine::semantic::{RemovalSet, SemanticModel};
+use wl_engine::semantic::{PrivateOrphan, RemovalSet, SemanticModel};
 
+use crate::LintId;
+use wl_diagnostic::builder::at_line;
 use wl_diagnostic::{Applicability, Diagnostic};
 
 use super::config::UnusedPubConfig;
-use super::ir::findings;
+use super::deletion::{DeleteOutcome, delete_suggestion};
+use super::ir::{PubFinding, build_glob_set, findings};
 use super::surgery::import_surgery;
 
 pub struct CascadeResult {
@@ -56,7 +59,8 @@ pub fn run(
     let mut freed_round: HashMap<String, usize> = HashMap::new();
     let mut round = 0usize;
     let final_findings = loop {
-        let cands = model.pub_candidates_excluding(&RemovalSet::new(removed.iter()));
+        let removal = RemovalSet::new(removed.iter());
+        let cands = model.pub_candidates_excluding(&removal);
         let batch = findings(global, per_crate, fast, cands);
         // Seeds for this round: genuinely-removable (Unused + MachineApplicable
         // deletion) findings that aren't already removed, aren't silenced, and
@@ -72,6 +76,21 @@ pub fn run(
             }
             newly.push(id.clone());
         }
+        // Private collateral: defs the removals so far strand (rustc
+        // `dead_code` would flag them on the fixed tree). They seed further
+        // removal under exactly the pub rules — the deletion must actually be
+        // applicable — so a freed private helper's own callees cascade too.
+        for o in model.private_orphans(&removal) {
+            if removed.contains(&o.id) || blocked.contains(&o.id) {
+                continue;
+            }
+            let Some(f) = collateral_finding(&o, global, per_crate, fast) else {
+                continue;
+            };
+            if f.removable && !suppressed(&f.diagnostic) {
+                newly.push(o.id.clone());
+            }
+        }
         if newly.is_empty() {
             break batch; // converged; this batch is the final picture
         }
@@ -82,7 +101,7 @@ pub fn run(
         round += 1;
     };
 
-    let diagnostics = final_findings
+    let mut diagnostics: Vec<Diagnostic> = final_findings
         .into_iter()
         .map(|f| {
             let is_blocked = f.id.as_deref().is_some_and(|id| blocked.contains(id));
@@ -111,13 +130,82 @@ pub fn run(
         })
         .collect();
 
-    let dangling = model.dangling_imports(&RemovalSet::new(removed.iter()));
+    // The converged collateral picture: every private orphan of the final
+    // removal set gets its finding (removable ones were seeds; dirty-file
+    // ones surface with the skip note, like pub deletions do).
+    let removal = RemovalSet::new(removed.iter());
+    for o in model.private_orphans(&removal) {
+        if blocked.contains(&o.id) {
+            continue;
+        }
+        if let Some(f) = collateral_finding(&o, global, per_crate, fast) {
+            diagnostics.push(f.diagnostic);
+        }
+    }
+
+    let dangling = model.dangling_imports(&removal);
     let surgery = import_surgery(dangling, fast.root());
 
     CascadeResult {
         diagnostics,
         surgery,
     }
+}
+
+/// Build the deletion finding for one private orphan, under the same
+/// per-crate config gates as the pub findings (`auto-delete` opt-in, crate /
+/// path / allowlist filters, build-generated exclusion, git-clean
+/// applicability). `None` ⇒ out of scope: the orphan must not seed a removal
+/// and gets no finding.
+fn collateral_finding(
+    o: &PrivateOrphan,
+    global: &UnusedPubConfig,
+    per_crate: &HashMap<String, UnusedPubConfig>,
+    fast: &FastModel,
+) -> Option<PubFinding> {
+    let krate = fast.members().iter().find(|k| k.code_name() == o.krate)?;
+    let config = per_crate.get(&krate.name).unwrap_or(global);
+    if !config.auto_delete
+        || config
+            .exclude_crates
+            .iter()
+            .any(|c| c == &krate.name || c == &o.krate)
+        || build_glob_set(&config.allowlist).is_some_and(|al| al.is_match(&o.id))
+    {
+        return None;
+    }
+    let span = o.span.as_ref()?;
+    let full = o.full_span.as_ref()?;
+    let file = fast.root().join(&span.file);
+    if file.starts_with(fast.target_directory())
+        || build_glob_set(&config.exclude_paths)
+            .is_some_and(|ex| ex.is_match(file.to_string_lossy().as_ref()))
+    {
+        return None;
+    }
+    let (suggestion, skip_note, removable) = match delete_suggestion(&file, full) {
+        DeleteOutcome::Apply(s) => (s, None, true),
+        DeleteOutcome::Skip(s, reason) => (s, Some(reason), false),
+        DeleteOutcome::Unavailable => return None,
+    };
+    let builder = at_line(
+        LintId::UnusedPub.id(),
+        format!(
+            "private {} `{}` in crate `{}` loses its last user in this `--fix`",
+            o.kind, o.name, o.krate
+        ),
+        file,
+        span.line,
+    )
+    .help("deleting it too — rustc `dead_code` would flag it on the fixed tree")
+    .note("transitively dead: the only item(s) that referenced it are also deleted by this `--fix`")
+    .suggestion(suggestion);
+    let builder = skip_note.into_iter().fold(builder, |b, r| b.note(r));
+    Some(PubFinding {
+        id: Some(o.id.clone()),
+        removable,
+        diagnostic: builder.build(),
+    })
 }
 
 /// Turn a MachineApplicable item deletion into a `MaybeIncorrect` one so

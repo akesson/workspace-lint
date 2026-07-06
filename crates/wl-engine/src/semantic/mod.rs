@@ -10,8 +10,11 @@
 //! rendering belongs to the lints.
 
 mod assembly;
+mod clippy_guard;
+mod collateral;
 mod def_info;
 mod deps;
+mod imports;
 mod join;
 mod meta;
 mod pub_usage;
@@ -19,7 +22,10 @@ mod removal;
 mod union;
 
 pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
+pub use clippy_guard::NarrowUnmask;
+pub use collateral::PrivateOrphan;
 pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
+pub use imports::DanglingImport;
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage};
 pub use removal::RemovalSet;
@@ -60,62 +66,6 @@ pub enum SemanticError {
 pub struct SemanticModel {
     configs: Vec<(String, Assembly)>,
     meta: WorkspaceMeta,
-}
-
-/// One `use`-declaration leaf left dangling by a cascade deletion: its target
-/// item is being removed, so the import must go too or the build breaks
-/// (E0432). The unused-pub `--fix` import-surgery surface
-/// ([`SemanticModel::dangling_imports`]).
-#[derive(Debug, Clone)]
-pub struct DanglingImport {
-    /// The leaf item's own span (workspace-relative file, on-disk byte range).
-    /// For a **standalone** `use a::b;` this is the whole statement — the
-    /// delete surface. For a **brace-list** leaf rustc collapses it to the
-    /// leaf, so it equals `elem`; that equality is the brace discriminator the
-    /// lint keys on (`decl == elem` ⇒ excise in place, else delete statement).
-    pub decl: wl_ir::Span,
-    /// The leaf as written (`b`, `b::c`, or `B as C`) — the intra-brace
-    /// excision surface. Covers the whole brace entry, nested path and rename
-    /// included.
-    pub elem: wl_ir::Span,
-    /// A `pub use` re-export: excising it can break a downstream name
-    /// (E0364/E0365). Surgery skips it — and the target should never be a
-    /// deletion candidate anyway (the candidate filter guards re-export
-    /// targets), so this is belt-and-braces.
-    pub reexport: bool,
-}
-
-/// See [`SemanticModel::import_target_usage`]: `(crate, identity)` sets of
-/// what each crate's real edges reference, split removed/surviving. Queries
-/// are prefix-aware — a reference to `a::StrExt::shout` counts as a use of an
-/// imported `a::StrExt` (method calls never name the trait itself).
-#[derive(Default)]
-struct ImportTargetUsage {
-    by_survivor: std::collections::BTreeSet<(String, String)>,
-    by_removed: std::collections::BTreeSet<(String, String)>,
-}
-
-impl ImportTargetUsage {
-    fn referenced_by_survivor(&self, krate: &str, id: &str) -> bool {
-        Self::contains(&self.by_survivor, krate, id)
-    }
-
-    fn referenced_by_removed(&self, krate: &str, id: &str) -> bool {
-        Self::contains(&self.by_removed, krate, id)
-    }
-
-    fn contains(set: &std::collections::BTreeSet<(String, String)>, krate: &str, id: &str) -> bool {
-        let key = (krate.to_string(), id.to_string());
-        if set.contains(&key) {
-            return true;
-        }
-        // Any identity under `id::` (assoc items, module children) keeps the
-        // import of `id` alive — one ordered range probe.
-        let prefix = format!("{id}::");
-        set.range((krate.to_string(), prefix.clone())..)
-            .next()
-            .is_some_and(|(k, i)| k == krate && i.starts_with(&prefix))
-    }
 }
 
 impl SemanticModel {
@@ -196,117 +146,16 @@ impl SemanticModel {
         pub_usage::compute_excluding(&self.configs, removed)
     }
 
-    /// Identities that must NOT be auto-deleted because a `use` naming them
-    /// can't be excised: the declaration lives in a **macro expansion**
-    /// (`decl_span.from_expansion`), so deleting the item would dangle an
-    /// import no edit can reach (E0432). The cascade excludes these from its
-    /// removable seeds up front, avoiding a mid-run un-delete ripple. (A
-    /// `pub use` re-export target is already guarded at the candidate filter.)
-    pub fn import_excision_blocked(&self) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
-        for (_, asm) in &self.configs {
-            for frag in asm.fragments() {
-                for e in &frag.references {
-                    if !e.import {
-                        continue;
-                    }
-                    let blocked = e.decl_span.as_ref().is_some_and(|d| d.from_expansion);
-                    if blocked && let Some(id) = asm.target_identity(e) {
-                        out.insert(id.to_string());
-                    }
-                }
-            }
+    /// The **private** defs left with no reaching edge once `removed`'s defs
+    /// are gone — rustc `dead_code` would flag them on the fixed tree, so the
+    /// unused-pub `--fix` cascade deletes them alongside the removal that
+    /// caused it. Causality-gated and kind-limited; see [`PrivateOrphan`]
+    /// and the `collateral` module docs.
+    pub fn private_orphans(&self, removed: &RemovalSet) -> Vec<PrivateOrphan> {
+        if removed.is_empty() {
+            return Vec::new();
         }
-        out
-    }
-
-    /// Every `use`-declaration leaf a cascade deletion leaves dangling.
-    /// Two orders, unioned across configs, deduped by (file, decl, elem) —
-    /// the unused-pub `--fix` import-surgery surface. Macro-generated and
-    /// `pub use` leaves are surfaced but flagged for the lint to skip.
-    ///
-    /// - **First order**: the import's target itself is being removed —
-    ///   keeping the `use` is E0432.
-    /// - **Second order**: the target survives but every one of its use-sites
-    ///   in the importing crate was removed (the `use data_cssvars::Theme;` /
-    ///   trait-import cases from the 2026-07-05 LeaveDates validation) —
-    ///   keeping the `use` is an `unused_imports` warning, a `-D warnings`
-    ///   failure. Flagged only when some *removed* def was a user (the
-    ///   deletion caused the danglingness): a pre-existing unused import may
-    ///   have users in cfg universes the engine never extracts, and is the
-    ///   author's to clean, not ours.
-    pub fn dangling_imports(&self, removed: &RemovalSet) -> Vec<DanglingImport> {
-        use std::collections::HashSet;
-        let usage = self.import_target_usage(removed);
-        let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
-        let mut out = Vec::new();
-        for (_, asm) in &self.configs {
-            for frag in asm.fragments() {
-                for e in &frag.references {
-                    if !e.import {
-                        continue;
-                    }
-                    let (Some(decl), Some(elem)) = (&e.decl_span, &e.elem_span) else {
-                        continue;
-                    };
-                    let Some(id) = asm.target_identity(e) else {
-                        continue;
-                    };
-                    let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
-                    let dangling = removed.contains_id(id)
-                        || (usage.referenced_by_removed(from_crate, id)
-                            && !usage.referenced_by_survivor(from_crate, id));
-                    if !dangling {
-                        continue;
-                    }
-                    if !seen.insert((decl.file.clone(), decl.lo, elem.lo)) {
-                        continue;
-                    }
-                    out.push(DanglingImport {
-                        decl: decl.clone(),
-                        elem: elem.clone(),
-                        reexport: e.reexport,
-                    });
-                }
-            }
-        }
-        out
-    }
-
-    /// The per-crate identity-usage split behind the second-order dangling
-    /// check: which identities each crate's real (non-import) edges reference,
-    /// partitioned by whether the referring def is in `removed`. Trait-impl
-    /// targets also credit the implemented trait *member*'s identity (whose
-    /// path is prefixed by the trait's), so a trait import kept alive by
-    /// method calls through a blanket impl in a third crate still counts.
-    fn import_target_usage(&self, removed: &RemovalSet) -> ImportTargetUsage {
-        let mut usage = ImportTargetUsage::default();
-        for (_, asm) in &self.configs {
-            for frag in asm.fragments() {
-                for e in &frag.references {
-                    if e.import {
-                        continue;
-                    }
-                    let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
-                    let set = if removed.covers(&e.from) {
-                        &mut usage.by_removed
-                    } else {
-                        &mut usage.by_survivor
-                    };
-                    if let Some(def) = asm.def_for_edge(e) {
-                        set.insert((from_crate.to_string(), def.path.clone()));
-                        if let Some(ti) = &def.trait_item
-                            && let Some(tm) = asm.defs.get(ti)
-                        {
-                            set.insert((from_crate.to_string(), tm.path.clone()));
-                        }
-                    } else if let Some(id) = asm.target_identity(e) {
-                        set.insert((from_crate.to_string(), id.to_string()));
-                    }
-                }
-            }
-        }
-        usage
+        collateral::compute(&self.configs, removed)
     }
 
     /// Every reference out of `krate`'s primary-unit code under the
