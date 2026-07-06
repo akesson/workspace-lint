@@ -73,12 +73,17 @@ impl SemanticModel {
     /// entry point the binary uses: `Engine::extract(..)` → here.
     pub fn load(runs: &ExtractionRuns, workspace_root: &Path) -> Result<Self, SemanticError> {
         let meta = WorkspaceMeta::from_workspace(workspace_root)?;
-        let mut configs = Vec::new();
-        for run in &runs.runs {
-            let fragments = load_fragments(&run.ir_dir)?;
-            configs.push((run.id.clone(), fragments));
-        }
-        Self::assemble(configs, meta)
+        let configs = crate::timing::phase("load_fragments[read+serde all configs]", || {
+            let mut configs = Vec::new();
+            for run in &runs.runs {
+                let fragments = load_fragments(&run.ir_dir)?;
+                configs.push((run.id.clone(), fragments));
+            }
+            Ok::<_, SemanticError>(configs)
+        })?;
+        crate::timing::phase("assemble[join+per-config indexes]", || {
+            Self::assemble(configs, meta)
+        })
     }
 
     /// Assemble from in-memory fragments (the golden-fixture entry point).

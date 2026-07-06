@@ -26,6 +26,7 @@
 pub mod fast;
 pub mod orchestrate;
 pub mod semantic;
+pub mod timing;
 
 pub use fast::FastModel;
 pub use orchestrate::{
