@@ -471,6 +471,23 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             return;
         }
         let from = local_path(self.tcx, self.crate_code, from_id);
+        // The lexical enclosing module — NOT derivable from `from`:
+        // `def_path_str` renders impl members at their self-type's path
+        // (`Type::method`, `<Type as Trait>::method`), hiding the module the
+        // impl block is written in. Import-scope resolution downstream needs
+        // the lexical module (rustc resolves a body's names through the
+        // imports of the module the code sits in). Module def paths are
+        // bracket-free, so `local_path` splits them losslessly.
+        let from_module = from_id
+            .as_local()
+            .map(|l| {
+                local_path(
+                    self.tcx,
+                    self.crate_code,
+                    self.tcx.parent_module_from_def_id(l).to_def_id(),
+                )
+            })
+            .unwrap_or_default();
         let external = to.krate != LOCAL_CRATE;
         let to_path = if external {
             ext_path(self.tcx, to)
@@ -483,6 +500,7 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
         let sm = self.tcx.sess.source_map();
         self.edges.push(RefEdge {
             from,
+            from_module,
             to: to_path,
             from_key: def_key(self.tcx, from_id),
             to_key: def_key(self.tcx, to),

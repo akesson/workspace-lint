@@ -74,7 +74,6 @@ fn section_schema(section: &str) -> Option<Schema> {
                 "kinds",
                 "exclude-paths",
                 "suppress-intra-crate",
-                "auto-delete",
                 "assume-all-public",
                 "publish-hint-threshold",
             ],
@@ -426,7 +425,6 @@ allowlist = ["*Error"]
 kinds = ["function", "struct"]
 exclude-paths = ["generated/**"]
 suppress-intra-crate = true
-auto-delete = false
 assume-all-public = false
 publish-hint-threshold = 3
 

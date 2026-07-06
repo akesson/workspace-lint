@@ -167,16 +167,40 @@ impl ImportTargetUsage {
 /// item's def path, longest first, down to and including the nearest enclosing
 /// module (or the crate root). Stops there — a `use` in a parent module is a
 /// different scope; nested modules only reach it via glob re-imports.
-fn scopes_of(asm: &Assembly, from: &[String]) -> Vec<String> {
+///
+/// The module terminal is the edge's **lexical** [`wl_ir::RefEdge::from_module`],
+/// not a textual prefix: `def_path_str` renders an impl member at its
+/// self-type's path (`Type::method`, `<Type as Trait>::method`), which hides
+/// the real module entirely (trait impls — no prefix is a module, so the walk
+/// used to fall through to the crate root and the body's trait-method calls
+/// credited no module's imports) or names a *different* module's chain (an
+/// inherent impl written outside its type's module). rustc resolves a body's
+/// names through the imports of the module the code is lexically in, so the
+/// prefix walk stops at the first textual module boundary and the lexical
+/// module is appended in its place. Pre-6 fragments (empty `from_module`)
+/// keep the historical textual walk.
+fn scopes_of(asm: &Assembly, from: &[String], from_module: &[String]) -> Vec<String> {
     let mut out = Vec::new();
+    if from_module.is_empty() {
+        for i in (1..=from.len()).rev() {
+            let id = from[..i].join("::");
+            let boundary = i == 1 || (i < from.len() && asm.is_module(&id));
+            out.push(id);
+            if boundary {
+                break;
+            }
+        }
+        return out;
+    }
+    let module = from_module.join("::");
     for i in (1..=from.len()).rev() {
         let id = from[..i].join("::");
-        let boundary = i == 1 || (i < from.len() && asm.is_module(&id));
-        out.push(id);
-        if boundary {
+        if id == module || i == 1 || (i < from.len() && asm.is_module(&id)) {
             break;
         }
+        out.push(id);
     }
+    out.push(module);
     out
 }
 
@@ -344,7 +368,7 @@ impl SemanticModel {
                         // delete a live trait import.
                         ids.push(e.to.join("::"));
                     }
-                    for scope in scopes_of(asm, &e.from) {
+                    for scope in scopes_of(asm, &e.from, &e.from_module) {
                         for id in &ids {
                             set.insert((from_crate.clone(), scope.clone(), id.clone()));
                         }

@@ -108,7 +108,7 @@ pub struct Suggestion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PubVerdict {
     /// Zero referrers found under any config → the fix deletes the item
-    /// (when `auto-delete` opted in; tighten otherwise).
+    /// (under `--fix-auto-delete`; tighten otherwise).
     Unused,
     /// Only same-crate referrers found → the fix tightens to `pub`.
     IntraCrate,

@@ -16,7 +16,7 @@ mod suggest;
 mod suppress;
 
 use clap::Parser;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 
 use cli::{CheckRule, Cli, Commands};
@@ -28,12 +28,15 @@ use wl_lints::{LintContext, LintId, git, util};
 fn main() {
     let cli = Cli::parse();
     let format = parse_format(cli.message_format.as_deref());
+    // `--fix-auto-delete` is `--fix` plus the unused-pub deletion cascade, so
+    // every `--fix` behavior keys off the disjunction.
+    let fix = cli.fix || cli.fix_auto_delete;
 
     match cli.command {
         None => {
             // `--fix` mutates tracked files in place; gate on a clean working
             // tree up front so the whole change stays reviewable as one diff.
-            if cli.fix {
+            if fix {
                 git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
             }
             let (config, config_diags) = config::load();
@@ -50,9 +53,7 @@ fn main() {
             // clean-tree check above. This keeps the default/editor run (e.g.
             // rust-analyzer's `check.overrideCommand`) side-effect-free. It runs
             // before lints so the structural pass measures post-expansion files.
-            if cli.fix
-                && let Some(ref ec) = config.expand
-            {
+            if fix && let Some(ref ec) = config.expand {
                 expand::run(ec);
             }
             let (mut diagnostics, fast, semantic, mut ran) = run_all(&config, cli.fast_only);
@@ -79,7 +80,8 @@ fn main() {
             // place users can act on; drop findings anchored in it before
             // suppression so they never consume an `expect!` or skew stale-expect.
             drop_generated_anchored(fast.as_ref(), &mut diagnostics);
-            // Under `--fix`, converge unused-pub deletions in one pass: deleting
+            // Under `--fix-auto-delete` (and only then — plain `--fix` never
+            // deletes), converge unused-pub deletions in one pass: deleting
             // a dead item frees whatever it solely reached. The cascade replaces
             // the plain unused-pub findings with the converged set and emits the
             // import surgery that keeps the tree compiling. Runs *before*
@@ -88,11 +90,17 @@ fn main() {
             // its own removal decisions consult a non-mutating suppression query
             // so an `expect!`-silenced item — and its callees — stay intact.
             let mut trimmed_imports = false;
-            if cli.fix
+            if cli.fix_auto_delete
                 && ran.contains(&LintId::UnusedPub)
                 && let (Some(fm), Some(sm)) = (fast.as_ref(), semantic.as_ref())
             {
-                trimmed_imports = run_unused_pub_cascade(&config, fm, sm, &mut diagnostics);
+                trimmed_imports = run_unused_pub_cascade(
+                    config.unused_pub.clone().unwrap_or_default(),
+                    config.unused_pub_overrides(),
+                    fm,
+                    sm,
+                    &mut diagnostics,
+                );
             }
             // Suppression filters by directives and appends `stale-expect` /
             // `unknown-lint` findings; leveling runs last so the appended ones
@@ -100,7 +108,7 @@ fn main() {
             // set before the exit-code tally.
             apply_suppression(fast.as_ref(), ran, &mut diagnostics);
             apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
-            if cli.fix {
+            if fix {
                 let summary = fix::run(&diagnostics);
                 // Any applied fix can leave fmt-relevant residue (a
                 // `pub`→`pub(crate)` rewrite alone can push a line past the
@@ -123,25 +131,39 @@ fn main() {
             }
         }
         Some(Commands::Check { rule }) => {
-            if cli.fix {
+            if fix {
                 git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
             }
             // For single-check runs we still honor the `[lints]` table if a
             // config file exists, so `workspace-lint check file-size` and the
             // default run agree on severity.
             let config_for_levels = config::try_load();
-            let (mut diagnostics, fast, ran) =
+            // Resolved up front (the rule is consumed by `run_single_check`):
+            // the `--fix-auto-delete` cascade below needs the same config the
+            // lint itself ran with.
+            let unused_pub_config = rule.unused_pub_config();
+            let (mut diagnostics, fast, semantic, ran) =
                 run_single_check(rule, cli.fast_only, config_for_levels.as_ref());
             // Same backfill as the default run: the drop and the directive
             // scanner's parse cache want the FastModel even when the single
             // checked rule didn't require one.
             let fast = fast.or_else(try_load_fast_model);
             drop_generated_anchored(fast.as_ref(), &mut diagnostics);
+            // The deletion cascade, exactly as in the default run — without it
+            // a `check unused-pub --fix-auto-delete` would delete items but
+            // leave their `use` sites dangling (E0432). No per-crate tier on
+            // the CLI surface.
+            if cli.fix_auto_delete
+                && let Some(global) = unused_pub_config
+                && let (Some(fm), Some(sm)) = (fast.as_ref(), semantic.as_ref())
+            {
+                run_unused_pub_cascade(global, HashMap::new(), fm, sm, &mut diagnostics);
+            }
             apply_suppression(fast.as_ref(), ran, &mut diagnostics);
             if let Some(cfg) = &config_for_levels {
                 apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
             }
-            if cli.fix {
+            if fix {
                 fix::run(&diagnostics);
             }
             report_and_exit(diagnostics, format);
@@ -354,17 +376,18 @@ fn apply_suppression(
     diagnostics.extend(unknown);
 }
 
-/// The `--fix` unused-pub cascade: replace the plain unused-pub findings with
-/// the transitively-converged set and append the import surgery. Builds a
-/// read-only [`suppress::SuppressionMap`] so an `expect!`/`allow!`-silenced
-/// deletion never seeds a removal (its callees stay live) — the map is scanned
-/// again by [`apply_suppression`] for the real filtering, a cheap re-scan paid
-/// only under `--fix`.
+/// The `--fix-auto-delete` unused-pub cascade: replace the plain unused-pub
+/// findings with the transitively-converged set and append the import surgery.
+/// Builds a read-only [`suppress::SuppressionMap`] so an `expect!`/`allow!`-
+/// silenced deletion never seeds a removal (its callees stay live) — the map
+/// is scanned again by [`apply_suppression`] for the real filtering, a cheap
+/// re-scan paid only under `--fix-auto-delete`.
 /// Returns `true` when the cascade emitted import surgery — the caller prints a
 /// `cargo fmt` hint after applying, since trimming `use` leaves valid but
 /// unformatted residue (collapsed blank lines, single-element `{…}` groups).
 fn run_unused_pub_cascade(
-    config: &config::Config,
+    global: wl_lints::unused_pub::UnusedPubConfig,
+    per_crate: HashMap<String, wl_lints::unused_pub::UnusedPubConfig>,
     fast: &FastModel,
     semantic: &wl_engine::SemanticModel,
     diagnostics: &mut Vec<Diagnostic>,
@@ -373,8 +396,6 @@ fn run_unused_pub_cascade(
     let map = suppress::SuppressionMap::from_directives(directives_list);
     let suppressed = |d: &Diagnostic| map.would_suppress(d);
 
-    let global = config.unused_pub.clone().unwrap_or_default();
-    let per_crate = config.unused_pub_overrides();
     let result =
         wl_lints::unused_pub::cascade::run(&global, &per_crate, fast, semantic, &suppressed);
 
@@ -441,7 +462,12 @@ fn run_single_check(
     rule: CheckRule,
     fast_only: bool,
     config: Option<&config::Config>,
-) -> (Vec<Diagnostic>, Option<FastModel>, HashSet<LintId>) {
+) -> (
+    Vec<Diagnostic>,
+    Option<FastModel>,
+    Option<wl_engine::SemanticModel>,
+    HashSet<LintId>,
+) {
     let lint = rule.into_lint();
     let requirements = lint.requirements();
     // A semantic lint cannot run without its model; under `--fast-only` that
@@ -466,7 +492,10 @@ fn run_single_check(
         semantic: semantic.as_ref(),
     };
     let ran = HashSet::from([lint.id()]);
-    (lint.check(&cx), fast, ran)
+    let diagnostics = lint.check(&cx);
+    // `cx`'s borrow of `semantic` ends above, so the model can move out for
+    // the `--fix-auto-delete` cascade the caller may run.
+    (diagnostics, fast, semantic, ran)
 }
 
 /// Build the full (rustc-backed) tier: vendored extractor → one embedded

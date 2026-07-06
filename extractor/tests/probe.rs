@@ -394,6 +394,36 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             false,
             "a written `Chip::to_units` path is NOT receiver-resolved",
         );
+
+        // `from_module` (schema 6): the edge from the trait-impl body
+        // (`<Chip as Yardstick>::raw` → `helper`) must carry the impl's
+        // LEXICAL module — which `from` itself hides inside the bracket
+        // rendering, the property that forced the dedicated field.
+        let raw_edge = frag.references.iter().find(|e| {
+            e.from.last().map(String::as_str) == Some("raw")
+                && e.to.last().map(String::as_str) == Some("helper")
+                && !e.import
+        });
+        match raw_edge {
+            None => ck
+                .failures
+                .push("[lexical] missing edge raw → helper".into()),
+            Some(e) => {
+                let bracketed = e.from.iter().any(|s| s.starts_with('<'));
+                let module_ok = e.from_module.join("::").ends_with("inherent::lexical");
+                if bracketed && module_ok {
+                    ck.passes += 1;
+                    println!(
+                        "PASS  lexical::raw→helper: bracket-rendered `from` carries lexical from_module"
+                    );
+                } else {
+                    ck.failures.push(format!(
+                        "[lexical] raw→helper: from={:?} (bracketed: {bracketed}) from_module={:?} (ends with inherent::lexical: {module_ok})",
+                        e.from, e.from_module
+                    ));
+                }
+            }
+        }
     }
 
     // 13. (PR 11) Fragment target kind: the probe compiles as a plain lib —

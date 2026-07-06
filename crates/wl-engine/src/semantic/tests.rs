@@ -46,6 +46,10 @@ fn edge(from: &[&str], to: &[&str], to_key: &str, import: bool) -> RefEdge {
 fn edge_ext(from: &[&str], to: &[&str], to_key: &str, import: bool, external: bool) -> RefEdge {
     RefEdge {
         from: from.iter().map(|s| s.to_string()).collect(),
+        // Empty models a pre-6 fragment (the textual scope walk). Fixtures
+        // with clean module-chain from-paths resolve identically either way;
+        // tests for the lexical-module semantics set it via `with_module`.
+        from_module: Vec::new(),
         to: to.iter().map(|s| s.to_string()).collect(),
         from_key: "fromkey".into(),
         to_key: to_key.into(),
@@ -1721,6 +1725,89 @@ fn dangling_imports_trait_method_calls_do_shield() {
         m.dangling_imports(&RemovalSet::new(["app::user"]))
             .is_empty(),
         "keeper's `.shout()` needs StrExt in scope — the trait import stays"
+    );
+}
+
+/// `edge` as the v6 extractor emits a method call: `receiver_resolved` plus
+/// the lexical [`RefEdge::from_module`].
+fn recv_edge_in_module(from: &[&str], module: &[&str], to: &[&str], to_key: &str) -> RefEdge {
+    let mut e = edge(from, to, to_key, false);
+    e.receiver_resolved = true;
+    e.from_module = module.iter().map(|s| s.to_string()).collect();
+    e
+}
+
+/// A trait-impl body's references credit the imports of the module the impl
+/// is lexically in (the LeaveDates `DateFn`/`from_iter` breakage, 2026-07-06):
+/// `def_path_str` renders the impl as `<list::List as FromIterator<…>>` — the
+/// real module appears only inside the bracket, so the textual prefix walk
+/// never reaches scope `app::list` and a surviving trait-method call there
+/// credited no module at all. The edge's lexical `from_module` is the fix.
+#[test]
+fn dangling_imports_trait_impl_body_credits_lexical_module() {
+    let lib = frag(
+        "app",
+        vec![
+            item(&["app", "datefn", "DateFn"], "K_TR", "trait", Some("mod")),
+            // Provided method (default body in the trait): a call resolves to
+            // the trait's own def, so `trait_parent` is the only linkage.
+            item(
+                &["app", "datefn", "DateFn", "year"],
+                "K_M",
+                "fn",
+                Some("trait"),
+            ),
+        ],
+        vec![
+            import_edge(
+                &["app", "list"],
+                &["app", "datefn", "DateFn"],
+                "K_TR",
+                true,
+                100,
+            ),
+            // The removed user: an inherent-impl fn in `app::list`.
+            recv_edge_in_module(
+                &["app", "list", "List", "dead_sort"],
+                &["app", "list"],
+                &["app", "datefn", "DateFn", "year"],
+                "K_M",
+            ),
+            // The SURVIVING user: a trait-impl fn in the same module, whose
+            // rendered from-path hides `list` inside the bracket segment.
+            recv_edge_in_module(
+                &[
+                    "app",
+                    "<list",
+                    "List as std",
+                    "iter",
+                    "FromIterator<date",
+                    "Date>>",
+                    "from_iter",
+                ],
+                &["app", "list"],
+                &["app", "datefn", "DateFn", "year"],
+                "K_M",
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![lib.clone()])]);
+    assert!(
+        m.dangling_imports(&RemovalSet::new(["app::list::List::dead_sort"]))
+            .is_empty(),
+        "from_iter's `.year()` still needs DateFn in scope — the import stays"
+    );
+
+    // Remove the surviving trait-impl edge: now the deleted fn really was the
+    // last user, and the import must dangle (guards against over-crediting).
+    let mut last_user = lib;
+    last_user.references.pop();
+    let m = model(vec![("default", vec![last_user])]);
+    assert_eq!(
+        m.dangling_imports(&RemovalSet::new(["app::list::List::dead_sort"]))
+            .len(),
+        1,
+        "no surviving user — the import dangles"
     );
 }
 

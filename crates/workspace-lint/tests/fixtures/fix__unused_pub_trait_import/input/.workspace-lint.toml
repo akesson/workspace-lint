@@ -1,0 +1,11 @@
+# `--fix-auto-delete` coverage for LEXICAL import-scope attribution (LeaveDates
+# 2026-07-06): `dead_sort` (unused, deleted) and the SURVIVING
+# `FromIterator for List` impl both call the provided trait method
+# `DateFn::year` through a closure. The impl's `def_path_str` rendering
+# (`<list::List as FromIterator<…>>`) hides module `list`, so before
+# `RefEdge::from_module` the survivor's call credited no module's imports and
+# `use crate::datefn::DateFn;` was trimmed — E0599 on the fixed tree. The
+# import must SURVIVE the fix.
+[lints]
+default = "allow"
+unused-pub = "warn"

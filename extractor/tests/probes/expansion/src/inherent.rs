@@ -53,3 +53,24 @@ impl Chip {
 pub fn call_shapes(c: &Carrier, chip: Chip) -> (u32, u32) {
     (c.same_module(), Chip::to_units(chip))
 }
+
+/// Lexical-module probe for `RefEdge::from_module` (schema 6): a trait-impl
+/// member renders at `<Type as Trait>::member` — the module the impl is
+/// written in appears only inside the bracket segment, so import-scope
+/// attribution needs the lexical module as its own emitted fact (the
+/// LeaveDates `DateFn`/`from_iter` dangling-import breakage).
+pub mod lexical {
+    pub trait Yardstick {
+        fn raw(&self) -> u32;
+    }
+
+    impl Yardstick for super::Chip {
+        fn raw(&self) -> u32 {
+            helper(self.0)
+        }
+    }
+
+    pub fn helper(v: u32) -> u32 {
+        v
+    }
+}

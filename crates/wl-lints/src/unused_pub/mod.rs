@@ -1,6 +1,7 @@
 //! Unused-pub check: flags `pub` items that have no cross-crate references.
 //! Items used only intra-crate get a "tighten to `pub(crate)`" suggestion;
-//! items with no references at all get a "remove" suggestion.
+//! items with no references at all get a "remove" suggestion (applied as a
+//! whole-item deletion only under `--fix-auto-delete`, via the cascade).
 //!
 //! The judged substrate is the rustc-extracted reference graph (the engine's
 //! [`wl_engine::SemanticModel`]), which natively sees macro expansions,
@@ -25,7 +26,6 @@
 
 use std::collections::HashMap;
 
-use crate::config::GlobPattern;
 use crate::{Lint, LintContext, LintId, Requirements};
 use wl_diagnostic::Diagnostic;
 
@@ -56,37 +56,6 @@ pub struct UnusedPub {
 impl UnusedPub {
     pub fn new(global: UnusedPubConfig, per_crate: HashMap<String, UnusedPubConfig>) -> Self {
         Self { global, per_crate }
-    }
-
-    pub fn from_cli(
-        exclude_crates: Vec<String>,
-        allowlist: Vec<String>,
-        kinds: Vec<KindFilter>,
-        exclude_paths: Vec<String>,
-        suppress_intra_crate: bool,
-    ) -> Self {
-        Self::new(
-            UnusedPubConfig {
-                exclude_crates,
-                allowlist: allowlist.iter().map(|p| GlobPattern::from_cli(p)).collect(),
-                kinds,
-                exclude_paths: exclude_paths
-                    .iter()
-                    .map(|p| GlobPattern::from_cli(p))
-                    .collect(),
-                suppress_intra_crate,
-                // `--fix` deletion is opt-in via config only — there's no CLI
-                // override because deletion is irreversible-without-git and we
-                // want the choice to live in the project's config file (not a
-                // forgotten shell history line).
-                auto_delete: false,
-                // Publish-awareness is config-only (no CLI flags): both live in the
-                // project's config file. CLI single-lint runs keep the defaults.
-                assume_all_public: false,
-                publish_hint_threshold: None,
-            },
-            HashMap::new(),
-        )
     }
 }
 
