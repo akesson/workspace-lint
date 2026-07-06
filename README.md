@@ -196,7 +196,8 @@ crate as having an external API (the pre-publish-aware behavior).
 
 Two findings:
 - **used only inside the crate** → suggests narrowing to `pub(crate)`.
-- **unused anywhere** → suggests `pub(crate)` (or deletion, with `auto-delete`).
+- **unused anywhere** → suggests `pub(crate)` (or deletion, under
+  `--fix-auto-delete`).
 
 ```toml
 [unused-pub]
@@ -205,7 +206,6 @@ allowlist = ["*Error", "main"]
 kinds = ["function", "struct"]
 exclude-paths = ["generated/**"]
 suppress-intra-crate = false
-auto-delete = false
 assume-all-public = false
 publish-hint-threshold = 3
 ```
@@ -217,7 +217,6 @@ publish-hint-threshold = 3
 | `kinds` | Item kinds to check: `function` (alias `fn`), `struct`, `enum`, `union`, `trait`, `type`, `const`, `static`, `module` (alias `mod`), `macro`. Omit (empty) to check all kinds. An unrecognized kind is a config error. |
 | `exclude-paths` | Glob patterns for source file paths to skip. |
 | `suppress-intra-crate` | When `true`, report only items unused *anywhere* and drop the "used only inside the crate, consider `pub(crate)`" findings. Default `false`. |
-| `auto-delete` | When `true`, the fix for an item that's unused everywhere becomes whole-item deletion (doc comment through body) instead of `pub(crate)` narrowing — but only when the containing file is git-tracked and clean (git is the backup). Dirty or untracked files downgrade the suggestion so `--fix` skips it. Deletion cascades in one pass (see below). Default `false`. |
 | `assume-all-public` | When `true`, treat *every* crate as having an external public API (skip library-public items regardless of `publish`). The conservative pre-publish-aware behavior. Default `false`. |
 | `publish-hint-threshold` | Emit the "set `publish = true`" hint once a workspace-internal crate reaches this many findings. `0` disables it. Default `3`. |
 
@@ -225,9 +224,16 @@ Any of these options can be set per-crate via
 [`[crates.<name>.unused-pub]`](#per-crate-configuration), which wholesale-replaces
 the global `[unused-pub]` for that crate.
 
-**One-pass cascade (`auto-delete`).** Deleting a dead item frees whatever it
-solely reached, so a single `workspace-lint --fix` run converges the *entire*
-dead chain — no commit-and-rerun between layers. When a removal leaves a `use`
+**One-pass deletion cascade (`--fix-auto-delete`).** The `--fix-auto-delete`
+flag is everything `--fix` does, plus: the fix for an item that's unused
+everywhere becomes whole-item deletion (doc comment through body) instead of
+`pub(crate)` narrowing — but only when the containing file is git-tracked and
+clean (git is the backup; dirty or untracked files are skipped with a `note:`
+explaining why). It is deliberately a CLI flag with no config equivalent:
+deleting code is a manual, human-invoked operation, and a CI `--fix` run must
+never be able to do it. Deleting a dead item frees whatever it solely
+reached, so a single `workspace-lint --fix-auto-delete` run converges the
+*entire* dead chain — no commit-and-rerun between layers. When a removal leaves a `use`
 dangling, the import is trimmed in the same pass — both an import *of* a
 removed item (`E0432`) and an import whose last real user was removed (an
 `unused_imports` warning), including imports of out-of-workspace items
@@ -724,13 +730,7 @@ removed files in the post-fix tree propagate correctly.
     - **unused-deps** deletes the dep line from `[dependencies]` /
       `[dev-dependencies]` / `[build-dependencies]`.
     - **unused-pub** tightens `pub fn`/`pub struct`/… to `pub(crate)` for
-      items used only inside their own crate, by default. With
-      `[unused-pub] auto-delete = true`, items that *appear unused
-      entirely* are deleted — but only if the file is tracked by git AND
-      has no uncommitted changes (git serves as the backup). When the
-      file is dirty or untracked the deletion suggestion is downgraded
-      to `MaybeIncorrect` and `--fix` skips it; the diagnostic carries
-      a `note:` explaining why.
+      items used only inside their own crate.
     - **stale-expect** deletes the whole directive line once the lint it
       silenced stops firing — the mechanical inverse of writing a silence
       directive. Withheld when the line also names a still-live or
@@ -741,6 +741,13 @@ removed files in the post-fix tree propagate correctly.
   silence directive on your behalf — that's always a human decision (paste
   the directive the diagnostic prints); deleting a stale one, which only
   reduces suppression, is the one exception.
+- `workspace-lint --fix-auto-delete` — everything `--fix` does, plus:
+  **unused-pub** items that *appear unused entirely* are whole-item
+  DELETED, cascading through the entire dead chain in one pass and
+  trimming any `use` left dangling (see the unused-pub section). Only
+  git-tracked-clean files are touched — the deletion's backup is
+  `git checkout`. A manual, CLI-only operation by design: there is no
+  config equivalent, so CI `--fix` runs can never delete code.
 - `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.
 

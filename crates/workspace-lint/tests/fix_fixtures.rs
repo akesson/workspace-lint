@@ -138,11 +138,12 @@ fn fix_unused_pub() {
 
 #[test]
 fn fix_unused_pub_delete() {
-    // `auto-delete` + the one-pass cascade: a 3-deep dead chain crossing a
+    // `--fix-auto-delete` + the one-pass cascade: a 3-deep dead chain crossing a
     // module boundary (`dead_a` → `helper` → `inner::extra::inner_dead`) is
     // removed whole-item in a single run, the `use inner::{helper, kept}` list
     // is trimmed to `{kept}`, and the live cross-crate API stays `pub`. The
-    // `[git] init` setup makes the tree clean so the deletions are
+    // flag comes from setup.toml's `args`; the `[git] init` setup makes the
+    // tree clean so the deletions are
     // MachineApplicable; the blessed `expected/` tree is a compiling workspace.
     run_fix_fixture("fix__unused_pub_delete");
 }
@@ -157,6 +158,19 @@ fn fix_unused_pub_delete_attrs() {
     // (`use util::thing;`, target SURVIVING) is trimmed second-order, and
     // blank separators collapse so the result is fmt-clean.
     run_fix_fixture("fix__unused_pub_delete_attrs");
+}
+
+#[test]
+fn fix_unused_pub_trait_import() {
+    // Lexical import-scope attribution (LeaveDates 2026-07-06): the deleted
+    // `dead_sort` and a SURVIVING `FromIterator` impl in the same module both
+    // call the provided trait method `DateFn::year`. The impl's rendered path
+    // (`<list::List as FromIterator<…>>`) hides its module, so without the
+    // edge's lexical `from_module` the survivor's call credited no scope and
+    // the trait import was trimmed — E0599 on the fixed tree. The
+    // `use crate::datefn::DateFn;` in list.rs must survive the fix; the
+    // blessed `expected/` tree is a compiling workspace.
+    run_fix_fixture("fix__unused_pub_trait_import");
 }
 
 #[test]

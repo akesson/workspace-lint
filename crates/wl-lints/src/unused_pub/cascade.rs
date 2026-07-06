@@ -1,11 +1,13 @@
-//! The one-pass `--fix` cascade: deleting a dead `pub` item frees whatever it
-//! solely reached, so this drives `pub_candidates_excluding` to a fixpoint and
-//! converges the whole dead chain in a single run (instead of one layer per
-//! invocation, each gated behind a commit).
+//! The one-pass `--fix-auto-delete` cascade: deleting a dead `pub` item frees
+//! whatever it solely reached, so this drives `pub_candidates_excluding` to a
+//! fixpoint and converges the whole dead chain in a single run (instead of one
+//! layer per invocation, each gated behind a commit).
 //!
-//! It is the `--fix` path for unused-pub: its output *replaces* the plain
-//! `ir::check` diagnostics, so it also owns the two safety
-//! properties a plain per-item delete can't guarantee alone —
+//! It is the deletion path for unused-pub — running it at all *is* the
+//! deletion opt-in (the `--fix-auto-delete` flag; plain `--fix` never
+//! deletes). Its output *replaces* the plain `ir::check` diagnostics, so it
+//! also owns the two safety properties a plain per-item delete can't
+//! guarantee alone —
 //!
 //!  - **Dangling-import cleanup.** A deleted item's `use` sites are excised in
 //!    the same fix (`import_surgery`), closing the E0432 hole.
@@ -61,7 +63,7 @@ pub fn run(
     let final_findings = loop {
         let removal = RemovalSet::new(removed.iter());
         let cands = model.pub_candidates_excluding(&removal);
-        let batch = findings(global, per_crate, fast, cands);
+        let batch = findings(global, per_crate, fast, cands, true);
         // Seeds for this round: genuinely-removable (Unused + MachineApplicable
         // deletion) findings that aren't already removed, aren't silenced, and
         // aren't macro-import-blocked.
@@ -153,10 +155,9 @@ pub fn run(
 }
 
 /// Build the deletion finding for one private orphan, under the same
-/// per-crate config gates as the pub findings (`auto-delete` opt-in, crate /
-/// path / allowlist filters, build-generated exclusion, git-clean
-/// applicability). `None` ⇒ out of scope: the orphan must not seed a removal
-/// and gets no finding.
+/// per-crate config gates as the pub findings (crate / path / allowlist
+/// filters, build-generated exclusion, git-clean applicability). `None` ⇒ out
+/// of scope: the orphan must not seed a removal and gets no finding.
 fn collateral_finding(
     o: &PrivateOrphan,
     global: &UnusedPubConfig,
@@ -165,11 +166,10 @@ fn collateral_finding(
 ) -> Option<PubFinding> {
     let krate = fast.members().iter().find(|k| k.code_name() == o.krate)?;
     let config = per_crate.get(&krate.name).unwrap_or(global);
-    if !config.auto_delete
-        || config
-            .exclude_crates
-            .iter()
-            .any(|c| c == &krate.name || c == &o.krate)
+    if config
+        .exclude_crates
+        .iter()
+        .any(|c| c == &krate.name || c == &o.krate)
         || build_glob_set(&config.allowlist).is_some_and(|al| al.is_match(&o.id))
     {
         return None;

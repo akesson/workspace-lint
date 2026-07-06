@@ -438,7 +438,7 @@ pub fn normalize_stderr(stderr: &str, tmp: &Path) -> String {
 /// side-effect that isn't part of the user-visible workspace state under test).
 ///
 /// The `.git` prune matters for a fixture whose `setup.toml` does `[git] init`
-/// (auto-delete needs a clean repo): the staged tempdir then carries a `.git/`
+/// (deletion under `--fix-auto-delete` needs a clean repo): the staged tempdir then carries a `.git/`
 /// whose commit hashes are non-deterministic — never a comparison target. The
 /// dir-prune list is shared with copying; only the *file* exclusion differs
 /// (comparing drops the generated `Cargo.lock`, copying keeps everything else).

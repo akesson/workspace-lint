@@ -1,16 +1,13 @@
-# `--fix` coverage for unused-pub's ONE-PASS auto-delete cascade.
+# `--fix-auto-delete` coverage for unused-pub's ONE-PASS deletion cascade.
 #
-# `auto-delete` turns a truly-`Unused` finding into a whole-item deletion. In a
-# single `--fix` run the cascade then converges the entire dead chain: deleting
+# The flag turns a truly-`Unused` finding into a whole-item deletion. In a
+# single run the cascade then converges the entire dead chain: deleting
 # `dead_a` frees `helper` (its only caller), whose deletion frees
 # `inner::extra::inner_dead` — all three go in one pass. The `use inner::{helper,
 # kept}` list is surgically trimmed to `use inner::{kept}` (the dangling `helper`
 # leaf excised, `kept` kept). Only unused-pub is enabled so the fixture stays
 # focused; the resulting `expected/` tree must compile (the E0432 / orphaned-body
 # regression guard).
-[unused-pub]
-auto-delete = true
-
 [lints]
 default = "allow"
 unused-pub = "warn"

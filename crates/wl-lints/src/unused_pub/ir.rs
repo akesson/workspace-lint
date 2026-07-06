@@ -43,14 +43,15 @@ use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
 use super::deletion::pick_deletion_fix;
 
-/// One unused-pub finding paired with the two things the `--fix` cascade needs
-/// beyond the rendered diagnostic: the candidate identity (the removed-set key)
-/// and whether it is a genuinely-`Unused` item carrying a MachineApplicable
-/// deletion — i.e. a removal seed that will actually be applied.
+/// One unused-pub finding paired with the two things the `--fix-auto-delete`
+/// cascade needs beyond the rendered diagnostic: the candidate identity (the
+/// removed-set key) and whether it is a genuinely-`Unused` item carrying a
+/// MachineApplicable deletion — i.e. a removal seed that will actually be
+/// applied.
 pub(crate) struct PubFinding {
     /// `PubCandidate::id`; `None` for the crate-level publish hint.
     pub id: Option<String>,
-    /// `Unused` + `auto-delete` + git-clean ⇒ this item's deletion is
+    /// `Unused` + deletion mode + git-clean ⇒ this item's deletion is
     /// MachineApplicable, so removing it (and cascading) is sound.
     pub removable: bool,
     pub diagnostic: Diagnostic,
@@ -62,21 +63,27 @@ pub(super) fn check(
     fast: &FastModel,
     model: &SemanticModel,
 ) -> Vec<Diagnostic> {
-    findings(global, per_crate, fast, model.pub_candidates())
+    // Deletion is a `--fix-auto-delete` concern, and that path replaces this
+    // plain-check output with the cascade's — so the plain run always renders
+    // the tighten fallback for `Unused` items, never a deletion.
+    findings(global, per_crate, fast, model.pub_candidates(), false)
         .into_iter()
         .map(|f| f.diagnostic)
         .collect()
 }
 
 /// The candidate-driven core of the lint — shared by the plain [`check`] (fed
-/// `SemanticModel::pub_candidates`) and the `--fix` cascade (fed
+/// `SemanticModel::pub_candidates`) and the `--fix-auto-delete` cascade (fed
 /// `pub_candidates_excluding`). Returns per-candidate [`PubFinding`]s plus the
 /// crate-level publish hints, in the same order [`check`] always emitted them.
+/// `auto_delete` selects the structural fix for `Unused` items: whole-item
+/// deletion (the cascade) vs the shown-but-not-applied tighten fallback.
 pub(crate) fn findings(
     global: &UnusedPubConfig,
     per_crate: &HashMap<String, UnusedPubConfig>,
     fast: &FastModel,
     candidates: Vec<PubCandidate>,
+    auto_delete: bool,
 ) -> Vec<PubFinding> {
     let mut by_crate: BTreeMap<&str, Vec<&PubCandidate>> = BTreeMap::new();
     for c in &candidates {
@@ -129,7 +136,7 @@ pub(crate) fn findings(
             allowlist: build_glob_set(&config.allowlist).as_ref().cloned(),
             exclude_paths: build_glob_set(&config.exclude_paths).as_ref().cloned(),
             suppress_intra_crate: config.suppress_intra_crate,
-            auto_delete: config.auto_delete,
+            auto_delete,
             exempt_external_api,
         };
         let mut crate_findings = Vec::new();
@@ -305,10 +312,10 @@ fn build_diagnostic(
 ///  - `IntraCrate` → `pub` → `pub(crate)`, `MachineApplicable` (the candidate
 ///    has an intra-crate referrer and has cleared every structural
 ///    must-stay-`pub` guard).
-///  - `Unused` + `auto_delete` + git-tracked-clean → delete.
-///  - `Unused` + `auto_delete` + dirty/untracked → deletion as
+///  - `Unused` + `--fix-auto-delete` + git-tracked-clean → delete.
+///  - `Unused` + `--fix-auto-delete` + dirty/untracked → deletion as
 ///    `MaybeIncorrect` plus an explanatory note.
-///  - `Unused` without `auto_delete` → tighten as `MaybeIncorrect`: "unused"
+///  - `Unused` without `--fix-auto-delete` → tighten as `MaybeIncorrect`: "unused"
 ///    still has residual blind spots (configs outside the matrix), so the
 ///    suggestion is shown but not auto-applied.
 fn apply_structural_fix(

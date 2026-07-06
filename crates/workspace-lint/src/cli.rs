@@ -24,10 +24,17 @@ pub(crate) struct Cli {
     pub message_format: Option<String>,
     /// Apply machine-applicable structural rewrites in-place. Requires a clean
     /// git working tree (override with `--allow-dirty`) so every change is
-    /// reviewable as one diff. With deep verification (default; see `--no-deep`)
-    /// a directive is auto-written only for a finding rust-analyzer disproves.
+    /// reviewable as one diff. Never deletes code — see `--fix-auto-delete`.
     #[arg(long, global = true, default_value_t = false)]
     pub fix: bool,
+    /// Everything `--fix` does, plus: an `unused-pub` item that is unused
+    /// everywhere is whole-item DELETED (doc comment through body), cascading
+    /// through the entire dead chain in one pass and trimming any `use` left
+    /// dangling. Only git-tracked-clean files are touched — the deletion's
+    /// backup is `git checkout`. A manual operation by design: there is no
+    /// config equivalent, so CI `--fix` runs can never delete code.
+    #[arg(long, global = true, default_value_t = false)]
+    pub fix_auto_delete: bool,
     /// Skip the clean-git-tree guard used by `--fix` and the `expand`
     /// subcommand, letting them run with uncommitted changes to tracked files.
     /// Off by default so the resulting changes stay reviewable as one diff.
@@ -182,22 +189,38 @@ impl CheckRule {
                 crate_name,
             } => Box::new(CliCrateVersion::from_cli(command, pattern, crate_name)),
             CheckRule::UnusedDeps { ignore } => Box::new(UnusedDeps::from_cli(ignore)),
+            CheckRule::UnusedPub { .. } => {
+                let config = self
+                    .unused_pub_config()
+                    .expect("the UnusedPub variant always resolves a config");
+                Box::new(UnusedPub::new(config, std::collections::HashMap::new()))
+            }
+            CheckRule::ModuleTree => Box::new(ModuleTree::new()),
+            CheckRule::FeatureDrift => Box::new(FeatureDrift::new()),
+            CheckRule::StaleGitIndex => Box::new(StaleGitIndex::new()),
+        }
+    }
+
+    /// The `UnusedPubConfig` a `check unused-pub` invocation resolves to;
+    /// `None` for every other rule. Exposed separately from [`Self::into_lint`]
+    /// because the `--fix-auto-delete` cascade needs the same config outside
+    /// the boxed `Lint`.
+    pub(crate) fn unused_pub_config(&self) -> Option<wl_lints::unused_pub::UnusedPubConfig> {
+        match self {
             CheckRule::UnusedPub {
                 exclude_crates,
                 allowlist,
                 kinds,
                 exclude_paths,
                 suppress_intra_crate,
-            } => Box::new(UnusedPub::from_cli(
+            } => Some(wl_lints::unused_pub::UnusedPubConfig::from_cli(
                 exclude_crates,
                 allowlist,
                 kinds,
                 exclude_paths,
-                suppress_intra_crate,
+                *suppress_intra_crate,
             )),
-            CheckRule::ModuleTree => Box::new(ModuleTree::new()),
-            CheckRule::FeatureDrift => Box::new(FeatureDrift::new()),
-            CheckRule::StaleGitIndex => Box::new(StaleGitIndex::new()),
+            _ => None,
         }
     }
 

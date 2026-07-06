@@ -1,4 +1,4 @@
-# `--fix` coverage for the deletion SURFACE (LeaveDates 2026-07-05):
+# `--fix-auto-delete` coverage for the deletion SURFACE (LeaveDates 2026-07-05):
 #
 # - `fake` is `#[cfg(test)]`-gated: in the `+test` unit where it exists, the
 #   cfg attr is STRIPPED from HIR, so the extractor's `full_span` cannot see
@@ -11,9 +11,6 @@
 #   second-order (it would be an `unused_imports` warning, a `-D warnings`
 #   failure).
 # - Blank separators around deleted items collapse — the result is fmt-clean.
-[unused-pub]
-auto-delete = true
-
 [lints]
 default = "allow"
 unused-pub = "warn"

@@ -1,4 +1,4 @@
-# `--fix` coverage for the CASCADE'S SECOND-ORDER surfaces (LeaveDates
+# `--fix-auto-delete` coverage for the CASCADE'S SECOND-ORDER surfaces (LeaveDates
 # 2026-07-05 follow-ups):
 #
 # - `dead` is unused → deleted. It was the last caller of the private
@@ -11,9 +11,6 @@
 # - …and of `use util::{gadget};` (gadget itself SURVIVES — the app bin uses
 #   it). Excising the leaf empties the brace group, which collapses the whole
 #   statement instead of leaving `use util::{};`.
-[unused-pub]
-auto-delete = true
-
 [lints]
 default = "allow"
 unused-pub = "warn"

@@ -1,4 +1,4 @@
-//! The `--fix` deletion surface: whole-item removal byte math shared by the
+//! The `--fix-auto-delete` deletion surface: whole-item removal byte math shared by the
 //! pub findings (`ir`), the private-collateral cascade (`cascade`), and the
 //! import surgery (`surgery`).
 //!
@@ -16,7 +16,8 @@ use wl_engine::wl_ir;
 
 use wl_diagnostic::{Applicability, PubVerdict};
 
-/// Pick a deletion suggestion when the user asked for one (`auto_delete`) and
+/// Pick a deletion suggestion when the run asked for one (`auto_delete`, i.e.
+/// `--fix-auto-delete`) and
 /// the item is genuinely unused. Returns `None` to mean "fall back to the
 /// tightening suggestion". The `Option<String>` second element carries the
 /// "git-dirty file" caveat note when present.
@@ -111,7 +112,7 @@ pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcom
         DeleteOutcome::Skip(
             suggestion,
             format!(
-                "file `{}` is untracked or has uncommitted changes; `--fix` will not auto-delete (commit first or use `git stash`)",
+                "file `{}` is untracked or has uncommitted changes; `--fix-auto-delete` will not delete it (commit first or use `git stash`)",
                 file.display()
             ),
         )

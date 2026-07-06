@@ -48,7 +48,16 @@ use serde::{Deserialize, Serialize};
 /// `.time()` call shield a `use …::TimeView;` whose written users are all
 /// deleted. A pre-5 fragment defaults the flag to `false` everywhere, which
 /// would re-open exactly that false shield — the bump forces a re-extract.
-pub const SCHEMA_VERSION: u32 = 5;
+/// 6 — edges gained [`RefEdge::from_module`]: the `from` item's **lexical**
+/// enclosing module. `from` itself is `def_path_str`-rendered, which places an
+/// impl member at its self-type's path (`Type::method`, `<Type as
+/// Trait>::method`) — the module the impl is *written in* is not recoverable
+/// from that text, so import-scope attribution credited a trait-impl body's
+/// references to no module at all (and an out-of-module inherent impl's to the
+/// wrong one), letting the cascade trim a `use` a surviving trait-method call
+/// still needs (E0599 on the fixed tree). A pre-6 fragment carries an empty
+/// `from_module`, silently re-opening that hole — the bump forces a re-extract.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.json`. Phase 2 assembles these.
@@ -124,6 +133,16 @@ impl IrFragment {
 pub struct RefEdge {
     pub from: Vec<String>,
     pub to: Vec<String>,
+    /// Def path of the `from` item's **lexical** enclosing module
+    /// (`[crate_code, mods…]`; the crate root is `[crate_code]`). `from` is
+    /// `def_path_str`-rendered, which places an impl member at its self-type's
+    /// path (`Type::method`, `<Type as Trait>::method`) — the module the impl
+    /// is *written in* is not a textual prefix of that rendering. rustc
+    /// resolves a body's names through the imports of the module the code is
+    /// lexically in, so import-scope attribution needs this as its own fact.
+    /// Empty only on pre-6 fragments.
+    #[serde(default)]
+    pub from_module: Vec<String>,
     /// Stable `DefPathHash` (hex) of the enclosing `from` item — always local.
     #[serde(default)]
     pub from_key: String,

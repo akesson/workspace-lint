@@ -65,15 +65,6 @@ pub struct UnusedPubConfig {
     /// "consider `pub`" suggestions.
     #[serde(default, rename = "suppress-intra-crate")]
     pub suppress_intra_crate: bool,
-    /// When `true`, the structural fix for `appears unused — consider
-    /// removing` becomes *item deletion* instead of `pub` narrowing.
-    /// Guarded by a git-tracked-clean check: if the containing file is
-    /// untracked or has uncommitted changes, the suggestion is downgraded
-    /// to `MaybeIncorrect` and `--fix` skips it. Default `false`
-    /// (visibility-narrow only — safer when the user can't recover via
-    /// `git checkout`).
-    #[serde(default, rename = "auto-delete")]
-    pub auto_delete: bool,
     /// When `true`, treat *every* crate as having an external public API:
     /// library-public items are exempt regardless of the crate's `publish`
     /// field (the conservative pre-publish-aware behavior). Default `false` —
@@ -89,4 +80,32 @@ pub struct UnusedPubConfig {
     /// built-in default (`DEFAULT_PUBLISH_HINT_THRESHOLD`).
     #[serde(default, rename = "publish-hint-threshold")]
     pub publish_hint_threshold: Option<usize>,
+}
+
+impl UnusedPubConfig {
+    /// Build the config a `check unused-pub` CLI invocation resolves to.
+    /// Shared by the lint construction and the `--fix-auto-delete` cascade
+    /// (which needs the same config outside the boxed `Lint`).
+    pub fn from_cli(
+        exclude_crates: &[String],
+        allowlist: &[String],
+        kinds: &[KindFilter],
+        exclude_paths: &[String],
+        suppress_intra_crate: bool,
+    ) -> Self {
+        Self {
+            exclude_crates: exclude_crates.to_vec(),
+            allowlist: allowlist.iter().map(|p| GlobPattern::from_cli(p)).collect(),
+            kinds: kinds.to_vec(),
+            exclude_paths: exclude_paths
+                .iter()
+                .map(|p| GlobPattern::from_cli(p))
+                .collect(),
+            suppress_intra_crate,
+            // Publish-awareness is config-only (no CLI flags): both live in the
+            // project's config file. CLI single-lint runs keep the defaults.
+            assume_all_public: false,
+            publish_hint_threshold: None,
+        }
+    }
 }
