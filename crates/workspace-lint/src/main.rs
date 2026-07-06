@@ -587,7 +587,7 @@ fn load_semantic_model(configs: Vec<wl_engine::CfgSelector>) -> wl_engine::Seman
         }
     });
     wl_engine::timing::phase("ASSEMBLE (phase 2)", || {
-        wl_engine::SemanticModel::load(&runs, &root).unwrap_or_else(|e| util::fail(e))
+        wl_engine::SemanticModel::load(&runs).unwrap_or_else(|e| util::fail(e))
     })
 }
 

@@ -89,6 +89,10 @@ pub struct ExtractionRuns {
     pub runs: Vec<ConfigRun>,
     /// The dylib that produced them (useful for diagnostics/logging).
     pub dylib: PathBuf,
+    /// Resolved workspace metadata (`cargo metadata` with `resolve`), read once
+    /// during extraction and reused by the semantic assembler — the completeness
+    /// guard and `WorkspaceMeta` share this single exec.
+    pub metadata: cargo_metadata::Metadata,
 }
 
 /// Everything that can go wrong before or during extraction. The toolchain
@@ -235,9 +239,21 @@ impl Engine {
             || source::build_dylib(&package_dir),
         )?);
 
-        // The guard's target set comes from cargo metadata on the target
-        // workspace — computed before the chdir (explicit manifest path).
-        let targets = guard::TargetSet::discover(&cfg.workspace_root, &cfg.packages, cfg)?;
+        // One `cargo metadata` (with `resolve`) serves both the completeness
+        // guard (below) and the semantic assembler (`WorkspaceMeta`, via the
+        // returned `ExtractionRuns`): the resolve graph is a superset of the
+        // guard's member/target facts, so a single exec — computed before the
+        // chdir, with an explicit manifest path — covers both.
+        let metadata = crate::timing::phase("cargo_metadata[+resolve]", || {
+            cargo_metadata::MetadataCommand::new()
+                .manifest_path(cfg.workspace_root.join("Cargo.toml"))
+                .exec()
+                .map_err(|source| EngineError::Metadata {
+                    dir: cfg.workspace_root.clone(),
+                    source: Box::new(source),
+                })
+        })?;
+        let targets = guard::TargetSet::discover(&metadata, &cfg.packages, cfg);
 
         let _cwd = CwdGuard::enter(&cfg.workspace_root)?;
         let mut runs = Vec::new();
@@ -268,6 +284,7 @@ impl Engine {
         Ok(ExtractionRuns {
             runs,
             dylib: dylib.canonical().to_path_buf(),
+            metadata,
         })
     }
 

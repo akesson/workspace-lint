@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::{EngineConfig, EngineError};
+use super::EngineConfig;
 
 /// The linted targets of the selected packages, from cargo metadata — the
 /// config-independent half of the expected-fragment computation.
@@ -45,15 +45,15 @@ pub(super) struct TargetSet {
 }
 
 impl TargetSet {
-    /// Compute the target set for a workspace + package selection. Returns
-    /// `Ok(None)` (guard skipped, with a warning) when any config carries a
-    /// target-selection flag we don't model, so the guard never fires
-    /// spuriously.
+    /// Compute the target set from an already-read `cargo metadata` and a
+    /// package selection. Returns `None` (guard skipped, with a warning) when
+    /// any config carries a target-selection flag we don't model, so the guard
+    /// never fires spuriously.
     pub(super) fn discover(
-        workspace_root: &Path,
+        md: &cargo_metadata::Metadata,
         packages: &[String],
         cfg: &EngineConfig,
-    ) -> Result<Option<Self>, EngineError> {
+    ) -> Option<Self> {
         // Flags that change which *targets* compile, beyond the `--tests` we
         // model. (Feature flags — `--features`, `--all-features`,
         // `--no-default-features` — change cfg/content, not the target set.)
@@ -88,20 +88,10 @@ impl TargetSet {
                      `{flag}` in config `{}`",
                     selector.id
                 );
-                return Ok(None);
+                return None;
             }
         }
 
-        let md = crate::timing::phase("cargo_metadata[guard,--no-deps]", || {
-            cargo_metadata::MetadataCommand::new()
-                .manifest_path(workspace_root.join("Cargo.toml"))
-                .no_deps()
-                .exec()
-                .map_err(|source| EngineError::Metadata {
-                    dir: workspace_root.to_path_buf(),
-                    source: Box::new(source),
-                })
-        })?;
         let member_ids: BTreeSet<String> = md
             .workspace_members
             .iter()
@@ -155,7 +145,7 @@ impl TargetSet {
                 }
             }
         }
-        Ok(Some(set))
+        Some(set)
     }
 
     /// The fragment filenames one config must produce, exactly as the
@@ -232,6 +222,17 @@ mod tests {
             .unwrap()
     }
 
+    /// `cargo metadata` for this repo, feeding `discover` (offline: `--no-deps`
+    /// needs no lockfile or network, and the guard reads only member facts —
+    /// identical under `--no-deps` and `resolve`).
+    fn repo_metadata() -> cargo_metadata::Metadata {
+        cargo_metadata::MetadataCommand::new()
+            .manifest_path(repo_root().join("Cargo.toml"))
+            .no_deps()
+            .exec()
+            .unwrap()
+    }
+
     fn engine_cfg(configs: Vec<CfgSelector>) -> EngineConfig {
         EngineConfig {
             workspace_root: repo_root(),
@@ -246,9 +247,7 @@ mod tests {
     #[test]
     fn expected_set_matches_this_workspace() {
         let cfg = engine_cfg(vec![CfgSelector::default_cfg(), CfgSelector::tests()]);
-        let set = TargetSet::discover(&repo_root(), &[], &cfg)
-            .unwrap()
-            .unwrap();
+        let set = TargetSet::discover(&repo_metadata(), &[], &cfg).unwrap();
 
         let default = set.expected_fragments(&[]);
         for frag in [
@@ -308,13 +307,10 @@ mod tests {
     #[test]
     fn package_filter_scopes_build_fragments() {
         let cfg = engine_cfg(vec![CfgSelector::default_cfg()]);
-        let with_build = TargetSet::discover(&repo_root(), &["wl-engine".to_string()], &cfg)
-            .unwrap()
-            .unwrap();
+        let with_build =
+            TargetSet::discover(&repo_metadata(), &["wl-engine".to_string()], &cfg).unwrap();
         assert_eq!(with_build.build_fragments().len(), 1);
-        let without = TargetSet::discover(&repo_root(), &["wl-ir".to_string()], &cfg)
-            .unwrap()
-            .unwrap();
+        let without = TargetSet::discover(&repo_metadata(), &["wl-ir".to_string()], &cfg).unwrap();
         assert!(without.build_fragments().is_empty());
     }
 
@@ -322,9 +318,7 @@ mod tests {
     #[test]
     fn package_filter_narrows_expectations() {
         let cfg = engine_cfg(vec![CfgSelector::default_cfg()]);
-        let set = TargetSet::discover(&repo_root(), &["wl-ir".to_string()], &cfg)
-            .unwrap()
-            .unwrap();
+        let set = TargetSet::discover(&repo_metadata(), &["wl-ir".to_string()], &cfg).unwrap();
         assert_eq!(set.expected_fragments(&[]).len(), 1);
         assert!(set.expected_fragments(&[]).contains("wl_ir.wlir"));
     }
@@ -340,11 +334,7 @@ mod tests {
                 cargo_args: vec!["--lib".into()],
             },
         ]);
-        assert!(
-            TargetSet::discover(&repo_root(), &[], &cfg)
-                .unwrap()
-                .is_none()
-        );
+        assert!(TargetSet::discover(&repo_metadata(), &[], &cfg).is_none());
     }
 
     /// A `test = false` target is expected under the default config but never

@@ -5,9 +5,6 @@
 //! (the unused-deps substrate). Lifted from the spike assembler's `Meta`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
-
-use super::SemanticError;
 
 /// Which cargo dependency table a declared dep came from — the axis that
 /// decides whether the IR can judge it. `Normal` deps compile in every lib/bin
@@ -75,19 +72,14 @@ pub struct WorkspaceMeta {
 }
 
 impl WorkspaceMeta {
-    /// Read the target workspace via `cargo metadata` (WITH `resolve`, so the
-    /// dependency graph is available for facade-crate attribution).
-    pub fn from_workspace(root: &Path) -> Result<Self, SemanticError> {
-        let md = crate::timing::phase("cargo_metadata[meta,+resolve]", || {
-            cargo_metadata::MetadataCommand::new()
-                .manifest_path(root.join("Cargo.toml"))
-                .exec()
-                .map_err(|source| SemanticError::Metadata {
-                    dir: root.to_path_buf(),
-                    source: Box::new(source),
-                })
-        })?;
-
+    /// Build the workspace facts from an already-read `cargo metadata` (with
+    /// `resolve`, so the dependency graph is available for facade-crate
+    /// attribution). The engine reads metadata once during extraction and
+    /// threads it here via [`ExtractionRuns`], so the assembler never re-execs
+    /// cargo.
+    ///
+    /// [`ExtractionRuns`]: crate::ExtractionRuns
+    pub fn from_metadata(md: &cargo_metadata::Metadata) -> Self {
         let member_ids: BTreeSet<String> = md
             .workspace_members
             .iter()
@@ -204,7 +196,7 @@ impl WorkspaceMeta {
                 .collect();
             meta.declared.insert(pkg, decls);
         }
-        Ok(meta)
+        meta
     }
 
     pub fn is_published_lib(&self, krate: &str) -> bool {

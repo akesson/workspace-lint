@@ -53,12 +53,6 @@ pub enum SemanticError {
         path: std::path::PathBuf,
         message: String,
     },
-
-    #[error("reading cargo metadata for {dir}: {source}")]
-    Metadata {
-        dir: std::path::PathBuf,
-        source: Box<cargo_metadata::Error>,
-    },
 }
 
 /// The assembled semantic model: one [`Assembly`] per extracted config (first
@@ -71,8 +65,8 @@ pub struct SemanticModel {
 impl SemanticModel {
     /// Load every fragment dir of an extraction and assemble. The convenience
     /// entry point the binary uses: `Engine::extract(..)` → here.
-    pub fn load(runs: &ExtractionRuns, workspace_root: &Path) -> Result<Self, SemanticError> {
-        let meta = WorkspaceMeta::from_workspace(workspace_root)?;
+    pub fn load(runs: &ExtractionRuns) -> Result<Self, SemanticError> {
+        let meta = WorkspaceMeta::from_metadata(&runs.metadata);
         let configs = crate::timing::phase("load_fragments[mmap all configs]", || {
             let mut configs = Vec::new();
             for run in &runs.runs {
