@@ -1,0 +1,14 @@
+[unused-pub]
+# `alpha::Shout` is imported by `beta` purely for method-call syntax. The
+# `use` edge is discounted (imports never count for unused-pub) and the call
+# edge lands on the trait *member*, never the trait — the member's reach must
+# fold onto the owning trait declaration or the trait reads "only used inside
+# the crate" and gets narrowed, breaking `beta` (E0603). (LeaveDates
+# 2026-07-05: 10 extension traits — StrExt, EventTargetExt, … — broke this way.)
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["default"]

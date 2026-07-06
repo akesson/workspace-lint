@@ -1,0 +1,3 @@
+# auto-delete needs a git-tracked-clean tree (git is the deletion's backup).
+[git]
+init = true

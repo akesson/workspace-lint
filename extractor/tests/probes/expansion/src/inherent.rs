@@ -25,3 +25,31 @@ pub mod remote_impl {
         }
     }
 }
+
+impl Carrier {
+    /// By-value receiver on a non-`Copy` type — the `wrong_self_convention`
+    /// shape the clippy-unmask guard replays (`self_kind: "value"`,
+    /// `self_copy: false`).
+    pub fn is_heavy(self) -> bool {
+        self.value > 10
+    }
+}
+
+/// `Copy` self type: by-value receivers are convention-CORRECT here
+/// (`self_copy: true` must be emitted so the guard stays quiet).
+#[derive(Clone, Copy)]
+pub struct Chip(pub u32);
+
+impl Chip {
+    pub fn to_units(self) -> u32 {
+        self.0
+    }
+}
+
+/// Use-site shapes for `RefEdge::receiver_resolved`: `c.same_module()` is a
+/// receiver-based method call (no written path — must flag `true`), while
+/// `Chip::to_units(chip)` is a written `TypeRelative` path (resolves `Chip`
+/// through its name — must stay `false`).
+pub fn call_shapes(c: &Carrier, chip: Chip) -> (u32, u32) {
+    (c.same_module(), Chip::to_units(chip))
+}

@@ -1,0 +1,22 @@
+# `--fix` coverage for the deletion SURFACE (LeaveDates 2026-07-05):
+#
+# - `fake` is `#[cfg(test)]`-gated: in the `+test` unit where it exists, the
+#   cfg attr is STRIPPED from HIR, so the extractor's `full_span` cannot see
+#   it — the deletion must extend over it lexically or the orphaned attr
+#   lands before `}` (a syntax error that also bricks `--fast-only`).
+# - `stale` carries Parsed built-in attrs (`#[deprecated]`, `#[must_use]`)
+#   the extractor skips for the same reason — both go with the item.
+# - `stale` was the last demo user of `use util::thing;` while `util::thing`
+#   itself SURVIVES (the app bin calls it): the import is trimmed
+#   second-order (it would be an `unused_imports` warning, a `-D warnings`
+#   failure).
+# - Blank separators around deleted items collapse — the result is fmt-clean.
+[unused-pub]
+auto-delete = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["default", "--tests"]

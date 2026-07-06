@@ -1,0 +1,22 @@
+# `--fix` coverage for the CASCADE'S SECOND-ORDER surfaces (LeaveDates
+# 2026-07-05 follow-ups):
+#
+# - `dead` is unused → deleted. It was the last caller of the private
+#   `helper`, whose only callee is the private `inner`: both would be rustc
+#   `dead_code` on the fixed tree, so the cascade deletes the whole private
+#   chain (collateral).
+# - `dead` was also the last user of `use std::fmt::Write;` — an
+#   OUT-OF-WORKSPACE import the assembler resolves to no def. It is trimmed
+#   via its display-path pseudo-identity (`unused_imports` otherwise).
+# - …and of `use util::{gadget};` (gadget itself SURVIVES — the app bin uses
+#   it). Excising the leaf empties the brace group, which collapses the whole
+#   statement instead of leaving `use util::{};`.
+[unused-pub]
+auto-delete = true
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["default"]

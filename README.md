@@ -228,14 +228,40 @@ the global `[unused-pub]` for that crate.
 **One-pass cascade (`auto-delete`).** Deleting a dead item frees whatever it
 solely reached, so a single `workspace-lint --fix` run converges the *entire*
 dead chain — no commit-and-rerun between layers. When a removal leaves a `use`
-dangling, the import is trimmed in the same pass: a multi-name list keeps its
-live leaves (`use m::{a, b}` → `use m::{b}`) and a fully-dead list is dropped
-whole, so the tree still compiles (no `E0432`). An item stays alive if *any*
-`[engine] configs` entry uses it (the config matrix is unioned), if an `expect!`
-/ `allow!` silences it, or if the only `use` naming it is macro-generated (no
-editable surface). Surgery leaves valid but unformatted residue (collapsed blank
-lines, single-element `{…}` groups), so `--fix` prints a `cargo fmt` hint when it
-trims imports.
+dangling, the import is trimmed in the same pass — both an import *of* a
+removed item (`E0432`) and an import whose last real user was removed (an
+`unused_imports` warning), including imports of out-of-workspace items
+(`use anyhow::Context;` whose only `.context()` caller died): a multi-name
+list keeps its live leaves (`use m::{a, b}` → `use m::{b}`) and a list left
+empty is dropped whole statement — nested groups collapse into their parent —
+so the tree stays compiling *and* `unused_imports`-clean. The judgement
+mirrors rustc's import resolution: it is scoped per module (a test module
+with its own `use` of the name doesn't keep the parent's alive), follows
+`use super::*` re-imports, and knows that an inherent method call like
+`x.time()` never goes through the type's import while a trait method call
+does need its trait in scope. Private code the
+deleted items alone reached (helpers, consts — the things rustc `dead_code`
+would start flagging) is deleted as collateral in the same cascade,
+causality-gated: a private item that was already dead before the fix is the
+author's, not ours, and private structs/enums/fields are never touched. An
+item stays alive if *any* `[engine] configs` entry uses it (the config matrix
+is unioned), if an `expect!` / `allow!` silences it, or if the only `use`
+naming it is macro-generated (no editable surface). Surgery can leave
+unformatted residue (collapsed blank lines), so `--fix` prints a `cargo fmt`
+hint whenever it changes anything.
+
+**Clippy-unmask guard.** De-`pub`-ing an item strips clippy's
+`avoid-breaking-exported-api` exemption, so a narrow can activate style lints
+on the fixed tree. `--fix` replays the two observed-in-practice ones —
+`wrong_self_convention` (against the extracted receiver kinds, `Copy`-aware)
+and `len_without_is_empty` — and downgrades an unmasking tighten to
+shown-but-not-applied, with a note naming the method. What remains the
+author's: a now-dead private struct *field* (deleting one means editing every
+construction site), and clippy lints beyond those two. On a `-D warnings`
+codebase, follow a delete run with `cargo clippy --fix` and `cargo fmt`.
+Glob imports (`use m::*`) are never trimmed. Fixes are only written into
+git-tracked files — a gitignored, build.rs-generated file (reached via
+`include!`) has no git backup, so `--fix` skips it and says so.
 
 ### architecture
 

@@ -1,0 +1,13 @@
+[unused-pub]
+# `demo::App` is used ONLY by the package's own bin target (`main.rs`). The
+# bin shares the lib's crate NAME but compiles as its own crate, so
+# `pub(crate)` cannot reach it — the verdict must trust the extractor's
+# CrateNum comparison (`RefEdge::external`), not the name, and keep `App`
+# pub. (LeaveDates 2026-07-05: `app_leave_dates::App` was narrowed → E0603.)
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["default"]

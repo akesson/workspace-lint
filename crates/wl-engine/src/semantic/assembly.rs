@@ -12,151 +12,11 @@ use std::sync::Arc;
 
 use wl_ir::{IrFragment, RefEdge, Visibility};
 
+pub(super) use super::def_info::{CANDIDATE_KINDS, CandReach};
+pub use super::def_info::{Category, DefInfo, Reach, ResolvedRef};
 use super::join::{ForeignReach, IdentityIndex};
 use super::meta::WorkspaceMeta;
 use super::removal::{DegreeView, RemovalOverlay, RemovalSet};
-
-/// How a def relates to the unused-pub verdict — derived from `parent_kind` +
-/// `trait_item` (both rustc-emitted, no text heuristic).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Category {
-    /// Module-level (parent `mod`/root) — a real unused-pub candidate.
-    ModuleLevel,
-    /// Inherent-impl item (`impl Foo { .. }`, no trait) — independently-
-    /// controllable pub API, judged by its direct-call edges. Also a real
-    /// candidate (the syn model can't even see these — a pivot win).
-    InherentImpl,
-    /// Trait-impl item (`impl Tr for Foo`) — reachable via trait dispatch the
-    /// ref graph doesn't edge, visibility forced by the trait. Judged by
-    /// dispatch expansion, not direct edges.
-    TraitImpl,
-    /// Trait *declaration* item, or body-nested / fn-local — excluded.
-    Other,
-}
-
-impl Category {
-    /// Classify from the rustc-emitted `parent_kind` + `trait_item`.
-    fn of(parent_kind: Option<&str>, trait_item: &Option<String>) -> Self {
-        match parent_kind {
-            Some("mod") | None => Category::ModuleLevel,
-            Some("impl") if trait_item.is_some() => Category::TraitImpl,
-            Some("impl") => Category::InherentImpl,
-            _ => Category::Other, // trait decl, fn-local, const/static bodies
-        }
-    }
-
-    /// Is this a def the unused-pub verdict judges? Module-level and
-    /// inherent-impl by direct use-site, trait-impl by dispatch expansion.
-    /// Only `Other` (trait *declaration* items, fn-local defs) stays out.
-    pub(super) fn is_candidate(self) -> bool {
-        matches!(
-            self,
-            Category::ModuleLevel | Category::InherentImpl | Category::TraitImpl
-        )
-    }
-}
-
-/// How a candidate def is reached under *one* config — the per-config
-/// primitive the unused-pub verdict and the cfg-matrix union both reduce to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reach {
-    /// A real (non-import) use-site references this def directly. (The only
-    /// way module-level / inherent-impl items are reached.)
-    Direct,
-    /// A trait-impl item whose implemented trait is **external** (std/serde/
-    /// …). External code dispatches it invisibly (`format!` → `Display::fmt`),
-    /// so it can never be proven dead — a sound root, never a lead.
-    ExternalDispatch,
-    /// A trait-impl item whose implemented trait is **workspace-internal** and
-    /// whose trait method is dispatched somewhere (via generic/`dyn`), which
-    /// reaches every impl of it.
-    InternalDispatch,
-    /// Carries an export-shaped attribute (`#[no_mangle]`/`#[export_name]`/
-    /// `#[used]`): exported to the linker, no Rust referrer will ever exist —
-    /// a sound root, never a lead (the `ffi_no_mangle_export` false positive
-    /// this variant retires).
-    ExportRoot,
-    /// A judged candidate with no reaching edge under this config — a lead.
-    Unreached,
-}
-
-/// One resolved reference out of a crate's primary-unit code — what
-/// [`Assembly::references_from`] returns and the `architecture` lint judges.
-/// `to_path` is canonical: the target's *definition* path for workspace defs
-/// (re-export chains resolved), the display path as-referenced otherwise.
-#[derive(Debug, Clone)]
-pub struct ResolvedRef {
-    /// Enclosing module of the use-site (crate-rooted definition path).
-    pub module: Vec<String>,
-    /// Canonical target path (see type docs).
-    pub to_path: Vec<String>,
-    /// The target's `DefKind` in the shared vocabulary (best-effort).
-    pub to_kind: String,
-    /// A `use`/`pub use` declaration, vs a code reference.
-    pub import: bool,
-    /// A glob import (`use m::*`) — judged as a representative child.
-    pub glob: bool,
-    /// Local binding name of a single-name import (`use a::B as C` ⇒ `C`).
-    pub alias: Option<String>,
-    /// Use-site span (file, on-disk byte range, 1-based line); `None` only
-    /// for dummy-span edge cases.
-    pub span: Option<wl_ir::Span>,
-}
-
-/// A def as the reverse index sees it — the owned copy keyed lookups return.
-#[derive(Debug)]
-pub struct DefInfo {
-    pub krate: String,
-    /// Display path, `[crate, ..]` joined with `::` — also the cross-config
-    /// stable identity the union joins on.
-    pub path: String,
-    pub kind: String,
-    pub public: bool,
-    pub category: Category,
-    /// For a trait-impl item, the stable key of the trait item it implements —
-    /// the dispatch handle. `None` for every non-trait-impl def.
-    pub trait_item: Option<String>,
-    /// No source span ⇒ a compiler-synthesized def (the `--test` harness's
-    /// generated `fn main`, …). Never an unused-pub candidate.
-    pub synthetic: bool,
-    /// Carries an export-shaped attribute (`ItemFact::attrs` non-empty) — a
-    /// linker-visible root; see [`Reach::ExportRoot`].
-    pub export_root: bool,
-    /// For an inherent-impl item, the stable key of the impl's nominal self
-    /// type — the external-reachability handle (see [`wl_ir::ItemFact::self_type`]).
-    pub self_type: Option<String>,
-    /// The whole-definition span (on-disk byte offsets — see [`wl_ir::Span`]).
-    /// `None` exactly when `synthetic`.
-    pub span: Option<wl_ir::Span>,
-    /// The whole-**item** span — attrs/doc through the body — for the
-    /// unused-pub `--fix` deletion surface (see [`wl_ir::ItemFact::full_span`]).
-    /// `None` when there is no editable surface (synthetic / macro-generated).
-    pub full_span: Option<wl_ir::Span>,
-    /// The visibility-token span — the `--fix` tighten write surface. `None`
-    /// when there is no independently editable token (private, trait-forced,
-    /// macro-generated); see [`wl_ir::ItemFact::vis_span`].
-    pub vis_span: Option<wl_ir::Span>,
-}
-
-/// One candidate def as the cfg-matrix union sees it: reduced to its
-/// cross-config stable identity, carrying whether it was reached in *this*
-/// config plus the display fields the union verdict reports.
-#[derive(Debug)]
-pub(crate) struct CandReach {
-    pub(crate) reached: bool,
-    pub(crate) krate: String,
-    pub(crate) category: Category,
-    pub(crate) kind: String,
-}
-
-/// The kinds the unused-pub verdict judges. Widened from the spike's
-/// `fn|struct|enum|trait|type` narrowing (migration PR 4): const/static/macro/
-/// union pub items are candidates too — the per-lint `kinds` config filters at
-/// the lint layer, not here. Exactly the syn model's `ItemKind::is_definition`
-/// set (`mod` deliberately absent — a container, not a named definition).
-pub(super) const CANDIDATE_KINDS: &[&str] = &[
-    "fn", "struct", "enum", "trait", "type", "const", "static", "macro", "union",
-];
 
 /// One config's assembled workspace: fragments plus the derived global
 /// indexes — the driver-backed replacement for the resolver's global view.
@@ -185,6 +45,23 @@ pub struct Assembly {
     /// Keys named in some PUB item's signature (`in_signature` edges whose
     /// `from` def is public) — the `exposed_in_public_signature` substrate.
     signature_exposed: BTreeSet<String>,
+    /// Trait-*member* key → the owning trait declaration's key. A method-call
+    /// edge resolves to the member def (`parent_kind == "trait"`, never a
+    /// candidate); the trait itself is only reachable through its members at
+    /// most call sites, so the fold credits every member edge to the parent
+    /// trait too (an extension trait imported cross-crate purely for method
+    /// syntax must stay `pub`).
+    pub(super) trait_parent: BTreeMap<String, String>,
+    /// Owner key (inherent-impl self type, or trait declaration) → its assoc
+    /// **fn** member keys — the member enumeration behind the clippy-unmask
+    /// guard (`super::clippy_guard`). Trait-*impl* methods are absent by
+    /// construction (their conventions are the trait's, and clippy skips
+    /// them too).
+    pub(super) assoc_members: BTreeMap<String, Vec<String>>,
+    /// ADT key → its field keys (underscore-prefixed fields excluded, as
+    /// rustc `dead_code` excludes them) — the dead-field narrow guard's
+    /// enumeration ([`Assembly::has_unread_field`]).
+    pub(super) fields_of: BTreeMap<String, Vec<String>>,
     /// Keys that are the target of a `pub use` re-export
     /// (`RefEdge::reexport`). Tightening or deleting such a def can break the
     /// re-export (E0364/E0365), so the unused-pub port suppresses these — the
@@ -203,6 +80,14 @@ pub struct Assembly {
     /// Retained so [`Assembly::refold_excluding`] can re-run the same join when
     /// the unused-pub `--fix` cascade recomputes degrees with items removed.
     path_key: BTreeMap<String, String>,
+    /// (crate, item name) → the crate's defs carrying that trailing segment —
+    /// the suffix-relaxed leg of the path fallback: an edge into a
+    /// feature-shifted generation NO config extracted renders its target at
+    /// the *re-export* path (`data_common::Fraction::new`), which exact path
+    /// equality can't join to the definition path
+    /// (`data_common::fraction::Fraction::new`). Same index domain as
+    /// `path_key`.
+    name_key: BTreeMap<(String, String), Vec<(String, String)>>,
     /// The global (all-configs) key → identity index, for resolving an edge
     /// whose target was extracted only under another config (see
     /// [`Assembly::resolve_key`]).
@@ -255,11 +140,15 @@ impl Assembly {
         let mut impls_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut module_vis = BTreeMap::new();
         let mut id_key: BTreeMap<String, String> = BTreeMap::new();
+        let mut trait_members: Vec<(String, String)> = Vec::new();
         for frag in &fragments {
             for it in &frag.items {
                 let category = Category::of(it.parent_kind.as_deref(), &it.trait_item);
                 if let Some(ti) = &it.trait_item {
                     impls_of.entry(ti.clone()).or_default().push(it.key.clone());
+                }
+                if it.parent_kind.as_deref() == Some("trait") && it.path.len() > 1 {
+                    trait_members.push((it.key.clone(), it.path[..it.path.len() - 1].join("::")));
                 }
                 if it.kind == "mod" {
                     module_vis.insert(it.path.join("::"), it.visibility == Visibility::Public);
@@ -282,10 +171,22 @@ impl Assembly {
                         span: it.span.clone(),
                         full_span: it.full_span.clone(),
                         vis_span: it.vis_span.clone(),
+                        self_kind: it.self_kind.clone(),
+                        self_copy: it.self_copy,
                     },
                 );
             }
         }
+
+        // Resolve trait members to their owning trait declaration's key (the
+        // parent path's identity — trait and member always land in the same
+        // fragment, and `id_key` is already first-write-deterministic).
+        let trait_parent: BTreeMap<String, String> = trait_members
+            .into_iter()
+            .filter_map(|(member, parent_path)| {
+                id_key.get(&parent_path).map(|k| (member, k.clone()))
+            })
+            .collect();
 
         // 2) Path→key fallback index for BUILD-fragment edges: a build script's
         // dependencies compile in Build mode, whose `-Cmetadata` (hence
@@ -300,12 +201,19 @@ impl Assembly {
         // (the visible-parent behavior) doesn't join and degrades to the
         // pre-build-fragment posture — the use goes unseen; never a false join.
         let mut path_key: BTreeMap<String, String> = BTreeMap::new();
+        let mut name_key: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
         for frag in &fragments {
             if !matches!(frag.target_kind.as_str(), "lib" | "proc-macro") {
                 continue;
             }
             for it in &frag.items {
                 path_key.insert(it.path.join("::"), it.key.clone());
+                if let (Some(first), Some(last)) = (it.path.first(), it.path.last()) {
+                    name_key
+                        .entry((first.clone(), last.clone()))
+                        .or_default()
+                        .push((it.path.join("::"), it.key.clone()));
+                }
             }
         }
 
@@ -313,6 +221,8 @@ impl Assembly {
         //    each resolves to. `fold_edges` reads `defs`/`ids`/`id_key`/
         //    `path_key`, so build the assembly with those in place and the
         //    edge-derived maps empty, then fold into them.
+        let assoc_members = super::clippy_guard::assoc_members_index(&defs, &trait_parent);
+        let fields_of = super::clippy_guard::fields_of_index(&defs, &id_key);
         let mut asm = Assembly {
             fragments,
             crates,
@@ -323,11 +233,15 @@ impl Assembly {
             referenced: BTreeSet::new(),
             import_edges: 0,
             impls_of,
+            assoc_members,
+            fields_of,
+            trait_parent,
             signature_exposed: BTreeSet::new(),
             import_targets: BTreeSet::new(),
             reexporters: BTreeMap::new(),
             module_vis,
             path_key,
+            name_key,
             ids,
             id_key,
             foreign_reach: BTreeMap::new(),
@@ -383,10 +297,20 @@ impl Assembly {
     /// the same identity (the target was extracted only under another config —
     /// a `+test`/bench/integration edge to a dependency's plain rlib carries
     /// that plain generation, and cargo freshness leaves it only in the primary
-    /// dir); then, for build fragments (`path_fallback`), the display-path
-    /// fallback. `None` when no config extracted the target (std/third-party,
-    /// or a ctor/variant we don't emit).
-    fn resolve_key(&self, e: &RefEdge, path_fallback: bool) -> Option<&str> {
+    /// dir); then the display-path fallback. `None` when the target resolves
+    /// nowhere (std/third-party, or a ctor/variant we don't emit).
+    ///
+    /// The path fallback is last-resort for EVERY edge, not just build
+    /// fragments: feature unification can give a member's plain rlib under
+    /// `--tests` a `-Cmetadata` (hence `DefPathHash` generation) that NO
+    /// config extracts — e.g. a `[features]`-gated integration test whose
+    /// harness links the feature-unified lib (the LeaveDates
+    /// `ChuckNorrisJokeEndpoint::new` E0624). Same soundness argument as the
+    /// build-fragment join: `path_key` holds definition-rooted paths of
+    /// lib-shaped fragments, so a hit is the def itself; a target rendered at
+    /// a re-export path just misses and degrades to the identity fold —
+    /// toward exemption, never a false lead.
+    pub(super) fn resolve_key(&self, e: &RefEdge) -> Option<&str> {
         if let Some((k, _)) = self.defs.get_key_value(&e.to_key) {
             return Some(k.as_str());
         }
@@ -395,8 +319,29 @@ impl Assembly {
         {
             return Some(k.as_str());
         }
-        if path_fallback && let Some(k) = self.path_key.get(&e.to.join("::")) {
+        if let Some(k) = self.path_key.get(&e.to.join("::")) {
             return Some(k.as_str());
+        }
+        // Suffix-relaxed leg: the unextracted-generation target may render at
+        // a RE-EXPORT path (`data_common::Fraction::new`,
+        // `data_model::wallchart::WorkSchedule::WEEKDAYS…`) that exact
+        // equality can't join to the definition path — re-exports both drop
+        // AND keep intermediate modules, so only the trailing `Type::item`
+        // (or bare `item`) is stable. Match crate root + that tail; taken
+        // only on an unambiguous single hit, and crediting reach is the
+        // exemption-safe direction.
+        if e.to.len() >= 2
+            && let (Some(first), Some(last)) = (e.to.first(), e.to.last())
+            && let Some(cands) = self.name_key.get(&(first.clone(), last.clone()))
+        {
+            let tail = match e.to.len() {
+                2 => format!("::{last}"),
+                _ => format!("::{}::{last}", e.to[e.to.len() - 2]),
+            };
+            let mut hits = cands.iter().filter(|(path, _)| path.ends_with(&tail));
+            if let (Some((_, k)), None) = (hits.next(), hits.next()) {
+                return Some(k.as_str());
+            }
         }
         None
     }
@@ -415,13 +360,12 @@ impl Assembly {
     fn fold_edges(&self, removed: Option<&RemovalSet>) -> EdgeFold {
         let mut f = EdgeFold::default();
         for frag in &self.fragments {
-            let build = frag.target_kind == "build";
             for e in &frag.references {
                 // The removed item's own use-sites disappear with it.
                 if removed.is_some_and(|r| r.covers(&e.from)) {
                     continue;
                 }
-                let Some(key) = self.resolve_key(e, build) else {
+                let Some(key) = self.resolve_key(e) else {
                     // No landing def anywhere local — but if the GLOBAL index
                     // knows the target, this config never extracted its crate
                     // (harness flag off) and the reach is recorded at identity
@@ -434,12 +378,23 @@ impl Assembly {
                 // Signature exposure: the target is named in a PUB item's
                 // signature (`from_key` is this fragment's own def — always a
                 // local key; an unknown `from` can't be a pub API surface).
-                if e.in_signature && self.defs.get(&e.from_key).is_some_and(|d| d.public) {
+                // A trait member's visibility is inherited, so a bound like
+                // `trait DateFn { type Date: ChronoExt; }` exposes ChronoExt
+                // iff the OWNING TRAIT is pub (`private_bounds` otherwise).
+                let from_public = self.defs.get(&e.from_key).is_some_and(|d| d.public)
+                    || self
+                        .trait_parent
+                        .get(&e.from_key)
+                        .and_then(|tk| self.defs.get(tk))
+                        .is_some_and(|t| t.public);
+                if e.in_signature && from_public {
                     f.signature_exposed.insert(key.to_string());
                 }
+                // Package-granularity dependency tracking keeps the crate-NAME
+                // comparison: a bin's use of its own package's lib is not a
+                // dependency edge.
                 let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
-                let cross = from_crate != def.krate;
-                if cross {
+                if from_crate != def.krate {
                     *f.dep_matrix
                         .entry((from_crate.to_string(), def.krate.clone()))
                         .or_insert(0) += 1;
@@ -458,9 +413,28 @@ impl Assembly {
                     }
                     continue; // import: not a use-site for unused-pub
                 }
+                // The VISIBILITY split trusts the extractor's `CrateNum`
+                // comparison, not the name: a sibling target of the same
+                // package (bin `main.rs`, integration test) shares the crate
+                // name but compiles as its OWN crate — `pub(crate)` cannot
+                // reach it, so its edges must count as cross-crate.
+                let cross = e.external;
                 *f.in_degree.entry(key.to_string()).or_insert(0) += 1;
                 if !cross {
                     *f.intra_degree.entry(key.to_string()).or_insert(0) += 1;
+                }
+                // A method-call edge lands on a trait *member* — the decl
+                // (`parent_kind == "trait"`) or an impl's method (whose
+                // `trait_item` names the decl) — never on the trait itself.
+                // The owning trait must survive wherever its members are
+                // used, so the member's reach folds onto the trait
+                // declaration too.
+                let member = def.trait_item.as_deref().unwrap_or(key);
+                if let Some(trait_key) = self.trait_parent.get(member) {
+                    *f.in_degree.entry(trait_key.clone()).or_insert(0) += 1;
+                    if !cross {
+                        *f.intra_degree.entry(trait_key.clone()).or_insert(0) += 1;
+                    }
                 }
             }
         }
@@ -470,7 +444,11 @@ impl Assembly {
     /// Credit an edge whose target the global index knows but this config has
     /// no def for (see [`ForeignReach`]). Mirrors the fold's own policies:
     /// signature exposure gated on a pub `from`, imports discounted from the
-    /// use-site reach, cross/intra split by crate name.
+    /// use-site reach, cross/intra split by the extractor's `CrateNum`
+    /// comparison ([`RefEdge::external`] — a same-package sibling target is a
+    /// different crate despite the shared name). Trait-member reach is not
+    /// folded onto the parent trait here: an identity-only target has no
+    /// `parent_kind`, and the config that extracted the trait credits it.
     fn fold_foreign(&self, e: &RefEdge, f: &mut EdgeFold) {
         let Some(id) = self.ids.identity_of(&e.to_key) else {
             return;
@@ -482,11 +460,10 @@ impl Assembly {
         if e.import {
             return; // import: not a use-site for unused-pub
         }
-        let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
-        if from_crate == id.split("::").next().unwrap_or_default() {
-            fr.intra = true;
-        } else {
+        if e.external {
             fr.cross = true;
+        } else {
+            fr.intra = true;
         }
     }
 
@@ -522,11 +499,16 @@ impl Assembly {
         def: &DefInfo,
         in_degree: &BTreeMap<String, usize>,
     ) -> Reach {
-        if in_degree.contains_key(key) {
-            return Reach::Direct;
-        }
+        // Export roots win over Direct: a proc-macro entry point picks up a
+        // phantom intra-crate edge from the compiler-synthesized `_DECLS`
+        // registration, and Direct would let that edge read as "only used
+        // inside the crate" — narrowing a `#[proc_macro_derive]` fn is a hard
+        // compile error.
         if def.export_root {
             return Reach::ExportRoot;
+        }
+        if in_degree.contains_key(key) {
+            return Reach::Direct;
         }
         if let Some(ti) = &def.trait_item {
             if !self.defs.contains_key(ti) {
@@ -574,11 +556,22 @@ impl Assembly {
     }
 
     /// Resolve an edge's target to the def it lands on — the full join
-    /// ([`Assembly::resolve_key`], build-fragment path fallback enabled).
+    /// ([`Assembly::resolve_key`], display-path fallback included).
     /// `None` when the target is outside the workspace or not a tree item. The
     /// import-index substrate ([`super::SemanticModel::dangling_imports`]).
     pub(super) fn def_for_edge(&self, e: &RefEdge) -> Option<&DefInfo> {
-        self.resolve_key(e, true).and_then(|k| self.defs.get(k))
+        self.resolve_key(e).and_then(|k| self.defs.get(k))
+    }
+
+    /// Is `id` (a `::`-joined display path) a module in this config? The
+    /// scope-boundary test of the dangling-import check: a `use` statement's
+    /// reach ends at its enclosing module, so the reference scope-chain walk
+    /// stops at the nearest prefix this returns `true` for.
+    pub(super) fn is_module(&self, id: &str) -> bool {
+        self.id_key
+            .get(id)
+            .and_then(|k| self.defs.get(k))
+            .is_some_and(|d| d.kind == "mod")
     }
 
     /// The cross-config identity an edge's target resolves to: through the def

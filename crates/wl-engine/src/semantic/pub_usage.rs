@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use wl_ir::Span;
 
 use super::assembly::{Assembly, CANDIDATE_KINDS, Category, Reach};
+use super::clippy_guard::NarrowUnmask;
 use super::removal::{DegreeView, RemovalSet};
 
 /// How a candidate is used, unioned across every extracted config. Mirrors the
@@ -72,6 +73,23 @@ pub struct PubCandidate {
     /// Target of a `use`/`pub use` under some config: tightening or deleting
     /// can break the re-export (E0364/E0365) — must stay `pub`.
     pub reexport_target: bool,
+    /// `IntraCrate` reached ONLY outside the primary config (`--tests` /
+    /// `--benches` cfg-gated code): `pub(crate)` still compiles, but the item
+    /// is dead code on the plain build — `-D warnings` gates reject the
+    /// narrowed tree, so the fix must not be machine-applied.
+    pub test_only: bool,
+    /// A trait with a member no primary-config edge reaches: narrowing
+    /// un-exempts the trait from rustc `dead_code`, which then flags the
+    /// never-called members — same `-D warnings` consequence, same gating.
+    pub dead_members: bool,
+    /// A type with a field no primary-config READ edge reaches: narrowing
+    /// un-exempts its fields from rustc `dead_code`, which flags write-only
+    /// fields — same `-D warnings` consequence, same gating.
+    pub dead_fields: bool,
+    /// Narrowing would activate a clippy lint the item's exported status
+    /// currently suppresses (`avoid-breaking-exported-api`) — same
+    /// `-D warnings` consequence, same gating. See [`NarrowUnmask`].
+    pub narrow_unmask: Option<NarrowUnmask>,
 }
 
 /// The per-config fold of one identity: OR-accumulated over every
@@ -81,10 +99,17 @@ pub struct PubCandidate {
 struct Fold {
     cross: bool,
     intra: bool,
+    /// Intra reach seen in the PRIMARY config (matrix index 0) — its absence
+    /// while `intra` holds means every use-site is test/bench cfg-gated.
+    intra_primary: bool,
     dispatch: bool,
     signature_exposed: bool,
     externally_reachable: bool,
     reexport_target: bool,
+    /// See [`PubCandidate::dead_members`] — primary-config judgement.
+    dead_members: bool,
+    /// See [`PubCandidate::dead_fields`] — primary-config judgement.
+    dead_fields: bool,
 }
 
 pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
@@ -160,6 +185,15 @@ fn compute_impl(
             let intra_only = view.intra_degree.get(key).copied().unwrap_or(0);
             fold.cross |= workspace_wide > intra_only;
             fold.intra |= intra_only > 0;
+            if ci == 0 {
+                fold.intra_primary |= intra_only > 0;
+                if def.kind == "trait" {
+                    fold.dead_members |= assembly.has_unreached_trait_member(key, view.in_degree);
+                }
+                if matches!(def.kind.as_str(), "struct" | "enum" | "union") {
+                    fold.dead_fields |= assembly.has_unread_field(key, view.in_degree);
+                }
+            }
             fold.dispatch |= matches!(
                 assembly.reach_with(key, def, view.in_degree),
                 Reach::ExternalDispatch | Reach::InternalDispatch | Reach::ExportRoot
@@ -207,12 +241,16 @@ fn compute_impl(
                 kind: def.kind.clone(),
                 category: def.category,
                 usage,
+                narrow_unmask: assembly.narrow_unmask(key, def),
                 span: def.span.clone(),
                 full_span: def.full_span.clone(),
                 vis_span: def.vis_span.clone(),
                 signature_exposed: fold.signature_exposed,
                 externally_reachable: fold.externally_reachable,
                 reexport_target: fold.reexport_target,
+                test_only: fold.intra && !fold.intra_primary && !fold.cross,
+                dead_members: fold.dead_members,
+                dead_fields: fold.dead_fields,
                 id,
             }
         })

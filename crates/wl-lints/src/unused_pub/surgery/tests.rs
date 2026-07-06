@@ -78,11 +78,12 @@ fn brace_leaf_last_removes_leaf_and_leading_separator() {
 }
 
 #[test]
-fn brace_all_leaves_coalesce_to_empty_group() {
-    let src = "use a::{b, c};\n";
-    // Both dead: the two separator ranges overlap and must coalesce, not abort.
+fn brace_all_leaves_dead_deletes_whole_statement() {
+    let src = "use a::{b, c};\nuse a::d;\n";
+    // Both dead: the two separator ranges coalesce, the emptied group
+    // collapses, and the whole statement goes — no `use a::{};` residue.
     let out = apply(src, vec![dangling(src, "b", "b"), dangling(src, "c", "c")]);
-    assert_eq!(out, "use a::{};\n");
+    assert_eq!(out, "use a::d;\n");
 }
 
 #[test]
@@ -93,10 +94,64 @@ fn brace_middle_leaf_of_three() {
 }
 
 #[test]
-fn sole_brace_leaf_leaves_empty_group() {
-    let src = "use a::{b};\n";
+fn sole_brace_leaf_deletes_whole_statement() {
+    let src = "use a::{b};\nuse a::c;\n";
     let out = apply(src, vec![dangling(src, "b", "b")]);
-    assert_eq!(out, "use a::{};\n");
+    assert_eq!(out, "use a::c;\n");
+}
+
+#[test]
+fn emptied_nested_group_is_excised_from_its_parent() {
+    let src = "use a::{b::{c}, d};\n";
+    // `c` dead empties `b::{c}` — the whole entry (and its separator) goes,
+    // leaving the live sibling.
+    let out = apply(src, vec![dangling(src, "c", "c")]);
+    assert_eq!(out, "use a::{d};\n");
+}
+
+#[test]
+fn sibling_groups_emptying_together_collapse_the_statement() {
+    let src = "use a::{b::{cc}, d::{ee}};\nfn keep() {}\n";
+    let out = apply(
+        src,
+        vec![dangling(src, "cc", "cc"), dangling(src, "ee", "ee")],
+    );
+    assert_eq!(out, "fn keep() {}\n");
+}
+
+#[test]
+fn collapsed_statement_takes_visibility_and_attributes() {
+    let src = "#[cfg(feature = \"x\")]\npub(crate) use a::{bb};\nfn keep() {}\n";
+    let out = apply(src, vec![dangling(src, "bb", "bb")]);
+    assert_eq!(out, "fn keep() {}\n");
+}
+
+#[test]
+fn multiline_group_with_trailing_comma_collapses() {
+    let src = "use a::{\n    bb,\n    cc,\n};\nuse a::d;\n";
+    // The two dead leaves never touch (a live newline+indent between them),
+    // so widening must judge emptiness against the union of ranges.
+    let out = apply(
+        src,
+        vec![dangling(src, "bb", "bb"), dangling(src, "cc", "cc")],
+    );
+    assert_eq!(out, "use a::d;\n");
+}
+
+#[test]
+fn comment_inside_group_bails_to_empty_group_residue() {
+    let src = "use a::{bb /* why */};\n";
+    // The scanner doesn't model comments — safe bail leaves the `{}` shell
+    // rather than risking a wrong statement deletion.
+    let out = apply(src, vec![dangling(src, "bb", "bb")]);
+    assert_eq!(out, "use a::{ /* why */};\n");
+}
+
+#[test]
+fn standalone_import_takes_preceding_attribute() {
+    let src = "#[cfg(test)]\nuse a::b;\nuse a::c;\n";
+    let out = apply(src, vec![dangling(src, "b;", "use a::b;")]);
+    assert_eq!(out, "use a::c;\n");
 }
 
 #[test]

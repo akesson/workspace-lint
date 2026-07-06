@@ -35,7 +35,20 @@ use serde::{Deserialize, Serialize};
 /// none of them, so the fix would silently skip the import cleanup or leave a
 /// broken `use`/body — the misleading-absence the bump forces a re-extract to
 /// close.
-pub const SCHEMA_VERSION: u32 = 3;
+/// 4 — assoc fns gained [`ItemFact::self_kind`] / [`ItemFact::self_copy`],
+/// the substrate for the clippy-unmask guard (narrowing an item strips
+/// clippy's `avoid-breaking-exported-api` exemption; `wrong_self_convention`
+/// and `len_without_is_empty` then fire on the fixed tree). A pre-4 fragment
+/// carries neither, so the guard would silently pass and `--fix` would write
+/// a narrow that breaks a `-D warnings` clippy gate.
+/// 5 — edges gained [`RefEdge::receiver_resolved`]: `true` for typeck
+/// receiver-based resolutions (method calls `x.f()`, field reads `x.f`) that
+/// involve no written path. rustc's `unused_imports` only counts written
+/// name-resolutions, so the dangling-import check must not let an inherent
+/// `.time()` call shield a `use …::TimeView;` whose written users are all
+/// deleted. A pre-5 fragment defaults the flag to `false` everywhere, which
+/// would re-open exactly that false shield — the bump forces a re-extract.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.json`. Phase 2 assembles these.
@@ -122,6 +135,18 @@ pub struct RefEdge {
     pub to_kind: String,
     /// `true` iff `to` lives in another crate (`to[0] != crate_name`).
     pub external: bool,
+    /// `true` iff this edge came from a typeck **receiver-based** resolution —
+    /// a method call (`x.f()`) or a field read (`x.f`) — rather than a written
+    /// path. Such a use involves no name resolution through any `use`
+    /// statement (rustc resolves it from the receiver's type), so the
+    /// dangling-import check must not count it as keeping an import alive.
+    /// The one exception is handled downstream: a *trait* member still
+    /// requires its trait in scope, so trait-member edges credit the trait's
+    /// import regardless of this flag. Written `Type::assoc` paths
+    /// (`QPath::TypeRelative`) are `false` — they do resolve `Type` through
+    /// its import.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub receiver_resolved: bool,
     /// `true` iff this edge is the path *inside* a `use` / `pub use` declaration
     /// (the enclosing `from` is a `DefKind::Use`) — an import/re-export, not a
     /// value/type use-site. Importing or re-exporting a name does **not** make it
@@ -284,6 +309,22 @@ pub struct ItemFact {
     /// don't affect reachability.
     #[serde(default)]
     pub attrs: Vec<String>,
+    /// For an **assoc fn**: how it takes `self` — `"none"` (no receiver, or
+    /// an explicit `self: Box<Self>`-style receiver the HIR doesn't model as
+    /// implicit), `"value"` (`self` / `mut self`), `"ref"` (`&self`), or
+    /// `"ref_mut"` (`&mut self`). `None` for every non-assoc-fn def. The
+    /// clippy-unmask guard replays `wrong_self_convention`'s naming table
+    /// against it before `--fix` narrows an item out of clippy's
+    /// `avoid-breaking-exported-api` exemption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_kind: Option<String>,
+    /// For an assoc fn in an **impl block**: whether the impl's self type is
+    /// `Copy` — clippy's convention table accepts by-value `self` where a
+    /// reference is otherwise expected (and *expects* it for `to_*`) on
+    /// `Copy` types. `None` for trait-declaration items (generic `Self`,
+    /// unknowable) and non-assoc defs; the guard treats `None` as not-`Copy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_copy: Option<bool>,
 }
 
 /// Normalized visibility. `Restricted` carries the rendered restriction

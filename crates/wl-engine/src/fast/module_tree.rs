@@ -114,7 +114,21 @@ fn build_module_from_file(file_path: &Path, mod_dir: &Path, inc: IncludeCtx<'_>)
 
     // A file's own items are at its top level — not inside any inline block of
     // *this* file, even when the file itself was reached via a `mod foo;`.
-    let contents = collect_module_contents(&parsed.items, file_path, mod_dir, false, inc)?;
+    let mut contents = collect_module_contents(&parsed.items, file_path, mod_dir, false, inc)?;
+
+    // File-level inner attributes gate too: an integration test opening with
+    // `#![cfg(feature = "…")]` is the canonical way to feature-gate a whole
+    // test target, and it lives in `syn::File::attrs`, attached to no item —
+    // dropping it made feature-drift report the feature "never gated".
+    let mut file_gates = std::collections::BTreeSet::new();
+    for attr in &parsed.attrs {
+        extract_cfg_feature_names(attr, &mut file_gates);
+    }
+    for gate in file_gates {
+        if !contents.cfg_features.contains(&gate) {
+            contents.cfg_features.push(gate);
+        }
+    }
 
     Ok(Module {
         file: file_path.to_path_buf(),

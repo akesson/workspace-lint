@@ -40,7 +40,9 @@ extern crate rustc_trait_selection;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
 use rustc_hir::intravisit::{self, Visitor};
-use rustc_hir::{Expr, ExprKind, HirId, Item, ItemKind, Node, Path, QPath, UseKind, UsePath};
+use rustc_hir::{
+    Expr, ExprKind, HirId, Item, ItemKind, Node, Pat, PatKind, Path, QPath, UseKind, UsePath,
+};
 use rustc_lint::{LateContext, LateLintPass, LintStore};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitor};
@@ -197,38 +199,19 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
             DefKind::Macro(_) => "macro",
             _ => continue, // closures, impls, params, ctors, … — not tree items
         };
+        items.push(item_fact(tcx, sm, &crate_code, local_id, kind));
 
-        // def_path_str omits the crate for local items; prepend the code name.
-        let mut path = vec![crate_code.clone()];
-        let rel = tcx.def_path_str(def_id);
-        if !rel.is_empty() {
-            path.extend(rel.split("::").map(str::to_string));
-        }
-
-        let visibility = match tcx.visibility(def_id) {
-            ty::Visibility::Public => Visibility::Public,
-            ty::Visibility::Restricted(m) => {
-                if m == CRATE_DEF_ID.to_def_id() {
-                    Visibility::Restricted("crate".to_string())
-                } else {
-                    Visibility::Restricted(tcx.def_path_str(m))
+        // Fields are not tree items for the verdict, but the dead-field
+        // narrow guard needs them as edge landing points: narrowing a type
+        // un-exempts its never-READ fields from rustc `dead_code`. They are
+        // not in `definitions()` — enumerate them off the ADT.
+        if matches!(kind, "struct" | "enum" | "union") {
+            for f in tcx.adt_def(def_id).all_fields() {
+                if let Some(flocal) = f.did.as_local() {
+                    items.push(item_fact(tcx, sm, &crate_code, flocal, "field"));
                 }
             }
-        };
-
-        items.push(ItemFact {
-            path,
-            key: def_key(tcx, def_id),
-            kind: kind.to_string(),
-            parent_kind: parent_def_kind(tcx, def_id),
-            trait_item: trait_item_key(tcx, def_id),
-            self_type: self_type_key(tcx, def_id),
-            visibility,
-            span: span_to_ir(sm, tcx.def_span(def_id)),
-            full_span: full_item_span(tcx, sm, local_id),
-            vis_span: vis_span_to_ir(tcx, sm, local_id),
-            attrs: export_attrs(tcx, local_id),
-        });
+        }
     }
 
     let references = collect_references(tcx, &crate_code);
@@ -239,6 +222,52 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         target_kind: target_kind(tcx).to_string(),
         items,
         references,
+    }
+}
+
+/// Project one local def into its [`ItemFact`] — the whole emit policy for a
+/// definition, shared by the `definitions()` walk and the per-ADT field
+/// enumeration (fields have no `definitions()` entry).
+fn item_fact(
+    tcx: TyCtxt<'_>,
+    sm: &rustc_span::source_map::SourceMap,
+    crate_code: &str,
+    local_id: LocalDefId,
+    kind: &str,
+) -> ItemFact {
+    let def_id = local_id.to_def_id();
+    // def_path_str omits the crate for local items; prepend the code name.
+    let mut path = vec![crate_code.to_string()];
+    let rel = tcx.def_path_str(def_id);
+    if !rel.is_empty() {
+        path.extend(rel.split("::").map(str::to_string));
+    }
+
+    let visibility = match tcx.visibility(def_id) {
+        ty::Visibility::Public => Visibility::Public,
+        ty::Visibility::Restricted(m) => {
+            if m == CRATE_DEF_ID.to_def_id() {
+                Visibility::Restricted("crate".to_string())
+            } else {
+                Visibility::Restricted(tcx.def_path_str(m))
+            }
+        }
+    };
+
+    ItemFact {
+        path,
+        key: def_key(tcx, def_id),
+        kind: kind.to_string(),
+        parent_kind: parent_def_kind(tcx, def_id),
+        trait_item: trait_item_key(tcx, def_id),
+        self_type: self_type_key(tcx, def_id),
+        visibility,
+        span: span_to_ir(sm, tcx.def_span(def_id)),
+        full_span: full_item_span(tcx, sm, local_id),
+        vis_span: vis_span_to_ir(tcx, sm, local_id),
+        attrs: export_attrs(tcx, local_id),
+        self_kind: assoc_self_kind(tcx, local_id),
+        self_copy: assoc_self_copy(tcx, def_id),
     }
 }
 
@@ -282,6 +311,7 @@ fn collect_references(tcx: TyCtxt<'_>, crate_code: &str) -> Vec<RefEdge> {
         tcx,
         crate_code,
         edges: Vec::new(),
+        write_fields: std::collections::HashSet::new(),
     };
     tcx.hir_walk_toplevel_module(&mut collector);
     collector.collect_signature_projections();
@@ -306,7 +336,7 @@ fn edge_identity(
     &str,
     &str,
     &str,
-    [bool; 5],
+    [bool; 6],
     Option<&str>,
     Option<&str>,
 ) {
@@ -316,7 +346,17 @@ fn edge_identity(
         &e.from_key,
         &e.to_key,
         &e.to_kind,
-        [e.external, e.import, e.in_signature, e.reexport, e.glob],
+        [
+            e.external,
+            e.import,
+            e.in_signature,
+            e.reexport,
+            e.glob,
+            // A written `Type::method` path and a `.method()` call to the same
+            // def must NOT merge: only the written form credits the type's
+            // import, and the global dedup keeps just one representative.
+            e.receiver_resolved,
+        ],
         e.alias.as_deref(),
         e.via.as_deref(),
     )
@@ -330,6 +370,10 @@ struct EdgeFlags {
     in_signature: bool,
     reexport: bool,
     glob: bool,
+    /// Typeck receiver-based resolution (method call / field read) — no
+    /// written path, so no `use` statement was involved. See
+    /// [`RefEdge::receiver_resolved`].
+    receiver_resolved: bool,
     /// Single-name imports only: the local binding name (`use a::B as C` ⇒ `C`).
     alias: Option<String>,
     /// The extern crate the written path routes through when it isn't the
@@ -348,6 +392,12 @@ struct RefCollector<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     crate_code: &'a str,
     edges: Vec<RefEdge>,
+    /// Field exprs in plain-assignment LHS position (`x.f = v`): writes, not
+    /// reads. rustc `dead_code` flags a field with writes but no reads, so
+    /// the read-edge collection must not count them (compound `+=` reads).
+    /// Parents visit before children, so the `Assign` arm marks the LHS
+    /// before the `Field` arm sees it.
+    write_fields: std::collections::HashSet<HirId>,
 }
 
 impl<'a, 'tcx> RefCollector<'a, 'tcx> {
@@ -374,6 +424,20 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
     fn record(&mut self, at: HirId, to: DefId, span: RustcSpan) {
         let from_id = self.tcx.hir_get_parent_item(at).to_def_id();
         self.record_edge(from_id, to, Some(span), EdgeFlags::default());
+    }
+
+    /// [`record`](Self::record), for typeck receiver-based resolutions —
+    /// method calls and field reads, which involve no written path (see
+    /// [`RefEdge::receiver_resolved`]). Pattern-field reads count too: the
+    /// pattern's *type* path (`S { f, .. }`) emits its own path edge, so the
+    /// field edge itself carries no import-crediting information.
+    fn record_receiver(&mut self, at: HirId, to: DefId, span: RustcSpan) {
+        let from_id = self.tcx.hir_get_parent_item(at).to_def_id();
+        let flags = EdgeFlags {
+            receiver_resolved: true,
+            ..EdgeFlags::default()
+        };
+        self.record_edge(from_id, to, Some(span), flags);
     }
 
     /// Record an import (`use`) edge with its declaration-shape metadata
@@ -426,6 +490,7 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             external,
             import: flags.import,
             in_signature: flags.in_signature,
+            receiver_resolved: flags.receiver_resolved,
             reexport: flags.reexport,
             glob: flags.glob,
             alias: flags.alias,
@@ -449,7 +514,12 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
         if !seg_did.is_crate_root() || seg_did.krate == LOCAL_CRATE || seg_did.krate == to.krate {
             return None;
         }
-        Some(self.tcx.crate_name(seg_did.krate).as_str().replace('-', "_"))
+        Some(
+            self.tcx
+                .crate_name(seg_did.krate)
+                .as_str()
+                .replace('-', "_"),
+        )
     }
 
     /// Second pass over each item's *lowered* signature (`fn_sig`/`type_of` —
@@ -611,7 +681,12 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                 kind: ItemKind::Use(_, UseKind::Single(ident)),
                 span: decl,
                 ..
-            }) => (false, Some(ident.to_string()), Some(*decl), Some(ident.span)),
+            }) => (
+                false,
+                Some(ident.to_string()),
+                Some(*decl),
+                Some(ident.span),
+            ),
             _ => (false, None, None, None),
         };
         let elem_span = binding_span.map(|b| path.span.to(b));
@@ -673,7 +748,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
             ExprKind::MethodCall(..) => {
                 let owner = self.tcx.hir_enclosing_body_owner(ex.hir_id);
                 if let Some(to) = self.tcx.typeck(owner).type_dependent_def_id(ex.hir_id) {
-                    self.record(ex.hir_id, to, ex.span);
+                    self.record_receiver(ex.hir_id, to, ex.span);
                 }
             }
             ExprKind::Path(ref qpath @ QPath::TypeRelative(..)) => {
@@ -687,9 +762,83 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                     self.record(ex.hir_id, to, ex.span);
                 }
             }
+            // A plain assignment's LHS field is a WRITE — mark it so the
+            // `Field` arm below skips it. rustc `dead_code` flags fields
+            // that are only ever written (struct-literal inits emit no
+            // `Field` expr at all, so they're never counted either).
+            ExprKind::Assign(lhs, ..) => {
+                if let ExprKind::Field(..) = lhs.kind {
+                    self.write_fields.insert(lhs.hir_id);
+                }
+            }
+            // A field READ (`x.f`, `t.0`) — the evidence the dead-field
+            // narrow guard needs. Resolved via typeck (field access is not a
+            // path). Tuples have no field defs; ADTs only.
+            ExprKind::Field(base, _) => {
+                if !self.write_fields.contains(&ex.hir_id) {
+                    let owner = self.tcx.hir_enclosing_body_owner(ex.hir_id);
+                    let typeck = self.tcx.typeck(owner);
+                    if let Some(idx) = typeck.opt_field_index(ex.hir_id)
+                        && let Some(adt) = typeck.expr_ty_adjusted(base).peel_refs().ty_adt_def()
+                    {
+                        let fd = &adt.non_enum_variant().fields[idx];
+                        self.record_receiver(ex.hir_id, fd.did, ex.span);
+                    }
+                }
+            }
             _ => {}
         }
         intravisit::walk_expr(self, ex);
+    }
+
+    /// Pattern field bindings are reads too (`let S { f, .. } = x`, match
+    /// arms, fn params) — rustc `dead_code` counts them, so the dead-field
+    /// guard must as well, or every pattern-destructured struct would gate
+    /// its own narrow.
+    fn visit_pat(&mut self, pat: &'tcx Pat<'tcx>) {
+        match pat.kind {
+            PatKind::Struct(ref qpath, fields, _) => {
+                let owner = self.tcx.hir_enclosing_body_owner(pat.hir_id);
+                let typeck = self.tcx.typeck(owner);
+                if let Some(adt) = typeck.pat_ty(pat).peel_refs().ty_adt_def() {
+                    let variant = adt.variant_of_res(typeck.qpath_res(qpath, pat.hir_id));
+                    for f in fields {
+                        if matches!(f.pat.kind, PatKind::Wild) {
+                            continue; // `f: _` binds nothing — not a read
+                        }
+                        if let Some(fd) = variant
+                            .fields
+                            .iter()
+                            .find(|fd| fd.ident(self.tcx).name == f.ident.name)
+                        {
+                            self.record_receiver(f.hir_id, fd.did, f.span);
+                        }
+                    }
+                }
+            }
+            PatKind::TupleStruct(ref qpath, pats, dot_dot) => {
+                let owner = self.tcx.hir_enclosing_body_owner(pat.hir_id);
+                let typeck = self.tcx.typeck(owner);
+                if let Some(adt) = typeck.pat_ty(pat).peel_refs().ty_adt_def() {
+                    let variant = adt.variant_of_res(typeck.qpath_res(qpath, pat.hir_id));
+                    for (i, p) in pats.iter().enumerate() {
+                        if matches!(p.kind, PatKind::Wild) {
+                            continue;
+                        }
+                        // Positions after a `..` gap map from the END.
+                        let idx = match dot_dot.as_opt_usize() {
+                            Some(gap) if i >= gap => variant.fields.len() - (pats.len() - i),
+                            _ => i,
+                        };
+                        if let Some(fd) = variant.fields.iter().nth(idx) {
+                            self.record_receiver(p.hir_id, fd.did, p.span);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        intravisit::walk_pat(self, pat);
     }
 }
 
@@ -786,6 +935,43 @@ fn self_type_key(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
     Some(def_key(tcx, adt.did()))
 }
 
+/// How an assoc fn takes `self`, from the HIR signature's implicit-self
+/// classification (`fn(…)` ⇒ `none`, `self`/`mut self` ⇒ `value`, `&self` ⇒
+/// `ref`, `&mut self` ⇒ `ref_mut`) — see [`ItemFact::self_kind`]. An explicit
+/// typed receiver (`self: Box<Self>`) lowers as `None` here and is reported
+/// `none`, the guard's under-flag direction. `None` for non-assoc-fn defs.
+fn assoc_self_kind(tcx: TyCtxt<'_>, local_id: LocalDefId) -> Option<String> {
+    if !matches!(tcx.def_kind(local_id.to_def_id()), DefKind::AssocFn) {
+        return None;
+    }
+    let sig = tcx.hir_node_by_def_id(local_id).fn_sig()?;
+    use rustc_hir::ImplicitSelfKind as Isk;
+    let s = match sig.decl.implicit_self {
+        Isk::None => "none",
+        Isk::Imm | Isk::Mut => "value",
+        Isk::RefImm => "ref",
+        Isk::RefMut => "ref_mut",
+    };
+    Some(s.to_string())
+}
+
+/// For an assoc fn in an impl block: whether the impl's self type is `Copy`
+/// (see [`ItemFact::self_copy`] — clippy's self-convention table is
+/// `Copy`-sensitive). `None` for trait-declaration items (generic `Self`)
+/// and non-assoc defs.
+fn assoc_self_copy(tcx: TyCtxt<'_>, def_id: DefId) -> Option<bool> {
+    if !matches!(tcx.def_kind(def_id), DefKind::AssocFn) {
+        return None;
+    }
+    let parent = tcx.opt_parent(def_id)?;
+    if !matches!(tcx.def_kind(parent), DefKind::Impl { .. }) {
+        return None;
+    }
+    let self_ty = tcx.type_of(parent).skip_binder();
+    let typing_env = ty::TypingEnv::non_body_analysis(tcx, parent);
+    Some(tcx.type_is_copy_modulo_regions(typing_env, self_ty))
+}
+
 /// Climb `Ctor → (Variant →) ADT`: constructors and variants aren't tree
 /// items; the def a use-site "uses" is the owning ADT.
 fn projected_target(tcx: TyCtxt<'_>, mut did: DefId) -> DefId {
@@ -848,6 +1034,17 @@ fn export_attrs(tcx: TyCtxt<'_>, local_id: LocalDefId) -> Vec<String> {
     }
     if find_attr!(attrs, AttributeKind::Used { .. }) {
         out.push("used".to_string());
+    }
+    // Proc-macro entry points are export roots too: their visibility is
+    // forced (`functions tagged with #[proc_macro_derive] must be pub`) and
+    // their only in-crate referrer is the compiler-synthesized `_DECLS`
+    // registration — without this root the unused-pub verdict reads that
+    // phantom edge as "only used inside the crate" and narrows illegally.
+    if find_attr!(attrs, AttributeKind::ProcMacro(_))
+        || find_attr!(attrs, AttributeKind::ProcMacroDerive { .. })
+        || find_attr!(attrs, AttributeKind::ProcMacroAttribute(_))
+    {
+        out.push("proc_macro".to_string());
     }
     out
 }

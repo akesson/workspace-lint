@@ -41,6 +41,7 @@ use wl_diagnostic::{Applicability, Diagnostic, PubVerdict};
 
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
+use super::deletion::pick_deletion_fix;
 
 /// One unused-pub finding paired with the two things the `--fix` cascade needs
 /// beyond the rendered diagnostic: the candidate identity (the removed-set key)
@@ -334,6 +335,36 @@ fn apply_structural_fix(
     let builder = build_tighten_suggestion(cand, file, verdict)
         .into_iter()
         .fold(builder, |b, s| b.suggestion(s));
+    // `pub(crate)` compiles but trips `dead_code` (or a clippy lint the
+    // exported status suppressed) on the plain build — say why `--fix`
+    // won't apply it.
+    let builder = if verdict == PubVerdict::IntraCrate && cand.test_only {
+        builder.note(
+            "every use-site is test/bench cfg-gated: `pub(crate)` would trip `dead_code` \
+             on the non-test build — gate the item `#[cfg(test)]`, move it into test code, \
+             or delete it",
+        )
+    } else if verdict == PubVerdict::IntraCrate && cand.dead_members {
+        builder.note(
+            "this trait declares members nothing calls: `pub(crate)` un-exempts it from \
+             `dead_code`, which will flag them — remove the unused members first",
+        )
+    } else if verdict == PubVerdict::IntraCrate && cand.dead_fields {
+        builder.note(
+            "this type has a field nothing reads: `pub(crate)` un-exempts its fields from \
+             `dead_code`, which will flag it — remove the write-only field first",
+        )
+    } else if verdict == PubVerdict::IntraCrate
+        && let Some(unmask) = &cand.narrow_unmask
+    {
+        builder.note(format!(
+            "`pub(crate)` would unmask clippy `{}` on `{}` (clippy exempts exported items \
+             via `avoid-breaking-exported-api`) — resolve that first or narrow by hand",
+            unmask.lint, unmask.member
+        ))
+    } else {
+        builder
+    };
     (builder, false)
 }
 
@@ -353,6 +384,20 @@ fn build_tighten_suggestion(
         return None; // the token lives in a macro definition — not editable
     }
     let applicability = match verdict {
+        // Reached only from test/bench cfg-gated code, a trait with
+        // never-called members, or a narrow that would unmask a clippy lint
+        // (`avoid-breaking-exported-api`): the narrow compiles but fails a
+        // `-D warnings` gate — shown, never machine-applied (the data-common
+        // `is_days`/`fraction`, ChronoExt, and `wrong_self_convention`
+        // clusters from the 2026-07-05 LeaveDates validation).
+        PubVerdict::IntraCrate
+            if cand.test_only
+                || cand.dead_members
+                || cand.dead_fields
+                || cand.narrow_unmask.is_some() =>
+        {
+            Applicability::MaybeIncorrect
+        }
         PubVerdict::IntraCrate => Applicability::MachineApplicable,
         PubVerdict::Unused => Applicability::MaybeIncorrect,
     };
@@ -378,116 +423,6 @@ fn build_tighten_suggestion(
         original,
         // Filled in by `attach_pub_evidence` once the diagnostic is built.
     })
-}
-
-/// Pick a deletion suggestion when the user asked for one (`auto_delete`) and
-/// the item is genuinely unused. Returns `None` to mean "fall back to the
-/// tightening suggestion". The `Option<String>` second element carries the
-/// "git-dirty file" caveat note when present.
-pub(super) fn pick_deletion_fix(
-    auto_delete: bool,
-    file: &Path,
-    span: &wl_ir::Span,
-    verdict: PubVerdict,
-) -> Option<(wl_diagnostic::Suggestion, Option<String>)> {
-    if !auto_delete || verdict != PubVerdict::Unused {
-        return None;
-    }
-    match delete_suggestion(file, span) {
-        DeleteOutcome::Apply(s) => Some((s, None)),
-        DeleteOutcome::Skip(s, reason) => Some((s, Some(reason))),
-        DeleteOutcome::Unavailable => None,
-    }
-}
-
-pub(super) enum DeleteOutcome {
-    /// Git-tracked-clean: emit a MachineApplicable deletion suggestion.
-    Apply(wl_diagnostic::Suggestion),
-    /// Tracked-but-dirty or untracked: emit MaybeIncorrect so `--fix` passes
-    /// over it, plus a reason note for the user.
-    Skip(wl_diagnostic::Suggestion, String),
-    /// File can't be read, degenerate range, etc. Fall back to the
-    /// visibility-narrowing path.
-    Unavailable,
-}
-
-pub(super) fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcome {
-    let Ok(source) = fs_err::read_to_string(file) else {
-        return DeleteOutcome::Unavailable;
-    };
-    let mut start = span.lo as usize;
-    let mut end = (span.hi as usize).min(source.len());
-    if start >= end {
-        return DeleteOutcome::Unavailable;
-    }
-    // Eat the item's leading indentation (horizontal whitespace back to the
-    // line start) so a deleted nested item leaves no orphaned indent. Safe: it
-    // only crosses spaces/tabs, never a newline or another item's text.
-    let bytes = source.as_bytes();
-    while start > 0 && matches!(bytes[start - 1], b' ' | b'\t') {
-        start -= 1;
-    }
-    // The item text itself (sans the trailing newline the deletion also
-    // eats), for the rendered `-` diff line.
-    let original = source[start..end].to_string();
-    if end < source.len() && source.as_bytes()[end] == b'\n' {
-        end += 1;
-    }
-    let applicability = if is_file_clean_in_git(file) {
-        Applicability::MachineApplicable
-    } else {
-        Applicability::MaybeIncorrect
-    };
-    let suggestion = wl_diagnostic::Suggestion {
-        span: wl_diagnostic::Span {
-            file: file.to_path_buf(),
-            line_start: span.line,
-            line_end: span.line,
-            col_start: 1,
-            col_end: 1,
-            byte_start: start as u32,
-            byte_end: end as u32,
-        },
-        message: "delete the unused item".into(),
-        replacement: String::new(),
-        applicability,
-        original: Some(original),
-        // Filled in by `attach_pub_evidence` once the diagnostic is built.
-    };
-    if applicability == Applicability::MachineApplicable {
-        DeleteOutcome::Apply(suggestion)
-    } else {
-        DeleteOutcome::Skip(
-            suggestion,
-            format!(
-                "file `{}` is untracked or has uncommitted changes; `--fix` will not auto-delete (commit first or use `git stash`)",
-                file.display()
-            ),
-        )
-    }
-}
-
-/// `true` iff `path` is tracked by git AND has no uncommitted changes.
-/// Returns `false` if we can't determine the state — the safer default is to
-/// downgrade the suggestion's applicability so `--fix` skips it.
-fn is_file_clean_in_git(path: &Path) -> bool {
-    let ls = crate::git::command(Path::new("."))
-        .args(["ls-files", "--error-unmatch", "--"])
-        .arg(path)
-        .output();
-    let Ok(out) = ls else { return false };
-    if !out.status.success() {
-        return false;
-    }
-    let st = crate::git::command(Path::new("."))
-        .args(["status", "--porcelain", "--"])
-        .arg(path)
-        .output();
-    let Ok(out) = st else { return false };
-    if !out.status.success() {
-        return false;
-    }
-    out.stdout.is_empty()
 }
 
 /// One crate-level hint suggesting `publish = true` for an internal crate
