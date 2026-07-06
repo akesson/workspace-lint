@@ -19,6 +19,7 @@ mod join;
 mod meta;
 mod pub_usage;
 mod removal;
+mod store;
 mod union;
 
 pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
@@ -33,9 +34,8 @@ pub use union::{Lead, Retired, UnionVerdict};
 
 use std::path::Path;
 
-use wl_ir::IrFragment;
-
 use crate::orchestrate::ExtractionRuns;
+use store::FragmentBytes;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SemanticError {
@@ -73,7 +73,7 @@ impl SemanticModel {
     /// entry point the binary uses: `Engine::extract(..)` → here.
     pub fn load(runs: &ExtractionRuns, workspace_root: &Path) -> Result<Self, SemanticError> {
         let meta = WorkspaceMeta::from_workspace(workspace_root)?;
-        let configs = crate::timing::phase("load_fragments[read+serde all configs]", || {
+        let configs = crate::timing::phase("load_fragments[mmap all configs]", || {
             let mut configs = Vec::new();
             for run in &runs.runs {
                 let fragments = load_fragments(&run.ir_dir)?;
@@ -82,13 +82,16 @@ impl SemanticModel {
             Ok::<_, SemanticError>(configs)
         })?;
         crate::timing::phase("assemble[join+per-config indexes]", || {
-            Self::assemble(configs, meta)
+            Self::assemble_bytes(configs, meta)
         })
     }
 
-    /// Assemble from in-memory fragments (the golden-fixture entry point).
-    pub fn assemble(
-        configs: Vec<(String, Vec<IrFragment>)>,
+    /// The assembly core over fragment byte stores, shared by production and
+    /// tests so both see the one archived representation. `load` feeds mmap'd
+    /// fragments straight in; the golden-fixture tests serialize native
+    /// `IrFragment`s through `FragmentBytes::owned` and call this directly.
+    fn assemble_bytes(
+        configs: Vec<(String, Vec<FragmentBytes>)>,
         meta: WorkspaceMeta,
     ) -> Result<Self, SemanticError> {
         assert!(
@@ -183,8 +186,11 @@ impl SemanticModel {
     }
 }
 
-/// Load and schema-check every `*.json` fragment in one config's IR dir.
-fn load_fragments(dir: &Path) -> Result<Vec<IrFragment>, SemanticError> {
+/// Mmap and header-validate every `*.wlir` fragment in one config's IR dir.
+/// Header validation (magic + current schema + length) is the skew detection a
+/// stale/foreign fragment must fail on — [`FragmentBytes::open`] rejects it so
+/// the run errors instead of assembling alongside current-schema fragments.
+fn load_fragments(dir: &Path) -> Result<Vec<FragmentBytes>, SemanticError> {
     let entries = std::fs::read_dir(dir).map_err(|source| SemanticError::IrDir {
         dir: dir.to_path_buf(),
         source,
@@ -192,18 +198,13 @@ fn load_fragments(dir: &Path) -> Result<Vec<IrFragment>, SemanticError> {
     let mut fragments = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        if path.extension().and_then(|e| e.to_str()) != Some("wlir") {
             continue;
         }
-        let bad = |message: String| SemanticError::BadFragment {
+        let frag = FragmentBytes::open(&path).map_err(|message| SemanticError::BadFragment {
             path: path.clone(),
             message,
-        };
-        let text = std::fs::read_to_string(&path).map_err(|e| bad(e.to_string()))?;
-        let frag: IrFragment = serde_json::from_str(&text).map_err(|e| bad(e.to_string()))?;
-        // Skew detection: a stale or foreign-build fragment must fail the
-        // run, not silently assemble alongside current-schema fragments.
-        frag.check_schema().map_err(bad)?;
+        })?;
         fragments.push(frag);
     }
     if fragments.is_empty() {
@@ -213,8 +214,13 @@ fn load_fragments(dir: &Path) -> Result<Vec<IrFragment>, SemanticError> {
     }
     // `crate_name` alone can tie — a package's bin may share the lib's crate
     // name — and read_dir order is OS-dependent, so break the tie on
-    // target_kind to keep assembly deterministic.
-    fragments.sort_by(|a, b| (&a.crate_name, &a.target_kind).cmp(&(&b.crate_name, &b.target_kind)));
+    // target_kind to keep assembly deterministic. (Reading the archived header
+    // fields is an O(1) cast per comparison.)
+    fragments.sort_by(|a, b| {
+        let (fa, fb) = (a.archived(), b.archived());
+        (fa.crate_name.as_str(), fa.target_kind.as_str())
+            .cmp(&(fb.crate_name.as_str(), fb.target_kind.as_str()))
+    });
     Ok(fragments)
 }
 

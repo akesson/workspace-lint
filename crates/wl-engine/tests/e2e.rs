@@ -46,10 +46,12 @@ fn vendored_extract_this_repo() {
         .expect("extraction");
 
     assert_eq!(runs.runs.len(), 1);
-    let frag_path = runs.runs[0].ir_dir.join("wl_ir.json");
-    let frag: wl_ir::IrFragment =
-        serde_json::from_str(&std::fs::read_to_string(&frag_path).unwrap()).unwrap();
-    frag.check_schema().unwrap();
+    let frag_path = runs.runs[0].ir_dir.join("wl_ir.wlir");
+    let bytes = std::fs::read(&frag_path).unwrap();
+    // Header validation is the schema gate now (the old `check_schema` on the
+    // JSON path); decode the archive back to an owned fragment for the asserts.
+    wl_ir::validate_header(&bytes).expect("valid fragment header");
+    let frag: wl_ir::IrFragment = wl_ir::from_archive_bytes(&bytes[wl_ir::HEADER_LEN..]).unwrap();
     assert_eq!(frag.crate_name, "wl_ir");
     assert!(
         frag.items

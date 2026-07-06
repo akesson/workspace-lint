@@ -159,8 +159,8 @@ impl TargetSet {
     }
 
     /// The fragment filenames one config must produce, exactly as the
-    /// extractor's `write_fragment` keys them: `<crate>[@bin].json` for a
-    /// default `cargo check`; `<crate>[@bin]+test.json` for everything
+    /// extractor's `write_fragment` keys them: `<crate>[@bin].wlir` for a
+    /// default `cargo check`; `<crate>[@bin]+test.wlir` for everything
     /// compiled under `--tests` (unit-test harnesses of lib/bin/proc-macro AND
     /// integration tests, all with `sess.opts.test` — a bin's harness keeps
     /// the `@bin` infix, since the sibling lib harness shares its crate name).
@@ -173,11 +173,11 @@ impl TargetSet {
         let mut expected = BTreeSet::new();
         if tests {
             for name in self.harnessed.iter().chain(&self.test_targets) {
-                expected.insert(format!("{name}+test.json"));
+                expected.insert(format!("{name}+test.wlir"));
             }
         } else {
             for name in &self.compile_units {
-                expected.insert(format!("{name}.json"));
+                expected.insert(format!("{name}.wlir"));
             }
         }
         expected
@@ -194,12 +194,12 @@ pub(super) fn missing_fragments(ir_dir: &Path, expected: &BTreeSet<String>) -> V
 }
 
 impl TargetSet {
-    /// Build-fragment filenames (`<pkg>@build.json`) — the cross-config half
+    /// Build-fragment filenames (`<pkg>@build.wlir`) — the cross-config half
     /// of the expected set (see the `build_units` field doc).
     pub(super) fn build_fragments(&self) -> BTreeSet<String> {
         self.build_units
             .iter()
-            .map(|stem| format!("{stem}.json"))
+            .map(|stem| format!("{stem}.wlir"))
             .collect()
     }
 }
@@ -252,10 +252,10 @@ mod tests {
 
         let default = set.expected_fragments(&[]);
         for frag in [
-            "workspace_lint@bin.json",
-            "workspace_lint_marker.json",
-            "wl_ir.json",
-            "wl_engine.json",
+            "workspace_lint@bin.wlir",
+            "workspace_lint_marker.wlir",
+            "wl_ir.wlir",
+            "wl_engine.wlir",
         ] {
             assert!(default.contains(frag), "{frag} missing from {default:?}");
         }
@@ -267,9 +267,9 @@ mod tests {
         // --tests: every compile unit flips to +test AND integration-test
         // targets appear (this repo has several under crates/workspace-lint).
         let tests = set.expected_fragments(&["--tests".to_string()]);
-        assert!(tests.contains("workspace_lint@bin+test.json"));
-        assert!(tests.contains("dogfood+test.json"), "{tests:?}");
-        assert!(tests.iter().all(|f| f.ends_with("+test.json")));
+        assert!(tests.contains("workspace_lint@bin+test.wlir"));
+        assert!(tests.contains("dogfood+test.wlir"), "{tests:?}");
+        assert!(tests.iter().all(|f| f.ends_with("+test.wlir")));
         assert!(tests.len() > default.len());
 
         // Build fragments are the cross-config half: package-keyed, config-
@@ -279,10 +279,10 @@ mod tests {
         let build = set.build_fragments();
         assert_eq!(
             build.iter().map(String::as_str).collect::<Vec<_>>(),
-            ["wl_engine@build.json"]
+            ["wl_engine@build.wlir"]
         );
-        assert!(!default.contains("wl_engine@build.json"));
-        assert!(!tests.contains("wl_engine@build.json"));
+        assert!(!default.contains("wl_engine@build.wlir"));
+        assert!(!tests.contains("wl_engine@build.wlir"));
     }
 
     /// Build-fragment enforcement is satisfied by ANY current config dir, and
@@ -293,14 +293,14 @@ mod tests {
         let default_dir = tmp.path().join("default");
         let tests_dir = tmp.path().join("tests"); // never created
         std::fs::create_dir_all(&default_dir).unwrap();
-        let names: BTreeSet<String> = ["wl_engine@build.json".to_string()].into();
+        let names: BTreeSet<String> = ["wl_engine@build.wlir".to_string()].into();
 
         let dirs = vec![default_dir.clone(), tests_dir];
         assert_eq!(
             missing_build_fragments(&dirs, &names),
-            vec!["wl_engine@build.json"]
+            vec!["wl_engine@build.wlir"]
         );
-        std::fs::write(default_dir.join("wl_engine@build.json"), b"{}").unwrap();
+        std::fs::write(default_dir.join("wl_engine@build.wlir"), b"{}").unwrap();
         assert!(missing_build_fragments(&dirs, &names).is_empty());
     }
 
@@ -326,7 +326,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(set.expected_fragments(&[]).len(), 1);
-        assert!(set.expected_fragments(&[]).contains("wl_ir.json"));
+        assert!(set.expected_fragments(&[]).contains("wl_ir.wlir"));
     }
 
     /// An unmodeled target-selection flag anywhere in the matrix skips the
@@ -359,11 +359,11 @@ mod tests {
             build_units: BTreeSet::new(),
         };
         let default = set.expected_fragments(&[]);
-        assert!(default.contains("alpha.json") && default.contains("beta.json"));
+        assert!(default.contains("alpha.wlir") && default.contains("beta.wlir"));
         let tests = set.expected_fragments(&["--tests".to_string()]);
         assert_eq!(
             tests.iter().map(String::as_str).collect::<Vec<_>>(),
-            ["beta+test.json"],
+            ["beta+test.wlir"],
             "only the harnessed unit flips to +test"
         );
     }
@@ -371,8 +371,8 @@ mod tests {
     #[test]
     fn missing_fragments_is_a_pure_existence_check() {
         let tmp = tempfile::tempdir().unwrap();
-        let expected: BTreeSet<String> = ["a.json".to_string(), "b.json".to_string()].into();
-        std::fs::write(tmp.path().join("a.json"), b"{}").unwrap();
-        assert_eq!(missing_fragments(tmp.path(), &expected), vec!["b.json"]);
+        let expected: BTreeSet<String> = ["a.wlir".to_string(), "b.wlir".to_string()].into();
+        std::fs::write(tmp.path().join("a.wlir"), b"{}").unwrap();
+        assert_eq!(missing_fragments(tmp.path(), &expected), vec!["b.wlir"]);
     }
 }

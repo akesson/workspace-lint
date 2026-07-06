@@ -82,6 +82,16 @@ pub(crate) enum Commands {
         #[arg(long, default_value_t = false)]
         auto_stage: bool,
     },
+    /// Debug: decode one `.wlir` IR fragment and print it. Reads the rkyv
+    /// archive directly (no extraction, no toolchain). `--json` emits serde
+    /// JSON (jq-able); otherwise Rust `{:#?}` debug.
+    DumpIr {
+        /// Path to a `.wlir` fragment file (e.g. `target/workspace-lint/ir/default/foo.wlir`).
+        file: std::path::PathBuf,
+        /// Emit serde JSON instead of `{:#?}` debug.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

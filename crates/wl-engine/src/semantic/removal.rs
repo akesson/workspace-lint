@@ -47,11 +47,13 @@ impl RemovalSet {
     }
 
     /// Does some removed identity equal `from` or a proper ancestor of it
-    /// (segment-wise)? `from` is an edge's enclosing-item path.
-    pub(super) fn covers(&self, from: &[String]) -> bool {
-        self.segs
-            .iter()
-            .any(|r| from.len() >= r.len() && from[..r.len()] == r[..])
+    /// (segment-wise)? `from` is an edge's enclosing-item path. Generic over
+    /// `AsRef<str>` so the archived runtime (`&[ArchivedString]`) and native
+    /// unit tests (`&[String]`) share one body.
+    pub(super) fn covers<S: AsRef<str>>(&self, from: &[S]) -> bool {
+        self.segs.iter().any(|r| {
+            from.len() >= r.len() && r.iter().zip(from).all(|(a, b)| a.as_str() == b.as_ref())
+        })
     }
 }
 

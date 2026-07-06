@@ -2,8 +2,8 @@
 //! `TyCtxt` of the crate under compilation and emits a byte-precise
 //! [`IrFragment`] (SPIKE-rustc-fidelity-tree.md §4/§11).
 //!
-//! This "lint" never warns: it harvests facts into `$WL_IR_OUT/<crate>.json`
-//! (the IR channel). Real diagnostics (the findings channel) ride Dylint's
+//! This "lint" never warns: it harvests facts into `$WL_IR_OUT/<crate>.wlir`
+//! (the rkyv IR channel). Real diagnostics (the findings channel) ride Dylint's
 //! native lint path separately; the two never mix (SPIKE §4). The
 //! findings-channel round-trip itself was proven by the retired pivot spike
 //! (WS1-A4, SPIKE §12.6/§12b) with a demo lint that did not graduate with
@@ -60,7 +60,7 @@ rustc_session::declare_lint! {
     /// ### What it does
     ///
     /// Walks `TyCtxt` for the crate under compilation and writes a byte-precise
-    /// IR fragment to `$WL_IR_OUT/<crate>.json`. Phase 1 of the rustc-fidelity
+    /// IR fragment to `$WL_IR_OUT/<crate>.wlir`. Phase 1 of the rustc-fidelity
     /// pivot (SPIKE-rustc-fidelity-tree.md §11.2), repackaged from the raw
     /// `rustc_driver` spike into a Dylint pass.
     ///
@@ -1196,16 +1196,19 @@ fn write_fragment(fragment: &IrFragment, file_stem: &str) {
     }
     // The stem is the caller's business: unit-kind disambiguation (`@bin`,
     // `+test`, `@build`) lives in `check_crate`, next to the unit
-    // discrimination that decides it.
-    let path = format!("{out_dir}/{file_stem}.json");
+    // discrimination that decides it. The `.wlir` extension marks the rkyv
+    // transport (schema 7+); the assembler mmaps and reads it zero-copy.
+    let path = format!("{out_dir}/{file_stem}.wlir");
     // Write-then-rename so a fragment is only ever observed complete: two
     // workspace-lint processes may extract the same workspace concurrently
     // (their compiles serialize on cargo's lock, but a reader in one can
-    // otherwise catch the other's half-written JSON). The temp name carries
-    // the pid so concurrent writers can't collide on it either.
+    // otherwise catch the other's half-written buffer). The temp name carries
+    // the pid so concurrent writers can't collide on it either. (Atomic
+    // replace is also load-bearing for the mmap reader: `access_archive` is
+    // unsound over a torn buffer, and rename never exposes one.)
     let tmp = format!("{path}.{}.tmp", std::process::id());
-    match serde_json::to_string_pretty(fragment) {
-        Ok(json) => match std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path)) {
+    match wl_ir::write_bytes(fragment) {
+        Ok(bytes) => match std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
             Ok(()) => eprintln!("WL-IR: wrote {} ({} items)", path, fragment.items.len()),
             Err(e) => eprintln!("WL-IR: write({path}) failed: {e}"),
         },

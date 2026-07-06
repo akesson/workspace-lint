@@ -179,11 +179,11 @@ impl ImportTargetUsage {
 /// prefix walk stops at the first textual module boundary and the lexical
 /// module is appended in its place. Pre-6 fragments (empty `from_module`)
 /// keep the historical textual walk.
-fn scopes_of(asm: &Assembly, from: &[String], from_module: &[String]) -> Vec<String> {
+fn scopes_of<S: AsRef<str>>(asm: &Assembly, from: &[S], from_module: &[S]) -> Vec<String> {
     let mut out = Vec::new();
     if from_module.is_empty() {
         for i in (1..=from.len()).rev() {
-            let id = from[..i].join("::");
+            let id = wl_ir::join_paths(&from[..i], "::");
             let boundary = i == 1 || (i < from.len() && asm.is_module(&id));
             out.push(id);
             if boundary {
@@ -192,9 +192,9 @@ fn scopes_of(asm: &Assembly, from: &[String], from_module: &[String]) -> Vec<Str
         }
         return out;
     }
-    let module = from_module.join("::");
+    let module = wl_ir::join_paths(from_module, "::");
     for i in (1..=from.len()).rev() {
-        let id = from[..i].join("::");
+        let id = wl_ir::join_paths(&from[..i], "::");
         if id == module || i == 1 || (i < from.len() && asm.is_module(&id)) {
             break;
         }
@@ -226,12 +226,13 @@ impl SemanticModel {
         let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
         let mut out = Vec::new();
         for (_, asm) in &self.configs {
-            for frag in asm.fragments() {
-                for e in &frag.references {
+            for frag in asm.archived_fragments() {
+                for e in frag.references.iter() {
                     if !e.import {
                         continue;
                     }
-                    let (Some(decl), Some(elem)) = (&e.decl_span, &e.elem_span) else {
+                    let (Some(decl), Some(elem)) = (e.decl_span.as_ref(), e.elem_span.as_ref())
+                    else {
                         continue;
                     };
                     // Out-of-workspace targets fall back to the display-path
@@ -243,24 +244,28 @@ impl SemanticModel {
                     let id = match asm.target_identity(e) {
                         Some(id) => id,
                         None => {
-                            pseudo = e.to.join("::");
+                            pseudo = wl_ir::join_paths(&e.to, "::");
                             pseudo.as_str()
                         }
                     };
-                    let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
-                    let scope = e.from.join("::");
+                    let from_crate = e.from.first().map(|s| s.as_str()).unwrap_or_default();
+                    let scope = wl_ir::join_paths(&e.from, "::");
                     let dangling = removed.contains_id(id)
                         || (usage.referenced_by_removed(from_crate, &scope, id)
                             && !usage.referenced_by_survivor(from_crate, &scope, id));
                     if !dangling {
                         continue;
                     }
-                    if !seen.insert((decl.file.clone(), decl.lo, elem.lo)) {
+                    if !seen.insert((
+                        decl.file.as_str().to_owned(),
+                        decl.lo.to_native(),
+                        elem.lo.to_native(),
+                    )) {
                         continue;
                     }
                     out.push(DanglingImport {
-                        decl: decl.clone(),
-                        elem: elem.clone(),
+                        decl: wl_ir::Span::from(decl),
+                        elem: wl_ir::Span::from(elem),
                         reexport: e.reexport,
                     });
                 }
@@ -281,19 +286,19 @@ impl SemanticModel {
     fn import_target_usage(&self, removed: &RemovalSet) -> ImportTargetUsage {
         let mut usage = ImportTargetUsage::default();
         for (_, asm) in &self.configs {
-            for frag in asm.fragments() {
-                for e in &frag.references {
+            for frag in asm.archived_fragments() {
+                for e in frag.references.iter() {
                     let from_crate = e
                         .from
                         .first()
-                        .map(String::as_str)
+                        .map(|s| s.as_str())
                         .unwrap_or_default()
                         .to_string();
                     if e.import {
-                        let scope = e.from.join("::");
+                        let scope = wl_ir::join_paths(&e.from, "::");
                         let id = match asm.target_identity(e) {
                             Some(id) => id.to_string(),
-                            None => e.to.join("::"),
+                            None => wl_ir::join_paths(&e.to, "::"),
                         };
                         if e.glob {
                             // `use m::*` at `scope`: references in `scope` can
@@ -322,6 +327,9 @@ impl SemanticModel {
                         &mut usage.by_survivor
                     };
                     let mut ids: Vec<String> = Vec::new();
+                    // NB `def` fields below (`def.path`, `def.trait_item`, …) are
+                    // owned `DefInfo` from the assembled index, so they stay
+                    // plain `String`; only the raw edge (`e.*`) is archived.
                     if let Some(key) = asm.resolve_key(e)
                         && let Some(def) = asm.defs.get(key)
                     {
@@ -366,7 +374,7 @@ impl SemanticModel {
                         // (`.context()`) is indistinguishable from an
                         // inherent one out here, and under-crediting would
                         // delete a live trait import.
-                        ids.push(e.to.join("::"));
+                        ids.push(wl_ir::join_paths(&e.to, "::"));
                     }
                     for scope in scopes_of(asm, &e.from, &e.from_module) {
                         for id in &ids {
@@ -389,8 +397,8 @@ impl SemanticModel {
     pub fn import_excision_blocked(&self) -> std::collections::HashSet<String> {
         let mut out = std::collections::HashSet::new();
         for (_, asm) in &self.configs {
-            for frag in asm.fragments() {
-                for e in &frag.references {
+            for frag in asm.archived_fragments() {
+                for e in frag.references.iter() {
                     if !e.import {
                         continue;
                     }
