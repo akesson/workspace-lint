@@ -39,7 +39,7 @@ fn main() {
             if fix {
                 git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
             }
-            let (config, config_diags) = config::load();
+            let (config, config_diags) = wl_engine::timing::phase("config::load", config::load);
             // Hidden debug surface: exercise the (still dark) semantic-tier
             // plumbing end-to-end — extract on the pinned toolchain, assemble,
             // print stats — then exit 0 without running any lints.
@@ -56,7 +56,8 @@ fn main() {
             if fix && let Some(ref ec) = config.expand {
                 expand::run(ec);
             }
-            let (mut diagnostics, fast, semantic, mut ran) = run_all(&config, cli.fast_only);
+            let (mut diagnostics, fast, semantic, mut ran) =
+                wl_engine::timing::phase("run_all", || run_all(&config, cli.fast_only));
             // Config-audit findings (below) are produced on every default
             // run, so expects for `config` are always judgeable here.
             ran.insert(LintId::Config);
@@ -106,7 +107,9 @@ fn main() {
             // `unknown-lint` findings; leveling runs last so the appended ones
             // are leveled too and `allow`-ed lints are dropped from the final
             // set before the exit-code tally.
-            apply_suppression(fast.as_ref(), ran, &mut diagnostics);
+            wl_engine::timing::phase("apply_suppression[scan expect!/allow!/directives]", || {
+                apply_suppression(fast.as_ref(), ran, &mut diagnostics)
+            });
             apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
             if fix {
                 let summary = fix::run(&diagnostics);
@@ -438,21 +441,29 @@ fn run_all(
     // The rustc-backed tier runs only when some (still-enabled) lint asks
     // for it — never under `--fast-only` (the retain above emptied those).
     let needs_semantic = registry.iter().any(|l| l.requirements().needs_semantic);
-    let fast = needs_fast.then(load_fast_model);
+    let fast = needs_fast.then(|| wl_engine::timing::phase("FastModel::load", load_fast_model));
     // A memberless workspace (a bare virtual manifest) has nothing to extract
     // or judge — cargo would just error "the workspace has no members" — so
     // the tier is skipped; semantic lints see zero members and emit nothing.
     // `needs_semantic ⇒ needs_fast` (every semantic lint declares both), so
     // `fast` is loaded whenever this check runs.
     let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
-    let semantic =
-        (needs_semantic && has_members).then(|| load_semantic_model(config.engine.selectors()));
+    let semantic = (needs_semantic && has_members).then(|| {
+        wl_engine::timing::phase("SEMANTIC (extract+assemble)", || {
+            load_semantic_model(config.engine.selectors())
+        })
+    });
     let cx = LintContext {
         fast: fast.as_ref(),
         semantic: semantic.as_ref(),
     };
     let ran: HashSet<LintId> = registry.iter().map(|l| l.id()).collect();
-    let diagnostics: Vec<Diagnostic> = registry.iter().flat_map(|l| l.check(&cx)).collect();
+    let diagnostics: Vec<Diagnostic> = wl_engine::timing::phase("LINTS (all)", || {
+        registry
+            .iter()
+            .flat_map(|l| wl_engine::timing::phase(l.id().short(), || l.check(&cx)))
+            .collect()
+    });
     // `cx`'s borrow of `semantic` ends here (its last use above), so `semantic`
     // can be moved out for the `--fix` cascade the caller runs.
     (diagnostics, fast, semantic, ran)
@@ -526,15 +537,19 @@ fn load_semantic_model(configs: Vec<wl_engine::CfgSelector>) -> wl_engine::Seman
         ir_root: std::path::PathBuf::from("target/workspace-lint/ir"),
     };
     let mut provisioner = provision::Provisioner::new();
-    let runs = loop {
-        match engine.extract(&engine_config) {
-            Ok(runs) => break runs,
-            // Returning at all means a remediation ran successfully → retry;
-            // every other path exits inside.
-            Err(e) => provisioner.repair_or_fail(&e),
+    let runs = wl_engine::timing::phase("EXTRACT (phase 1)", || {
+        loop {
+            match engine.extract(&engine_config) {
+                Ok(runs) => break runs,
+                // Returning at all means a remediation ran successfully → retry;
+                // every other path exits inside.
+                Err(e) => provisioner.repair_or_fail(&e),
+            }
         }
-    };
-    wl_engine::SemanticModel::load(&runs, &root).unwrap_or_else(|e| util::fail(e))
+    });
+    wl_engine::timing::phase("ASSEMBLE (phase 2)", || {
+        wl_engine::SemanticModel::load(&runs, &root).unwrap_or_else(|e| util::fail(e))
+    })
 }
 
 /// The hidden `--engine-dump` debug output: a compact plain-line stats block
@@ -583,7 +598,7 @@ fn report_and_exit(diagnostics: Vec<Diagnostic>, format: Format) {
         Format::Human => &mut stderr,
         Format::Json | Format::Github => &mut stdout,
     };
-    let deny_count = render(format, &diagnostics, out)
+    let deny_count = wl_engine::timing::phase("render", || render(format, &diagnostics, out))
         .unwrap_or_else(|e| util::fail(format!("error: failed to write diagnostics: {e}")));
     // Exit-code policy (see [`util::fail`]): only a surviving `Deny` flips the
     // code to `1` ("the linted code has findings"); operational failures use `2`.

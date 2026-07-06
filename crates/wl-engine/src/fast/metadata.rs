@@ -51,10 +51,12 @@ impl FastModel {
     /// resolvable graph (network / a populated registry / a lockfile) just to
     /// load. Skipping it keeps the load offline and sub-second.
     pub fn load(root: &Path) -> Result<Self> {
-        let metadata = MetadataCommand::new()
-            .manifest_path(root.join("Cargo.toml"))
-            .no_deps()
-            .exec()?;
+        let metadata = crate::timing::phase("cargo_metadata[fast,--no-deps]", || {
+            MetadataCommand::new()
+                .manifest_path(root.join("Cargo.toml"))
+                .no_deps()
+                .exec()
+        })?;
         // Store the metadata's `workspace_root`, not the caller's argument:
         // the member `manifest_dir`s below are absolute paths from the same
         // metadata call, so relative-path queries agree without leaning on
@@ -62,47 +64,51 @@ impl FastModel {
         let root = metadata.workspace_root.as_std_path().to_path_buf();
         let target_directory = metadata.target_directory.as_std_path().to_path_buf();
         let root_manifest = Manifest::load(root.join("Cargo.toml"))?;
-        let mut members = metadata
-            .workspace_packages()
-            .into_iter()
-            .map(|pkg| {
-                let manifest_path = pkg.manifest_path.as_std_path();
-                let manifest_dir = manifest_path
-                    .parent()
-                    .expect("a Cargo.toml path always has a parent directory")
-                    .to_path_buf();
-                let mut declared_features: Vec<String> = pkg.features.keys().cloned().collect();
-                declared_features.sort();
-                // Full activation lists (cargo synthesizes `foo = ["dep:foo"]`
-                // for an implicit optional-dependency feature) so consumers can
-                // tell a code-gating "leaf" feature (empty list) from a
-                // dependency/feature "plumbing" one.
-                let feature_values: BTreeMap<String, Vec<String>> = pkg
-                    .features
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                let targets = module_tree::build_targets(pkg, &manifest_dir)?;
-                let orphan_files = module_tree::compute_orphans(&manifest_dir, &targets);
-                // Union of every target's spliced `include!` files (each module
-                // records its own in [`Module::generated_files`]).
-                let generated_files: Vec<PathBuf> = targets
-                    .iter()
-                    .flat_map(|t| t.all_modules())
-                    .flat_map(|m| m.generated_files.iter().cloned())
-                    .collect();
-                Ok(CrateInfo {
-                    name: pkg.name.to_string(),
-                    manifest_dir,
-                    manifest: Manifest::load(manifest_path)?,
-                    declared_features,
-                    feature_values,
-                    targets,
-                    orphan_files,
-                    generated_files,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut members =
+            crate::timing::phase("module_walk[manifests+syntactic mod tree]", || {
+                metadata
+                    .workspace_packages()
+                    .into_iter()
+                    .map(|pkg| {
+                        let manifest_path = pkg.manifest_path.as_std_path();
+                        let manifest_dir = manifest_path
+                            .parent()
+                            .expect("a Cargo.toml path always has a parent directory")
+                            .to_path_buf();
+                        let mut declared_features: Vec<String> =
+                            pkg.features.keys().cloned().collect();
+                        declared_features.sort();
+                        // Full activation lists (cargo synthesizes `foo = ["dep:foo"]`
+                        // for an implicit optional-dependency feature) so consumers can
+                        // tell a code-gating "leaf" feature (empty list) from a
+                        // dependency/feature "plumbing" one.
+                        let feature_values: BTreeMap<String, Vec<String>> = pkg
+                            .features
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let targets = module_tree::build_targets(pkg, &manifest_dir)?;
+                        let orphan_files = module_tree::compute_orphans(&manifest_dir, &targets);
+                        // Union of every target's spliced `include!` files (each module
+                        // records its own in [`Module::generated_files`]).
+                        let generated_files: Vec<PathBuf> = targets
+                            .iter()
+                            .flat_map(|t| t.all_modules())
+                            .flat_map(|m| m.generated_files.iter().cloned())
+                            .collect();
+                        Ok(CrateInfo {
+                            name: pkg.name.to_string(),
+                            manifest_dir,
+                            manifest: Manifest::load(manifest_path)?,
+                            declared_features,
+                            feature_values,
+                            targets,
+                            orphan_files,
+                            generated_files,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?;
         members.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Self {
             root,

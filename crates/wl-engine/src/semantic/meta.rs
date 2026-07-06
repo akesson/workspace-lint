@@ -78,13 +78,15 @@ impl WorkspaceMeta {
     /// Read the target workspace via `cargo metadata` (WITH `resolve`, so the
     /// dependency graph is available for facade-crate attribution).
     pub fn from_workspace(root: &Path) -> Result<Self, SemanticError> {
-        let md = cargo_metadata::MetadataCommand::new()
-            .manifest_path(root.join("Cargo.toml"))
-            .exec()
-            .map_err(|source| SemanticError::Metadata {
-                dir: root.to_path_buf(),
-                source: Box::new(source),
-            })?;
+        let md = crate::timing::phase("cargo_metadata[meta,+resolve]", || {
+            cargo_metadata::MetadataCommand::new()
+                .manifest_path(root.join("Cargo.toml"))
+                .exec()
+                .map_err(|source| SemanticError::Metadata {
+                    dir: root.to_path_buf(),
+                    source: Box::new(source),
+                })
+        })?;
 
         let member_ids: BTreeSet<String> = md
             .workspace_members

@@ -225,9 +225,15 @@ impl Engine {
     /// changes the current directory to the target workspace (restored on
     /// return, including the error paths, via an RAII guard).
     pub fn extract(&self, cfg: &EngineConfig) -> Result<ExtractionRuns, EngineError> {
-        toolchain::preflight(Self::pinned_toolchain())?;
-        let package_dir = self.source.materialize()?;
-        let dylib = relink::RelinkedDylib::new(source::build_dylib(&package_dir)?);
+        crate::timing::phase("preflight[rustup]", || {
+            toolchain::preflight(Self::pinned_toolchain())
+        })?;
+        let package_dir =
+            crate::timing::phase("materialize[vendored src]", || self.source.materialize())?;
+        let dylib = relink::RelinkedDylib::new(crate::timing::phase(
+            "build_dylib[cargo build nightly]",
+            || source::build_dylib(&package_dir),
+        )?);
 
         // The guard's target set comes from cargo metadata on the target
         // workspace — computed before the chdir (explicit manifest path).
@@ -241,7 +247,9 @@ impl Engine {
                 context: format!("creating IR dir {}", ir_dir.display()),
                 source,
             })?;
-            self.run_config(selector, &ir_dir, &dylib, &cfg.packages, targets.as_ref())?;
+            crate::timing::phase(format_args!("run_config[{}]", selector.id), || {
+                self.run_config(selector, &ir_dir, &dylib, &cfg.packages, targets.as_ref())
+            })?;
             runs.push(ConfigRun {
                 id: selector.id.clone(),
                 cargo_args: selector.cargo_args.clone(),

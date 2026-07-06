@@ -92,14 +92,16 @@ impl TargetSet {
             }
         }
 
-        let md = cargo_metadata::MetadataCommand::new()
-            .manifest_path(workspace_root.join("Cargo.toml"))
-            .no_deps()
-            .exec()
-            .map_err(|source| EngineError::Metadata {
-                dir: workspace_root.to_path_buf(),
-                source: Box::new(source),
-            })?;
+        let md = crate::timing::phase("cargo_metadata[guard,--no-deps]", || {
+            cargo_metadata::MetadataCommand::new()
+                .manifest_path(workspace_root.join("Cargo.toml"))
+                .no_deps()
+                .exec()
+                .map_err(|source| EngineError::Metadata {
+                    dir: workspace_root.to_path_buf(),
+                    source: Box::new(source),
+                })
+        })?;
         let member_ids: BTreeSet<String> = md
             .workspace_members
             .iter()
