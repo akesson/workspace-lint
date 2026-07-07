@@ -569,7 +569,7 @@ fn load_semantic_model(configs: Vec<wl_engine::ConfigSpec>) -> wl_engine::Semant
     let engine_config = wl_engine::EngineConfig {
         workspace_root: root.clone(),
         configs,
-        packages: vec![],
+
         // Relative on purpose: `Engine::extract` enters the workspace
         // root, so the per-config IR dirs land under the target dir of
         // the linted workspace (stable across runs — warm-cache friendly).

@@ -144,6 +144,20 @@ impl EdgeFold {
 }
 
 impl Assembly {
+    /// The crates whose pub API this config is entitled to *judge*: those
+    /// with a lib / bin / proc-macro unit here (a lib's `+test` harness keeps
+    /// its lib kind). Integration-test / bench target crates contribute
+    /// usage only — their pubs are harness plumbing, not API surface.
+    pub(super) fn candidate_crates(&self) -> BTreeSet<String> {
+        const USAGE_ONLY: &[&str] = &["build", "test", "bench", "example"];
+        self.fragments
+            .iter()
+            .map(|f| f.archived())
+            .filter(|f| !USAGE_ONLY.contains(&f.target_kind.as_str()))
+            .map(|f| f.crate_name.as_str().to_owned())
+            .collect()
+    }
+
     pub(super) fn build(fragments: Vec<FragmentBytes>, ids: Arc<IdentityIndex>) -> Self {
         // Build-script fragments are references-only carriers (`items` empty,
         // crate name always `build_script_build`) — not crates of the
@@ -154,7 +168,6 @@ impl Assembly {
             .filter(|f| f.target_kind.as_str() != "build")
             .map(|f| f.crate_name.as_str().to_owned())
             .collect();
-
         // 1) Global def index (keyed by the cross-crate-stable DefPathHash) +
         //    the trait→impls linkage + the module-visibility table (the
         //    pub-module-hop substrate) + `id_key` (identity → this config's

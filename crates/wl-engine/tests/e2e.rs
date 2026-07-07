@@ -13,7 +13,7 @@
 //! One `#[test]` only: `Engine::extract` documents process-global effects
 //! (WL_IR_OUT + a scoped chdir), so it must not race a sibling test.
 
-use wl_engine::{ConfigSpec, Engine, EngineConfig, ExtractorSource, SemanticModel};
+use wl_engine::{Engine, EngineConfig, ExtractorSource, SemanticModel};
 
 #[test]
 fn vendored_extract_this_repo() {
@@ -37,10 +37,12 @@ fn vendored_extract_this_repo() {
     let runs = engine
         .extract(&EngineConfig {
             workspace_root: repo_root.clone(),
-            configs: vec![ConfigSpec::host_default()],
             // One small crate: e2e proves the flow, not the fan-out (the
             // whole-workspace path is exercised daily by spike.yml + scripts).
-            packages: vec!["wl-ir".into()],
+            // Package scoping is per-config now — declared as the real
+            // command, closure-expanded by the engine (wl-ir has no member
+            // deps, so the closure is itself).
+            configs: vec![wl_engine::parse_command("cargo build -p wl-ir").expect("parses")],
             ir_root: ir_root.path().to_path_buf(),
         })
         .expect("extraction");
@@ -64,7 +66,12 @@ fn vendored_extract_this_repo() {
     // assembly succeeds, and wl-ir's schema types read as published API
     // surface (its crate declares publish intent), never as hard-dead.
     let model = SemanticModel::load(&runs).expect("assemble");
-    assert_eq!(model.config_ids().collect::<Vec<_>>(), ["default"]);
+    let ids: Vec<&str> = model.config_ids().collect();
+    assert_eq!(ids.len(), 1);
+    assert!(
+        ids[0].starts_with("default-"),
+        "a package-scoped host config keys `default-<hash>`: {ids:?}"
+    );
     let verdict = model.union_verdict();
     assert!(
         verdict.leads.iter().all(|l| !l.dead),

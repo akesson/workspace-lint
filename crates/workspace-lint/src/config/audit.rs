@@ -151,6 +151,37 @@ fn audit_engine_configs(config: &Config, config_path: &str, out: &mut Vec<Diagno
             .build(),
         );
     }
+
+    // Order guidance: the first entry is the primary — crates it covers are
+    // judged in its universe. A scoped/targeted first entry ahead of a plain
+    // whole-workspace host entry inverts the natural home for every shared
+    // crate.
+    let specs: Vec<wl_engine::ConfigSpec> = config
+        .engine
+        .configs
+        .iter()
+        .filter_map(|e| wl_engine::parse_command(e).ok())
+        .collect();
+    if let Some(first) = specs.first()
+        && (first.target.is_some() || !first.packages.is_empty())
+        && let Some(host) = specs[1..]
+            .iter()
+            .find(|s| s.target.is_none() && s.packages.is_empty())
+    {
+        out.push(
+            at_file(
+                LintId::Config.id(),
+                format!(
+                    "`[engine] configs` lists the scoped `{}` before the whole-workspace `{}`; \
+                     the first entry is the primary config",
+                    first.display, host.display
+                ),
+                config_path,
+            )
+            .help("list your main build first so every crate is judged in its natural home config")
+            .build(),
+        );
+    }
 }
 
 /// `[lints]`-shaped keys must be `default` or a known lint short name. `ctx` is

@@ -623,6 +623,26 @@ fn audit_maps_old_vocabulary_to_commands() {
 }
 
 #[test]
+fn audit_warns_when_scoped_config_is_primary() {
+    // The first entry is the primary; leading with the wasm-scoped command
+    // makes it every shared crate's home. Same matrix, reordered, is clean.
+    let diags = audit_of(
+        "[engine]\nconfigs = [\"cargo build --target wasm32-unknown-unknown -p app\", \
+         \"cargo build\"]\n",
+    );
+    let d = diags
+        .iter()
+        .find(|d| d.message.contains("the first entry is the primary config"))
+        .expect("expected the reorder warning");
+    assert!(d.helps.iter().any(|h| h.contains("main build first")));
+    let diags = audit_of(
+        "[engine]\nconfigs = [\"cargo build\", \
+         \"cargo build --target wasm32-unknown-unknown -p app\"]\n",
+    );
+    assert!(diags.is_empty(), "unexpected: {diags:?}");
+}
+
+#[test]
 fn audit_flags_unknown_engine_field() {
     let diags = audit_of("[engine]\nconfig = [\"cargo build\"]\n");
     assert!(

@@ -1,12 +1,16 @@
 //! The cfg-matrix union (SPIKE §7): a pub item is a lead iff unreached in
-//! EVERY config; the first config is the **primary** — it defines the
-//! member-crate candidate set, so a `--tests` config's integration-test crates
-//! contribute *usage* but never *candidates*. Lifted from the spike
-//! assembler's `Matrix`, producing data instead of a printed report.
+//! EVERY config. Candidates come from each crate's **home** config (the
+//! first config whose lib/bin units cover it — see
+//! [`covering_configs`](super::covering_configs)), so a test
+//! config's integration-test crates contribute *usage* but never
+//! *candidates*, while a crate only a `--target` config compiles is still
+//! judged. Lifted from the spike assembler's `Matrix`, producing data
+//! instead of a printed report.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::assembly::{Assembly, CandReach, Category};
+use super::covering_configs;
 use super::meta::WorkspaceMeta;
 
 /// One surviving lead of the union: a pub candidate reached in no config.
@@ -48,8 +52,8 @@ impl UnionVerdict {
         configs: &[(String, Assembly)],
         meta: Option<&WorkspaceMeta>,
     ) -> UnionVerdict {
-        let (_, primary) = &configs[0];
-        let members = &primary.crates;
+        let covering = covering_configs(configs);
+        let is_member = |krate: &str| covering.contains_key(krate);
 
         // Level-1→2: reduce each config to config-stable candidate identities.
         let per: Vec<(&str, BTreeMap<String, CandReach>)> = configs
@@ -77,11 +81,12 @@ impl UnionVerdict {
             }
         }
 
-        // Union candidate set, restricted to member crates (the real pub API).
+        // Union candidate set, restricted to home-covered crates (the real
+        // pub API — test/bench target crates have no home).
         let mut all: BTreeMap<&str, &CandReach> = BTreeMap::new();
         for (_, cands) in &per {
             for (id, c) in cands {
-                if members.contains(&c.krate) {
+                if is_member(&c.krate) {
                     all.entry(id.as_str()).or_insert(c);
                 }
             }
@@ -89,7 +94,8 @@ impl UnionVerdict {
 
         // Surviving leads: candidate somewhere, reached nowhere — split by the
         // external-boundary classification (published lib ⇒ API surface;
-        // bin / publish=false ⇒ hard DEAD verdict).
+        // bin / publish=false ⇒ hard DEAD verdict), judged by the crate's
+        // home config.
         let leads: Vec<Lead> = all
             .iter()
             .filter(|(id, _)| !used.contains(*id))
@@ -98,7 +104,9 @@ impl UnionVerdict {
                 krate: c.krate.clone(),
                 kind: c.kind.clone(),
                 category: c.category,
-                dead: !primary.external_boundary(&c.krate, meta),
+                dead: !configs[covering[&c.krate]]
+                    .1
+                    .external_boundary(&c.krate, meta),
             })
             .collect();
 
@@ -107,7 +115,7 @@ impl UnionVerdict {
         let primary_cands = &per[0].1;
         let mut retired = Vec::new();
         for (id, c) in primary_cands {
-            if members.contains(&c.krate) && !c.reached && used.contains(id.as_str()) {
+            if is_member(&c.krate) && !c.reached && used.contains(id.as_str()) {
                 let saved_by = per
                     .iter()
                     .enumerate()
@@ -132,7 +140,7 @@ impl UnionVerdict {
 
         let primary_only_leads = primary_cands
             .iter()
-            .filter(|(_, c)| members.contains(&c.krate) && !c.reached)
+            .filter(|(_, c)| is_member(&c.krate) && !c.reached)
             .count();
 
         UnionVerdict {

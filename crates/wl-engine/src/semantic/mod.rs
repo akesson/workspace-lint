@@ -37,6 +37,24 @@ use std::path::Path;
 use crate::orchestrate::ExtractionRuns;
 use store::FragmentBytes;
 
+/// crate → index of the first config (declared order) whose lib/bin units
+/// cover it: the crate's **home** config — the one entitled to judge its pub
+/// API, define its display defs, and classify its external boundary. Under
+/// the plain build+test matrix every lib's home is the primary config; a
+/// crate only a `--target` config compiles (a wasm-only member) is judged by
+/// that config instead of silently escaping judgment.
+pub(crate) fn covering_configs(
+    configs: &[(String, Assembly)],
+) -> std::collections::BTreeMap<String, usize> {
+    let mut covering = std::collections::BTreeMap::new();
+    for (ci, (_, asm)) in configs.iter().enumerate() {
+        for krate in asm.candidate_crates() {
+            covering.entry(krate).or_insert(ci);
+        }
+    }
+    covering
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SemanticError {
     #[error("no IR fragments found in {dir} — did extraction run?")]

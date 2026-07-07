@@ -17,6 +17,7 @@ use wl_ir::Span;
 
 use super::assembly::{Assembly, CANDIDATE_KINDS, Category, Reach};
 use super::clippy_guard::NarrowUnmask;
+use super::covering_configs;
 use super::removal::{DegreeView, RemovalSet};
 
 /// How a candidate is used, unioned across every extracted config. Mirrors the
@@ -99,16 +100,16 @@ pub struct PubCandidate {
 struct Fold {
     cross: bool,
     intra: bool,
-    /// Intra reach seen in the PRIMARY config (matrix index 0) — its absence
-    /// while `intra` holds means every use-site is test/bench cfg-gated.
-    intra_primary: bool,
+    /// Intra reach seen in the crate's HOME config — its absence while
+    /// `intra` holds means every use-site is test/bench cfg-gated.
+    intra_home: bool,
     dispatch: bool,
     signature_exposed: bool,
     externally_reachable: bool,
     reexport_target: bool,
-    /// See [`PubCandidate::dead_members`] — primary-config judgement.
+    /// See [`PubCandidate::dead_members`] — home-config judgement.
     dead_members: bool,
-    /// See [`PubCandidate::dead_fields`] — primary-config judgement.
+    /// See [`PubCandidate::dead_fields`] — home-config judgement.
     dead_fields: bool,
 }
 
@@ -143,8 +144,11 @@ fn compute_impl(
     configs: &[(String, Assembly)],
     overlay_views: Option<&[DegreeView<'_>]>,
 ) -> Vec<PubCandidate> {
-    let (_, primary) = &configs[0];
-    let members = &primary.crates;
+    // Each crate is judged by its **home** config: the first config whose
+    // lib/bin units cover it. Under the plain build+test matrix that is the
+    // primary for every lib; a crate only a `--target` config compiles gets
+    // that config as home instead of escaping judgment entirely.
+    let covering = covering_configs(configs);
     let prebuilt: Vec<DegreeView>;
     let views: &[DegreeView] = match overlay_views {
         Some(vs) => vs,
@@ -163,11 +167,13 @@ fn compute_impl(
     for (ci, (_, assembly)) in configs.iter().enumerate() {
         let view = &views[ci];
         for (key, def) in &assembly.defs {
+            let Some(&home) = covering.get(&def.krate) else {
+                continue; // test/bench target crate — usage only, never judged
+            };
             if !def.public
                 || def.synthetic
                 || !def.category.is_candidate()
                 || !CANDIDATE_KINDS.contains(&def.kind.as_str())
-                || !members.contains(&def.krate)
             {
                 continue;
             }
@@ -185,8 +191,8 @@ fn compute_impl(
             let intra_only = view.intra_degree.get(key).copied().unwrap_or(0);
             fold.cross |= workspace_wide > intra_only;
             fold.intra |= intra_only > 0;
-            if ci == 0 {
-                fold.intra_primary |= intra_only > 0;
+            if ci == home {
+                fold.intra_home |= intra_only > 0;
                 if def.kind == "trait" {
                     fold.dead_members |= assembly.has_unreached_trait_member(key, view.in_degree);
                 }
@@ -248,7 +254,7 @@ fn compute_impl(
                 signature_exposed: fold.signature_exposed,
                 externally_reachable: fold.externally_reachable,
                 reexport_target: fold.reexport_target,
-                test_only: fold.intra && !fold.intra_primary && !fold.cross,
+                test_only: fold.intra && !fold.intra_home && !fold.cross,
                 dead_members: fold.dead_members,
                 dead_fields: fold.dead_fields,
                 id,
