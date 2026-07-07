@@ -1,4 +1,4 @@
-use globset::{GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokei::{Config as TokeiConfig, Languages};
@@ -6,8 +6,8 @@ use tokei::{Config as TokeiConfig, Languages};
 use crate::shipped_source;
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_file;
-use wl_lint_api::config::GlobPattern;
-use wl_lint_api::{Lint, LintContext, LintId};
+use wl_lint_api::config::{GlobPattern, glob_set};
+use wl_lint_api::{LintContext, LintId, LintImpl};
 
 pub mod config;
 #[cfg(test)]
@@ -34,12 +34,10 @@ impl FileSize {
     }
 }
 
-impl Lint for FileSize {
-    fn id(&self) -> LintId {
-        LintId::FileSize
-    }
+impl LintImpl for FileSize {
+    const ID: LintId = LintId::FileSize;
 
-    fn check(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
+    fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
         check(&self.config)
     }
 }
@@ -114,11 +112,7 @@ fn collect_file_lines(rules: &[FileSizeRule]) -> HashMap<String, usize> {
 
 /// Build a matcher over every rule glob, to decide which files a rule targets.
 fn rule_globset(rules: &[FileSizeRule]) -> GlobSet {
-    let mut builder = GlobSetBuilder::new();
-    for rule in rules {
-        builder.add(rule.glob.compiled().clone());
-    }
-    builder.build().unwrap()
+    glob_set(rules.iter().map(|r| &r.glob)).unwrap_or_default()
 }
 
 fn is_rust(path: &Path) -> bool {

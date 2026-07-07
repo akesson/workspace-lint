@@ -1,11 +1,10 @@
-use globset::GlobSetBuilder;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_file;
 use wl_lint_api::config::{GlobPattern, Globs};
-use wl_lint_api::{Lint, LintContext, LintId};
+use wl_lint_api::{LintContext, LintId, LintImpl};
 
 pub mod config;
 #[cfg(test)]
@@ -32,12 +31,10 @@ impl Freshness {
     }
 }
 
-impl Lint for Freshness {
-    fn id(&self) -> LintId {
-        LintId::Freshness
-    }
+impl LintImpl for Freshness {
+    const ID: LintId = LintId::Freshness;
 
-    fn check(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
+    fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
         check(&self.config)
     }
 }
@@ -143,13 +140,7 @@ fn find_files_matching(root: &Path, glob: &GlobPattern) -> Vec<PathBuf> {
 }
 
 fn find_deps_in_dir(dir: &Path, deps: &Globs) -> Vec<PathBuf> {
-    let mut builder = GlobSetBuilder::new();
-    for glob in deps.iter() {
-        builder.add(glob.compiled().clone());
-    }
-    let set = builder
-        .build()
-        .expect("depends-on globs pre-validated at parse time");
+    let set = deps.glob_set();
 
     let mut results = Vec::new();
     for entry in ignore::WalkBuilder::new(dir).build().flatten() {

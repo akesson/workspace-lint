@@ -143,6 +143,27 @@ impl FastModel {
         &self.members
     }
 
+    /// The members whose workspace-relative manifest directory satisfies
+    /// `matches`, as `(relative-display-key, member)` pairs sorted by key —
+    /// the key is what crate-anchored diagnostics and per-Cargo.toml
+    /// suppression directives match on. A predicate (not a glob type) so this
+    /// crate stays matcher-agnostic.
+    pub fn members_matching(&self, matches: impl Fn(&str) -> bool) -> Vec<(String, &CrateInfo)> {
+        let mut out: Vec<(String, &CrateInfo)> = self
+            .members
+            .iter()
+            .filter_map(|krate| {
+                let key = self
+                    .crate_relative_path(&krate.manifest_dir)
+                    .display()
+                    .to_string();
+                matches(&key).then_some((key, krate))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// `krate`'s `publish` field with `publish.workspace = true` resolved
     /// against the root manifest's `[workspace.package] publish`. (A root
     /// that itself inherits is nonsensical; treated as absent.) Mirrors the

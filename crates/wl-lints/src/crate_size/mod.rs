@@ -1,12 +1,11 @@
-use globset::{Glob, GlobSetBuilder};
 use std::path::{Path, PathBuf};
 use tokei::{Config as TokeiConfig, Languages};
 use wl_engine::fast::FastModel;
 
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_crate;
-use wl_lint_api::config::GlobPattern;
-use wl_lint_api::{Lint, LintContext, LintId, Requirements};
+use wl_lint_api::config::{GlobPattern, glob_set};
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 pub mod config;
 #[cfg(test)]
@@ -40,23 +39,15 @@ impl CrateSize {
     }
 }
 
-impl Lint for CrateSize {
-    fn id(&self) -> LintId {
-        LintId::CrateSize
-    }
+impl LintImpl for CrateSize {
+    const ID: LintId = LintId::CrateSize;
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: false,
+    };
 
-    fn requirements(&self) -> Requirements {
-        Requirements {
-            needs_fast: true,
-            ..Requirements::default()
-        }
-    }
-
-    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let fast = cx
-            .fast
-            .expect("crate-size lint requires FastModel (Requirements::needs_fast)");
-        check(&self.config, fast)
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        check(&self.config, cx.fast_model(Self::ID))
     }
 }
 
@@ -74,49 +65,26 @@ pub(crate) fn check(config: &CrateSizeConfig, fast: &FastModel) -> Vec<Diagnosti
         // Override per rule with `include` to count other file types or to
         // narrow to specific Rust files. Patterns match the file name (not the
         // full path).
-        let mut include_builder = GlobSetBuilder::new();
-        match &rule.include {
-            Some(patterns) => {
-                for p in patterns {
-                    include_builder.add(p.compiled().clone());
-                }
-            }
+        let rust_only;
+        let include_patterns = match &rule.include {
+            Some(patterns) => patterns.as_slice(),
             None => {
-                include_builder.add(Glob::new("*.rs").expect("`*.rs` is a valid glob"));
+                rust_only = [GlobPattern::new("*.rs").expect("`*.rs` is a valid glob")];
+                &rust_only
             }
-        }
-        let include_set = include_builder.build().unwrap();
+        };
+        let include_set = glob_set(include_patterns).unwrap_or_default();
 
-        // Iterate every workspace member whose workspace-relative manifest
-        // directory matches the rule's glob. Replaces the previous
-        // `read_dir`-based scan: now the lint can only target real cargo
-        // workspace members (cargo's `members`/`exclude`/glob semantics
-        // are honored), and the resulting anchor path is workspace-
-        // relative for free — `# workspace-lint: allow(crate-size)` in a
-        // member Cargo.toml now matches.
-        let mut matches: Vec<(String, std::path::PathBuf)> = fast
-            .members()
-            .iter()
-            .map(|krate| {
-                (
-                    fast.crate_relative_path(&krate.manifest_dir),
-                    krate.manifest_dir.clone(),
-                )
-            })
-            .filter_map(|(rel, abs)| {
-                let key = rel.display().to_string();
-                if matcher.is_match(&key) {
-                    Some((key, abs))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        matches.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let crate_totals: Vec<(String, usize)> = matches
+        // Every workspace member whose workspace-relative manifest directory
+        // matches the rule's glob (`members_matching`): the lint can only
+        // target real cargo workspace members (cargo's `members`/`exclude`/
+        // glob semantics are honored), and the resulting anchor path is
+        // workspace-relative for free — `# workspace-lint: allow(crate-size)`
+        // in a member Cargo.toml matches.
+        let crate_totals: Vec<(String, usize)> = fast
+            .members_matching(|key| matcher.is_match(key))
             .into_iter()
-            .map(|(rel, abs)| (rel, count_crate_code(&abs, &include_set)))
+            .map(|(rel, krate)| (rel, count_crate_code(&krate.manifest_dir, &include_set)))
             .collect();
 
         diagnostics.extend(find_crate_violations(rule, &crate_totals));

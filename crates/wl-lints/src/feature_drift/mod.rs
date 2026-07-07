@@ -21,7 +21,7 @@ use wl_engine::fast::FastModel;
 
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_crate;
-use wl_lint_api::{Lint, LintContext, LintId, Requirements};
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 pub struct FeatureDrift;
 
@@ -37,23 +37,15 @@ impl Default for FeatureDrift {
     }
 }
 
-impl Lint for FeatureDrift {
-    fn id(&self) -> LintId {
-        LintId::FeatureDrift
-    }
+impl LintImpl for FeatureDrift {
+    const ID: LintId = LintId::FeatureDrift;
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: false,
+    };
 
-    fn requirements(&self) -> Requirements {
-        Requirements {
-            needs_fast: true,
-            ..Requirements::default()
-        }
-    }
-
-    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let fast = cx
-            .fast
-            .expect("feature-drift lint requires FastModel (Requirements::needs_fast)");
-        check(fast)
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        check(cx.fast_model(Self::ID))
     }
 }
 

@@ -27,7 +27,8 @@
 use std::collections::HashMap;
 
 use wl_diagnostic::Diagnostic;
-use wl_lint_api::{Lint, LintContext, LintId, Requirements};
+use wl_lint_api::config::PerCrate;
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 /// Number of unused-pub findings an internal crate must accumulate before we
 /// emit the one-time `publish = true` hint. Used when the config leaves
@@ -43,37 +44,30 @@ mod tests;
 pub use config::{KindFilter, UnusedPubConfig};
 
 pub struct UnusedPub {
-    /// Workspace-wide params, used for any crate without a per-crate section.
-    global: UnusedPubConfig,
-    /// Per-crate params (keyed by Cargo package name), each *wholesale*
-    /// replacing the global config for that crate. Empty for CLI single-check
-    /// runs, which have no `[crates.*]` tier.
-    per_crate: HashMap<String, UnusedPubConfig>,
+    config: PerCrate<UnusedPubConfig>,
 }
 
 impl UnusedPub {
     pub fn new(global: UnusedPubConfig, per_crate: HashMap<String, UnusedPubConfig>) -> Self {
-        Self { global, per_crate }
+        Self {
+            config: PerCrate::new(global, per_crate),
+        }
     }
 }
 
-impl Lint for UnusedPub {
-    fn id(&self) -> LintId {
-        LintId::UnusedPub
-    }
+impl LintImpl for UnusedPub {
+    const ID: LintId = LintId::UnusedPub;
+    // Semantic judgment; fast for manifests (publish resolution) and
+    // workspace-relative paths.
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: true,
+    };
 
-    fn requirements(&self) -> Requirements {
-        Requirements {
-            needs_semantic: true,
-            // Manifests (publish resolution), workspace-relative paths.
-            needs_fast: true,
-        }
-    }
-
-    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let Some((fast, semantic)) = cx.semantic_models("unused-pub") else {
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        let Some((fast, semantic)) = cx.semantic_models(Self::ID) else {
             return Vec::new();
         };
-        ir::check(&self.global, &self.per_crate, fast, semantic, cx.cfg_shadow)
+        ir::check(&self.config, fast, semantic, cx.cfg_shadow)
     }
 }

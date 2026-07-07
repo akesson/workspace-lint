@@ -30,12 +30,14 @@ nightly `extractor/` package:
   the per-lint config structs so the TOML schema is unchanged; the *registry*
   stays in the binary (it's where lint impls meet config loading).
 - **`wl-lint-api`** — everything a lint builds on that isn't judgment: the
-  `Lint` trait / `LintId` / `LintContext` vocabulary, the config *primitives*
-  (`config.rs`: `LintLevel` / `GlobPattern` / …), the shared `git` (the
-  `GIT_*`-scrub chokepoint) and `util` helpers, and `surgery/` — the
-  byte-exact source-editing machinery behind the structural fixes
-  (whole-item deletion incl. the lexical attribute extension, dangling-`use`
-  excision). Extracted from `wl-lints` when it hit the crate-size ceiling.
+  `Lint` trait / `LintId` / `LintContext` vocabulary (incl. `LintImpl`, the
+  const-declarative face lints actually implement), the config *primitives*
+  and grammar (`config.rs`: `LintLevel` / `GlobPattern` / `glob_set` /
+  `PerCrate` / …), the shared `git` (the `GIT_*`-scrub chokepoint) and `util`
+  helpers, and `surgery/` — the byte-exact source-editing machinery behind
+  the structural fixes (whole-item deletion incl. the lexical attribute
+  extension, dangling-`use` excision). Extracted from `wl-lints` when it hit
+  the crate-size ceiling.
 - **`wl-diagnostic`** — the diagnostic vocabulary (`Diagnostic` / `Span` /
   `SilenceAnchor` / `Suggestion`), the `DiagnosticBuilder`, and the three
   renderers (`human` / `json` / `github`). A leaf crate consumed by both
@@ -248,8 +250,10 @@ fail. The trait lives in `wl-lint-api/src/lib.rs`, the registry in the
 binary's `registry.rs`.)
 
 1. Create `crates/wl-lints/src/<name>/{mod.rs,config.rs,tests.rs}` implementing
-   `Lint`. Export the lint struct + its constructor and (if any) `*Config` `pub`
-   so the registry can reach them; keep internal helpers `pub(crate)`.
+   `LintImpl` (`const ID` / `const REQUIRES` / `fn run`; the blanket impl in
+   `wl-lint-api` supplies `Lint`). Export the lint struct + its constructor and
+   (if any) `*Config` `pub` so the registry can reach them; keep internal
+   helpers `pub(crate)`.
 2. Add a `LintId` variant in `wl-lint-api/src/lints_id.rs` + wire its `id()`/`short()`
    arms and `LintId::ALL` (kept alphabetical-by-id; asserted by a test).
 3. Add one line in the binary's `registry::registry` gating it on its config
