@@ -542,6 +542,27 @@ weaker analysis — the explicit degradation path is `--fast-only`.
 - **pre-push / CI**: `workspace-lint` — the full tier; warm runs are
   cheap, and CI caches the extractor build per toolchain pin.
 
+### Performance
+
+Warm runs are cheap, but the cost **scales with `[engine] configs`**: each entry
+is a full `cargo check` freshness pass over the whole workspace on the pinned
+nightly, so N entries cost roughly N× the warm floor — not a fixed overhead. That
+check runs in the engine's own `target/dylint` build universe, separate from the
+`target/` your everyday `cargo` uses, so the two never share artifacts (the first
+full run after a normal build is cold). `--fast-only` skips the tier, and this
+cost, entirely.
+
+A workspace with a **non-deterministic `build.rs`** (e.g. Dioxus / `manganis`
+asset codegen) can need **one extra warm run to settle**: the build script
+re-fires inside the engine's freshness universe until its generated outputs
+stabilize, so the first warm run after a change re-checks more than the steady
+state (observed 45s → 23s → 6s across three consecutive runs). That is the build
+script converging, not a workspace-lint regression — later runs are fast.
+
+On a very large workspace the assemble phase holds every crate's IR fragment in
+memory at once, so peak RSS grows with the workspace (multiple GB on
+thousand-file trees).
+
 ## Output formats
 
 `--message-format` picks the renderer (default `human`):
