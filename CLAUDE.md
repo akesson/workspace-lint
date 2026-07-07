@@ -48,8 +48,10 @@ nightly `extractor/` package:
   compiles, used by unused-pub's "possibly used under `cfg(...)`" note and
   the `--fix-auto-delete` veto), `shipped_source` (the `#[cfg(test)]`-aware
   shipped-line counter behind file-size / crate-size / duplicate-code's
-  test-mass exclusion), and the `WL_TIMING` `timing` instrument. Extracted
-  from `wl-engine` when the two tiers outgrew one crate-size budget.
+  test-mass exclusion), `clones` (the name-invariant Type-2 clone finder
+  behind duplicate-code — the *lint* stays in `wl-lints`), and the
+  `WL_TIMING` `timing` instrument. Extracted from `wl-engine` when the two
+  tiers outgrew one crate-size budget.
 - **`wl-ir`** — the serde-only IR contract between the extractor and the
   assembler (publishable; schema-versioned).
 - **`workspace-lint-marker`** — zero-dep crate exporting the `expect!` / `allow!`

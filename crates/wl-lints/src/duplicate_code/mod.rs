@@ -2,9 +2,10 @@
 //!
 //! Flags groups of structurally identical code regions — whole fns and
 //! nested blocks — even when local variable names and literal values differ.
-//! The matching engine (normalization + subtree hashing) lives in `detect`;
-//! this module owns enumeration (which member files to scan, via the fast
-//! tier's module walk) and diagnostic shaping.
+//! The matching engine (normalization + subtree hashing) is the fast tier's
+//! [`wl_engine::fast::clones`] scanner; this module owns enumeration (which
+//! member files to scan, via the fast tier's module walk) and diagnostic
+//! shaping.
 //!
 //! Advisory-only by design: there is no `MachineApplicable` fix. Resolving a
 //! duplicate means *extracting* — choosing a name, parameterizing the
@@ -29,14 +30,10 @@ use wl_diagnostic::builder::at_line;
 use wl_engine::fast::{FastModel, TargetKind};
 
 pub mod config;
-mod detect;
-mod encode;
-#[cfg(test)]
-mod tests;
 
 pub use config::DuplicateCodeConfig;
 
-use detect::{CloneGroup, Options, Region, ScanFile};
+use wl_engine::fast::clones::{CloneGroup, Options, Region, ScanFile, find_clones};
 
 pub struct DuplicateCode {
     config: DuplicateCodeConfig,
@@ -63,7 +60,7 @@ impl Lint for DuplicateCode {
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
         let fast = cx.fast.expect("duplicate-code declares needs_fast");
         let files = enumerate(fast, &self.config);
-        let groups = detect::find_clones(&files, &options(&self.config));
+        let groups = find_clones(&files, &options(&self.config));
         emit(&groups)
     }
 }
