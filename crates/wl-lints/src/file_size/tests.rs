@@ -12,7 +12,7 @@ fn make_config(rules: Vec<(&str, usize)>) -> FileSizeConfig {
         rules: rules
             .into_iter()
             .map(|(glob, max)| FileSizeRule {
-                glob: glob.into(),
+                glob: GlobPattern::new(glob).unwrap(),
                 max_code_lines: max,
             })
             .collect(),

@@ -110,7 +110,7 @@ pub struct GlobPattern(Glob);
 impl GlobPattern {
     /// Compile a pattern. Reached via [`GlobPattern::from_cli`] on the CLI
     /// `check` path (raw `--glob` strings) and the test `From<&str>` helper.
-    pub(crate) fn new(pattern: &str) -> Result<Self, globset::Error> {
+    pub fn new(pattern: &str) -> Result<Self, globset::Error> {
         Glob::new(pattern).map(GlobPattern)
     }
 
@@ -118,7 +118,7 @@ impl GlobPattern {
     /// The `check` subcommands have no config file to anchor a diagnostic at,
     /// so an unusable glob is a fail-fast error, mirroring the config path.
     /// Used by the lints' `from_cli` constructors.
-    pub(crate) fn from_cli(pattern: &str) -> Self {
+    pub fn from_cli(pattern: &str) -> Self {
         Self::new(pattern).unwrap_or_else(|e| {
             eprintln!("error: invalid glob `{pattern}`: {e}");
             std::process::exit(2);
@@ -127,12 +127,12 @@ impl GlobPattern {
 
     /// The original pattern text. Cross-crate comparisons go through the
     /// [`PartialEq`]`<&str>` impl below rather than this accessor.
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         self.0.glob()
     }
 
     /// The compiled `globset::Glob` (for building a `GlobSet` or a matcher).
-    pub(crate) fn compiled(&self) -> &Glob {
+    pub fn compiled(&self) -> &Glob {
         &self.0
     }
 }
@@ -182,7 +182,7 @@ impl From<&str> for Globs {
 }
 
 impl Globs {
-    pub(crate) fn iter(&self) -> std::slice::Iter<'_, GlobPattern> {
+    pub fn iter(&self) -> std::slice::Iter<'_, GlobPattern> {
         self.0.iter()
     }
 }

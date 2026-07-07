@@ -56,12 +56,15 @@ glob = "crates/*"
 # config + registry (~2.1k). `wl-engine` tripped the ceiling next (the
 # commands-as-configs parser pushed it past 4k) and shed its build-free tier
 # into `wl-fast`. `wl-lints` hit the ceiling after `duplicate-code` and shed
-# that lint's detection *engine* (the syntactic clone finder, now
-# `wl_fast::clones` — same scanner family as `shipped_source`) back under
-# budget, keeping every lint's judgment + diagnostics together. The ceiling
-# stays at 4000: enough headroom for a modest addition anywhere, tight enough
-# that the next real growth spurt trips it and prompts the next extraction
-# rather than a higher ceiling.
+# its two non-judgment masses: that lint's detection *engine* (the syntactic
+# clone finder, now `wl_fast::clones` — same scanner family as
+# `shipped_source`) and everything a lint builds on that isn't judgment (the
+# `Lint`/`LintId` vocabulary, config primitives, git/util helpers, and the
+# deletion/import-excision fix surgery — now `wl-lint-api`), keeping every
+# lint's judgment + diagnostics together. The ceiling stays at 4000: enough
+# headroom for a modest addition anywhere, tight enough that the next real
+# growth spurt trips it and prompts the next extraction rather than a higher
+# ceiling.
 max-code-lines = 4000
 
 # Name-invariant (Type-2) duplicate detection at the built-in thresholds

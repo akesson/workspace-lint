@@ -14,7 +14,7 @@
 use crate::suggest::closest;
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_file;
-use wl_lints::LintId;
+use wl_lint_api::LintId;
 
 use super::Config;
 

@@ -317,6 +317,7 @@ mod tests {
                 "wl-engine",
                 "wl-fast",
                 "wl-ir",
+                "wl-lint-api",
                 "wl-lints",
                 "workspace-lint",
                 "workspace-lint-marker",

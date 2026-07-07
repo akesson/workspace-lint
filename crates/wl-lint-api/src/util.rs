@@ -17,7 +17,7 @@ pub fn fail(msg: impl std::fmt::Display) -> ! {
 
 /// A crate name with all `-`/`_` separators removed, for the FP-safe lib-name
 /// fallback match (`md_5` collapses to `md5` to match a `md5` lib target).
-pub(crate) fn separator_stripped(name: &str) -> String {
+pub fn separator_stripped(name: &str) -> String {
     name.chars().filter(|c| *c != '-' && *c != '_').collect()
 }
 
@@ -63,7 +63,7 @@ pub fn split_command(command: &str) -> Vec<String> {
 /// fixtures lock it in). Shared by `centralized-deps` and `unused-deps` —
 /// extracted when `duplicate-code`'s statement-run upgrade flagged the two
 /// hand-rolled copies as clones.
-pub(crate) fn at_crate_manifest(
+pub fn at_crate_manifest(
     lint_id: &'static str,
     fast: &wl_engine::fast::FastModel,
     manifest_dir: &std::path::Path,

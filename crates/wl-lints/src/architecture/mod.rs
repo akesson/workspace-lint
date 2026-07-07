@@ -34,10 +34,10 @@ use std::path::PathBuf;
 
 use globset::{Glob, GlobMatcher};
 
-use crate::config::LintLevel;
-use crate::{Lint, LintContext, LintId, Requirements};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::{at_crate, at_line};
+use wl_lint_api::config::LintLevel;
+use wl_lint_api::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
 mod ir;

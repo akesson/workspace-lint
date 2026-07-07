@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, IsTerminal, Write};
 
 use wl_engine::EngineError;
-use wl_lints::util;
+use wl_lint_api::util;
 
 /// One extraction attempt's provisioning state: which repairs already ran.
 pub(crate) struct Provisioner {

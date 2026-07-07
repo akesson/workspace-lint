@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use wl_engine::fast::toml_edit::Item;
 use wl_engine::fast::{DepSection, FastModel, Manifest};
 
-use crate::{Lint, LintContext, LintId, Requirements};
 use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion};
+use wl_lint_api::{Lint, LintContext, LintId, Requirements};
 
 #[cfg(test)]
 mod tests;
@@ -80,7 +80,7 @@ pub(crate) fn check(fast: &FastModel) -> Vec<Diagnostic> {
 
         if !crate_errors.is_empty() {
             let n = crate_errors.len();
-            let mut builder = crate::util::at_crate_manifest(
+            let mut builder = wl_lint_api::util::at_crate_manifest(
                 lint_id,
                 fast,
                 &krate.manifest_dir,

@@ -2,9 +2,9 @@ use fs_err as fs;
 use regex::Regex;
 use std::process::Command;
 
-use crate::{Lint, LintContext, LintId};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_workspace;
+use wl_lint_api::{Lint, LintContext, LintId};
 
 pub mod config;
 #[cfg(test)]
@@ -24,7 +24,7 @@ impl CliCrateVersion {
     pub fn from_cli(command: String, pattern: String, crate_name: String) -> Self {
         Self::new(CliCrateVersionConfig {
             rules: vec![CliCrateVersionRule {
-                command: crate::util::split_command(&command),
+                command: wl_lint_api::util::split_command(&command),
                 pattern,
                 crate_name,
             }],

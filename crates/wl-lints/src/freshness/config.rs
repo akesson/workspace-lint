@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::config::{GlobPattern, Globs};
+use wl_lint_api::config::{GlobPattern, Globs};
 
 #[derive(Deserialize, Clone)]
 pub struct FreshnessConfig {

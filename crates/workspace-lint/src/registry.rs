@@ -3,8 +3,9 @@
 //! config *loading* (this binary) — hence it lives here, not in `wl-lints`.
 
 use crate::config::{Config, LintLevel};
+use wl_lint_api::{Lint, LintId};
 use wl_lints::{
-    Lint, LintId, architecture::Architecture, centralized_deps::CentralizedDeps,
+    architecture::Architecture, centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion, crate_size::CrateSize, duplicate_code::DuplicateCode,
     feature_drift::FeatureDrift, file_size::FileSize, freshness::Freshness,
     module_tree::ModuleTree, stale_git_index::StaleGitIndex, unused_deps::UnusedDeps,

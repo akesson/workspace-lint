@@ -23,11 +23,11 @@ use std::path::PathBuf;
 
 use globset::{GlobSet, GlobSetBuilder};
 
-use crate::config::Globs;
-use crate::{Lint, LintContext, LintId, Requirements};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_line;
 use wl_engine::fast::{FastModel, TargetKind};
+use wl_lint_api::config::Globs;
+use wl_lint_api::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
 

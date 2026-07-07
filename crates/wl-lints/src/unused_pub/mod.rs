@@ -26,8 +26,8 @@
 
 use std::collections::HashMap;
 
-use crate::{Lint, LintContext, LintId, Requirements};
 use wl_diagnostic::Diagnostic;
+use wl_lint_api::{Lint, LintContext, LintId, Requirements};
 
 /// Number of unused-pub findings an internal crate must accumulate before we
 /// emit the one-time `publish = true` hint. Used when the config leaves
@@ -36,9 +36,7 @@ pub(super) const DEFAULT_PUBLISH_HINT_THRESHOLD: usize = 3;
 
 pub mod cascade;
 pub mod config;
-mod deletion;
 mod ir;
-mod surgery;
 #[cfg(test)]
 mod tests;
 

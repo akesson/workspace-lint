@@ -23,7 +23,7 @@ use cli::{CheckRule, Cli, Commands};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::render::{Format, render};
 use wl_engine::fast::FastModel;
-use wl_lints::{LintContext, LintId, git, util};
+use wl_lint_api::{LintContext, LintId, git, util};
 
 fn main() {
     let mut cli = Cli::parse();

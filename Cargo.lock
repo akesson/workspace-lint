@@ -2915,6 +2915,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wl-lint-api"
+version = "0.1.0"
+dependencies = [
+ "fs-err",
+ "globset",
+ "ignore",
+ "serde",
+ "shell-words",
+ "tempfile",
+ "wl-diagnostic",
+ "wl-engine",
+]
+
+[[package]]
 name = "wl-lints"
 version = "0.1.0"
 dependencies = [
@@ -2925,13 +2939,13 @@ dependencies = [
  "insta",
  "regex",
  "serde",
- "shell-words",
  "strip-ansi-escapes",
  "tempfile",
  "tokei",
  "toml 1.1.2+spec-1.1.0",
  "wl-diagnostic",
  "wl-engine",
+ "wl-lint-api",
 ]
 
 [[package]]
@@ -2956,6 +2970,7 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "wl-diagnostic",
  "wl-engine",
+ "wl-lint-api",
  "wl-lints",
 ]
 

@@ -1,0 +1,26 @@
+[package]
+name = "wl-lint-api"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+repository = "https://github.com/akesson/workspace-lint"
+# Internal library: everything a lint implementation builds on that isn't
+# judgment — the `Lint` trait vocabulary, `LintId`, the config primitives
+# (`LintLevel`/`GlobPattern`/…), the shared `git`/`util` helpers, and the
+# `surgery` fix machinery (byte-exact deletion + import excision). Sits
+# between `wl-lints` and {`wl-diagnostic`, `wl-engine`}. Not published;
+# `publish = false` keeps its `pub` API judged workspace-internally by the
+# deny-level `unused-pub` dogfood.
+publish = false
+
+[dependencies]
+fs-err = { workspace = true }
+globset = { workspace = true }
+ignore = { workspace = true }
+serde = { workspace = true }
+shell-words = { workspace = true }
+wl-diagnostic = { path = "../wl-diagnostic" }
+wl-engine = { path = "../wl-engine" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -18,19 +18,24 @@ options. This file covers the internal architecture.
 
 ## Workspace layout
 
-Seven crates under `crates/` (`members = ["crates/*"]`), plus the excluded
+Eight crates under `crates/` (`members = ["crates/*"]`), plus the excluded
 nightly `extractor/` package:
 
 - **`workspace-lint`** — the binary. The diagnostic pipeline, config loading,
   and `registry.rs` (the composition root that binds enabled lints to a loaded
   `Config`). Thin now that lints and the diagnostic types have moved out.
-- **`wl-lints`** — every lint implementation (one `<name>/` dir each), the
+- **`wl-lints`** — every lint implementation (one `<name>/` dir each) and the
+  per-lint `*Config` structs. Judgment and diagnostic shaping only: the
+  vocabulary it builds on is `wl-lint-api`. The binary's `Config` re-exports
+  the per-lint config structs so the TOML schema is unchanged; the *registry*
+  stays in the binary (it's where lint impls meet config loading).
+- **`wl-lint-api`** — everything a lint builds on that isn't judgment: the
   `Lint` trait / `LintId` / `LintContext` vocabulary, the config *primitives*
-  (`config.rs`: `LintLevel` / `GlobPattern` / …) and per-lint `*Config` structs,
-  and the shared `git` (the `GIT_*`-scrub chokepoint) and `util` helpers. The
-  binary's `Config` re-exports the per-lint config structs so the TOML schema is
-  unchanged; the *registry* stays in the binary (it's where lint impls meet
-  config loading).
+  (`config.rs`: `LintLevel` / `GlobPattern` / …), the shared `git` (the
+  `GIT_*`-scrub chokepoint) and `util` helpers, and `surgery/` — the
+  byte-exact source-editing machinery behind the structural fixes
+  (whole-item deletion incl. the lexical attribute extension, dangling-`use`
+  excision). Extracted from `wl-lints` when it hit the crate-size ceiling.
 - **`wl-diagnostic`** — the diagnostic vocabulary (`Diagnostic` / `Span` /
   `SilenceAnchor` / `Suggestion`), the `DiagnosticBuilder`, and the three
   renderers (`human` / `json` / `github`). A leaf crate consumed by both
@@ -61,11 +66,12 @@ nightly `extractor/` package:
   Ships vendored inside the binary; its gate is the probe suite in
   `extractor/tests`.
 
-Strict layering: `workspace-lint` → `wl-lints` → {`wl-diagnostic`, `wl-engine`}.
-`wl-lints` and `wl-diagnostic` are `publish = false`, so the deny-level
-`unused-pub` dogfood judges their `pub` APIs workspace-internally (which is why
-a helper reachable only from another crate's *test* code needs an allowlist
-entry — see the `render_one` note in `.workspace-lint.toml`).
+Strict layering: `workspace-lint` → `wl-lints` → `wl-lint-api` →
+{`wl-diagnostic`, `wl-engine`}. `wl-lints`, `wl-lint-api`, and `wl-diagnostic`
+are `publish = false`, so the deny-level `unused-pub` dogfood judges their
+`pub` APIs workspace-internally (which is why a helper reachable only from
+another crate's *test* code needs an allowlist entry — see the `render_one`
+note in `.workspace-lint.toml`).
 
 `workspace-lint-marker` and `wl-ir` are published; CI gates them with
 `cargo publish --dry-run`.
@@ -121,7 +127,7 @@ Always review the diff before committing a blessed change.
    `config::audit`, merged into the stream. The `config` module is a directory:
    `config/mod.rs` (schema + loading), `config/audit.rs` (the raw-TOML key
    audit); the strongly-typed primitives (`LintLevel`, `LintLevels`,
-   `GlobPattern`, `Globs`) live in `wl_lints::config` and are re-exported by
+   `GlobPattern`, `Globs`) live in `wl_lint_api::config` and are re-exported by
    `config/mod.rs`.
 2. **`run_all`** → `registry::registry(config)` builds `Vec<Box<dyn Lint>>`. A lint
    is enabled iff its effective level (`[lints]` override → `default` → built-in
@@ -153,11 +159,11 @@ Always review the diff before committing a blessed change.
 6. **`report_and_exit`** — `human` → stderr, `json`/`github` → stdout. Exit 1 iff
    any surviving diagnostic is `Deny`.
 
-The `Lint` trait, `Requirements`, and `LintContext` live in `wl-lints`'s
+The `Lint` trait, `Requirements`, and `LintContext` live in `wl-lint-api`'s
 `lib.rs`; `registry` (+ `level_on`) is the binary's `registry.rs`, the
 composition root that binds them to a `Config`. `LintId` (the canonical list of
 every lint name, its `workspace-lint::<kebab>` id, and short name) lives in
-`wl-lints/src/lints_id.rs` and is the single source of truth tying lints to
+`wl-lint-api/src/lints_id.rs` and is the single source of truth tying lints to
 config keys, snapshots, and fixtures.
 
 `Diagnostic` (the `wl-diagnostic` crate) mirrors rustc's `DiagnosticSpan` so JSON
@@ -237,13 +243,14 @@ keys). Verified cadence: a ~10-week jump needed exactly one edit.
 
 ## Adding a new lint
 
-(Spans `wl-lints` and the binary — keep them in sync or tests fail. The trait
-lives in `wl-lints/src/lib.rs`, the registry in the binary's `registry.rs`.)
+(Spans `wl-lints`, `wl-lint-api`, and the binary — keep them in sync or tests
+fail. The trait lives in `wl-lint-api/src/lib.rs`, the registry in the
+binary's `registry.rs`.)
 
 1. Create `crates/wl-lints/src/<name>/{mod.rs,config.rs,tests.rs}` implementing
    `Lint`. Export the lint struct + its constructor and (if any) `*Config` `pub`
    so the registry can reach them; keep internal helpers `pub(crate)`.
-2. Add a `LintId` variant in `wl-lints/src/lints_id.rs` + wire its `id()`/`short()`
+2. Add a `LintId` variant in `wl-lint-api/src/lints_id.rs` + wire its `id()`/`short()`
    arms and `LintId::ALL` (kept alphabetical-by-id; asserted by a test).
 3. Add one line in the binary's `registry::registry` gating it on its config
    block (and re-export its `*Config` from `config/mod.rs` if it has one).
@@ -300,7 +307,7 @@ root `.workspace-lint.toml` carries explanatory comments for every `ignore` /
   (paste the directive the diagnostic prints).
 - All workspace crates use `workspace = true` deps (enforced by the
   `centralized-deps` lint, on for this repo).
-- **Never `Command::new("git")` directly** — spawn git via `wl_lints::git::command`
+- **Never `Command::new("git")` directly** — spawn git via `wl_lint_api::git::command`
   (src) or `common::git` (tests). Both scrub the repo-pinning `GIT_*` environment:
   git exports an absolute `GIT_DIR` to hooks in linked worktrees, and an
   unscrubbed child git operates on the *invoker's* repository (this once let

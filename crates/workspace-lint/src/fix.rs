@@ -117,14 +117,14 @@ fn drop_untracked_files(by_file: &mut BTreeMap<std::path::PathBuf, Vec<Suggestio
     if by_file.is_empty() {
         return 0;
     }
-    let repo_probe = wl_lints::git::command(std::path::Path::new("."))
+    let repo_probe = wl_lint_api::git::command(std::path::Path::new("."))
         .args(["rev-parse", "--is-inside-work-tree"])
         .output();
     match repo_probe {
         Ok(out) if out.status.success() => {}
         _ => return 0, // not a repo (or no git) — apply everything
     }
-    let mut ls = wl_lints::git::command(std::path::Path::new("."));
+    let mut ls = wl_lint_api::git::command(std::path::Path::new("."));
     ls.args(["ls-files", "-z", "--"]);
     for path in by_file.keys() {
         ls.arg(path);

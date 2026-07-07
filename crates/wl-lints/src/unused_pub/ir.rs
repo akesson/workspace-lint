@@ -34,16 +34,16 @@ use wl_engine::fast::{CrateInfo, FastModel, Publish};
 use wl_engine::semantic::{Category, PubCandidate, PubUsage, SemanticModel};
 use wl_engine::wl_ir;
 
-use crate::LintId;
-use crate::config::GlobPattern;
 use wl_diagnostic::builder::{at_crate, at_line};
 use wl_diagnostic::{Applicability, Diagnostic, PubVerdict};
+use wl_lint_api::LintId;
+use wl_lint_api::config::GlobPattern;
 
 use wl_engine::coverage::CfgShadow;
 
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
-use super::deletion::pick_deletion_fix;
+use wl_lint_api::surgery::deletion::pick_deletion_fix;
 
 /// One unused-pub finding paired with the two things the `--fix-auto-delete`
 /// cascade needs beyond the rendered diagnostic: the candidate identity (the
@@ -508,8 +508,8 @@ pub(super) fn build_glob_set(patterns: &[GlobPattern]) -> Option<GlobSet> {
         builder.add(pattern.compiled().clone());
     }
     Some(
-        builder
-            .build()
-            .unwrap_or_else(|e| crate::util::fail(format!("failed to build glob filter: {e}"))),
+        builder.build().unwrap_or_else(|e| {
+            wl_lint_api::util::fail(format!("failed to build glob filter: {e}"))
+        }),
     )
 }

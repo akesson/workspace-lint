@@ -26,6 +26,8 @@
 //! construct the byte scanner doesn't model bails to the `{}` residue — never
 //! a wrong deletion.
 
+pub mod deletion;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -39,7 +41,7 @@ use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion, builder::at_lin
 /// be safely excised (macro-generated, or `pub use` re-exports) are skipped —
 /// the cascade already refused to delete their targets
 /// (`SemanticModel::import_excision_blocked`), so they never dangle here.
-pub(crate) fn import_surgery(dangling: Vec<DanglingImport>, root: &Path) -> Vec<Diagnostic> {
+pub fn import_surgery(dangling: Vec<DanglingImport>, root: &Path) -> Vec<Diagnostic> {
     // Group excisable leaves by file.
     let mut by_file: BTreeMap<String, Vec<DanglingImport>> = BTreeMap::new();
     for d in dangling {
@@ -104,9 +106,9 @@ fn deletion_range(source: &str, d: &DanglingImport) -> Option<Range> {
         // as item deletion), the newline, and any following blank lines (a
         // `use` block at the top of a file must not leave a leading blank
         // line behind).
-        let lo = super::deletion::extend_over_preceding_attrs(source, dlo);
+        let lo = deletion::extend_over_preceding_attrs(source, dlo);
         let hi = eat_trailing_newline(src, dhi);
-        (lo, super::deletion::eat_blank_lines_bytes(src, hi))
+        (lo, deletion::eat_blank_lines_bytes(src, hi))
     };
     Some(Range {
         lo: lo as u32,
@@ -263,8 +265,8 @@ fn widen_emptied_group(source: &str, all: &[Range], r: Range) -> Option<Range> {
         return None;
     }
     end = eat_trailing_newline(src, end + 1);
-    end = super::deletion::eat_blank_lines_bytes(src, end);
-    let mut start = super::deletion::extend_over_preceding_attrs(source, stmt);
+    end = deletion::eat_blank_lines_bytes(src, end);
+    let mut start = deletion::extend_over_preceding_attrs(source, stmt);
     while start > 0 && matches!(src[start - 1], b' ' | b'\t') {
         start -= 1;
     }

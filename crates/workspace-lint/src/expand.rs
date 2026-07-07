@@ -87,7 +87,7 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
             if rule.auto_stage {
                 // `Path::new(".")` preserves this site's historical cwd-relative
                 // staging; the scrub in `git::command` is what matters here.
-                let status = wl_lints::git::command(Path::new("."))
+                let status = wl_lint_api::git::command(Path::new("."))
                     .args(["add", &file.to_string_lossy()])
                     .status()
                     .expect("failed to run `git add`");
@@ -127,7 +127,7 @@ fn find_files_matching(root: &Path, pattern: &str) -> Vec<PathBuf> {
         eprintln!("expand: invalid glob pattern '{pattern}': {e}");
         std::process::exit(2);
     });
-    wl_lints::util::walk_files_matching(root, &glob.compile_matcher())
+    wl_lint_api::util::walk_files_matching(root, &glob.compile_matcher())
 }
 
 #[cfg(test)]

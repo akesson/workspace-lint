@@ -8,11 +8,11 @@ mod audit;
 // The strongly-typed config primitives now live in `wl-lints` (shared with the
 // per-lint config structs); re-export the two the binary's `Config` needs so
 // the rest of it keeps referring to `crate::config::…`.
-pub(crate) use wl_lints::config::{LintLevel, LintLevels};
+pub(crate) use wl_lint_api::config::{LintLevel, LintLevels};
 
 use wl_diagnostic::Diagnostic;
 use wl_engine::fast::FastModel;
-use wl_lints::LintId;
+use wl_lint_api::LintId;
 
 // Per-lint config structs live next to their lint impls in `wl-lints`. `Config`
 // re-exports them so the top-level TOML schema (the user-facing
@@ -279,15 +279,15 @@ pub(crate) fn load() -> (Config, Vec<Diagnostic>) {
     let cargo_metadata = read_cargo_metadata();
 
     match (standalone_exists, cargo_metadata) {
-        (true, Some(_)) => wl_lints::util::fail(format!(
+        (true, Some(_)) => wl_lint_api::util::fail(format!(
             "error: found both {STANDALONE_FILE} and [workspace.metadata.workspace-lint] in Cargo.toml — use only one"
         )),
-        (false, None) => wl_lints::util::fail(format!(
+        (false, None) => wl_lint_api::util::fail(format!(
             "error: no configuration found — run `workspace-lint init` to scaffold {STANDALONE_FILE}, or add [workspace.metadata.workspace-lint] to Cargo.toml"
         )),
         (true, None) => {
             let content = fs::read_to_string(STANDALONE_FILE).unwrap_or_else(|e| {
-                wl_lints::util::fail(format!("failed to read {STANDALONE_FILE}: {e}"))
+                wl_lint_api::util::fail(format!("failed to read {STANDALONE_FILE}: {e}"))
             });
             let config = parse_config(&content, STANDALONE_FILE);
             let diags = audit::audit(&content, STANDALONE_FILE, &config);
@@ -322,7 +322,7 @@ pub(crate) fn try_load() -> Option<Config> {
 
 fn parse_config(toml_str: &str, source: &str) -> Config {
     toml::from_str(toml_str).unwrap_or_else(|e| {
-        wl_lints::util::fail(format!("failed to parse config from {source}: {e}"))
+        wl_lint_api::util::fail(format!("failed to parse config from {source}: {e}"))
     })
 }
 

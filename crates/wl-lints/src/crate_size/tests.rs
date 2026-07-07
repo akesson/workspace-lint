@@ -5,7 +5,7 @@ use super::*;
 
 fn rule(glob: &str, max: usize) -> CrateSizeRule {
     CrateSizeRule {
-        glob: glob.into(),
+        glob: GlobPattern::new(glob).unwrap(),
         max_code_lines: max,
         include: None,
     }

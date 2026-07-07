@@ -129,7 +129,7 @@ fn rust_comment_directive_suppresses_item_below_via_lookback() {
     let mut map = crate::suppress::SuppressionMap::from_directives(directives);
     let d = at_line("workspace-lint::unused-pub", "unused", "src/lib.rs", 2).build();
     assert!(map.is_suppressed(&d));
-    let ran = wl_lints::LintId::ALL.iter().copied().collect();
+    let ran = wl_lint_api::LintId::ALL.iter().copied().collect();
     assert!(map.stale_expects(&ran, tmp.path()).is_empty());
 }
 

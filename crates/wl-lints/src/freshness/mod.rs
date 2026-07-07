@@ -2,10 +2,10 @@ use globset::GlobSetBuilder;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::config::{GlobPattern, Globs};
-use crate::{Lint, LintContext, LintId};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_file;
+use wl_lint_api::config::{GlobPattern, Globs};
+use wl_lint_api::{Lint, LintContext, LintId};
 
 pub mod config;
 #[cfg(test)]
@@ -139,7 +139,7 @@ fn mark_done_with_root(config: &FreshnessConfig, root: &Path) {
 }
 
 fn find_files_matching(root: &Path, glob: &GlobPattern) -> Vec<PathBuf> {
-    crate::util::walk_files_matching(root, &glob.compiled().compile_matcher())
+    wl_lint_api::util::walk_files_matching(root, &glob.compiled().compile_matcher())
 }
 
 fn find_deps_in_dir(dir: &Path, deps: &Globs) -> Vec<PathBuf> {

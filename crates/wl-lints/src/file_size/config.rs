@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::config::GlobPattern;
+use wl_lint_api::config::GlobPattern;
 
 #[derive(Deserialize, Clone)]
 pub struct FileSizeConfig {
