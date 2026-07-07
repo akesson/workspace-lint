@@ -42,9 +42,13 @@ nightly `extractor/` package:
   extractor dylib. Re-exports `wl-fast` as `wl_engine::fast` (+ `timing`), so
   consumers see one engine surface.
 - **`wl-fast`** — leaf crate: the build-free `FastModel` (cargo metadata,
-  manifests, a lean syntactic module walker) and the `WL_TIMING` `timing`
-  instrument. Extracted from `wl-engine` when the two tiers outgrew one
-  crate-size budget.
+  manifests, a lean syntactic module walker), the `cfg_regions` scan (which
+  `#[cfg]`-gated byte ranges exist, with parsed predicates — the substrate of
+  `wl-engine::coverage`'s cfg-shadow index: regions no `[engine]` config
+  compiles, used by unused-pub's "possibly used under `cfg(...)`" note and
+  the `--fix-auto-delete` veto), and the `WL_TIMING` `timing` instrument.
+  Extracted from `wl-engine` when the two tiers outgrew one crate-size
+  budget.
 - **`wl-ir`** — the serde-only IR contract between the extractor and the
   assembler (publishable; schema-versioned).
 - **`workspace-lint-marker`** — zero-dep crate exporting the `expect!` / `allow!`

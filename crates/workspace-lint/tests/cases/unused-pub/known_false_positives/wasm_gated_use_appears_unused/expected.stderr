@@ -1,0 +1,17 @@
+error: pub fn `tz_offset_minutes` in crate `utils` appears unused — consider removing
+ --> <TMP>/crates/utils/src/lib.rs:2:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: possibly used: mentioned under `cfg(target_arch = "wasm32")` (crates/app/src/main.rs), which no declared `[engine]` config compiles — add a matching cargo command to `[engine] configs` to judge that code
+help: tighten to `pub(crate)`
+  |
+2 - pub
+2 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+2 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[deny(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 1 error

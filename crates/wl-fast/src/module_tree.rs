@@ -321,7 +321,7 @@ fn splice_includes(
 /// `mod.rs` own the directory they sit in, so their children are siblings;
 /// any other file `foo.rs` owns a `foo/` subdirectory, so *its* children live
 /// under `foo/`.
-fn dir_owning_children(file: &Path) -> PathBuf {
+pub(crate) fn dir_owning_children(file: &Path) -> PathBuf {
     let parent = file.parent().unwrap_or(Path::new("."));
     match file.file_stem().and_then(|s| s.to_str()) {
         Some("mod") | Some("lib") | Some("main") => parent.to_path_buf(),
@@ -376,6 +376,19 @@ fn resolve_mod_file(
     Ok(None)
 }
 
+/// [`resolve_mod_file`] for callers outside the walk (the cfg-region scan):
+/// file-level `mod` resolution, infallible, `#[path]` anchored at the
+/// declaring file's directory.
+pub(crate) fn resolve_mod_file_simple(
+    parent_file: &Path,
+    mod_dir: &Path,
+    item_mod: &syn::ItemMod,
+) -> Option<PathBuf> {
+    resolve_mod_file(parent_file, mod_dir, item_mod, false)
+        .ok()
+        .flatten()
+}
+
 /// Read a `#[path = "..."]` value from a list of attributes, ignoring
 /// `cfg_attr`-wrapped forms.
 fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
@@ -395,7 +408,7 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 
 /// Outer attributes of a syn item. Returned as a slice so the caller can
 /// iterate without copying.
-fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+pub(crate) fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     match item {
         syn::Item::Const(i) => &i.attrs,
         syn::Item::Enum(i) => &i.attrs,

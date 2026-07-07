@@ -434,6 +434,42 @@ impl Manifest {
         refs
     }
 
+    /// The features this package enables under **default features**: the
+    /// transitive closure of `default` within its own `[features]` table
+    /// (bare entries name sibling features; `dep:`/`?`/`/` forms activate
+    /// dependencies, not local features, and are skipped). `cfg(feature)`
+    /// always refers to the *enclosing* package's features, so this local
+    /// closure is exactly the set a plain `cargo build` compiles with.
+    pub fn default_features(&self) -> BTreeSet<String> {
+        let mut enabled = BTreeSet::new();
+        let Some(features) = self
+            .doc
+            .as_table()
+            .get("features")
+            .and_then(Item::as_table_like)
+        else {
+            return enabled;
+        };
+        let mut queue = vec!["default".to_string()];
+        while let Some(name) = queue.pop() {
+            if !enabled.insert(name.clone()) {
+                continue;
+            }
+            let Some(values) = features.get(&name).and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for entry in values.iter() {
+                if let Some(raw) = entry.as_str()
+                    && !raw.starts_with("dep:")
+                    && !raw.contains('/')
+                {
+                    queue.push(raw.trim().to_string());
+                }
+            }
+        }
+        enabled
+    }
+
     /// Locate the line for a specific dep key inside the given section.
     /// Returns `None` for entries whose value wraps across multiple lines
     /// (multi-line inline table) or is declared as a `[<section>.dep]` table

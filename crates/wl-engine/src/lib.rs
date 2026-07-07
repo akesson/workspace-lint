@@ -22,6 +22,7 @@
 //! depends on the app layer (diagnostics, config, rendering) — "Phase 2 is
 //! plain data" stays a structural boundary.
 
+pub mod coverage;
 pub mod orchestrate;
 pub mod semantic;
 

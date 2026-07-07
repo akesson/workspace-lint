@@ -20,6 +20,7 @@
 //! (copied, not moved — the duplication is deliberate and disappears when
 //! syn-workspace retires).
 
+pub mod cfg_regions;
 mod doc_fences;
 mod include_resolve;
 mod manifest;

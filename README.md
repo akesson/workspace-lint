@@ -325,8 +325,15 @@ would start flagging) is deleted as collateral in the same cascade,
 causality-gated: a private item that was already dead before the fix is the
 author's, not ours, and private structs/enums/fields are never touched. An
 item stays alive if *any* `[engine] configs` entry uses it (the config matrix
-is unioned), if an `expect!` / `allow!` silences it, or if the only `use`
-naming it is macro-generated (no editable surface). Surgery can leave
+is unioned), if an `expect!` / `allow!` silences it, if the only `use`
+naming it is macro-generated (no editable surface), or if it is **mentioned
+inside a `#[cfg(...)]` region no declared config compiles** — deletion needs
+a higher standard of proof than reporting, so a possibly-wasm-only (or
+windows-only, feature-gated, …) item is never deleted; the diagnostic names
+the uncovered cfg and the `[engine]` entry that would cover it. The same
+evidence sharpens plain report runs: an "appears unused" finding mentioned
+under an uncovered cfg carries a specific "possibly used under `cfg(...)`"
+note instead of the generic disclaimer. Surgery can leave
 unformatted residue (collapsed blank lines), so `--fix` prints a `cargo fmt`
 hint whenever it changes anything.
 
