@@ -86,6 +86,21 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note(r#"configured by [[crate-size.rules]] glob = "crates/*""#)
             .build(),
         ),
+        // duplicate-code: one instance of a clone group (each instance gets
+        // its own line-anchored diagnostic, cross-referencing the others).
+        (
+            "duplicate_code_group",
+            at_line(
+                "workspace-lint::duplicate-code",
+                "duplicated code: 3 structurally identical instances (~14 lines)",
+                PathBuf::from("crates/alpha/src/report.rs"),
+                42,
+            )
+            .note("also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17")
+            .note("matching ignores local variable names and literal values")
+            .help("extract the shared logic into one function the copies can call")
+            .build(),
+        ),
         // freshness: tracked file stale relative to deps.
         (
             "freshness_stale",
@@ -547,6 +562,23 @@ mod tests {
               |
               = note: `#[warn(workspace_lint::crate_size)]` on by default
             "#);
+        }
+
+        #[test]
+        fn duplicate_code_group() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_group")), @r"
+            warning: duplicated code: 3 structurally identical instances (~14 lines)
+             --> crates/alpha/src/report.rs:42:1
+              |
+              = help: extract the shared logic into one function the copies can call
+              = note: also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17
+              = note: matching ignores local variable names and literal values
+            help: if intentional, silence with:
+              |
+            42 + workspace_lint::expect!(duplicate_code);
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            ");
         }
 
         #[test]
@@ -1030,6 +1062,11 @@ mod tests {
         }
 
         #[test]
+        fn duplicate_code_group() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_group")), @r#"{"level":"warning","message":"duplicated code: 3 structurally identical instances (~14 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
         fn freshness_stale() {
             insta::assert_snapshot!(render(&scenario("freshness_stale")), @r##"{"level":"warning","message":"`crates/api/CLAUDE.md` is older than source files it depends on","code":{"code":"workspace-lint::freshness","explanation":null},"spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(freshness)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"files matching `**/*.rs` in the subtree are newer","spans":[]},{"level":"help","message":"run `workspace-lint done` once the tracked file is up to date","spans":[]}],"rendered":null}"##);
         }
@@ -1111,6 +1148,11 @@ mod tests {
         #[test]
         fn crate_size_over_limit() {
             insta::assert_snapshot!(render(&scenario("crate_size_over_limit")), @"::warning file=crates/legacy/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Acrate-size::crate exceeds 5000 code lines (7321)");
+        }
+
+        #[test]
+        fn duplicate_code_group() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_group")), @"::warning file=crates/alpha/src/report.rs,line=42,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicated code: 3 structurally identical instances (~14 lines)");
         }
 
         #[test]

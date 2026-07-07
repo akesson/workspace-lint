@@ -21,6 +21,27 @@ pub(crate) fn separator_stripped(name: &str) -> String {
     name.chars().filter(|c| *c != '-' && *c != '_').collect()
 }
 
+/// Walk `root` (`.gitignore`-aware, via the `ignore` crate) and collect every
+/// file whose root-relative path matches `matcher`. Shared by the `freshness`
+/// lint and the binary's `expand` scanner — extracted when `duplicate-code`'s
+/// own dogfood flagged the two hand-rolled copies of this walk as clones.
+pub fn walk_files_matching(
+    root: &std::path::Path,
+    matcher: &globset::GlobMatcher,
+) -> Vec<std::path::PathBuf> {
+    let mut results = Vec::new();
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
+        if matcher.is_match(rel) {
+            results.push(entry.into_path());
+        }
+    }
+    results
+}
+
 /// Split a CLI `--command` string into argv using shell-like quoting, so
 /// `--command "tool --flag 'a b'"` survives args with spaces (the old naive
 /// whitespace split mangled them). Exits with a clear message on unbalanced

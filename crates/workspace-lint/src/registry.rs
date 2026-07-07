@@ -5,9 +5,10 @@
 use crate::config::{Config, LintLevel};
 use wl_lints::{
     Lint, LintId, architecture::Architecture, centralized_deps::CentralizedDeps,
-    cli_crate_version::CliCrateVersion, crate_size::CrateSize, feature_drift::FeatureDrift,
-    file_size::FileSize, freshness::Freshness, module_tree::ModuleTree,
-    stale_git_index::StaleGitIndex, unused_deps::UnusedDeps, unused_pub::UnusedPub,
+    cli_crate_version::CliCrateVersion, crate_size::CrateSize, duplicate_code::DuplicateCode,
+    feature_drift::FeatureDrift, file_size::FileSize, freshness::Freshness,
+    module_tree::ModuleTree, stale_git_index::StaleGitIndex, unused_deps::UnusedDeps,
+    unused_pub::UnusedPub,
 };
 
 /// `true` when `id` is enabled *anywhere* — its global effective level isn't
@@ -51,6 +52,11 @@ pub(crate) fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
         && let Some(ref cs) = config.crate_size
     {
         out.push(Box::new(CrateSize::new(cs.clone())));
+    }
+    if level_on(config, LintId::DuplicateCode)
+        && let Some(ref dc) = config.duplicate_code
+    {
+        out.push(Box::new(DuplicateCode::new(dc.clone())));
     }
     if level_on(config, LintId::FileSize)
         && let Some(ref fs) = config.file_size
@@ -124,6 +130,8 @@ crate = \"wasm-bindgen\"
 [[architecture.rules]]
 from = [\"crates/a/**\"]
 deny = [\"crates/b/**\"]
+
+[duplicate-code]
 ";
 
     /// Lints that are emitted by the config-audit / suppression pipeline rather
@@ -199,6 +207,9 @@ deny = [\"crates/b/**\"]
     ///   state, which requires an in-tempdir git init/add/rm dance.
     /// - `config`, `unknown-lint`: config-validation diagnostics with no
     ///   structural fix — the remedy is a hand edit of the config / directive.
+    /// - `duplicate-code`: advisory by design, never fixturable — resolving a
+    ///   duplicate means *extracting* (naming, parameterizing, choosing a
+    ///   home), an author decision no machine-applicable rewrite can make.
     /// - `architecture`, `feature-drift`, `module-tree`: the structural fixes
     ///   for these are planned but not yet implemented; once `--fix` rewrites
     ///   them, add fixtures and move them up.

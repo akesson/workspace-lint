@@ -20,6 +20,7 @@ use wl_lints::LintId;
 pub(crate) use wl_lints::architecture::ArchitectureConfig;
 pub(crate) use wl_lints::cli_crate_version::CliCrateVersionConfig;
 pub(crate) use wl_lints::crate_size::CrateSizeConfig;
+pub(crate) use wl_lints::duplicate_code::DuplicateCodeConfig;
 pub(crate) use wl_lints::file_size::FileSizeConfig;
 pub(crate) use wl_lints::freshness::FreshnessConfig;
 pub(crate) use wl_lints::unused_deps::UnusedDepsConfig;
@@ -45,6 +46,8 @@ pub(crate) struct Config {
     pub expand: Option<ExpandConfig>,
     #[serde(default, rename = "cli-crate-version")]
     pub cli_crate_version: Option<CliCrateVersionConfig>,
+    #[serde(default, rename = "duplicate-code")]
+    pub duplicate_code: Option<DuplicateCodeConfig>,
     #[serde(default, rename = "unused-deps")]
     pub unused_deps: Option<UnusedDepsConfig>,
     #[serde(default, rename = "unused-pub")]
@@ -150,6 +153,7 @@ impl Config {
             LintId::CrateSize => self.crate_size.is_some(),
             LintId::Freshness => self.freshness.is_some(),
             LintId::CliCrateVersion => self.cli_crate_version.is_some(),
+            LintId::DuplicateCode => self.duplicate_code.is_some(),
             LintId::Architecture => self
                 .architecture
                 .as_ref()

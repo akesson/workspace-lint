@@ -1,0 +1,261 @@
+//! Unit tests for the normalization + grouping engine. Each test feeds
+//! source strings straight through `find_clones`, so the α-rename, literal
+//! abstraction, suppression-context, and subsumption rules are exercised
+//! without a workspace on disk.
+
+use std::path::PathBuf;
+
+use super::detect::{Options, ScanFile, find_clones};
+
+/// Low thresholds so small snippets qualify; individual tests override.
+fn opts() -> Options {
+    Options {
+        min_lines: 1,
+        min_tokens: 5,
+        min_instances: 2,
+        ignore_literals: true,
+        ignore_test_code: true,
+        cross_crate_only: false,
+    }
+}
+
+fn file(name: &str, krate: &str, src: &str) -> ScanFile {
+    ScanFile {
+        rel_path: PathBuf::from(name),
+        krate: krate.to_string(),
+        ast: syn::parse_file(src).expect("test source must parse"),
+    }
+}
+
+/// Two single-file sources → the clone groups between them.
+fn clones_between(a: &str, b: &str, opts: &Options) -> Vec<super::detect::CloneGroup> {
+    find_clones(
+        &[file("a.rs", "crate-a", a), file("b.rs", "crate-b", b)],
+        opts,
+    )
+}
+
+#[test]
+fn consistent_rename_with_different_literals_matches() {
+    // The motivating case: names AND literals differ, structure identical.
+    let a = "fn compute(user: u32) -> u32 {\n    let total = user + 1;\n    total * 2\n}";
+    let b = "fn summed(p: u32) -> u32 {\n    let sum = p + 5;\n    sum * 2\n}";
+    let groups = clones_between(a, b, &opts());
+    assert!(!groups.is_empty(), "renamed clone must match");
+    assert_eq!(groups[0].instances.len(), 2);
+}
+
+#[test]
+fn name_reuse_pattern_is_part_of_the_structure() {
+    // α-consistency edge: in `a` the local shares the *fn's own* name, so
+    // both map to one placeholder; `b` uses two distinct names. The reuse
+    // pattern differs, so these are (correctly) not clones.
+    let a = "fn total(user: u32) -> u32 {\n    let total = user + 1;\n    total * 2\n}";
+    let b = "fn summed(p: u32) -> u32 {\n    let sum = p + 5;\n    sum * 2\n}";
+    assert!(clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn inconsistent_rename_does_not_match() {
+    // Same tokens modulo names, but the *pattern* of name reuse differs:
+    // `a + b` vs `y + x` (operand order swapped relative to binding order).
+    let a = "fn f() -> u32 {\n    let a = g();\n    let b = h();\n    a + b\n}";
+    let b = "fn f() -> u32 {\n    let x = g();\n    let y = h();\n    y + x\n}";
+    assert!(clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn different_structure_does_not_match() {
+    let a = "fn f(x: u32) -> u32 {\n    let y = x + 1;\n    y * 2\n}";
+    let b = "fn f(x: u32) -> u32 {\n    let y = x * 2;\n    y + 1\n}";
+    assert!(clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn free_function_names_are_anchors() {
+    // Identical shapes calling *different* free functions are not clones.
+    let a = "fn f(x: u32) -> u32 {\n    let y = alpha(x);\n    beta(y)\n}";
+    let b = "fn f(x: u32) -> u32 {\n    let y = gamma(x);\n    delta(y)\n}";
+    assert!(clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn field_and_method_names_are_anchors() {
+    // `.age` vs `.len` and `.iter()` vs `.keys()` must not be erased even
+    // when a local shares the field's spelling.
+    let a = "fn f(user: U) -> u32 {\n    let age = user.age;\n    age + user.items.iter().count() as u32\n}";
+    let b = "fn f(user: U) -> u32 {\n    let age = user.len;\n    age + user.items.keys().count() as u32\n}";
+    assert!(clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn range_locals_still_rename() {
+    // Regression for the field-dot heuristic: `0..n` is a range, not field
+    // access, so the trailing local must still α-rename.
+    let a = "fn f(n: u32) -> u32 {\n    let mut s = 0;\n    for i in 0..n {\n        s += i;\n    }\n    s\n}";
+    let b = "fn f(m: u32) -> u32 {\n    let mut t = 0;\n    for j in 0..m {\n        t += j;\n    }\n    t\n}";
+    assert!(!clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn path_segments_do_not_rename() {
+    // A local named `new` must not erase `Foo::new` path segments.
+    let a = "fn f() -> u32 {\n    let new = Foo::new();\n    new.run() + 1\n}";
+    let b = "fn f() -> u32 {\n    let old = Foo::make();\n    old.run() + 1\n}";
+    assert!(clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn literals_are_anchors_when_ignore_literals_is_off() {
+    let a = "fn f(x: u32) -> u32 {\n    let y = x + 1;\n    y * 2\n}";
+    let b = "fn f(z: u32) -> u32 {\n    let w = z + 5;\n    w * 2\n}";
+    let strict = Options {
+        ignore_literals: false,
+        ..opts()
+    };
+    assert!(clones_between(a, b, &strict).is_empty());
+    // Same literals + renamed locals still match under strict literals.
+    let c = "fn f(z: u32) -> u32 {\n    let w = z + 1;\n    w * 2\n}";
+    assert!(!clones_between(a, c, &strict).is_empty());
+}
+
+#[test]
+fn literal_kinds_are_not_conflated() {
+    // `#int` vs `#str`: a numeric and a string literal in the same slot are
+    // different structures even with ignore-literals on.
+    let a = "fn f() -> String {\n    let v = wrap(1);\n    v.render()\n}";
+    let b = "fn f() -> String {\n    let v = wrap(\"one\");\n    v.render()\n}";
+    assert!(clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn macro_contents_normalize_like_code() {
+    // Locals referenced inside a macro invocation rename consistently.
+    let a = "fn f(count: u32) {\n    let doubled = count * 2;\n    println!(\"{} {}\", count, doubled);\n}";
+    let b = "fn f(n: u32) {\n    let d = n * 2;\n    println!(\"{} {}\", n, d);\n}";
+    assert!(!clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn fn_group_dominates_its_body_block_group() {
+    // Identical fns produce both a fn-level and a body-block-level match on
+    // the same lines; subsumption must report exactly one group.
+    let a = "fn f(x: u32) -> u32 {\n    let y = x + 1;\n    let z = y * 3;\n    z - x\n}";
+    let b = "fn g(q: u32) -> u32 {\n    let r = q + 1;\n    let s = r * 3;\n    s - q\n}";
+    let groups = clones_between(a, b, &opts());
+    assert_eq!(
+        groups.len(),
+        1,
+        "the body-block group must be subsumed by the fn group"
+    );
+}
+
+#[test]
+fn inner_block_copied_to_a_third_place_survives_subsumption() {
+    // fns f/g are whole-fn clones; the loop block inside them ALSO appears in
+    // otherwise-different h. The block group has an uncovered instance, so it
+    // must survive (with all three sites).
+    let block = "    for i in 0..limit {\n        acc = acc + i;\n        acc = acc * 2;\n        acc = acc % 97;\n    }\n";
+    let f = format!("fn f(limit: u32) -> u32 {{\n    let mut acc = 0;\n{block}    acc\n}}");
+    let g = format!("fn g(limit: u32) -> u32 {{\n    let mut acc = 0;\n{block}    acc\n}}");
+    let h = format!(
+        "fn h(limit: u32, seed: u32) -> u32 {{\n    let mut acc = seed;\n    let mut extra = limit * 3;\n{block}    extra += acc;\n    extra\n}}"
+    );
+    let src_a = format!("{f}\n{g}");
+    let groups = clones_between(&src_a, &h, &opts());
+    // The fn group (f, g) plus the block group (3 sites incl. h's).
+    assert_eq!(groups.len(), 2);
+    let block_group = groups
+        .iter()
+        .find(|g| g.instances.len() == 3)
+        .expect("the 3-site block group must survive");
+    assert!(
+        block_group
+            .instances
+            .iter()
+            .any(|r| r.file.ends_with("b.rs"))
+    );
+}
+
+#[test]
+fn min_instances_filters_groups() {
+    let a = "fn f(x: u32) -> u32 {\n    let y = x + 1;\n    y * 2\n}";
+    let b = "fn g(z: u32) -> u32 {\n    let w = z + 5;\n    w * 2\n}";
+    let three = Options {
+        min_instances: 3,
+        ..opts()
+    };
+    assert!(clones_between(a, b, &three).is_empty());
+}
+
+#[test]
+fn thresholds_drop_small_regions() {
+    let a = "fn f(x: u32) -> u32 {\n    x + 1\n}";
+    let b = "fn g(z: u32) -> u32 {\n    z + 5\n}";
+    let sized = Options {
+        min_lines: 4,
+        ..opts()
+    };
+    assert!(clones_between(a, b, &sized).is_empty());
+    let tokened = Options {
+        min_tokens: 100,
+        ..opts()
+    };
+    assert!(clones_between(a, b, &tokened).is_empty());
+}
+
+#[test]
+fn cross_crate_only_requires_two_crates() {
+    let a = "fn f(x: u32) -> u32 {\n    let y = x + 1;\n    y * 2\n}\nfn g(z: u32) -> u32 {\n    let w = z + 5;\n    w * 2\n}";
+    let cross = Options {
+        cross_crate_only: true,
+        ..opts()
+    };
+    // Both instances in one crate → filtered.
+    assert!(find_clones(&[file("a.rs", "crate-a", a)], &cross).is_empty());
+    // Same pair split across crates → reported.
+    let f1 = "fn f(x: u32) -> u32 {\n    let y = x + 1;\n    y * 2\n}";
+    let f2 = "fn g(z: u32) -> u32 {\n    let w = z + 5;\n    w * 2\n}";
+    assert!(!clones_between(f1, f2, &cross).is_empty());
+}
+
+#[test]
+fn cfg_test_items_are_skipped() {
+    let test_mod = "#[cfg(test)]\nmod tests {\n    fn f(x: u32) -> u32 {\n        let y = x + 1;\n        y * 2\n    }\n}";
+    let shipped = "fn g(z: u32) -> u32 {\n    let w = z + 5;\n    w * 2\n}";
+    assert!(clones_between(test_mod, shipped, &opts()).is_empty());
+    // With ignore-test-code off, the same pair matches.
+    let scan_tests = Options {
+        ignore_test_code: false,
+        ..opts()
+    };
+    assert!(!clones_between(test_mod, shipped, &scan_tests).is_empty());
+}
+
+#[test]
+fn test_attr_fns_are_skipped() {
+    let a = "#[test]\nfn t() {\n    let y = probe() + 1;\n    assert_eq!(y * 2, 4);\n}";
+    let b = "#[tokio::test]\nfn t2() {\n    let w = probe() + 5;\n    assert_eq!(w * 2, 8);\n}";
+    assert!(clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn trait_default_methods_are_candidates() {
+    let a = "trait T {\n    fn run(&self, x: u32) -> u32 {\n        let y = x + 1;\n        y * self.base()\n    }\n    fn base(&self) -> u32;\n}";
+    let b = "trait U {\n    fn run(&self, q: u32) -> u32 {\n        let r = q + 9;\n        r * self.base()\n    }\n    fn base(&self) -> u32;\n}";
+    assert!(!clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn instances_and_groups_are_deterministically_ordered() {
+    let a = "fn f(x: u32) -> u32 {\n    let y = x + 1;\n    y * 2\n}";
+    let b = "fn g(z: u32) -> u32 {\n    let w = z + 5;\n    w * 2\n}";
+    let groups = clones_between(b, a, &opts());
+    assert_eq!(groups.len(), 1);
+    let files: Vec<String> = groups[0]
+        .instances
+        .iter()
+        .map(|r| r.file.display().to_string())
+        .collect();
+    assert_eq!(files, ["a.rs", "b.rs"], "instances sort by (file, line)");
+}

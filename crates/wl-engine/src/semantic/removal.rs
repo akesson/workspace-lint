@@ -1,8 +1,9 @@
 //! The unused-pub `--fix` cascade's removal vocabulary: which defs to treat
-//! as deleted ([`RemovalSet`]), the indexes the deletion invalidates and
-//! [`super::Assembly::refold_excluding`] recomputes ([`RemovalOverlay`]), and
-//! the borrowed view ([`DegreeView`]) that lets the verdict fold read either
-//! the prebuilt or the recomputed maps through one interface.
+//! as deleted ([`RemovalSet`]), the removal-sensitive index bundle
+//! ([`DegreeMaps`] — held prebuilt by `Assembly` and recomputed by
+//! [`super::Assembly::refold_excluding`]), and the borrowed view
+//! ([`DegreeView`]) that lets the verdict fold read either copy through one
+//! interface.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -57,18 +58,28 @@ impl RemovalSet {
     }
 }
 
-/// The removal-sensitive indexes recomputed by
-/// [`super::Assembly::refold_excluding`] — the degree source
-/// [`super::pub_usage::compute`] reads instead of the prebuilt maps when a
-/// cascade removal set is in effect.
-pub(super) struct RemovalOverlay {
+/// The removal-sensitive indexes, bundled: the four maps that change when
+/// defs are treated as deleted, and nothing else. `Assembly` holds the
+/// prebuilt copy; [`super::Assembly::refold_excluding`] recomputes one for
+/// the unused-pub `--fix` cascade. One owned type (instead of four parallel
+/// fields in each holder) so the [`Self::view`] projection exists exactly
+/// once.
+#[derive(Default)]
+pub(super) struct DegreeMaps {
+    /// Stable key → **workspace-wide** in-degree of real (non-import)
+    /// use-sites. The reverse index.
     pub(super) in_degree: BTreeMap<String, usize>,
+    /// Stable key → intra-crate-only in-degree (kept for reporting deltas).
     pub(super) intra_degree: BTreeMap<String, usize>,
+    /// Keys named in some PUB item's signature (`in_signature` edges whose
+    /// `from` def is public) — the `exposed_in_public_signature` substrate.
     pub(super) signature_exposed: BTreeSet<String>,
+    /// Reach credited to identities the config has **no def for** (the
+    /// defining crate wasn't extracted here at all). See [`ForeignReach`].
     pub(super) foreign_reach: BTreeMap<String, ForeignReach>,
 }
 
-impl RemovalOverlay {
+impl DegreeMaps {
     pub(super) fn view(&self) -> DegreeView<'_> {
         DegreeView {
             in_degree: &self.in_degree,
@@ -80,9 +91,9 @@ impl RemovalOverlay {
 }
 
 /// A borrowed view of the removal-sensitive indexes — either the prebuilt
-/// maps ([`super::Assembly::degree_view`]) or a recomputed [`RemovalOverlay`].
-/// The degree source [`super::pub_usage::compute`] reads, so the same fold
-/// serves both the plain and the cascade paths.
+/// [`DegreeMaps`] or a recomputed one. The degree source
+/// [`super::pub_usage::compute`] reads, so the same fold serves both the
+/// plain and the cascade paths.
 pub(super) struct DegreeView<'a> {
     pub(super) in_degree: &'a BTreeMap<String, usize>,
     pub(super) intra_degree: &'a BTreeMap<String, usize>,

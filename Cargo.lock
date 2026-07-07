@@ -2910,6 +2910,8 @@ dependencies = [
  "globset",
  "ignore",
  "insta",
+ "proc-macro2",
+ "quote",
  "regex",
  "serde",
  "shell-words",

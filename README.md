@@ -122,6 +122,46 @@ max-code-lines = 5000
 include = ["*.rs"]
 ```
 
+### duplicate-code
+
+Name-invariant (Type-2) duplicate detection: flags groups of structurally
+identical code regions — whole functions/methods and nested blocks — **even
+when local variable names and literal values differ**. Each region is
+normalized (local bindings α-renamed to positional placeholders in
+first-occurrence order, literals abstracted per kind) and hashed; identical
+structures bucket together, so the pass is near-linear and finds cross-crate
+copy-paste for free. Renames must be *consistent*: swapping two variables
+changes the structure and correctly breaks the match. Called functions,
+types, and field/method names are kept verbatim — two blocks that call
+different functions are never clones.
+
+Each instance of a clone group gets its own line-anchored diagnostic listing
+the other sites, so every copy is independently silenceable with
+`workspace_lint::expect!(duplicate_code)`. Advisory only: `--fix` never
+rewrites duplicates — resolving one means extracting a shared function, which
+is an author decision.
+
+Build-free (runs under `--fast-only`). The table's presence enables the lint;
+all fields are optional:
+
+```toml
+[duplicate-code]
+min-lines = 8            # smallest region (source lines) considered
+min-tokens = 40          # …and its minimum normalized-token weight
+min-instances = 2        # copies needed before a group is reported
+ignore-literals = true   # `+ 1` vs `+ 5` still matches
+ignore-test-code = true  # skip tests/benches/examples and #[cfg(test)] items
+cross-crate-only = false # true = only groups spanning ≥ 2 crates
+include = []             # workspace-relative globs to scan (empty = all)
+exclude = []             # globs to skip (wins over include)
+```
+
+Known limits (deliberate): a single inserted/removed statement breaks a match
+(near-miss "Type-3" detection is out of scope); `macro_rules!` bodies are not
+scanned; struct-pattern shorthand (`Point { x }`) erases the field name in
+the pattern position, which can over-match otherwise-identical functions
+destructuring different fields.
+
 ### freshness
 
 Checks that tracked files (e.g. `CLAUDE.md`) are newer than their dependencies. Useful for ensuring documentation stays up to date with source changes.
@@ -615,8 +655,9 @@ ignored.
 
 **What runs:** a lint runs when its effective level isn't `allow`, with one
 extra condition for the *policy* lints (`file-size`, `crate-size`, `freshness`,
-`cli-crate-version`, `architecture`) — they're meaningless without parameters,
-so they additionally require their config table to be present. The *structural*
+`cli-crate-version`, `architecture`, `duplicate-code`) — they're meaningless
+without parameters (or, for `duplicate-code`, noisy enough to demand deliberate
+opt-in), so they additionally require their config table to be present. The *structural*
 lints (`centralized-deps`, `module-tree`, `feature-drift`, `unused-deps`,
 `unused-pub`) need no table and are therefore on by default. So:
 

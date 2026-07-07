@@ -70,7 +70,7 @@ impl UnionVerdict {
             }
         }
         for (_, asm) in configs {
-            for (id, fr) in &asm.foreign_reach {
+            for (id, fr) in &asm.degrees.foreign_reach {
                 if fr.reached() {
                     used.insert(id.as_str());
                 }
@@ -116,6 +116,7 @@ impl UnionVerdict {
                         cs.get(id).map(|x| x.reached).unwrap_or(false)
                             || configs[*i]
                                 .1
+                                .degrees
                                 .foreign_reach
                                 .get(id)
                                 .is_some_and(|fr| fr.reached())

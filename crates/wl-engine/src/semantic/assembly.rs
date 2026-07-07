@@ -32,7 +32,7 @@ pub(super) type DefMap = IndexMap<String, DefInfo, FixedState>;
 pub(super) type FastMap<K, V> = std::collections::HashMap<K, V, FixedState>;
 use super::join::{ForeignReach, IdentityIndex};
 use super::meta::WorkspaceMeta;
-use super::removal::{DegreeView, RemovalOverlay, RemovalSet};
+use super::removal::{DegreeMaps, DegreeView, RemovalSet};
 use super::store::FragmentBytes;
 
 /// One config's assembled workspace: fragments plus the derived global
@@ -43,11 +43,11 @@ pub struct Assembly {
     pub(super) crates: BTreeSet<String>,
     /// Stable key → the def it identifies. The global symbol table.
     pub(super) defs: DefMap,
-    /// Stable key → **workspace-wide** in-degree of real (non-import)
-    /// use-sites. The reverse index.
-    in_degree: BTreeMap<String, usize>,
-    /// Stable key → intra-crate-only in-degree (kept for reporting deltas).
-    intra_degree: BTreeMap<String, usize>,
+    /// The prebuilt removal-sensitive index bundle (`in_degree`,
+    /// `intra_degree`, `signature_exposed`, `foreign_reach`) — see
+    /// [`DegreeMaps`]. `pub(super)` so the union/collateral folds can read
+    /// `foreign_reach` alongside the recomputed overlays.
+    pub(super) degrees: DegreeMaps,
     /// (from-crate, defining-crate) → edge count, workspace-internal only,
     /// counting ALL edges (imports included — importing B's item uses B).
     pub(super) dep_matrix: BTreeMap<(String, String), usize>,
@@ -59,9 +59,6 @@ pub struct Assembly {
     /// Trait-item key → the impl-item keys implementing it (the dispatch
     /// linkage: a dispatched trait method reaches every impl of it).
     impls_of: BTreeMap<String, Vec<String>>,
-    /// Keys named in some PUB item's signature (`in_signature` edges whose
-    /// `from` def is public) — the `exposed_in_public_signature` substrate.
-    signature_exposed: BTreeSet<String>,
     /// Trait-*member* key → the owning trait declaration's key. A method-call
     /// edge resolves to the member def (`parent_kind == "trait"`, never a
     /// candidate); the trait itself is only reachable through its members at
@@ -115,12 +112,6 @@ pub struct Assembly {
     /// so every degree stays keyed by a def in `defs`. First fragment wins;
     /// deterministic because `load_fragments` sorts.
     id_key: FastMap<String, String>,
-    /// Reach this config's edges credit to identities it has **no def for** —
-    /// the defining crate wasn't extracted here at all (harness flag off:
-    /// `[lib] test = false` / `bench = false`), so the global join has no
-    /// landing key. See [`ForeignReach`]; the union and per-candidate
-    /// classification OR these in.
-    pub(super) foreign_reach: BTreeMap<String, ForeignReach>,
 }
 
 /// The edge-derived indexes produced by one pass of
@@ -136,6 +127,20 @@ struct EdgeFold {
     import_targets: BTreeSet<String>,
     reexporters: BTreeMap<String, Vec<String>>,
     foreign_reach: BTreeMap<String, ForeignReach>,
+}
+
+impl EdgeFold {
+    /// Move the removal-sensitive subset out of the fold — the one
+    /// [`DegreeMaps`] construction site, shared by the build pass and
+    /// [`Assembly::refold_excluding`].
+    fn take_degrees(&mut self) -> DegreeMaps {
+        DegreeMaps {
+            in_degree: std::mem::take(&mut self.in_degree),
+            intra_degree: std::mem::take(&mut self.intra_degree),
+            signature_exposed: std::mem::take(&mut self.signature_exposed),
+            foreign_reach: std::mem::take(&mut self.foreign_reach),
+        }
+    }
 }
 
 impl Assembly {
@@ -262,8 +267,7 @@ impl Assembly {
             fragments,
             crates,
             defs,
-            in_degree: BTreeMap::new(),
-            intra_degree: BTreeMap::new(),
+            degrees: DegreeMaps::default(),
             dep_matrix: BTreeMap::new(),
             referenced: BTreeSet::new(),
             import_edges: 0,
@@ -271,7 +275,6 @@ impl Assembly {
             assoc_members,
             fields_of,
             trait_parent,
-            signature_exposed: BTreeSet::new(),
             import_targets: BTreeSet::new(),
             reexporters: BTreeMap::new(),
             module_vis,
@@ -279,7 +282,6 @@ impl Assembly {
             name_key,
             ids,
             id_key,
-            foreign_reach: BTreeMap::new(),
         };
         let mut fold = asm.fold_edges(None);
 
@@ -334,15 +336,12 @@ impl Assembly {
             }
         }
 
-        asm.in_degree = fold.in_degree;
-        asm.intra_degree = fold.intra_degree;
+        asm.degrees = fold.take_degrees();
         asm.dep_matrix = fold.dep_matrix;
         asm.referenced = fold.referenced;
         asm.import_edges = fold.import_edges;
-        asm.signature_exposed = fold.signature_exposed;
         asm.import_targets = fold.import_targets;
         asm.reexporters = fold.reexporters;
-        asm.foreign_reach = fold.foreign_reach;
         asm
     }
 
@@ -540,7 +539,7 @@ impl Assembly {
     /// no Rust referrer possible). Module-level and inherent-impl items carry
     /// no `trait_item`, so they fall through to Direct-or-Unreached.
     pub fn reach_of(&self, key: &str, def: &DefInfo) -> Reach {
-        self.reach_with(key, def, &self.in_degree)
+        self.reach_with(key, def, &self.degrees.in_degree)
     }
 
     /// [`Assembly::reach_of`] against an explicit in-degree map — the
@@ -585,12 +584,7 @@ impl Assembly {
     /// Borrow the prebuilt removal-sensitive indexes — the no-removal degree
     /// source for [`super::pub_usage::compute`].
     pub(super) fn degree_view(&self) -> DegreeView<'_> {
-        DegreeView {
-            in_degree: &self.in_degree,
-            intra_degree: &self.intra_degree,
-            signature_exposed: &self.signature_exposed,
-            foreign_reach: &self.foreign_reach,
-        }
+        self.degrees.view()
     }
 
     /// Recompute the removal-sensitive indexes (`in_degree`, `intra_degree`,
@@ -606,14 +600,8 @@ impl Assembly {
     /// Shares [`Assembly::fold_edges`] with the build pass (so the cross-config
     /// global join applies to the cascade too); the fold's deletion-invariant
     /// outputs (`dep_matrix`, import maps, …) are recomputed and discarded here.
-    pub(super) fn refold_excluding(&self, removed: &RemovalSet) -> RemovalOverlay {
-        let f = self.fold_edges(Some(removed));
-        RemovalOverlay {
-            in_degree: f.in_degree,
-            intra_degree: f.intra_degree,
-            signature_exposed: f.signature_exposed,
-            foreign_reach: f.foreign_reach,
-        }
+    pub(super) fn refold_excluding(&self, removed: &RemovalSet) -> DegreeMaps {
+        self.fold_edges(Some(removed)).take_degrees()
     }
 
     /// Resolve an edge's target to the def it lands on — the full join
@@ -652,7 +640,7 @@ impl Assembly {
     /// breaks compilation (E0446 / `private_interfaces`), so the unused-pub
     /// `--fix` must not propose it.
     pub fn exposed_in_public_signature(&self, key: &str) -> bool {
-        self.signature_exposed.contains(key)
+        self.degrees.signature_exposed.contains(key)
     }
 
     /// Is `key`'s def the target of a `use`/`pub use` declaration? Tightening
@@ -829,7 +817,7 @@ impl Assembly {
     /// Workspace-wide count of intra-crate-only references to `key` — kept for
     /// diagnostics that explain what the cross-crate join changed.
     pub fn intra_degree(&self, key: &str) -> usize {
-        self.intra_degree.get(key).copied().unwrap_or(0)
+        self.degrees.intra_degree.get(key).copied().unwrap_or(0)
     }
 
     /// The impl-item keys implementing a trait item (dispatch linkage).
