@@ -23,7 +23,7 @@ pub enum Category {
 
 impl Category {
     /// Classify from the rustc-emitted `parent_kind` + `trait_item`.
-    pub(super) fn of(parent_kind: Option<&str>, trait_item: &Option<String>) -> Self {
+    pub(super) fn of(parent_kind: Option<&str>, trait_item: Option<&str>) -> Self {
         match parent_kind {
             Some("mod") | None => Category::ModuleLevel,
             Some("impl") if trait_item.is_some() => Category::TraitImpl,

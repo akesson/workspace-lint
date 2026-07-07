@@ -17,5 +17,9 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 # workspace-lint: expect(centralized-deps) — must stay concrete; see the
-# self-containment note at the top of this file.
+# self-containment note at the top of this file. Covers every dep in this
+# manifest (the lint emits one crate-level diagnostic aggregating all of them).
 serde = { version = "1", features = ["derive"] }
+# The on-disk transport: fragments are rkyv archives (zero-copy mmap on read),
+# with serde kept only for the `dump-ir` debug JSON path.
+rkyv = "0.8"

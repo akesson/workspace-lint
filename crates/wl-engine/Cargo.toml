@@ -15,8 +15,11 @@ license = "MIT OR Apache-2.0"
 wl-ir = { path = "../wl-ir" }
 dylint = { workspace = true }
 cargo_metadata = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
+# semantic tier: fragments are read zero-copy — mmap the file, access the rkyv
+# archive in place (see FragmentBytes / semantic::store).
+memmap2 = { workspace = true }
+rkyv = { workspace = true }
 # fast tier: the parsed-Cargo.toml layer (re-exported as `fast::toml_edit`).
 toml_edit = { workspace = true }
 # fast tier: the syntactic module-tree walker parses member sources with syn;

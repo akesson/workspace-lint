@@ -89,14 +89,17 @@ fn frag_target(
 }
 
 fn model(configs: Vec<(&str, Vec<IrFragment>)>) -> SemanticModel {
-    SemanticModel::assemble(
-        configs
-            .into_iter()
-            .map(|(id, frags)| (id.to_string(), frags))
-            .collect(),
-        fixture_meta(),
-    )
-    .unwrap()
+    // Route native fixtures through the same archived core production uses.
+    let configs = configs
+        .into_iter()
+        .map(|(id, frags)| {
+            (
+                id.to_string(),
+                frags.iter().map(FragmentBytes::owned).collect(),
+            )
+        })
+        .collect();
+    SemanticModel::assemble_bytes(configs, fixture_meta()).unwrap()
 }
 
 fn lead_ids(v: &UnionVerdict) -> Vec<&str> {
@@ -387,17 +390,17 @@ fn deps_verdict_scopes_and_facades() {
 /// Unused-deps: a re-export shim dep is credited through [`RefEdge::via`] —
 /// the resolved target defines the item in `std` (a sysroot crate outside
 /// every cargo closure), and only the written path root names the dep. An
-/// edge without `via` (the pre-`via` fragment shape, exercised through JSON
-/// to lock the serde default) must keep the dep flagged.
+/// edge with `via == None` (the plain, non-shim shape) must keep the dep
+/// flagged.
 #[test]
 fn deps_verdict_credits_reexport_shim_via_written_root() {
-    // Old-shape edge JSON (no `via` key): deserializes with via == None and
-    // does NOT credit the shim.
-    let old_shape: RefEdge = serde_json::from_str(
-        r#"{"from":["alpha","user"],"to":["std","time","Duration"],
-            "to_kind":"struct","external":true,"import":true}"#,
-    )
-    .unwrap();
+    // A plain edge (via == None): the std target credits nothing.
+    let old_shape = edge(
+        &["alpha", "user"],
+        &["std", "time", "Duration"],
+        "K_STD",
+        true,
+    );
     assert_eq!(old_shape.via, None);
     let m = model(vec![(
         "default",
@@ -519,13 +522,12 @@ fn loader_is_strict() {
         Err(SemanticError::EmptyIrDir { .. })
     ));
 
-    let mut stale = frag("alpha", vec![], vec![]);
-    stale.schema_version = 0;
-    std::fs::write(
-        tmp.path().join("alpha.json"),
-        serde_json::to_string(&stale).unwrap(),
-    )
-    .unwrap();
+    // A `.wlir` written under a different schema version: a valid archive with
+    // a stale header. The header gate rejects it before any archived access,
+    // exactly as `check_schema` used to on the JSON path.
+    let mut bytes = wl_ir::write_bytes(&frag("alpha", vec![], vec![])).unwrap();
+    bytes[4] = bytes[4].wrapping_add(1); // corrupt SCHEMA_VERSION in the header
+    std::fs::write(tmp.path().join("alpha.wlir"), &bytes).unwrap();
     assert!(matches!(
         super::load_fragments(tmp.path()),
         Err(SemanticError::BadFragment { .. })

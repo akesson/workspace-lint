@@ -25,9 +25,14 @@ dylint = { version = "6.0.1", features = ["library_packages"] }
 fs-err = "3"
 globset = "0.4"
 ignore = "0.4"
+# Zero-copy mmap of the rkyv IR fragments (already a transitive dep via tokei).
+memmap2 = "0.9"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 regex = "1"
+# The on-disk IR fragment transport (see wl-ir). Concrete-pinned in wl-ir itself
+# (self-contained crate); inherited here by wl-engine.
+rkyv = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shell-words = "1"
@@ -44,6 +49,21 @@ cargo-husky = { version = "1", default-features = false, features = ["user-hooks
 insta = "1"
 predicates = "3"
 tempfile = "3"
+
+# Optimize the semantic tier's hot path even in dev builds. The join reads its
+# IR fragments as rkyv **archived** types (rel-ptr chasing, `ArchivedString::as_str`,
+# `ArchivedVec` iteration, `wl_ir::join_paths`); those accessors are tiny and rely
+# on inlining, so at `opt-level = 0` the cross-crate join runs ~5× slower on large
+# workspaces (the debug `cargo run` path the dogfood/CI use — negligible on small
+# ones). Optimizing only the three crates the archived loop spans keeps every other
+# crate's incremental dev build fast. rkyv compiles once; wl-ir is tiny; wl-engine
+# is the one with a modest dev-rebuild cost, worth it for the ~5× join speedup.
+[profile.dev.package.rkyv]
+opt-level = 2
+[profile.dev.package.wl-ir]
+opt-level = 2
+[profile.dev.package.wl-engine]
+opt-level = 2
 
 # The profile that 'dist' will build with
 [profile.dist]

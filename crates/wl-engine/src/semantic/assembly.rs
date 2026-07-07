@@ -10,18 +10,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use wl_ir::{IrFragment, RefEdge, Visibility};
+use wl_ir::{ArchivedIrFragment, ArchivedRefEdge, Visibility};
 
 pub(super) use super::def_info::{CANDIDATE_KINDS, CandReach};
 pub use super::def_info::{Category, DefInfo, Reach, ResolvedRef};
 use super::join::{ForeignReach, IdentityIndex};
 use super::meta::WorkspaceMeta;
 use super::removal::{DegreeView, RemovalOverlay, RemovalSet};
+use super::store::FragmentBytes;
 
 /// One config's assembled workspace: fragments plus the derived global
 /// indexes — the driver-backed replacement for the resolver's global view.
 pub struct Assembly {
-    fragments: Vec<IrFragment>,
+    fragments: Vec<FragmentBytes>,
     /// Every fragment crate's code-form name.
     pub(super) crates: BTreeSet<String>,
     /// Stable key → the def it identifies. The global symbol table.
@@ -122,14 +123,15 @@ struct EdgeFold {
 }
 
 impl Assembly {
-    pub(super) fn build(fragments: Vec<IrFragment>, ids: Arc<IdentityIndex>) -> Self {
+    pub(super) fn build(fragments: Vec<FragmentBytes>, ids: Arc<IdentityIndex>) -> Self {
         // Build-script fragments are references-only carriers (`items` empty,
         // crate name always `build_script_build`) — not crates of the
         // assembly. Letting one in would insert a phantom member.
         let crates: BTreeSet<String> = fragments
             .iter()
-            .filter(|f| f.target_kind != "build")
-            .map(|f| f.crate_name.clone())
+            .map(|f| f.archived())
+            .filter(|f| f.target_kind.as_str() != "build")
+            .map(|f| f.crate_name.as_str().to_owned())
             .collect();
 
         // 1) Global def index (keyed by the cross-crate-stable DefPathHash) +
@@ -141,38 +143,48 @@ impl Assembly {
         let mut module_vis = BTreeMap::new();
         let mut id_key: BTreeMap<String, String> = BTreeMap::new();
         let mut trait_members: Vec<(String, String)> = Vec::new();
-        for frag in &fragments {
-            for it in &frag.items {
-                let category = Category::of(it.parent_kind.as_deref(), &it.trait_item);
-                if let Some(ti) = &it.trait_item {
-                    impls_of.entry(ti.clone()).or_default().push(it.key.clone());
+        for fb in &fragments {
+            let frag = fb.archived();
+            for it in frag.items.iter() {
+                let category = Category::of(it.parent_kind.as_deref(), it.trait_item.as_deref());
+                if let Some(ti) = it.trait_item.as_deref() {
+                    impls_of
+                        .entry(ti.to_owned())
+                        .or_default()
+                        .push(it.key.as_str().to_owned());
                 }
                 if it.parent_kind.as_deref() == Some("trait") && it.path.len() > 1 {
-                    trait_members.push((it.key.clone(), it.path[..it.path.len() - 1].join("::")));
+                    trait_members.push((
+                        it.key.as_str().to_owned(),
+                        wl_ir::join_paths(&it.path[..it.path.len() - 1], "::"),
+                    ));
                 }
-                if it.kind == "mod" {
-                    module_vis.insert(it.path.join("::"), it.visibility == Visibility::Public);
+                if it.kind.as_str() == "mod" {
+                    module_vis.insert(
+                        wl_ir::join_paths(&it.path, "::"),
+                        it.visibility == Visibility::Public,
+                    );
                 }
                 id_key
-                    .entry(it.path.join("::"))
-                    .or_insert_with(|| it.key.clone());
+                    .entry(wl_ir::join_paths(&it.path, "::"))
+                    .or_insert_with(|| it.key.as_str().to_owned());
                 defs.insert(
-                    it.key.clone(),
+                    it.key.as_str().to_owned(),
                     DefInfo {
-                        krate: frag.crate_name.clone(),
-                        path: it.path.join("::"),
-                        kind: it.kind.clone(),
+                        krate: frag.crate_name.as_str().to_owned(),
+                        path: wl_ir::join_paths(&it.path, "::"),
+                        kind: it.kind.as_str().to_owned(),
                         public: it.visibility == Visibility::Public,
                         category,
-                        trait_item: it.trait_item.clone(),
+                        trait_item: it.trait_item.as_deref().map(str::to_owned),
                         synthetic: it.span.is_none(),
                         export_root: !it.attrs.is_empty(),
-                        self_type: it.self_type.clone(),
-                        span: it.span.clone(),
-                        full_span: it.full_span.clone(),
-                        vis_span: it.vis_span.clone(),
-                        self_kind: it.self_kind.clone(),
-                        self_copy: it.self_copy,
+                        self_type: it.self_type.as_deref().map(str::to_owned),
+                        span: it.span.as_ref().map(wl_ir::Span::from),
+                        full_span: it.full_span.as_ref().map(wl_ir::Span::from),
+                        vis_span: it.vis_span.as_ref().map(wl_ir::Span::from),
+                        self_kind: it.self_kind.as_deref().map(str::to_owned),
+                        self_copy: it.self_copy.as_ref().copied(),
                     },
                 );
             }
@@ -202,17 +214,24 @@ impl Assembly {
         // pre-build-fragment posture — the use goes unseen; never a false join.
         let mut path_key: BTreeMap<String, String> = BTreeMap::new();
         let mut name_key: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
-        for frag in &fragments {
+        for fb in &fragments {
+            let frag = fb.archived();
             if !matches!(frag.target_kind.as_str(), "lib" | "proc-macro") {
                 continue;
             }
-            for it in &frag.items {
-                path_key.insert(it.path.join("::"), it.key.clone());
+            for it in frag.items.iter() {
+                path_key.insert(
+                    wl_ir::join_paths(&it.path, "::"),
+                    it.key.as_str().to_owned(),
+                );
                 if let (Some(first), Some(last)) = (it.path.first(), it.path.last()) {
                     name_key
-                        .entry((first.clone(), last.clone()))
+                        .entry((first.as_str().to_owned(), last.as_str().to_owned()))
                         .or_default()
-                        .push((it.path.join("::"), it.key.clone()));
+                        .push((
+                            wl_ir::join_paths(&it.path, "::"),
+                            it.key.as_str().to_owned(),
+                        ));
                 }
             }
         }
@@ -310,16 +329,16 @@ impl Assembly {
     /// lib-shaped fragments, so a hit is the def itself; a target rendered at
     /// a re-export path just misses and degrades to the identity fold —
     /// toward exemption, never a false lead.
-    pub(super) fn resolve_key(&self, e: &RefEdge) -> Option<&str> {
-        if let Some((k, _)) = self.defs.get_key_value(&e.to_key) {
+    pub(super) fn resolve_key(&self, e: &ArchivedRefEdge) -> Option<&str> {
+        if let Some((k, _)) = self.defs.get_key_value(e.to_key.as_str()) {
             return Some(k.as_str());
         }
-        if let Some(id) = self.ids.identity_of(&e.to_key)
+        if let Some(id) = self.ids.identity_of(e.to_key.as_str())
             && let Some(k) = self.id_key.get(id)
         {
             return Some(k.as_str());
         }
-        if let Some(k) = self.path_key.get(&e.to.join("::")) {
+        if let Some(k) = self.path_key.get(wl_ir::join_paths(&e.to, "::").as_str()) {
             return Some(k.as_str());
         }
         // Suffix-relaxed leg: the unextracted-generation target may render at
@@ -332,11 +351,14 @@ impl Assembly {
         // exemption-safe direction.
         if e.to.len() >= 2
             && let (Some(first), Some(last)) = (e.to.first(), e.to.last())
-            && let Some(cands) = self.name_key.get(&(first.clone(), last.clone()))
+            && let Some(cands) = self
+                .name_key
+                .get(&(first.as_str().to_owned(), last.as_str().to_owned()))
         {
+            let last = last.as_str();
             let tail = match e.to.len() {
                 2 => format!("::{last}"),
-                _ => format!("::{}::{last}", e.to[e.to.len() - 2]),
+                _ => format!("::{}::{last}", e.to[e.to.len() - 2].as_str()),
             };
             let mut hits = cands.iter().filter(|(path, _)| path.ends_with(&tail));
             if let (Some((_, k)), None) = (hits.next(), hits.next()) {
@@ -359,8 +381,9 @@ impl Assembly {
     /// cross-crate edge (importing B's item is a use of B).
     fn fold_edges(&self, removed: Option<&RemovalSet>) -> EdgeFold {
         let mut f = EdgeFold::default();
-        for frag in &self.fragments {
-            for e in &frag.references {
+        for fb in &self.fragments {
+            let frag = fb.archived();
+            for e in frag.references.iter() {
                 // The removed item's own use-sites disappear with it.
                 if removed.is_some_and(|r| r.covers(&e.from)) {
                     continue;
@@ -381,10 +404,10 @@ impl Assembly {
                 // A trait member's visibility is inherited, so a bound like
                 // `trait DateFn { type Date: ChronoExt; }` exposes ChronoExt
                 // iff the OWNING TRAIT is pub (`private_bounds` otherwise).
-                let from_public = self.defs.get(&e.from_key).is_some_and(|d| d.public)
+                let from_public = self.defs.get(e.from_key.as_str()).is_some_and(|d| d.public)
                     || self
                         .trait_parent
-                        .get(&e.from_key)
+                        .get(e.from_key.as_str())
                         .and_then(|tk| self.defs.get(tk))
                         .is_some_and(|t| t.public);
                 if e.in_signature && from_public {
@@ -393,7 +416,7 @@ impl Assembly {
                 // Package-granularity dependency tracking keeps the crate-NAME
                 // comparison: a bin's use of its own package's lib is not a
                 // dependency edge.
-                let from_crate = e.from.first().map(String::as_str).unwrap_or_default();
+                let from_crate = e.from.first().map(|s| s.as_str()).unwrap_or_default();
                 if from_crate != def.krate {
                     *f.dep_matrix
                         .entry((from_crate.to_string(), def.krate.clone()))
@@ -409,7 +432,7 @@ impl Assembly {
                         f.reexporters
                             .entry(key.to_string())
                             .or_default()
-                            .push(e.from.join("::"));
+                            .push(wl_ir::join_paths(&e.from, "::"));
                     }
                     continue; // import: not a use-site for unused-pub
                 }
@@ -449,12 +472,12 @@ impl Assembly {
     /// different crate despite the shared name). Trait-member reach is not
     /// folded onto the parent trait here: an identity-only target has no
     /// `parent_kind`, and the config that extracted the trait credits it.
-    fn fold_foreign(&self, e: &RefEdge, f: &mut EdgeFold) {
-        let Some(id) = self.ids.identity_of(&e.to_key) else {
+    fn fold_foreign(&self, e: &ArchivedRefEdge, f: &mut EdgeFold) {
+        let Some(id) = self.ids.identity_of(e.to_key.as_str()) else {
             return;
         };
         let fr = f.foreign_reach.entry(id.to_string()).or_default();
-        if e.in_signature && self.defs.get(&e.from_key).is_some_and(|d| d.public) {
+        if e.in_signature && self.defs.get(e.from_key.as_str()).is_some_and(|d| d.public) {
             fr.signature_exposed = true;
         }
         if e.import {
@@ -467,8 +490,10 @@ impl Assembly {
         }
     }
 
-    pub(super) fn fragments(&self) -> &[IrFragment] {
-        &self.fragments
+    /// Iterate the archived fragments — the re-scan substrate the dangling-import
+    /// and unused-deps queries walk. Each `archived()` is an O(1) cast.
+    pub(super) fn archived_fragments(&self) -> impl Iterator<Item = &ArchivedIrFragment> {
+        self.fragments.iter().map(|f| f.archived())
     }
 
     /// Reachability of a candidate def under this single-config assembly.
@@ -559,7 +584,7 @@ impl Assembly {
     /// ([`Assembly::resolve_key`], display-path fallback included).
     /// `None` when the target is outside the workspace or not a tree item. The
     /// import-index substrate ([`super::SemanticModel::dangling_imports`]).
-    pub(super) fn def_for_edge(&self, e: &RefEdge) -> Option<&DefInfo> {
+    pub(super) fn def_for_edge(&self, e: &ArchivedRefEdge) -> Option<&DefInfo> {
         self.resolve_key(e).and_then(|k| self.defs.get(k))
     }
 
@@ -579,10 +604,10 @@ impl Assembly {
     /// foreign case — see [`ForeignReach`]). Lets the import surgery see a
     /// `use` of a removed item even from a config that never extracted the
     /// defining crate.
-    pub(super) fn target_identity(&self, e: &RefEdge) -> Option<&str> {
+    pub(super) fn target_identity(&self, e: &ArchivedRefEdge) -> Option<&str> {
         match self.def_for_edge(e) {
             Some(def) => Some(def.path.as_str()),
-            None => self.ids.identity_of(&e.to_key),
+            None => self.ids.identity_of(e.to_key.as_str()),
         }
     }
 
@@ -612,11 +637,14 @@ impl Assembly {
     /// alias granularity, spanless.
     pub fn references_from(&self, krate: &str) -> Vec<ResolvedRef> {
         let mut out = Vec::new();
-        for frag in &self.fragments {
-            if frag.crate_name != krate || matches!(frag.target_kind.as_str(), "test" | "build") {
+        for fb in &self.fragments {
+            let frag = fb.archived();
+            if frag.crate_name.as_str() != krate
+                || matches!(frag.target_kind.as_str(), "test" | "build")
+            {
                 continue;
             }
-            for e in &frag.references {
+            for e in frag.references.iter() {
                 if e.in_signature {
                     continue;
                 }
@@ -626,18 +654,18 @@ impl Assembly {
                 // sees through `pub use` chains, exactly like syn's
                 // `resolve_canonical`. Out-of-workspace targets keep their
                 // display path (rules may deny third-party crates by name).
-                let to_path = match self.defs.get(&e.to_key) {
+                let to_path = match self.defs.get(e.to_key.as_str()) {
                     Some(def) => def.path.split("::").map(str::to_string).collect(),
-                    None => e.to.clone(),
+                    None => e.to.iter().map(|s| s.as_str().to_owned()).collect(),
                 };
                 out.push(ResolvedRef {
                     module: self.enclosing_module(&e.from),
                     to_path,
-                    to_kind: e.to_kind.clone(),
+                    to_kind: e.to_kind.as_str().to_owned(),
                     import: e.import,
                     glob: e.glob,
-                    alias: e.alias.clone(),
-                    span: e.span.clone(),
+                    alias: e.alias.as_deref().map(str::to_owned),
+                    span: e.span.as_ref().map(wl_ir::Span::from),
                 });
             }
         }
@@ -650,16 +678,19 @@ impl Assembly {
     /// tried first; a code edge's `from` is the item, whose trailing
     /// segments (item name, impl-block renderings) never match a `mod` fact.
     /// Falls back to the crate root.
-    fn enclosing_module(&self, from: &[String]) -> Vec<String> {
+    fn enclosing_module<S: AsRef<str>>(&self, from: &[S]) -> Vec<String> {
         for end in (2..=from.len()).rev() {
             if self
                 .module_vis
-                .contains_key(from[..end].join("::").as_str())
+                .contains_key(wl_ir::join_paths(&from[..end], "::").as_str())
             {
-                return from[..end].to_vec();
+                return from[..end].iter().map(|s| s.as_ref().to_owned()).collect();
             }
         }
-        from.first().cloned().into_iter().collect()
+        from.first()
+            .map(|s| s.as_ref().to_owned())
+            .into_iter()
+            .collect()
     }
 
     /// External reachability: could an out-of-workspace consumer name this

@@ -184,6 +184,45 @@ fn main() {
             let ec = CheckRule::into_expand_config(command, glob, marker, auto_stage);
             expand::run(&ec);
         }
+        Some(Commands::DumpIr { file, json }) => {
+            dump_ir(&file, json);
+        }
+    }
+}
+
+/// Decode a single `.wlir` IR fragment and print it — the debug window into the
+/// binary transport (the reason `wl_ir` keeps serde). Never runs extraction — a
+/// pure file read. This is the I/O + exit-code shell; the decode/render is the
+/// pure [`render_ir`], so the interesting logic is unit-tested without a
+/// tempfile or a subprocess.
+fn dump_ir(path: &std::path::Path, json: bool) -> ! {
+    let rendered = std::fs::read(path)
+        .map_err(|e| format!("reading {}: {e}", path.display()))
+        .and_then(|bytes| render_ir(&bytes, json));
+    match rendered {
+        Ok(text) => {
+            println!("{text}");
+            std::process::exit(0);
+        }
+        Err(message) => {
+            eprintln!("dump-ir: {message}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Validate a `.wlir` fragment's header, deserialize the rkyv archive to an owned
+/// [`wl_engine::wl_ir::IrFragment`], and render it as serde JSON (`--json`,
+/// jq-able) or Rust `{:#?}` debug. Pure over the file bytes (header validated
+/// before the archive slice, so a short buffer errors rather than panics).
+fn render_ir(bytes: &[u8], json: bool) -> Result<String, String> {
+    use wl_engine::wl_ir;
+    wl_ir::validate_header(bytes).map_err(|e| e.to_string())?;
+    let frag = wl_ir::from_archive_bytes(&bytes[wl_ir::HEADER_LEN..]).map_err(|e| e.to_string())?;
+    if json {
+        serde_json::to_string_pretty(&frag).map_err(|e| e.to_string())
+    } else {
+        Ok(format!("{frag:#?}"))
     }
 }
 
@@ -606,5 +645,37 @@ fn report_and_exit(diagnostics: Vec<Diagnostic>, format: Format) {
     // advisory and the run exits `0`.
     if deny_count > 0 {
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod dump_ir_tests {
+    use super::render_ir;
+    use wl_engine::wl_ir::{self, IrFragment, SCHEMA_VERSION};
+
+    fn sample_wlir() -> Vec<u8> {
+        wl_ir::write_bytes(&IrFragment {
+            schema_version: SCHEMA_VERSION,
+            crate_name: "demo".into(),
+            target_kind: "lib".into(),
+            items: vec![],
+            references: vec![],
+        })
+        .expect("fixture fragment serializes")
+    }
+
+    #[test]
+    fn renders_json_and_debug() {
+        let bytes = sample_wlir();
+        let json = render_ir(&bytes, true).expect("json render");
+        assert!(json.trim_start().starts_with('{'), "not JSON:\n{json}");
+        assert!(json.contains("demo"), "crate name missing:\n{json}");
+        let debug = render_ir(&bytes, false).expect("debug render");
+        assert!(debug.contains("demo"), "crate name missing:\n{debug}");
+    }
+
+    #[test]
+    fn rejects_bad_header() {
+        assert!(render_ir(b"not a wlir file", true).is_err());
     }
 }

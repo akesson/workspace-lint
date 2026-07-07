@@ -22,7 +22,7 @@
 //!   compiled (a `--tests` entry in `[engine] configs`); otherwise their
 //!   usage is invisible and they are skipped, never flagged.
 //! - **build deps** are never judged. Build scripts ARE lint-passed (their
-//!   `<pkg>@build.json` fragments back unused-pub's build.rs-consumer
+//!   `<pkg>@build.wlir` fragments back unused-pub's build.rs-consumer
 //!   crediting), but `DepUsage` deliberately finds no owner for the shared
 //!   `build_script_build` crate name, so their references credit no
 //!   package's `[dependencies]` and `[build-dependencies]` stay unjudged.

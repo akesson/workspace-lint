@@ -7,20 +7,31 @@
 //! resolved definitions (path, kind, visibility, byte-span) plus the
 //! **reference graph** (who-uses-whom) that backs the usage lints.
 //!
-//! Compatibility model: *additive* growth uses `#[serde(default)]` fields (old
-//! fragments stay loadable); a change that would make old fragments
-//! **misleading** — a field's meaning shifts, an emit rule changes what a value
-//! covers — bumps [`SCHEMA_VERSION`] instead, and loaders reject the mismatch
-//! loudly rather than silently assembling skewed data.
+//! Transport: fragments are serialized as **rkyv** archives and read
+//! **zero-copy** — the assembler mmaps each file and accesses the archived
+//! types in place (see [`write_bytes`] / [`access_archive`]), so loading a
+//! multi-hundred-MB fragment set is a pointer cast, not a parse. serde is
+//! retained only for the `dump-ir` debug path, never the hot path.
+//!
+//! Compatibility model: the rkyv archive is **layout-exact**, so — unlike the
+//! former JSON + `#[serde(default)]` scheme — adding a field is NOT
+//! backward-compatible: it changes the archived layout, and an old buffer is a
+//! different, incompatible type. **Every field addition therefore bumps
+//! [`SCHEMA_VERSION`]** (the on-disk header version gate then rejects stale
+//! buffers and the completeness guard re-extracts); a change that makes old
+//! fragments *misleading* bumps it for the same reason it always did. This is
+//! operationally free because the extractor ships vendored in lockstep. The
+//! `#[serde(default)]` attributes survive only so `dump-ir` can still read a
+//! fragment — they no longer buy transport compatibility.
 
 use serde::{Deserialize, Serialize};
 
-/// The schema version the extractor stamps into every [`IrFragment`] and
-/// loaders assert with [`IrFragment::check_schema`]. The extractor and the
-/// assembler ship in lockstep (the binary vendors the extractor source), so a
-/// mismatch always means a stale cache or a hand-mixed fragment dir — never a
-/// supported configuration. Pre-versioning fragments deserialize as `0` and
-/// are rejected the same way.
+/// The schema version the extractor stamps into every fragment's on-disk
+/// header, which loaders assert with [`validate_header`] before any archived
+/// access. The extractor and the assembler ship in lockstep (the binary vendors
+/// the extractor source), so a mismatch always means a stale cache or a
+/// hand-mixed fragment dir — never a supported configuration. A pre-7 `.json`
+/// fragment has no header and is rejected the same way (bad magic).
 ///
 /// History: 2 — build-script units emit fragments (`target_kind: "build"`,
 /// `<pkg>@build.json`). An old binary reading a shared ir dir containing them
@@ -57,16 +68,27 @@ use serde::{Deserialize, Serialize};
 /// wrong one), letting the cascade trim a `use` a surviving trait-method call
 /// still needs (E0599 on the fixed tree). A pre-6 fragment carries an empty
 /// `from_module`, silently re-opening that hole — the bump forces a re-extract.
-pub const SCHEMA_VERSION: u32 = 6;
+/// 7 — transport changed from JSON to **rkyv zero-copy**; the field schema is
+/// otherwise identical to 6. The on-disk file gained a 16-byte header
+/// (magic + this version + archive length) and a `.wlir` extension (see
+/// [`write_bytes`]); a pre-7 `.json` fragment has no header and is rejected at
+/// the header gate. Under a layout-exact archive, every *future* field addition
+/// must bump this too (see the compatibility model in the module docs) — the
+/// additive `#[serde(default)]` tolerance no longer applies to the transport.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
-/// and written to `$WL_IR_OUT/<crate>.json`. Phase 2 assembles these.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
 pub struct IrFragment {
-    /// The [`SCHEMA_VERSION`] of the extractor that wrote this fragment.
-    /// `#[serde(default)]` so pre-versioning fragments deserialize (as `0`)
-    /// and get rejected by [`IrFragment::check_schema`] with a real message
-    /// instead of a serde error.
+    /// The [`SCHEMA_VERSION`] of the extractor that wrote this fragment. The
+    /// on-disk header carries the authoritative copy that [`validate_header`]
+    /// gates on before any archived access; this in-archive field mirrors it so
+    /// a decoded fragment (`dump-ir`) is self-describing. `#[serde(default)]`
+    /// keeps the field readable by the serde debug path.
     #[serde(default)]
     pub schema_version: u32,
     /// Code-form crate name (hyphens → underscores) — the leading segment of
@@ -95,24 +117,6 @@ pub struct IrFragment {
     pub references: Vec<RefEdge>,
 }
 
-impl IrFragment {
-    /// Rejects a fragment written under a different [`SCHEMA_VERSION`].
-    /// Call this on every loaded fragment before assembling — skew detection
-    /// is the loader's job, and silent acceptance of a stale fragment would
-    /// assemble a tree that mixes two schema generations.
-    pub fn check_schema(&self) -> Result<(), String> {
-        if self.schema_version == SCHEMA_VERSION {
-            return Ok(());
-        }
-        Err(format!(
-            "IR fragment for `{}` has schema version {} but this build expects {}; \
-             the fragment dir is stale or was written by a different extractor build \
-             — delete it and re-extract",
-            self.crate_name, self.schema_version, SCHEMA_VERSION
-        ))
-    }
-}
-
 /// One resolved reference: local item `from` mentions def `to`. Both carry a
 /// human `path` (`[crate_name, ..]`) *and* a cross-crate-stable `key`.
 ///
@@ -129,7 +133,20 @@ impl IrFragment {
 /// `to_key` against [`ItemFact::key`].
 ///
 /// Deduped per fragment, so a `from` that calls `to` five times yields one edge.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
 pub struct RefEdge {
     pub from: Vec<String>,
     pub to: Vec<String>,
@@ -246,7 +263,10 @@ pub struct RefEdge {
 }
 
 /// A single resolved definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
 pub struct ItemFact {
     /// Canonical path segments: `[crate_name, module.., name]`. Display-only —
     /// this is `def_path_str`, which is *not* stable cross-crate (see
@@ -349,7 +369,18 @@ pub struct ItemFact {
 /// Normalized visibility. `Restricted` carries the rendered restriction
 /// (`"crate"`, or a module path) so the diff against syn's
 /// `Public`/`PubCrate`/`PubSuper`/`PubIn`/`Private` can normalize later.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug), compare(PartialEq))]
 pub enum Visibility {
     Public,
     Restricted(String),
@@ -375,7 +406,20 @@ pub enum Visibility {
 /// that findings on generated code get no editable span; consumers key that off
 /// this flag (for whole-item spans) and off [`ItemFact::vis_span`] being `None`
 /// (for the tighten surface). `#[serde(default)]` keeps old fragments loadable.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
 pub struct Span {
     pub file: String,
     pub lo: u32,
@@ -386,4 +430,267 @@ pub struct Span {
     pub line: u32,
     #[serde(default)]
     pub from_expansion: bool,
+}
+
+// ---------------------------------------------------------------------------
+// rkyv transport: the on-disk fragment format (schema 7+).
+//
+// File layout: a 16-byte header, then the rkyv archive bytes (root at the end
+// of the archive slice). The header is validated *before* any archived access,
+// so a stale/foreign/truncated file is rejected loudly instead of casting into
+// garbage. 16 bytes keeps the archive slice at a 16-aligned offset under the
+// page-aligned mmap base — above `ArchivedIrFragment`'s max alignment (4).
+// ---------------------------------------------------------------------------
+
+/// The 4-byte magic every fragment file starts with.
+pub const MAGIC: [u8; 4] = *b"WLIR";
+
+/// Header length in bytes: `MAGIC` (4) + `SCHEMA_VERSION` (u32) + archive
+/// length (u64). Also the offset at which the rkyv archive begins.
+pub const HEADER_LEN: usize = 16;
+
+/// Why a byte buffer is not a valid current-schema fragment. Every variant is
+/// the loud-rejection path the completeness guard turns into a re-extract —
+/// none is a silent skew.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderError {
+    /// Fewer than [`HEADER_LEN`] bytes, or no room for an `ArchivedIrFragment`.
+    TooShort,
+    /// First four bytes are not [`MAGIC`] — not a `.wlir` fragment (e.g. a
+    /// stale pre-7 `.json` file, or an unrelated file).
+    BadMagic,
+    /// Written by a different [`SCHEMA_VERSION`] (stale cache / foreign build).
+    SchemaMismatch { found: u32 },
+    /// The recorded archive length disagrees with the file — a truncated or
+    /// partially-written buffer.
+    LenMismatch,
+}
+
+impl std::fmt::Display for HeaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooShort => write!(f, "fragment is too short to hold a header + archive"),
+            Self::BadMagic => write!(
+                f,
+                "not a workspace-lint IR fragment (bad magic) — a stale `.json` fragment \
+                 or foreign file; delete it and re-extract"
+            ),
+            Self::SchemaMismatch { found } => write!(
+                f,
+                "IR fragment has schema version {found} but this build expects {SCHEMA_VERSION}; \
+                 the fragment dir is stale or was written by a different extractor build \
+                 — delete it and re-extract"
+            ),
+            Self::LenMismatch => write!(
+                f,
+                "IR fragment length is inconsistent with its header (truncated or \
+                 partially written) — delete it and re-extract"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HeaderError {}
+
+/// Serialize a fragment to its full on-disk bytes: the [`HEADER_LEN`]-byte
+/// header followed by the rkyv archive. The extractor writes this (temp file +
+/// atomic rename); the assembler mmaps it and calls [`access_archive`].
+pub fn write_bytes(fragment: &IrFragment) -> Result<Vec<u8>, rkyv::rancor::Error> {
+    let archive = rkyv::to_bytes::<rkyv::rancor::Error>(fragment)?;
+    let mut out = Vec::with_capacity(HEADER_LEN + archive.len());
+    out.extend_from_slice(&MAGIC);
+    out.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    out.extend_from_slice(&(archive.len() as u64).to_le_bytes());
+    out.extend_from_slice(&archive);
+    Ok(out)
+}
+
+/// The bare rkyv archive of a fragment (no header) — the in-memory
+/// representation the fixture/test path uses (`FragmentBytes::Owned`).
+pub fn to_archive(fragment: &IrFragment) -> Result<rkyv::util::AlignedVec, rkyv::rancor::Error> {
+    rkyv::to_bytes::<rkyv::rancor::Error>(fragment)
+}
+
+/// Validate a full on-disk fragment buffer's header. Call this before
+/// [`access_archive`] — it is what makes the subsequent unchecked access sound
+/// for stale/foreign/truncated inputs. Returns the archive-bytes offset range's
+/// implicit start ([`HEADER_LEN`]) via `Ok`; the caller slices `&buf[HEADER_LEN..]`.
+pub fn validate_header(buf: &[u8]) -> Result<(), HeaderError> {
+    if buf.len() < HEADER_LEN {
+        return Err(HeaderError::TooShort);
+    }
+    if buf[0..4] != MAGIC {
+        return Err(HeaderError::BadMagic);
+    }
+    let found = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    if found != SCHEMA_VERSION {
+        return Err(HeaderError::SchemaMismatch { found });
+    }
+    let archive_len = u64::from_le_bytes(buf[8..16].try_into().expect("8-byte slice")) as usize;
+    if archive_len != buf.len() - HEADER_LEN {
+        return Err(HeaderError::LenMismatch);
+    }
+    if archive_len < std::mem::size_of::<ArchivedIrFragment>() {
+        return Err(HeaderError::TooShort);
+    }
+    Ok(())
+}
+
+/// Access the archived fragment inside a validated on-disk buffer, zero-copy.
+///
+/// # Safety
+/// `buf` must have passed [`validate_header`] in this build (magic, current
+/// [`SCHEMA_VERSION`], and length all check out) and be otherwise intact — i.e.
+/// produced by [`write_bytes`] of this exact schema. The header gate covers the
+/// stale/foreign/truncated cases; the residual precondition is no mid-buffer
+/// corruption. For a corruption-diagnosis path use [`access_archive_checked`].
+pub unsafe fn access_archive(buf: &[u8]) -> &ArchivedIrFragment {
+    // SAFETY: contract delegated to the caller (header validated); the archive
+    // slice starts at HEADER_LEN, which is 16-aligned under a page-aligned mmap
+    // base — satisfying the archive's alignment (<= 4).
+    unsafe { rkyv::access_unchecked::<ArchivedIrFragment>(&buf[HEADER_LEN..]) }
+}
+
+/// Checked counterpart of [`access_archive`]: validates every relative pointer,
+/// bound, and UTF-8 string in the archive. O(n) over the whole buffer (pages it
+/// all in) — the `WL_IR_CHECKED` diagnosis path only, never the hot path.
+pub fn access_archive_checked(buf: &[u8]) -> Result<&ArchivedIrFragment, rkyv::rancor::Error> {
+    rkyv::access::<ArchivedIrFragment, rkyv::rancor::Error>(&buf[HEADER_LEN..])
+}
+
+/// Reconstruct an owned [`IrFragment`] from a bare archive slice (no header) —
+/// the `dump-ir` debug path and the test round-trip. Checked (validates then
+/// deserializes); not for the hot path.
+pub fn from_archive_bytes(archive: &[u8]) -> Result<IrFragment, rkyv::rancor::Error> {
+    rkyv::from_bytes::<IrFragment, rkyv::rancor::Error>(archive)
+}
+
+/// Join archived (or native) path segments with `sep`. Archived string vectors
+/// have no `join`, and the assembler joins `ItemFact::path` / `RefEdge::{to,from}`
+/// constantly; generic over `AsRef<str>` so native fixtures and archived runtime
+/// share one implementation.
+pub fn join_paths<S: AsRef<str>>(segs: &[S], sep: &str) -> String {
+    let mut out = String::new();
+    for (i, s) in segs.iter().enumerate() {
+        if i > 0 {
+            out.push_str(sep);
+        }
+        out.push_str(s.as_ref());
+    }
+    out
+}
+
+impl From<&ArchivedSpan> for Span {
+    /// Materialize an owned [`Span`] from its archived view — the assembler
+    /// stores owned spans in `DefInfo`/`ResolvedRef`/`DanglingImport`.
+    fn from(a: &ArchivedSpan) -> Self {
+        Span {
+            file: a.file.as_str().to_owned(),
+            lo: a.lo.to_native(),
+            hi: a.hi.to_native(),
+            line: a.line.to_native(),
+            from_expansion: a.from_expansion,
+        }
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    fn sample() -> IrFragment {
+        IrFragment {
+            schema_version: SCHEMA_VERSION,
+            crate_name: "demo".into(),
+            target_kind: "lib".into(),
+            items: vec![ItemFact {
+                path: vec!["demo".into(), "thing".into()],
+                key: "deadbeef".into(),
+                kind: "fn".into(),
+                parent_kind: Some("mod".into()),
+                trait_item: None,
+                self_type: None,
+                visibility: Visibility::Public,
+                span: Some(Span {
+                    file: "src/lib.rs".into(),
+                    lo: 10,
+                    hi: 42,
+                    line: 2,
+                    from_expansion: false,
+                }),
+                full_span: None,
+                vis_span: None,
+                attrs: vec![],
+                self_kind: None,
+                self_copy: None,
+            }],
+            references: vec![],
+        }
+    }
+
+    #[test]
+    fn round_trip_zero_copy() {
+        let frag = sample();
+        let buf = write_bytes(&frag).expect("serialize");
+        validate_header(&buf).expect("header valid");
+        // SAFETY: buf is from write_bytes of this schema, header just validated.
+        let archived = unsafe { access_archive(&buf) };
+        assert_eq!(archived.crate_name.as_str(), "demo");
+        assert_eq!(archived.items.len(), 1);
+        assert_eq!(join_paths(&archived.items[0].path, "::"), "demo::thing");
+        assert!(archived.items[0].visibility == Visibility::Public);
+        let span = Span::from(archived.items[0].span.as_ref().expect("span"));
+        assert_eq!(span.lo, 10);
+        assert_eq!(span.hi, 42);
+    }
+
+    #[test]
+    fn header_rejects_bad_magic_and_version() {
+        let mut buf = write_bytes(&sample()).expect("serialize");
+        // Corrupt magic → BadMagic.
+        let mut bad = buf.clone();
+        bad[0] = b'X';
+        assert_eq!(validate_header(&bad), Err(HeaderError::BadMagic));
+        // Wrong version → SchemaMismatch.
+        buf[4] = buf[4].wrapping_add(1);
+        assert!(matches!(
+            validate_header(&buf),
+            Err(HeaderError::SchemaMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn checked_access_matches() {
+        let buf = write_bytes(&sample()).expect("serialize");
+        let archived = access_archive_checked(&buf).expect("checked access");
+        assert_eq!(archived.crate_name.as_str(), "demo");
+    }
+
+    /// Guards the compatibility model: the rkyv archive is layout-exact, so any
+    /// field add/remove/reorder that changes an archived type's size is a
+    /// transport break. If this fails, you changed the on-disk layout — bump
+    /// [`SCHEMA_VERSION`] (so stale caches are rejected at the header gate) and
+    /// update these pins in the same commit. A same-size reorder still needs
+    /// the version bump even though this test wouldn't catch it — the pins are
+    /// a tripwire, not a proof.
+    #[test]
+    fn archived_layout_is_pinned() {
+        use std::mem::size_of;
+        assert_eq!(
+            size_of::<ArchivedIrFragment>(),
+            36,
+            "ArchivedIrFragment layout changed"
+        );
+        assert_eq!(
+            size_of::<ArchivedItemFact>(),
+            180,
+            "ArchivedItemFact layout changed"
+        );
+        assert_eq!(
+            size_of::<ArchivedRefEdge>(),
+            164,
+            "ArchivedRefEdge layout changed"
+        );
+        assert_eq!(size_of::<ArchivedSpan>(), 24, "ArchivedSpan layout changed");
+    }
 }

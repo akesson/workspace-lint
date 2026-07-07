@@ -83,28 +83,28 @@ impl DepUsage {
         let mut exercised: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut dev_deps_judged = false;
         for (_, asm) in configs {
-            for frag in asm.fragments() {
-                if meta.test_targets.contains(&frag.crate_name) {
+            for frag in asm.archived_fragments() {
+                if meta.test_targets.contains(frag.crate_name.as_str()) {
                     dev_deps_judged = true;
                 }
-                let Some(owner) = meta.target_owner.get(&frag.crate_name) else {
+                let Some(owner) = meta.target_owner.get(frag.crate_name.as_str()) else {
                     continue; // no matching manifest target — don't guess
                 };
                 let set = exercised.entry(owner.clone()).or_default();
-                for e in &frag.references {
+                for e in frag.references.iter() {
                     if let Some(to) = e.to.first()
-                        && to != owner
+                        && to.as_str() != owner.as_str()
                     {
-                        set.insert(to.clone());
+                        set.insert(to.as_str().to_owned());
                     }
                     // `to[0]` is the *defining* crate; a re-export shim
                     // (`use web_time::Instant` resolving into `std`) is only
                     // named by the written path root the extractor records
                     // in `via` — credit it too, or the shim dep reads unused.
-                    if let Some(via) = &e.via
-                        && via != owner
+                    if let Some(via) = e.via.as_deref()
+                        && via != owner.as_str()
                     {
-                        set.insert(via.clone());
+                        set.insert(via.to_owned());
                     }
                 }
             }

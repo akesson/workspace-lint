@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use wl_ir::IrFragment;
+use super::store::FragmentBytes;
 
 /// Stable `DefPathHash` → the cross-config identity (`crate::module::…::name`)
 /// of the def it names, unioned over every config's fragments. Built once per
@@ -35,14 +35,15 @@ impl IdentityIndex {
     /// Union every config's item keys into the global index. A `DefPathHash` is
     /// globally unique, so a key seen in two configs names the same def and the
     /// two identities agree by construction — first-write (matrix order) wins.
-    pub(super) fn build(configs: &[(String, Vec<IrFragment>)]) -> Arc<Self> {
+    pub(super) fn build(configs: &[(String, Vec<FragmentBytes>)]) -> Arc<Self> {
         let mut identity_of: BTreeMap<String, String> = BTreeMap::new();
         for (_, frags) in configs {
-            for frag in frags {
-                for it in &frag.items {
+            for fb in frags {
+                let frag = fb.archived();
+                for it in frag.items.iter() {
                     identity_of
-                        .entry(it.key.clone())
-                        .or_insert_with(|| it.path.join("::"));
+                        .entry(it.key.as_str().to_owned())
+                        .or_insert_with(|| wl_ir::join_paths(&it.path, "::"));
                 }
             }
         }

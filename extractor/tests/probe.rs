@@ -18,6 +18,15 @@ use std::process::Command;
 use dylint::opts::{Check, Dylint, LibrarySelection, Operation};
 use wl_ir::{IrFragment, ItemFact, Visibility};
 
+/// Decode a `.wlir` fragment the extractor wrote (header + rkyv archive) back
+/// to an owned [`IrFragment`] for the golden assertions. Header validation is
+/// the schema gate (replacing the old JSON `check_schema`).
+fn read_fragment(path: &Path) -> anyhow::Result<IrFragment> {
+    let bytes = std::fs::read(path)?;
+    wl_ir::validate_header(&bytes).map_err(anyhow::Error::msg)?;
+    Ok(wl_ir::from_archive_bytes(&bytes[wl_ir::HEADER_LEN..])?)
+}
+
 #[test]
 fn expansion_probe_span_policy() -> anyhow::Result<()> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -70,9 +79,8 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
     };
     dylint::run(&opts)?;
 
-    let frag_path = ir_out.path().join("probe_expansion.json");
-    let frag: IrFragment = serde_json::from_str(&std::fs::read_to_string(&frag_path)?)?;
-    frag.check_schema().map_err(anyhow::Error::msg)?;
+    let frag_path = ir_out.path().join("probe_expansion.wlir");
+    let frag = read_fragment(&frag_path)?;
 
     let mut ck = Checker {
         root: probe_root,
@@ -649,14 +657,15 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
     //     carry Build-mode keys; the assembler's path-fallback join is
     //     covered by wl-engine's golden tests and the cases fixture.)
     {
-        let build_path = ir_out.path().join("probe_expansion@build.json");
-        match std::fs::read_to_string(&build_path) {
+        let build_path = ir_out.path().join("probe_expansion@build.wlir");
+        match std::fs::read(&build_path) {
             Err(e) => ck
                 .failures
                 .push(format!("[build fragment] missing {build_path:?}: {e}")),
-            Ok(text) => {
-                let bfrag: IrFragment = serde_json::from_str(&text)?;
-                bfrag.check_schema().map_err(anyhow::Error::msg)?;
+            Ok(bytes) => {
+                wl_ir::validate_header(&bytes).map_err(anyhow::Error::msg)?;
+                let bfrag: IrFragment =
+                    wl_ir::from_archive_bytes(&bytes[wl_ir::HEADER_LEN..])?;
                 if bfrag.target_kind == "build"
                     && bfrag.crate_name == "build_script_build"
                     && bfrag.items.is_empty()
@@ -854,9 +863,8 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
     {
         std::env::set_current_dir(manifest_dir.join("tests/probes/procmacro"))?;
         dylint::run(&opts)?;
-        let frag_path = ir_out.path().join("probe_procmacro.json");
-        let pm: IrFragment = serde_json::from_str(&std::fs::read_to_string(&frag_path)?)?;
-        pm.check_schema().map_err(anyhow::Error::msg)?;
+        let frag_path = ir_out.path().join("probe_procmacro.wlir");
+        let pm = read_fragment(&frag_path)?;
         let attr_of = |name: &str| -> Option<bool> {
             pm.items
                 .iter()

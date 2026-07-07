@@ -1287,10 +1287,10 @@ mod engine_errors {
     fn workspace_compile_failure_names_the_config() {
         let e = EngineError::Incomplete {
             config: "tests".into(),
-            missing: vec!["demo+test.json".into()],
+            missing: vec!["demo+test.wlir".into()],
         };
         insta::assert_snapshot!(e.to_string(), @r#"
-        IR incomplete under config `tests`: fragments still missing after a forced re-lint: ["demo+test.json"]
+        IR incomplete under config `tests`: fragments still missing after a forced re-lint: ["demo+test.wlir"]
 
         hint: if this persists, delete `target/dylint` in the analyzed workspace to reset the engine's build cache
         "#);
