@@ -157,6 +157,7 @@ ignore-test-code = true  # skip tests/benches/examples and #[cfg(test)] items
 cross-crate-only = false # true = only groups spanning ≥ 2 crates
 min-distinct-anchors = 4      # noise filter: distinct verbatim names required
 min-non-repeating-ratio = 0.5 # noise filter: fraction of non-repeated windows
+max-parameters = 3       # extraction-cost gate: literal parameters allowed
 include = []             # workspace-relative globs to scan (empty = all)
 exclude = []             # globs to skip (wins over include)
 ```
@@ -175,25 +176,49 @@ token-based clone detectors (CCFinderX's RNR/TKS metrics):
   region. One row stamped out N times (an insert table, assert stutter) is
   self-repetition, not duplication worth extracting.
 
+After grouping, the lint reads back the concrete literals normalization
+abstracted away and prices the extraction:
+
+- Each distinct way the instances' literals co-vary is one **parameter** of
+  the function an extraction would produce. A group needing more than
+  `max-parameters` (default 3; 0 disables) is a *data table* — match arms
+  mapping the same variants to different strings, unrolled codegen rows —
+  and is suppressed. Groups that survive carry the price in a note:
+  `instances are identical (differing at most in local names)` (the most
+  mechanical extraction) or `extracting would take ~N parameter(s)`.
+  Calibrated on eight real crates plus a production app: everything the
+  default suppresses was a table or codegen wall; genuine clones are
+  overwhelmingly literal-identical.
+- One literal breaking an otherwise *consistent* cross-instance mapping —
+  the copy renamed `"alpha"` → `"beta"` but missed one occurrence — is the
+  classic copy-paste-bug signature (CP-Miner; Juergens ICSE'09: about half
+  of inconsistent clone edits are unintentional). Such a group is reported
+  with a `possible copy-paste drift: <site> has X where the mapping
+  elsewhere expects Y` note and is **never** suppressed by `max-parameters`.
+  The rule is deliberately strict (the defect must be one-of-a-kind, the
+  odd value must echo the mapping's other side, and `0`/`1`/`""` never
+  qualify), so expect it to be quiet — when it speaks, look closely.
+
 To try it on any workspace without touching config, use the ad-hoc form (one
 flag per field; `--exact-literals` / `--include-test-code` invert the
-`ignore-*` defaults):
+`ignore-*` defaults). `--stats` prints a measure-only readout (per-group
+divergence, parameter histogram, drift candidates, threshold sweeps) instead
+of diagnostics — the view to tune thresholds against:
 
 ```sh
 workspace-lint check duplicate-code                     # defaults, zero config
 workspace-lint check duplicate-code --cross-crate-only  # just cross-crate copy-paste
 workspace-lint check duplicate-code --min-lines 12 --exact-literals
+workspace-lint check duplicate-code --stats             # threshold-tuning readout
 ```
 
 Known limits (deliberate): an edited statement mid-clone splits the match
 into the identical runs on either side of it — each reported only if it
 clears the thresholds on its own (near-miss "Type-3" detection is out of
-scope); `macro_rules!` bodies are not scanned; and under `ignore-literals`,
-two match tables mapping the same enum's variants to *different* strings
-collapse to one structure and fire as a clone — the variant names are
-distinct anchors and distinct rows aren't self-repetition, so the noise
-filters deliberately don't catch this (tracked as a known false positive;
-set `ignore-literals = false` where it bites).
+scope); `macro_rules!` bodies are not scanned; and drift detection sees
+literal divergence only — a changed *identifier* produces a different
+structure and silently leaves the group rather than being reported as
+drift.
 
 ### freshness
 

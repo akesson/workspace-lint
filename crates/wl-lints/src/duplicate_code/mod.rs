@@ -32,6 +32,7 @@ mod measure;
 pub use config::DuplicateCodeConfig;
 pub use measure::{GroupMeasure, MeasureReport, measure};
 
+use wl_engine::fast::clones::divergence::{Divergence, DivergenceAnalyzer};
 use wl_engine::fast::clones::{CloneGroup, Options, Region, ScanFile, find_clones};
 
 pub struct DuplicateCode {
@@ -54,7 +55,20 @@ impl LintImpl for DuplicateCode {
     fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
         let files = enumerate(cx.fast_model(Self::ID), &self.config);
         let groups = find_clones(&files, &options(&self.config));
-        emit(&groups)
+        // Divergence only reads meaningfully when literals were abstracted;
+        // under `ignore-literals = false` instances are literal-identical by
+        // construction and every group ships unshaped.
+        let mut analyzer = self
+            .config
+            .ignore_literals
+            .then(|| DivergenceAnalyzer::new(&files));
+        groups
+            .iter()
+            .filter_map(|group| {
+                let divergence = analyzer.as_mut().and_then(|a| a.analyze(group));
+                emit(group, divergence.as_ref(), self.config.max_parameters)
+            })
+            .collect()
     }
 }
 
@@ -126,34 +140,65 @@ fn enumerate(fast: &FastModel, config: &DuplicateCodeConfig) -> Vec<ScanFile> {
 
 /// One diagnostic per group, anchored at the group's first instance — groups
 /// arrive from `find_clones` already sorted by that anchor's (file, line).
-fn emit(groups: &[CloneGroup]) -> Vec<Diagnostic> {
-    let lint_id = LintId::DuplicateCode.id();
-    groups
-        .iter()
-        .map(|group| {
-            let anchor = &group.instances[0];
-            let lines = anchor.line_end - anchor.line_start + 1;
-            at_line(
-                lint_id,
-                format!(
-                    "duplicated code: {} structurally identical instances (~{lines} lines)",
-                    group.instances.len(),
-                ),
-                anchor.file.clone(),
-                anchor.line_start,
-            )
-            .note(format!("also found at: {}", other_sites(group)))
-            .note("matching ignores local variable names and literal values")
-            .help("extract the shared logic into one function the copies can call")
-            .build()
-        })
-        .collect()
+/// The group's literal divergence decides its fate and its shaping:
+/// - a drift violation keeps the group unconditionally (a probable
+///   copy-paste bug must never be silenced by the table gate) and is
+///   rendered as its own note per defecting site;
+/// - otherwise `params > max-parameters` drops the group — that many
+///   independently-varying literals is a data table, not copy-paste;
+/// - otherwise one actionability note: literal-identical instances (the
+///   most mechanical extraction) or the parameter count extracting would
+///   take.
+fn emit(
+    group: &CloneGroup,
+    divergence: Option<&Divergence>,
+    max_parameters: usize,
+) -> Option<Diagnostic> {
+    let anchor = &group.instances[0];
+    let lines = anchor.line_end - anchor.line_start + 1;
+    let mut builder = at_line(
+        LintId::DuplicateCode.id(),
+        format!(
+            "duplicated code: {} structurally identical instances (~{lines} lines)",
+            group.instances.len(),
+        ),
+        anchor.file.clone(),
+        anchor.line_start,
+    )
+    .note(format!("also found at: {}", other_sites(group)))
+    .note("matching ignores local variable names and literal values")
+    .help("extract the shared logic into one function the copies can call");
+    if let Some(d) = divergence {
+        if d.violations.is_empty() && max_parameters > 0 && d.params > max_parameters {
+            return None;
+        }
+        for v in d.violations.iter().take(MAX_LISTED) {
+            builder = builder.note(format!(
+                "possible copy-paste drift: {}:{} has {} where the mapping elsewhere expects {}",
+                wl_diagnostic::render::display_path(&v.file),
+                v.line,
+                v.found,
+                v.expected,
+            ));
+        }
+        if d.violations.is_empty() {
+            builder = builder.note(match d.params {
+                0 => "instances are identical (differing at most in local names)".to_string(),
+                1 => "extracting would take ~1 parameter for the differing literals".to_string(),
+                n => format!("extracting would take ~{n} parameters for the differing literals"),
+            });
+        }
+    }
+    Some(builder.build())
 }
 
-/// `file:line` list of the group's instances beyond the anchor, capped so a
-/// pathological group doesn't turn the note into a wall.
+/// Cap for per-diagnostic site lists (cross-references and drift notes), so
+/// a pathological group doesn't turn the notes into a wall.
+const MAX_LISTED: usize = 5;
+
+/// `file:line` list of the group's instances beyond the anchor, capped at
+/// [`MAX_LISTED`].
 fn other_sites(group: &CloneGroup) -> String {
-    const MAX_LISTED: usize = 5;
     let others: &[Region] = &group.instances[1..];
     let mut listed: Vec<String> = others
         .iter()

@@ -1,0 +1,15 @@
+# The literal-collapse table, retired from known_false_positives by the
+# `max-parameters` extraction-cost gate: two match tables over the same enum
+# mapping each variant to a DIFFERENT string still collapse to one structure
+# under `ignore-literals = true` (every value becomes `#str`), but each row's
+# strings diverge independently, so the group needs one parameter per row —
+# far past `max-parameters` (default 3) — and is suppressed as a data table.
+# The noise filters alone still don't catch it (variant names are distinct
+# anchors, distinct rows aren't self-repetition); the gate is what judges it.
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20

@@ -1,0 +1,13 @@
+# The drift bug-finder's bypass: this pair needs 5 literal parameters — past
+# `max-parameters` (default 3), so the table gate WOULD suppress it — but the
+# copy renamed "alpha" -> "beta" and forgot the last occurrence, an
+# inconsistency in an otherwise consistent mapping (CP-Miner's copy-paste-bug
+# signature). A probable bug must never be silenced by the table gate, so the
+# group survives and the defecting site is named in a note.
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20

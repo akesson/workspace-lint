@@ -22,7 +22,7 @@
 //!   silence exactly the bug class.
 //!
 //! A violation claim is expensive when wrong, so the rule is guarded three
-//! ways (see [`violations`]): the defect must be one-of-a-kind (a class of
+//! ways (see `violations` below): the defect must be one-of-a-kind (a class of
 //! support 1 — repeated defects are systematic, not drift), the defecting
 //! value must be a *stale twin* (the value the violated mapping holds in
 //! some other instance — "edited two copies, forgot this one"), and

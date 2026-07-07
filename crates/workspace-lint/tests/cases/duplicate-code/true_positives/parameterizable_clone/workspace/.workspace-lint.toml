@@ -1,0 +1,11 @@
+# The extraction-cost actionability tier: this pair differs only in one
+# literal used twice ("aurora" vs "borealis" — one co-variance class = one
+# parameter of the extracted fn), well under `max-parameters`, so the finding
+# fires and the note prices the extraction.
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20
