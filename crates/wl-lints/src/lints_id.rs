@@ -30,6 +30,7 @@ pub enum LintId {
     CliCrateVersion,
     Config,
     CrateSize,
+    DuplicateCode,
     FeatureDrift,
     FileSize,
     Freshness,
@@ -50,6 +51,7 @@ impl LintId {
         LintId::CliCrateVersion,
         LintId::Config,
         LintId::CrateSize,
+        LintId::DuplicateCode,
         LintId::FeatureDrift,
         LintId::FileSize,
         LintId::Freshness,
@@ -70,6 +72,7 @@ impl LintId {
             Self::CliCrateVersion => "workspace-lint::cli-crate-version",
             Self::Config => "workspace-lint::config",
             Self::CrateSize => "workspace-lint::crate-size",
+            Self::DuplicateCode => "workspace-lint::duplicate-code",
             Self::FeatureDrift => "workspace-lint::feature-drift",
             Self::FileSize => "workspace-lint::file-size",
             Self::Freshness => "workspace-lint::freshness",
@@ -84,23 +87,15 @@ impl LintId {
 
     /// Short kebab name (no `workspace-lint::` prefix). Used in fixture
     /// directory names, comment directives, and the `[lints]` config table.
-    pub const fn short(self) -> &'static str {
-        match self {
-            Self::Architecture => "architecture",
-            Self::CentralizedDeps => "centralized-deps",
-            Self::CliCrateVersion => "cli-crate-version",
-            Self::Config => "config",
-            Self::CrateSize => "crate-size",
-            Self::FeatureDrift => "feature-drift",
-            Self::FileSize => "file-size",
-            Self::Freshness => "freshness",
-            Self::ModuleTree => "module-tree",
-            Self::StaleExpect => "stale-expect",
-            Self::StaleGitIndex => "stale-git-index",
-            Self::UnknownLint => "unknown-lint",
-            Self::UnusedDeps => "unused-deps",
-            Self::UnusedPub => "unused-pub",
-        }
+    ///
+    /// Derived from [`Self::id`] — the one lookup table — so the two names
+    /// can never drift. (Its own `duplicate-code` dogfood flagged the
+    /// previous hand-maintained twin match.) The prefix is guaranteed by
+    /// `tests::every_lint_uses_workspace_lint_prefix`.
+    pub fn short(self) -> &'static str {
+        self.id()
+            .strip_prefix("workspace-lint::")
+            .expect("every LintId::id carries the `workspace-lint::` prefix")
     }
 
     /// Reverse of [`Self::short`]: look up a variant by its kebab name.
@@ -109,9 +104,10 @@ impl LintId {
         Self::ALL.iter().copied().find(|v| v.short() == s)
     }
 
-    /// `true` for the *policy* lints that have no meaning without parameters,
-    /// so the presence of their config table is the opt-in: `file-size`,
-    /// `crate-size`, `freshness`, `cli-crate-version`, `architecture`.
+    /// `true` for the *policy* lints that have no meaning without parameters
+    /// (or whose noise profile demands deliberate opt-in), so the presence of
+    /// their config table is the enable switch: `file-size`, `crate-size`,
+    /// `freshness`, `cli-crate-version`, `architecture`, `duplicate-code`.
     ///
     /// The remaining (*structural*) lints catch universal mistakes with zero
     /// required config, so they run whenever their effective level isn't
@@ -125,6 +121,7 @@ impl LintId {
                 | Self::Freshness
                 | Self::CliCrateVersion
                 | Self::Architecture
+                | Self::DuplicateCode
         )
     }
 }
@@ -138,6 +135,7 @@ pub(crate) const ALL_LINTS: &[&str] = &[
     LintId::CliCrateVersion.id(),
     LintId::Config.id(),
     LintId::CrateSize.id(),
+    LintId::DuplicateCode.id(),
     LintId::FeatureDrift.id(),
     LintId::FileSize.id(),
     LintId::Freshness.id(),

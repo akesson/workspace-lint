@@ -67,6 +67,11 @@ centralized-deps = "deny"
 # glob = "crates/*"
 # max-code-lines = 5000
 
+# Flag structurally identical code (Type-2 clones: variable names and literal
+# values may differ) across the workspace. The bare table enables it with the
+# built-in thresholds; see the README for the tuning fields.
+# [duplicate-code]
+
 # Keep docs fresh: flag a CLAUDE.md older than the sources it documents.
 # [[freshness.rules]]
 # glob = "**/CLAUDE.md"

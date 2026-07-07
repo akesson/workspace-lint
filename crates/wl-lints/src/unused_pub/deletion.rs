@@ -230,21 +230,22 @@ pub(super) fn eat_blank_lines_bytes(bytes: &[u8], mut end: usize) -> usize {
 /// Returns `false` if we can't determine the state — the safer default is to
 /// downgrade the suggestion's applicability so `--fix` skips it.
 fn is_file_clean_in_git(path: &Path) -> bool {
-    let ls = crate::git::command(Path::new("."))
-        .args(["ls-files", "--error-unmatch", "--"])
-        .arg(path)
-        .output();
-    let Ok(out) = ls else { return false };
-    if !out.status.success() {
+    if git_success(path, &["ls-files", "--error-unmatch", "--"]).is_none() {
         return false;
     }
-    let st = crate::git::command(Path::new("."))
-        .args(["status", "--porcelain", "--"])
-        .arg(path)
-        .output();
-    let Ok(out) = st else { return false };
-    if !out.status.success() {
-        return false;
+    match git_success(path, &["status", "--porcelain", "--"]) {
+        Some(out) => out.stdout.is_empty(),
+        None => false,
     }
-    out.stdout.is_empty()
+}
+
+/// Run one git subcommand with `path` appended; `Some(output)` only on a
+/// zero exit.
+fn git_success(path: &Path, args: &[&str]) -> Option<std::process::Output> {
+    let out = crate::git::command(Path::new("."))
+        .args(args)
+        .arg(path)
+        .output()
+        .ok()?;
+    out.status.success().then_some(out)
 }

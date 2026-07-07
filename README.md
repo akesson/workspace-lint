@@ -122,6 +122,61 @@ max-code-lines = 5000
 include = ["*.rs"]
 ```
 
+### duplicate-code
+
+Name-invariant (Type-2) duplicate detection: flags groups of structurally
+identical code regions — whole functions/methods, nested blocks, and runs of
+consecutive statements — **even when local variable names and literal values
+differ**. Each region is normalized (local bindings α-renamed to positional
+placeholders in first-occurrence order, literals abstracted per kind) and
+hashed; identical structures bucket together, so the pass is near-linear and
+finds cross-crate copy-paste for free. Statement runs are what keep a clone
+in one piece: a span copied mid-body into two otherwise-different functions
+is reported once, maximally — not as fragments of whichever nested blocks
+happen to match. Renames must be *consistent*: swapping two variables
+changes the structure and correctly breaks the match. Called functions,
+types, and field/method names are kept verbatim — two blocks that call
+different functions are never clones.
+
+Each clone group gets ONE line-anchored diagnostic at its first site (by
+file and line), listing the other sites in a note; silence a deliberate
+duplication with `workspace_lint::expect!(duplicate_code)` at that anchor
+site. Advisory only: `--fix` never rewrites duplicates — resolving one means
+extracting a shared function, which is an author decision.
+
+Build-free (runs under `--fast-only`). The table's presence enables the lint;
+all fields are optional:
+
+```toml
+[duplicate-code]
+min-lines = 8            # smallest region (source lines) considered
+min-tokens = 40          # …and its minimum normalized-token weight
+min-instances = 2        # copies needed before a group is reported
+ignore-literals = true   # `+ 1` vs `+ 5` still matches
+ignore-test-code = true  # skip tests/benches/examples and #[cfg(test)] items
+cross-crate-only = false # true = only groups spanning ≥ 2 crates
+include = []             # workspace-relative globs to scan (empty = all)
+exclude = []             # globs to skip (wins over include)
+```
+
+To try it on any workspace without touching config, use the ad-hoc form (one
+flag per field; `--exact-literals` / `--include-test-code` invert the
+`ignore-*` defaults):
+
+```sh
+workspace-lint check duplicate-code                     # defaults, zero config
+workspace-lint check duplicate-code --cross-crate-only  # just cross-crate copy-paste
+workspace-lint check duplicate-code --min-lines 12 --exact-literals
+```
+
+Known limits (deliberate): an edited statement mid-clone splits the match
+into the identical runs on either side of it — each reported only if it
+clears the thresholds on its own (near-miss "Type-3" detection is out of
+scope); `macro_rules!` bodies are not
+scanned; struct-pattern shorthand (`Point { x }`) erases the field name in
+the pattern position, which can over-match otherwise-identical functions
+destructuring different fields.
+
 ### freshness
 
 Checks that tracked files (e.g. `CLAUDE.md`) are newer than their dependencies. Useful for ensuring documentation stays up to date with source changes.
@@ -379,6 +434,7 @@ lint failure (and vice versa).
 ```sh
 workspace-lint check centralized-deps
 workspace-lint check file-size --glob "**/*.rs" --max-code-lines 500
+workspace-lint check duplicate-code --cross-crate-only
 workspace-lint check freshness --glob "**/CLAUDE.md" --depends-on "**/*.rs"
 workspace-lint check unused-deps --ignore prost --ignore tonic
 ```
@@ -615,8 +671,9 @@ ignored.
 
 **What runs:** a lint runs when its effective level isn't `allow`, with one
 extra condition for the *policy* lints (`file-size`, `crate-size`, `freshness`,
-`cli-crate-version`, `architecture`) — they're meaningless without parameters,
-so they additionally require their config table to be present. The *structural*
+`cli-crate-version`, `architecture`, `duplicate-code`) — they're meaningless
+without parameters (or, for `duplicate-code`, noisy enough to demand deliberate
+opt-in), so they additionally require their config table to be present. The *structural*
 lints (`centralized-deps`, `module-tree`, `feature-drift`, `unused-deps`,
 `unused-pub`) need no table and are therefore on by default. So:
 

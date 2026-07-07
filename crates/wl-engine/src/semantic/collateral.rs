@@ -104,7 +104,7 @@ pub(super) fn compute(configs: &[(String, Assembly)], removed: &RemovalSet) -> V
     // verdict treats foreign reach. Merged after the main fold so it only
     // ever ORs into identities some config actually defines.
     for (ci, (_, assembly)) in configs.iter().enumerate() {
-        for (id, fr) in &assembly.foreign_reach {
+        for (id, fr) in &assembly.degrees.foreign_reach {
             if (fr.cross || fr.intra)
                 && let Some(fold) = folds.get_mut(id.as_str())
             {

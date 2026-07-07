@@ -54,18 +54,9 @@ impl Lint for UnusedDeps {
     }
 
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let fast = cx.fast.expect("unused-deps requires the FastModel");
-        // The runner skips the tier for a memberless workspace (there is
-        // nothing to extract or judge) — mirror that here instead of
-        // expecting a model that deliberately wasn't built.
-        if fast.members().is_empty() {
+        let Some((fast, semantic)) = cx.semantic_models("unused-deps") else {
             return Vec::new();
-        }
-        ir::check(
-            &self.global,
-            &self.per_crate,
-            fast,
-            cx.semantic.expect("unused-deps requires the SemanticModel"),
-        )
+        };
+        ir::check(&self.global, &self.per_crate, fast, semantic)
     }
 }

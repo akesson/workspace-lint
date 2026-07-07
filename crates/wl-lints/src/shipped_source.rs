@@ -199,7 +199,9 @@ impl<'ast> Visit<'ast> for TestRegionScan<'_> {
 /// True for exactly `#[cfg(test)]`. `cfg(any(test, …))`, `cfg(all(test, …))`,
 /// and `cfg_attr(…)` are deliberately NOT matched: only an unconditional test
 /// gate counts as test-only code (the conservative, never-under-count choice).
-fn is_cfg_test(attr: &syn::Attribute) -> bool {
+/// Shared with `duplicate-code`'s `ignore-test-code` skip so the two lints
+/// agree on what "test code" means.
+pub(crate) fn is_cfg_test(attr: &syn::Attribute) -> bool {
     if !attr.path().is_ident("cfg") {
         return false;
     }
@@ -209,7 +211,8 @@ fn is_cfg_test(attr: &syn::Attribute) -> bool {
 
 /// True when any attribute marks a test fn: a path ending in `test`
 /// (`#[test]`, `#[tokio::test]`) or the `#[wasm_bindgen_test]` marker.
-fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
+/// Shared with `duplicate-code` (see [`is_cfg_test`]).
+pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         a.path()
             .segments
@@ -241,7 +244,8 @@ fn out_of_line_mod_files(dir: &Path, name: &str) -> [PathBuf; 2] {
 }
 
 /// Outer attributes of a syn item (mirrors the resolver's own `item_attrs`).
-fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+/// Shared with `duplicate-code` (see [`is_cfg_test`]).
+pub(crate) fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     match item {
         syn::Item::Const(i) => &i.attrs,
         syn::Item::Enum(i) => &i.attrs,

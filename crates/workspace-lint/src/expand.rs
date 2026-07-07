@@ -127,19 +127,7 @@ fn find_files_matching(root: &Path, pattern: &str) -> Vec<PathBuf> {
         eprintln!("expand: invalid glob pattern '{pattern}': {e}");
         std::process::exit(2);
     });
-    let matcher = glob.compile_matcher();
-
-    let mut results = Vec::new();
-    for entry in ignore::WalkBuilder::new(root).build().flatten() {
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-        let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
-        if matcher.is_match(rel) {
-            results.push(entry.into_path());
-        }
-    }
-    results
+    wl_lints::util::walk_files_matching(root, &glob.compile_matcher())
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ const SECTIONS: &[&str] = &[
     "crate-size",
     "freshness",
     "cli-crate-version",
+    "duplicate-code",
     "unused-deps",
     "unused-pub",
     "architecture",
@@ -65,6 +66,19 @@ fn section_schema(section: &str) -> Option<Schema> {
         "expand" => s(
             &["rules"],
             Some(&["command", "glob", "marker", "auto-stage"]),
+        ),
+        "duplicate-code" => s(
+            &[
+                "min-lines",
+                "min-tokens",
+                "min-instances",
+                "ignore-literals",
+                "ignore-test-code",
+                "cross-crate-only",
+                "include",
+                "exclude",
+            ],
+            None,
         ),
         "unused-deps" => s(&["ignore"], None),
         "unused-pub" => s(

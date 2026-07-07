@@ -21,6 +21,27 @@ pub(crate) fn separator_stripped(name: &str) -> String {
     name.chars().filter(|c| *c != '-' && *c != '_').collect()
 }
 
+/// Walk `root` (`.gitignore`-aware, via the `ignore` crate) and collect every
+/// file whose root-relative path matches `matcher`. Shared by the `freshness`
+/// lint and the binary's `expand` scanner — extracted when `duplicate-code`'s
+/// own dogfood flagged the two hand-rolled copies of this walk as clones.
+pub fn walk_files_matching(
+    root: &std::path::Path,
+    matcher: &globset::GlobMatcher,
+) -> Vec<std::path::PathBuf> {
+    let mut results = Vec::new();
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
+        if matcher.is_match(rel) {
+            results.push(entry.into_path());
+        }
+    }
+    results
+}
+
 /// Split a CLI `--command` string into argv using shell-like quoting, so
 /// `--command "tool --flag 'a b'"` survives args with spaces (the old naive
 /// whitespace split mangled them). Exits with a clear message on unbalanced
@@ -31,4 +52,26 @@ pub fn split_command(command: &str) -> Vec<String> {
         eprintln!("error: could not parse --command `{command}`: {e}");
         std::process::exit(2);
     })
+}
+
+/// Start a crate-anchored diagnostic for a manifest-level finding.
+/// Workspace-relative paths everywhere — both the in-message path handed to
+/// `message` and the suppression anchor — so a per-Cargo.toml
+/// `# workspace-lint: allow(...)` directive can actually match the
+/// diagnostic's `SilenceAnchor::Crate`. `display_path` forces forward slashes
+/// so Windows runs produce the same diagnostic text as Linux/macOS (snapshot
+/// fixtures lock it in). Shared by `centralized-deps` and `unused-deps` —
+/// extracted when `duplicate-code`'s statement-run upgrade flagged the two
+/// hand-rolled copies as clones.
+pub(crate) fn at_crate_manifest(
+    lint_id: &'static str,
+    fast: &wl_engine::fast::FastModel,
+    manifest_dir: &std::path::Path,
+    manifest_path: &std::path::Path,
+    message: impl FnOnce(&str) -> String,
+) -> wl_diagnostic::builder::DiagnosticBuilder {
+    let manifest_dir_rel = fast.crate_relative_path(manifest_dir);
+    let manifest_path_rel = fast.crate_relative_path(manifest_path);
+    let cargo_path_str = wl_diagnostic::render::display_path(&manifest_path_rel);
+    wl_diagnostic::builder::at_crate(lint_id, message(&cargo_path_str), manifest_dir_rel)
 }

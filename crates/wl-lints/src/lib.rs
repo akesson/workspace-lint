@@ -26,6 +26,7 @@ pub mod architecture;
 pub mod centralized_deps;
 pub mod cli_crate_version;
 pub mod crate_size;
+pub mod duplicate_code;
 pub mod feature_drift;
 pub mod file_size;
 pub mod freshness;
@@ -91,4 +92,28 @@ pub struct Requirements {
 pub struct LintContext<'a> {
     pub fast: Option<&'a FastModel>,
     pub semantic: Option<&'a wl_engine::SemanticModel>,
+}
+
+impl<'a> LintContext<'a> {
+    /// Both models a semantic lint runs on, or `None` for a memberless
+    /// workspace — the runner skips the semantic tier there (nothing to
+    /// extract or judge), so lints must bail instead of expecting a model
+    /// that deliberately wasn't built. Panics (a wiring bug, not a user
+    /// error) if a lint that declared the requirements is run without the
+    /// models on a workspace that *has* members.
+    pub(crate) fn semantic_models(
+        &self,
+        lint: &str,
+    ) -> Option<(&'a FastModel, &'a wl_engine::SemanticModel)> {
+        let fast = self
+            .fast
+            .unwrap_or_else(|| panic!("{lint} requires the FastModel"));
+        if fast.members().is_empty() {
+            return None;
+        }
+        let semantic = self
+            .semantic
+            .unwrap_or_else(|| panic!("{lint} requires the SemanticModel"));
+        Some((fast, semantic))
+    }
 }

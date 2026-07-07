@@ -6,6 +6,7 @@ use wl_lints::{
     centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion,
     crate_size::CrateSize,
+    duplicate_code::{DuplicateCode, DuplicateCodeConfig},
     feature_drift::FeatureDrift,
     file_size::FileSize,
     freshness::Freshness,
@@ -119,6 +120,34 @@ pub(crate) enum CheckRule {
         #[arg(long)]
         include: Vec<String>,
     },
+    /// Check for structurally identical (Type-2) duplicated code
+    DuplicateCode {
+        /// Minimum source lines a region must span to be considered
+        #[arg(long, default_value_t = DuplicateCodeConfig::default().min_lines)]
+        min_lines: u32,
+        /// Minimum normalized-token count (guards against dense one-liners)
+        #[arg(long, default_value_t = DuplicateCodeConfig::default().min_tokens)]
+        min_tokens: usize,
+        /// How many structurally identical instances make a finding
+        #[arg(long, default_value_t = DuplicateCodeConfig::default().min_instances)]
+        min_instances: usize,
+        /// Require literal values to match exactly (by default `+ 1` vs `+ 5`
+        /// still matches — the copy-paste-and-tweak signature)
+        #[arg(long, default_value_t = false)]
+        exact_literals: bool,
+        /// Also scan test targets, `#[cfg(test)]` items, and `#[test]` fns
+        #[arg(long, default_value_t = false)]
+        include_test_code: bool,
+        /// Report only groups spanning at least two crates
+        #[arg(long, default_value_t = false)]
+        cross_crate_only: bool,
+        /// Workspace-relative globs to scan (default: every member source file)
+        #[arg(long)]
+        include: Vec<String>,
+        /// Workspace-relative globs to skip (wins over --include)
+        #[arg(long)]
+        exclude: Vec<String>,
+    },
     /// Check that files are fresher than their dependencies
     Freshness {
         /// Glob pattern for files to check
@@ -190,6 +219,25 @@ impl CheckRule {
                 max_code_lines,
                 include,
             } => Box::new(CrateSize::from_cli(glob, max_code_lines, include)),
+            CheckRule::DuplicateCode {
+                min_lines,
+                min_tokens,
+                min_instances,
+                exact_literals,
+                include_test_code,
+                cross_crate_only,
+                include,
+                exclude,
+            } => Box::new(DuplicateCode::new(DuplicateCodeConfig::from_cli(
+                min_lines,
+                min_tokens,
+                min_instances,
+                exact_literals,
+                include_test_code,
+                cross_crate_only,
+                &include,
+                &exclude,
+            ))),
             CheckRule::Freshness { glob, depends_on } => {
                 Box::new(Freshness::from_cli(glob, depends_on))
             }
@@ -283,6 +331,57 @@ mod tests {
         }
         .into_lint();
         assert_eq!(lint.id(), LintId::CrateSize);
+    }
+
+    #[test]
+    fn into_lint_duplicate_code() {
+        let lint = CheckRule::DuplicateCode {
+            min_lines: 8,
+            min_tokens: 40,
+            min_instances: 2,
+            exact_literals: false,
+            include_test_code: false,
+            cross_crate_only: true,
+            include: vec![],
+            exclude: vec!["**/generated/**".into()],
+        }
+        .into_lint();
+        assert_eq!(lint.id(), LintId::DuplicateCode);
+    }
+
+    /// Every runnable lint must have an ad-hoc `check <short>` subcommand —
+    /// the "try it on this repo without touching config" entry point. The
+    /// exceptions are enumerated with their reasons; a new lint that lands
+    /// without `check` wiring (as `duplicate-code` first did) fails here.
+    #[test]
+    fn every_runnable_lint_has_a_check_subcommand() {
+        use clap::CommandFactory;
+        // Not runnable on demand: `config`/`unknown-lint`/`stale-expect` are
+        // pipeline findings (config audit / suppression pass), and
+        // `architecture` rules are too structured for flags — TOML-only.
+        let non_checkable = [
+            LintId::Architecture,
+            LintId::Config,
+            LintId::StaleExpect,
+            LintId::UnknownLint,
+        ];
+        let cmd = Cli::command();
+        let check = cmd
+            .find_subcommand("check")
+            .expect("the check subcommand exists");
+        let subcommands: Vec<&str> = check.get_subcommands().map(|c| c.get_name()).collect();
+        for id in LintId::ALL {
+            if non_checkable.contains(id) {
+                continue;
+            }
+            assert!(
+                subcommands.contains(&id.short()),
+                "lint `{}` has no `check {}` subcommand (add a CheckRule variant or list it \
+                 in non_checkable with a reason)",
+                id.short(),
+                id.short()
+            );
+        }
     }
 
     #[test]

@@ -139,19 +139,7 @@ fn mark_done_with_root(config: &FreshnessConfig, root: &Path) {
 }
 
 fn find_files_matching(root: &Path, glob: &GlobPattern) -> Vec<PathBuf> {
-    let matcher = glob.compiled().compile_matcher();
-
-    let mut results = Vec::new();
-    for entry in ignore::WalkBuilder::new(root).build().flatten() {
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-        let path = entry.path().strip_prefix(root).unwrap_or(entry.path());
-        if matcher.is_match(path) {
-            results.push(entry.into_path());
-        }
-    }
-    results
+    crate::util::walk_files_matching(root, &glob.compiled().compile_matcher())
 }
 
 fn find_deps_in_dir(dir: &Path, deps: &Globs) -> Vec<PathBuf> {
