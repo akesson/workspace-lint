@@ -2885,6 +2885,7 @@ dependencies = [
  "memmap2",
  "rayon",
  "rkyv",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "wl-fast",

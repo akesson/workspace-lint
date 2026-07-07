@@ -13,4 +13,10 @@ cov-summary = "llvm-cov --workspace --summary-only"
 # STRING values override. A worktree nested inside the checkout (e.g.
 # `.claude/worktrees/<name>`) sees this file twice, and the array form doubled
 # the argv (`crap --lcov … crap --lcov …`), breaking `cargo cov-crap` there.
-cov-crap = "crap --lcov lcov.info --exclude **/tests/** --exclude **/tests.rs --exclude **/tools/** --exclude corpus/** --exclude extractor/** --allow *::fmt"
+#
+# `--allow` entries are flat exhaustive dispatch with no decisions: `*::fmt`
+# (Display impls) and `expr_attrs` (syn::Expr variant → its attrs field, one
+# arm per variant). Their cyclomatic count exceeds the threshold by shape
+# alone — CRAP > 30 even at 100% coverage — and splitting them would be
+# structure for the meter's sake.
+cov-crap = "crap --lcov lcov.info --exclude **/tests/** --exclude **/tests.rs --exclude **/tools/** --exclude corpus/** --exclude extractor/** --allow *::fmt --allow expr_attrs"

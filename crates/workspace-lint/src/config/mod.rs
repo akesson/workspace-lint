@@ -100,7 +100,7 @@ fn default_engine_configs() -> Vec<String> {
 impl EngineSection {
     /// The extraction matrix, in declaration order (first = primary),
     /// deduplicated by normalized universe (`cargo test` ≡ `cargo nextest
-    /// run`). Unparseable entries are skipped (the audit already flagged
+    /// run`). Unparsable entries are skipped (the audit already flagged
     /// them). An empty result — an explicit `configs = []` or all entries
     /// invalid — falls back to the default matrix so extraction always has a
     /// primary.

@@ -344,7 +344,7 @@ fn build_diagnostic(
              config compiles — add a matching cargo command to `[engine] configs` to judge \
              that code",
             region.predicate,
-            region.file.display(),
+            region.file,
         )),
         None => builder.note(
             "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",

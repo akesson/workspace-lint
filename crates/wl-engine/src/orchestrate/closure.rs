@@ -138,3 +138,153 @@ fn member_id_by_name<'a>(md: &'a cargo_metadata::Metadata, name: &str) -> Option
         .find(|p| p.name.as_str() == name)
         .map(|p| p.id.repr.as_str())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orchestrate::command::parse_command;
+
+    /// Hand-built `cargo metadata` JSON: `members` become workspace packages,
+    /// `externals` registry packages; `edges` is `(from, to, kind)` with kind
+    /// one of `"normal"` / `"dev"` / `"build"`. `optionals` adds a manifest
+    /// declaration (resolve edge absent — exactly cargo's shape for an
+    /// optional dep the default resolve didn't enable).
+    fn metadata(
+        members: &[&str],
+        externals: &[&str],
+        edges: &[(&str, &str, &str)],
+        optionals: &[(&str, &str)],
+    ) -> cargo_metadata::Metadata {
+        let id = |name: &str| format!("registry+https://crates.io/{name}#0.1.0");
+        let pkg = |name: &str, member: bool| {
+            let deps: Vec<_> = optionals
+                .iter()
+                .filter(|(f, _)| *f == name)
+                .map(|(_, to)| {
+                    serde_json::json!({
+                        "name": to, "req": "*", "kind": null, "optional": true,
+                        "uses_default_features": true, "features": [],
+                        "source": null, "target": null, "rename": null,
+                        "registry": null,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "name": name, "version": "0.1.0", "id": id(name),
+                "license": null, "license_file": null, "description": null,
+                "source": if member { serde_json::Value::Null } else { "registry".into() },
+                "dependencies": deps, "targets": [], "features": {},
+                "manifest_path": format!("/w/{name}/Cargo.toml"),
+                "metadata": null, "publish": null, "authors": [],
+                "categories": [], "keywords": [], "readme": null,
+                "repository": null, "homepage": null, "documentation": null,
+                "edition": "2024", "links": null, "default_run": null,
+                "rust_version": null,
+            })
+        };
+        let node = |name: &str| {
+            let deps: Vec<_> = edges
+                .iter()
+                .filter(|(from, _, _)| *from == name)
+                .map(|(_, to, kind)| {
+                    serde_json::json!({
+                        "name": to.replace('-', "_"), "pkg": id(to),
+                        "dep_kinds": [{
+                            "kind": if *kind == "normal" { serde_json::Value::Null } else { (*kind).into() },
+                            "target": null,
+                        }],
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "id": id(name), "deps": deps, "dependencies": [], "features": [],
+            })
+        };
+        let all: Vec<&str> = members.iter().chain(externals).copied().collect();
+        serde_json::from_value(serde_json::json!({
+            "packages": all.iter().map(|n| pkg(n, members.contains(n))).collect::<Vec<_>>(),
+            "workspace_members": members.iter().map(|n| id(n)).collect::<Vec<_>>(),
+            "workspace_default_members": members.iter().map(|n| id(n)).collect::<Vec<_>>(),
+            "resolve": {
+                "nodes": all.iter().map(|n| node(n)).collect::<Vec<_>>(),
+                "root": null,
+            },
+            "workspace_root": "/w", "target_directory": "/w/target",
+            "version": 1, "metadata": null,
+        }))
+        .expect("synthetic metadata deserializes")
+    }
+
+    fn closure(md: &cargo_metadata::Metadata, cmd: &str) -> Vec<String> {
+        member_closure(md, &parse_command(cmd).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn roots_expand_over_normal_edges_members_only() {
+        let md = metadata(
+            &["app", "lib", "other"],
+            &["serde"],
+            &[("app", "lib", "normal"), ("app", "serde", "normal")],
+            &[],
+        );
+        // `lib` joins (member, normal edge); `serde` (external) and `other`
+        // (member, unreferenced) don't.
+        assert_eq!(closure(&md, "cargo build -p app"), ["app", "lib"]);
+    }
+
+    #[test]
+    fn dev_edges_only_from_roots_and_only_for_tests() {
+        let md = metadata(
+            &["app", "lib", "devlib", "deep"],
+            &[],
+            &[
+                ("app", "lib", "normal"),
+                ("app", "devlib", "dev"),
+                ("lib", "deep", "dev"),
+            ],
+            &[],
+        );
+        // Default kind: no dev edges at all.
+        assert_eq!(closure(&md, "cargo build -p app"), ["app", "lib"]);
+        // Tests kind: the root's dev deps compile, a transitive member's don't
+        // (`cargo test -p app` doesn't build lib's dev-deps).
+        assert_eq!(closure(&md, "cargo test -p app"), ["app", "devlib", "lib"]);
+    }
+
+    #[test]
+    fn build_edges_always_follow() {
+        let md = metadata(
+            &["app", "buildlib"],
+            &[],
+            &[("app", "buildlib", "build")],
+            &[],
+        );
+        assert_eq!(closure(&md, "cargo build -p app"), ["app", "buildlib"]);
+    }
+
+    #[test]
+    fn unknown_root_is_an_error_naming_the_config() {
+        let md = metadata(&["app"], &[], &[], &[]);
+        let spec = parse_command("cargo build -p nope").unwrap();
+        match member_closure(&md, &spec) {
+            Err(EngineError::UnknownPackage { package, config }) => {
+                assert_eq!(package, "nope");
+                assert_eq!(config, "cargo build -p nope");
+            }
+            other => panic!("expected UnknownPackage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declared_features_pull_in_optional_member_deps() {
+        // The resolve graph (default features) has no app→opt edge; only the
+        // manifest declares it, optional. A `--features` config must
+        // over-approximate it into the closure.
+        let md = metadata(&["app", "opt"], &[], &[], &[("app", "opt")]);
+        assert_eq!(closure(&md, "cargo build -p app"), ["app"]);
+        assert_eq!(
+            closure(&md, "cargo build -p app --features extras"),
+            ["app", "opt"]
+        );
+    }
+}

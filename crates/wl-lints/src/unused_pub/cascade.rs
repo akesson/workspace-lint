@@ -70,8 +70,7 @@ pub fn run(
             "mentioned under `cfg({})` ({}), which no declared `[engine]` config compiles — \
              possibly used on a target the engine never saw; not deleting. Add a matching \
              command to `[engine] configs`, or remove manually",
-            region.predicate,
-            region.file.display(),
+            region.predicate, region.file,
         ))
     };
 

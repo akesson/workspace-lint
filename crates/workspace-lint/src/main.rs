@@ -26,108 +26,14 @@ use wl_engine::fast::FastModel;
 use wl_lints::{LintContext, LintId, git, util};
 
 fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let format = parse_format(cli.message_format.as_deref());
     // `--fix-auto-delete` is `--fix` plus the unused-pub deletion cascade, so
     // every `--fix` behavior keys off the disjunction.
     let fix = cli.fix || cli.fix_auto_delete;
 
-    match cli.command {
-        None => {
-            // `--fix` mutates tracked files in place; gate on a clean working
-            // tree up front so the whole change stays reviewable as one diff.
-            if fix {
-                git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
-            }
-            let (config, config_diags) = wl_engine::timing::phase("config::load", config::load);
-            // Hidden debug surface: exercise the (still dark) semantic-tier
-            // plumbing end-to-end — extract on the pinned toolchain, assemble,
-            // print stats — then exit 0 without running any lints.
-            if cli.engine_dump {
-                let model = load_semantic_model(config.engine.selectors());
-                print_engine_stats(&model);
-                return;
-            }
-            // `expand` mutates files in place (and may `git add` with
-            // `auto-stage`), so it runs only under `--fix` — gated by the
-            // clean-tree check above. This keeps the default/editor run (e.g.
-            // rust-analyzer's `check.overrideCommand`) side-effect-free. It runs
-            // before lints so the structural pass measures post-expansion files.
-            if fix && let Some(ref ec) = config.expand {
-                expand::run(ec);
-            }
-            let RunOutput {
-                mut diagnostics,
-                fast,
-                semantic,
-                cfg_shadow,
-                mut ran,
-            } = wl_engine::timing::phase("run_all", || run_all(&config, cli.fast_only));
-            // Config-audit findings (below) are produced on every default
-            // run, so expects for `config` are always judgeable here.
-            ran.insert(LintId::Config);
-            // Config-validation findings join the stream before suppression
-            // (so a `# workspace-lint: allow(config)` directive can silence
-            // them) and before leveling (so `[lints] config = …` applies).
-            diagnostics.extend(config_diags);
-            // The per-crate `[crates.<name>]` tier's crate names are validated
-            // against the resolved workspace membership (a typo'd or stale crate
-            // name is otherwise a silent no-op). Needs the loaded `FastModel`,
-            // so it runs here rather than in the pure-TOML config audit.
-            if let Some(fm) = fast.as_ref() {
-                diagnostics.extend(config::audit_crate_membership(&config, fm));
-            }
-            // Backfill the FastModel when no enabled lint required it: the
-            // generated-file drop and the suppression scanner's parse cache
-            // read it. Best-effort — outside a cargo workspace both consumers
-            // degrade gracefully.
-            let fast = fast.or_else(try_load_fast_model);
-            // Generated (`include!`d) code participates in analysis but is not a
-            // place users can act on; drop findings anchored in it before
-            // suppression so they never consume an `expect!` or skew stale-expect.
-            drop_generated_anchored(fast.as_ref(), &mut diagnostics);
-            // Under `--fix-auto-delete` (and only then — plain `--fix` never
-            // deletes), converge unused-pub deletions in one pass: deleting
-            // a dead item frees whatever it solely reached. The cascade replaces
-            // the plain unused-pub findings with the converged set and emits the
-            // import surgery that keeps the tree compiling. Runs *before*
-            // suppression so its findings (some newly `Unused` this pass) flow
-            // through directive filtering + stale-expect accounting normally;
-            // its own removal decisions consult a non-mutating suppression query
-            // so an `expect!`-silenced item — and its callees — stay intact.
-            let mut trimmed_imports = false;
-            if cli.fix_auto_delete
-                && ran.contains(&LintId::UnusedPub)
-                && let (Some(fm), Some(sm)) = (fast.as_ref(), semantic.as_ref())
-            {
-                trimmed_imports = run_unused_pub_cascade(
-                    config.unused_pub.clone().unwrap_or_default(),
-                    config.unused_pub_overrides(),
-                    cfg_shadow.as_ref(),
-                    fm,
-                    sm,
-                    &mut diagnostics,
-                );
-            }
-            // Suppression filters by directives and appends `stale-expect` /
-            // `unknown-lint` findings; leveling runs last so the appended ones
-            // are leveled too and `allow`-ed lints are dropped from the final
-            // set before the exit-code tally.
-            wl_engine::timing::phase("apply_suppression[scan expect!/allow!/directives]", || {
-                apply_suppression(fast.as_ref(), ran, &mut diagnostics)
-            });
-            apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
-            if fix {
-                let summary = fix::run(&diagnostics);
-                // Any applied fix can leave fmt-relevant residue (a
-                // `pub`→`pub(crate)` rewrite alone can push a line past the
-                // width limit), deletions especially so.
-                if trimmed_imports || summary.deleted_any || summary.modified > 0 {
-                    eprintln!("note: run `cargo fmt` to tidy the fixed files");
-                }
-            }
-            report_and_exit(diagnostics, format);
-        }
+    match cli.command.take() {
+        None => run_default(&cli, format, fix),
         Some(Commands::Init { force }) => {
             init::run(force);
         }
@@ -139,56 +45,7 @@ fn main() {
                 wl_lints::freshness::mark_done(fc);
             }
         }
-        Some(Commands::Check { rule }) => {
-            if fix {
-                git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
-            }
-            // For single-check runs we still honor the `[lints]` table if a
-            // config file exists, so `workspace-lint check file-size` and the
-            // default run agree on severity.
-            let config_for_levels = config::try_load();
-            // Resolved up front (the rule is consumed by `run_single_check`):
-            // the `--fix-auto-delete` cascade below needs the same config the
-            // lint itself ran with.
-            let unused_pub_config = rule.unused_pub_config();
-            let RunOutput {
-                mut diagnostics,
-                fast,
-                semantic,
-                cfg_shadow,
-                ran,
-            } = run_single_check(rule, cli.fast_only, config_for_levels.as_ref());
-            // Same backfill as the default run: the drop and the directive
-            // scanner's parse cache want the FastModel even when the single
-            // checked rule didn't require one.
-            let fast = fast.or_else(try_load_fast_model);
-            drop_generated_anchored(fast.as_ref(), &mut diagnostics);
-            // The deletion cascade, exactly as in the default run — without it
-            // a `check unused-pub --fix-auto-delete` would delete items but
-            // leave their `use` sites dangling (E0432). No per-crate tier on
-            // the CLI surface.
-            if cli.fix_auto_delete
-                && let Some(global) = unused_pub_config
-                && let (Some(fm), Some(sm)) = (fast.as_ref(), semantic.as_ref())
-            {
-                run_unused_pub_cascade(
-                    global,
-                    HashMap::new(),
-                    cfg_shadow.as_ref(),
-                    fm,
-                    sm,
-                    &mut diagnostics,
-                );
-            }
-            apply_suppression(fast.as_ref(), ran, &mut diagnostics);
-            if let Some(cfg) = &config_for_levels {
-                apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
-            }
-            if fix {
-                fix::run(&diagnostics);
-            }
-            report_and_exit(diagnostics, format);
-        }
+        Some(Commands::Check { rule }) => run_check(rule, &cli, format, fix),
         Some(Commands::Expand {
             command,
             glob,
@@ -206,6 +63,157 @@ fn main() {
             dump_ir(&file, json);
         }
     }
+}
+
+/// The default (no-subcommand) run: the full diagnostic pipeline described in
+/// CLAUDE.md. Extracted from `main` so the CLI dispatch stays a thin match.
+fn run_default(cli: &Cli, format: Format, fix: bool) {
+    // `--fix` mutates tracked files in place; gate on a clean working
+    // tree up front so the whole change stays reviewable as one diff.
+    if fix {
+        git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
+    }
+    let (config, config_diags) = wl_engine::timing::phase("config::load", config::load);
+    // Hidden debug surface: exercise the (still dark) semantic-tier
+    // plumbing end-to-end — extract on the pinned toolchain, assemble,
+    // print stats — then exit 0 without running any lints.
+    if cli.engine_dump {
+        let model = load_semantic_model(config.engine.selectors());
+        print_engine_stats(&model);
+        return;
+    }
+    // `expand` mutates files in place (and may `git add` with
+    // `auto-stage`), so it runs only under `--fix` — gated by the
+    // clean-tree check above. This keeps the default/editor run (e.g.
+    // rust-analyzer's `check.overrideCommand`) side-effect-free. It runs
+    // before lints so the structural pass measures post-expansion files.
+    if fix && let Some(ref ec) = config.expand {
+        expand::run(ec);
+    }
+    let RunOutput {
+        mut diagnostics,
+        fast,
+        semantic,
+        cfg_shadow,
+        mut ran,
+    } = wl_engine::timing::phase("run_all", || run_all(&config, cli.fast_only));
+    // Config-audit findings (below) are produced on every default
+    // run, so expects for `config` are always judgeable here.
+    ran.insert(LintId::Config);
+    // Config-validation findings join the stream before suppression
+    // (so a `# workspace-lint: allow(config)` directive can silence
+    // them) and before leveling (so `[lints] config = …` applies).
+    diagnostics.extend(config_diags);
+    // The per-crate `[crates.<name>]` tier's crate names are validated
+    // against the resolved workspace membership (a typo'd or stale crate
+    // name is otherwise a silent no-op). Needs the loaded `FastModel`,
+    // so it runs here rather than in the pure-TOML config audit.
+    if let Some(fm) = fast.as_ref() {
+        diagnostics.extend(config::audit_crate_membership(&config, fm));
+    }
+    // Backfill the FastModel when no enabled lint required it: the
+    // generated-file drop and the suppression scanner's parse cache
+    // read it. Best-effort — outside a cargo workspace both consumers
+    // degrade gracefully.
+    let fast = fast.or_else(try_load_fast_model);
+    // Generated (`include!`d) code participates in analysis but is not a
+    // place users can act on; drop findings anchored in it before
+    // suppression so they never consume an `expect!` or skew stale-expect.
+    drop_generated_anchored(fast.as_ref(), &mut diagnostics);
+    // Under `--fix-auto-delete` (and only then — plain `--fix` never
+    // deletes), converge unused-pub deletions in one pass: deleting
+    // a dead item frees whatever it solely reached. The cascade replaces
+    // the plain unused-pub findings with the converged set and emits the
+    // import surgery that keeps the tree compiling. Runs *before*
+    // suppression so its findings (some newly `Unused` this pass) flow
+    // through directive filtering + stale-expect accounting normally;
+    // its own removal decisions consult a non-mutating suppression query
+    // so an `expect!`-silenced item — and its callees — stay intact.
+    let mut trimmed_imports = false;
+    if cli.fix_auto_delete
+        && ran.contains(&LintId::UnusedPub)
+        && let (Some(fm), Some(sm)) = (fast.as_ref(), semantic.as_ref())
+    {
+        trimmed_imports = run_unused_pub_cascade(
+            config.unused_pub.clone().unwrap_or_default(),
+            config.unused_pub_overrides(),
+            cfg_shadow.as_ref(),
+            fm,
+            sm,
+            &mut diagnostics,
+        );
+    }
+    // Suppression filters by directives and appends `stale-expect` /
+    // `unknown-lint` findings; leveling runs last so the appended ones
+    // are leveled too and `allow`-ed lints are dropped from the final
+    // set before the exit-code tally.
+    wl_engine::timing::phase("apply_suppression[scan expect!/allow!/directives]", || {
+        apply_suppression(fast.as_ref(), ran, &mut diagnostics)
+    });
+    apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
+    if fix {
+        let summary = fix::run(&diagnostics);
+        // Any applied fix can leave fmt-relevant residue (a
+        // `pub`→`pub(crate)` rewrite alone can push a line past the
+        // width limit), deletions especially so.
+        if trimmed_imports || summary.deleted_any || summary.modified > 0 {
+            eprintln!("note: run `cargo fmt` to tidy the fixed files");
+        }
+    }
+    report_and_exit(diagnostics, format);
+}
+
+/// `workspace-lint check <rule>`: one lint, CLI-configured, sharing the default
+/// run's suppression/leveling/fix tail.
+fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
+    if fix {
+        git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
+    }
+    // For single-check runs we still honor the `[lints]` table if a
+    // config file exists, so `workspace-lint check file-size` and the
+    // default run agree on severity.
+    let config_for_levels = config::try_load();
+    // Resolved up front (the rule is consumed by `run_single_check`):
+    // the `--fix-auto-delete` cascade below needs the same config the
+    // lint itself ran with.
+    let unused_pub_config = rule.unused_pub_config();
+    let RunOutput {
+        mut diagnostics,
+        fast,
+        semantic,
+        cfg_shadow,
+        ran,
+    } = run_single_check(rule, cli.fast_only, config_for_levels.as_ref());
+    // Same backfill as the default run: the drop and the directive
+    // scanner's parse cache want the FastModel even when the single
+    // checked rule didn't require one.
+    let fast = fast.or_else(try_load_fast_model);
+    drop_generated_anchored(fast.as_ref(), &mut diagnostics);
+    // The deletion cascade, exactly as in the default run — without it
+    // a `check unused-pub --fix-auto-delete` would delete items but
+    // leave their `use` sites dangling (E0432). No per-crate tier on
+    // the CLI surface.
+    if cli.fix_auto_delete
+        && let Some(global) = unused_pub_config
+        && let (Some(fm), Some(sm)) = (fast.as_ref(), semantic.as_ref())
+    {
+        run_unused_pub_cascade(
+            global,
+            HashMap::new(),
+            cfg_shadow.as_ref(),
+            fm,
+            sm,
+            &mut diagnostics,
+        );
+    }
+    apply_suppression(fast.as_ref(), ran, &mut diagnostics);
+    if let Some(cfg) = &config_for_levels {
+        apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
+    }
+    if fix {
+        fix::run(&diagnostics);
+    }
+    report_and_exit(diagnostics, format);
 }
 
 /// Decode a single `.wlir` IR fragment and print it — the debug window into the

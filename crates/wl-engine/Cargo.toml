@@ -33,4 +33,7 @@ indexmap = { workspace = true }
 foldhash = { workspace = true }
 
 [dev-dependencies]
+# Synthetic `cargo metadata` fixtures for the closure tests (Metadata is
+# Deserialize, so a hand-built resolve graph needs no cargo/network).
+serde_json = { workspace = true }
 tempfile = { workspace = true }

@@ -37,7 +37,7 @@ pub enum CfgPredicate {
     All(Vec<CfgPredicate>),
     Any(Vec<CfgPredicate>),
     Not(Box<CfgPredicate>),
-    /// Unparseable — evaluates to Unknown (shadowed, the safe direction).
+    /// Unparsable — evaluates to Unknown (shadowed, the safe direction).
     Unknown,
 }
 
@@ -461,6 +461,25 @@ mod tests {
         assert_eq!(regions.len(), 1, "{regions:?}");
         let text = &src[regions[0].lo..regions[0].hi];
         assert!(text.contains("tz_offset"), "region text: {text}");
+    }
+
+    #[test]
+    fn foreign_and_trait_member_cfgs_are_seen() {
+        // Members of extern blocks, traits, and impls carry their own attrs
+        // behind distinct syn item types; each projection must be walked.
+        let src = "unsafe extern \"C\" {\n    #[cfg(target_os = \"linux\")]\n    fn epoll_wait();\n    #[cfg(target_os = \"linux\")]\n    static PAGE: u8;\n}\n\
+                   trait T {\n    #[cfg(target_os = \"linux\")]\n    fn probe();\n}\n";
+        let regions = scan_src(src);
+        assert_eq!(regions.len(), 3, "{regions:?}");
+        assert!(
+            regions
+                .iter()
+                .all(|r| r.predicate == kv("target_os", "linux"))
+        );
+        let texts: Vec<&str> = regions.iter().map(|r| &src[r.lo..r.hi]).collect();
+        assert!(texts.iter().any(|t| t.contains("epoll_wait")));
+        assert!(texts.iter().any(|t| t.contains("PAGE")));
+        assert!(texts.iter().any(|t| t.contains("probe")));
     }
 
     #[test]

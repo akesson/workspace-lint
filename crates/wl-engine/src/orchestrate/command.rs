@@ -401,36 +401,61 @@ pub fn parse_command(entry: &str) -> Result<ConfigSpec, CommandError> {
     }
 
     let verb = toks.next().ok_or(CommandError::Empty)?;
-    let mut kinds = match verb {
-        "build" | "b" | "check" | "c" | "clippy" => Kinds::Default,
-        "test" | "t" => Kinds::Tests,
-        "bench" => Kinds::Benches,
+    let mut spec = SpecBuilder {
+        kinds: parse_verb(verb, &mut toks)?,
+        target: None,
+        packages: Vec::new(),
+        features: FeatureSel::default(),
+    };
+    while let Some(tok) = toks.next() {
+        spec.apply_flag(tok, &mut toks)?;
+    }
+    Ok(ConfigSpec::finish(
+        spec.kinds,
+        spec.target,
+        spec.packages,
+        spec.features,
+    ))
+}
+
+type Toks<'a> = std::iter::Peekable<std::str::SplitWhitespace<'a>>;
+
+fn parse_verb(verb: &str, toks: &mut Toks<'_>) -> Result<Kinds, CommandError> {
+    match verb {
+        "build" | "b" | "check" | "c" | "clippy" => Ok(Kinds::Default),
+        "test" | "t" => Ok(Kinds::Tests),
+        "bench" => Ok(Kinds::Benches),
         "nextest" => {
             // `cargo nextest run` (bare `cargo nextest` accepted); compiles
             // the `cargo test --no-run` set.
             if toks.peek() == Some(&"run") {
                 toks.next();
             }
-            Kinds::Tests
+            Ok(Kinds::Tests)
         }
-        other => {
-            return Err(CommandError::UnknownVerb {
-                verb: other.to_string(),
-            });
-        }
-    };
+        other => Err(CommandError::UnknownVerb {
+            verb: other.to_string(),
+        }),
+    }
+}
 
-    let mut target: Option<String> = None;
-    let mut packages: Vec<String> = Vec::new();
-    let mut features = FeatureSel::default();
+/// The spec-in-progress while the flag loop runs; folded into
+/// [`ConfigSpec::finish`] once the tokens are exhausted.
+struct SpecBuilder {
+    kinds: Kinds,
+    target: Option<String>,
+    packages: Vec<String>,
+    features: FeatureSel,
+}
 
-    while let Some(tok) = toks.next() {
+impl SpecBuilder {
+    fn apply_flag(&mut self, tok: &str, toks: &mut Toks<'_>) -> Result<(), CommandError> {
         // `--flag=value` splits here; bare `--flag` keeps `None`.
         let (flag, inline_val) = match tok.split_once('=') {
             Some((f, v)) => (f, Some(v.to_string())),
             None => (tok, None),
         };
-        let value = |toks: &mut std::iter::Peekable<std::str::SplitWhitespace<'_>>| {
+        let value = |toks: &mut Toks<'_>| {
             inline_val
                 .clone()
                 .or_else(|| toks.next().map(str::to_string))
@@ -447,28 +472,28 @@ pub fn parse_command(entry: &str) -> Result<ConfigSpec, CommandError> {
         }
         match flag {
             "--target" => {
-                if target.is_some() {
+                if self.target.is_some() {
                     return Err(CommandError::DuplicateTarget);
                 }
-                target = Some(value(&mut toks)?);
+                self.target = Some(value(toks)?);
             }
-            "-p" | "--package" => packages.push(value(&mut toks)?),
+            "-p" | "--package" => self.packages.push(value(toks)?),
             "--workspace" | "--all" => {} // the default
             "--features" | "-F" => {
-                let v = value(&mut toks)?;
-                features.features.extend(
+                let v = value(toks)?;
+                self.features.features.extend(
                     v.split([',', ' '])
                         .filter(|s| !s.is_empty())
                         .map(String::from),
                 );
             }
-            "--all-features" => features.all_features = true,
-            "--no-default-features" => features.no_default_features = true,
-            "--tests" => kinds = Kinds::Tests,
-            "--benches" => kinds = Kinds::Benches,
+            "--all-features" => self.features.all_features = true,
+            "--no-default-features" => self.features.no_default_features = true,
+            "--tests" => self.kinds = Kinds::Tests,
+            "--benches" => self.kinds = Kinds::Benches,
             _ if UNIVERSE_NEUTRAL.contains(&flag) => {}
             _ if UNIVERSE_NEUTRAL_VALUED.contains(&flag) => {
-                value(&mut toks)?;
+                value(toks)?;
             }
             _ if flag.starts_with('-') => {
                 return Err(CommandError::UnknownFlag {
@@ -481,9 +506,8 @@ pub fn parse_command(entry: &str) -> Result<ConfigSpec, CommandError> {
                 });
             }
         }
+        Ok(())
     }
-
-    Ok(ConfigSpec::finish(kinds, target, packages, features))
 }
 
 #[cfg(test)]

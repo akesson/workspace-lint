@@ -17,7 +17,7 @@
 //! `--features` entry could enable it.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::orchestrate::{ConfigSpec, Kinds};
 use wl_fast::FastModel;
@@ -28,7 +28,10 @@ use wl_fast::cfg_regions::{CfgAtom, CfgPredicate, CfgRegion, scan_target};
 pub struct ShadowRegion {
     /// Owning member's crate code name (underscored).
     pub krate: String,
-    pub file: PathBuf,
+    /// Workspace-relative, `/`-separated on every OS: this feeds diagnostic
+    /// note text, which must be deterministic across checkouts and platforms
+    /// (the cases harness blesses one expected.stderr for all three OSes).
+    pub file: String,
     /// Human rendering of the uncovered predicate, e.g.
     /// `target_arch = "wasm32"`.
     pub predicate: String,
@@ -83,13 +86,14 @@ impl CfgShadow {
                     .get(region.lo..region.hi.min(text.len()))
                     .unwrap_or("")
                     .to_string();
-                // Workspace-relative for the diagnostic note (deterministic
-                // across checkouts).
                 let file = region
                     .file
                     .strip_prefix(fast.root())
-                    .map(Path::to_path_buf)
-                    .unwrap_or(region.file);
+                    .unwrap_or(&region.file)
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
                 regions.push(ShadowRegion {
                     krate: member.name.replace('-', "_"),
                     file,
@@ -147,19 +151,6 @@ impl CfgShadow {
                 }
                 _ => false,
             })
-    }
-
-    /// The distinct uncovered predicates, with one representative file each —
-    /// the coverage audit's payload.
-    pub fn uncovered_predicates(&self) -> Vec<(&str, &std::path::Path)> {
-        let mut seen = BTreeSet::new();
-        let mut out = Vec::new();
-        for r in &self.regions {
-            if seen.insert(r.predicate.as_str()) {
-                out.push((r.predicate.as_str(), r.file.as_path()));
-            }
-        }
-        out
     }
 }
 
@@ -520,7 +511,7 @@ mod tests {
         let shadow = CfgShadow {
             regions: vec![ShadowRegion {
                 krate: "app".into(),
-                file: PathBuf::from("src/lib.rs"),
+                file: "src/lib.rs".to_string(),
                 predicate: "target_arch = \"wasm32\"".into(),
                 text: "{ let z = utils::tz_offset(); Command::new(\"x\"); v.push(1); }".into(),
             }],
