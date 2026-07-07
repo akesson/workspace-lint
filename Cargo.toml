@@ -22,13 +22,23 @@ clap = { version = "4", features = ["derive"] }
 # driver and invoke `cargo check`. Version-locked to the pin in
 # extractor/rust-toolchain.toml — bump both together (SPIKE §12.4).
 dylint = { version = "6.0.1", features = ["library_packages"] }
+# The fixed-seed fast hasher backing the semantic join's hot lookup maps
+# (keyed on DefPathHash / display path) — replaces BTreeMap<String> string
+# compares over ~100k defs on the ~1.65M-edge fold. `FixedState` ⇒ reproducible.
+foldhash = "0.1"
 fs-err = "3"
 globset = "0.4"
 ignore = "0.4"
+# Insertion-ordered def index for the semantic assembly: O(1) fast-hash lookup
+# with deterministic iteration order (the derived guard indexes depend on it).
+indexmap = "2"
 # Zero-copy mmap of the rkyv IR fragments (already a transitive dep via tokei).
 memmap2 = "0.9"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
+# Data-parallelism for the semantic tier: the per-config assemblies are
+# independent, so they build concurrently (one rayon task per `[engine] config`).
+rayon = "1"
 regex = "1"
 # The on-disk IR fragment transport (see wl-ir). Concrete-pinned in wl-ir itself
 # (self-contained crate); inherited here by wl-engine.

@@ -10,10 +10,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use foldhash::fast::FixedState;
+use indexmap::IndexMap;
 use wl_ir::{ArchivedIrFragment, ArchivedRefEdge, Visibility};
 
 pub(super) use super::def_info::{CANDIDATE_KINDS, CandReach};
 pub use super::def_info::{Category, DefInfo, Reach, ResolvedRef};
+
+/// The global def index: `DefPathHash` key → the def it names. **Insertion
+/// ordered** (an `IndexMap`), so iteration is deterministic — the derived
+/// clippy-guard indexes and the cfg-matrix union walk it — while lookups are
+/// O(1) fast-hash rather than the `BTreeMap<String>` string-compare over ~100k
+/// keys the ~1.65M-edge fold used to pay per edge. Insertion order is fixed by
+/// [`super::load_fragments`]' fragment sort × the extractor's item order, so it
+/// is stable across runs (the fixed-seed hasher never reorders it).
+pub(super) type DefMap = IndexMap<String, DefInfo, FixedState>;
+
+/// A fast-hash lookup map for the join's other hot, **iteration-order-agnostic**
+/// keys (`DefPathHash` / display path → key). Fixed seed ⇒ reproducible; only
+/// ever `get`/`insert`, never iterated in an output-visible order.
+pub(super) type FastMap<K, V> = std::collections::HashMap<K, V, FixedState>;
 use super::join::{ForeignReach, IdentityIndex};
 use super::meta::WorkspaceMeta;
 use super::removal::{DegreeView, RemovalOverlay, RemovalSet};
@@ -26,7 +42,7 @@ pub struct Assembly {
     /// Every fragment crate's code-form name.
     pub(super) crates: BTreeSet<String>,
     /// Stable key → the def it identifies. The global symbol table.
-    pub(super) defs: BTreeMap<String, DefInfo>,
+    pub(super) defs: DefMap,
     /// Stable key → **workspace-wide** in-degree of real (non-import)
     /// use-sites. The reverse index.
     in_degree: BTreeMap<String, usize>,
@@ -52,7 +68,7 @@ pub struct Assembly {
     /// most call sites, so the fold credits every member edge to the parent
     /// trait too (an extension trait imported cross-crate purely for method
     /// syntax must stay `pub`).
-    pub(super) trait_parent: BTreeMap<String, String>,
+    pub(super) trait_parent: FastMap<String, String>,
     /// Owner key (inherent-impl self type, or trait declaration) → its assoc
     /// **fn** member keys — the member enumeration behind the clippy-unmask
     /// guard (`super::clippy_guard`). Trait-*impl* methods are absent by
@@ -80,7 +96,7 @@ pub struct Assembly {
     /// build-fragment edge join fallback (see the fold in [`Assembly::build`]).
     /// Retained so [`Assembly::refold_excluding`] can re-run the same join when
     /// the unused-pub `--fix` cascade recomputes degrees with items removed.
-    path_key: BTreeMap<String, String>,
+    path_key: FastMap<String, String>,
     /// (crate, item name) → the crate's defs carrying that trailing segment —
     /// the suffix-relaxed leg of the path fallback: an edge into a
     /// feature-shifted generation NO config extracted renders its target at
@@ -88,7 +104,7 @@ pub struct Assembly {
     /// equality can't join to the definition path
     /// (`data_common::fraction::Fraction::new`). Same index domain as
     /// `path_key`.
-    name_key: BTreeMap<(String, String), Vec<(String, String)>>,
+    name_key: FastMap<(String, String), Vec<(String, String)>>,
     /// The global (all-configs) key → identity index, for resolving an edge
     /// whose target was extracted only under another config (see
     /// [`Assembly::resolve_key`]).
@@ -98,7 +114,7 @@ pub struct Assembly {
     /// translated through here to a local def before its use-site is counted,
     /// so every degree stays keyed by a def in `defs`. First fragment wins;
     /// deterministic because `load_fragments` sorts.
-    id_key: BTreeMap<String, String>,
+    id_key: FastMap<String, String>,
     /// Reach this config's edges credit to identities it has **no def for** —
     /// the defining crate wasn't extracted here at all (harness flag off:
     /// `[lib] test = false` / `bench = false`), so the global join has no
@@ -138,10 +154,10 @@ impl Assembly {
         //    the trait→impls linkage + the module-visibility table (the
         //    pub-module-hop substrate) + `id_key` (identity → this config's
         //    key, the landing map for a cross-config global-join hit).
-        let mut defs = BTreeMap::new();
+        let mut defs = DefMap::default();
         let mut impls_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut module_vis = BTreeMap::new();
-        let mut id_key: BTreeMap<String, String> = BTreeMap::new();
+        let mut id_key: FastMap<String, String> = FastMap::default();
         let mut trait_members: Vec<(String, String)> = Vec::new();
         for fb in &fragments {
             let frag = fb.archived();
@@ -193,7 +209,7 @@ impl Assembly {
         // Resolve trait members to their owning trait declaration's key (the
         // parent path's identity — trait and member always land in the same
         // fragment, and `id_key` is already first-write-deterministic).
-        let trait_parent: BTreeMap<String, String> = trait_members
+        let trait_parent: FastMap<String, String> = trait_members
             .into_iter()
             .filter_map(|(member, parent_path)| {
                 id_key.get(&parent_path).map(|k| (member, k.clone()))
@@ -212,8 +228,8 @@ impl Assembly {
         // collisions). Residual miss: a target rendered at a re-export path
         // (the visible-parent behavior) doesn't join and degrades to the
         // pre-build-fragment posture — the use goes unseen; never a false join.
-        let mut path_key: BTreeMap<String, String> = BTreeMap::new();
-        let mut name_key: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
+        let mut path_key: FastMap<String, String> = FastMap::default();
+        let mut name_key: FastMap<(String, String), Vec<(String, String)>> = FastMap::default();
         for fb in &fragments {
             let frag = fb.archived();
             if !matches!(frag.target_kind.as_str(), "lib" | "proc-macro") {
@@ -274,6 +290,28 @@ impl Assembly {
         // `pub use m::*` here; expanding both over-approximates toward
         // suppression — the safe direction. Plain `use` never lands in
         // `reexporters`, so a test-mod `use super::*` expands nothing.)
+        //
+        // Index the direct PUBLIC children of every module by their parent
+        // path ONCE (O(defs)), so the expansion is O(re-exporting modules +
+        // their children) rather than a full `defs` scan per re-exporting
+        // module (O(modules × defs) — the dominant glob-expand cost at scale).
+        // A def is a direct member of `parent` iff its path is `parent::<name>`
+        // with no deeper `::`, i.e. `parent` is its path minus the trailing
+        // segment — so `rsplit_once("::")` yields exactly that parent. Root
+        // items (no `::`) have no parent module and match no glob, as before.
+        let mut children_by_parent: std::collections::HashMap<&str, Vec<&str>> =
+            std::collections::HashMap::new();
+        for (child_key, child) in &asm.defs {
+            if !child.public {
+                continue;
+            }
+            if let Some((parent, _)) = child.path.rsplit_once("::") {
+                children_by_parent
+                    .entry(parent)
+                    .or_default()
+                    .push(child_key.as_str());
+            }
+        }
         let module_imports: Vec<(String, Vec<String>)> = fold
             .reexporters
             .iter()
@@ -281,20 +319,18 @@ impl Assembly {
             .map(|(key, importers)| (asm.defs[key].path.clone(), importers.clone()))
             .collect();
         for (mod_path, importers) in module_imports {
-            let prefix = format!("{mod_path}::");
-            for (child_key, child) in &asm.defs {
-                if child.public
-                    && child
-                        .path
-                        .strip_prefix(prefix.as_str())
-                        .is_some_and(|rest| !rest.contains("::"))
-                {
-                    fold.import_targets.insert(child_key.clone());
-                    fold.reexporters
-                        .entry(child_key.clone())
-                        .or_default()
-                        .extend(importers.iter().cloned());
-                }
+            let Some(children) = children_by_parent.get(mod_path.as_str()) else {
+                continue;
+            };
+            // Each child key is distinct and has a single parent, so the visit
+            // order never affects a `reexporters` Vec (each is extended once)
+            // nor the `import_targets` set — the expansion stays deterministic.
+            for &child_key in children {
+                fold.import_targets.insert(child_key.to_owned());
+                fold.reexporters
+                    .entry(child_key.to_owned())
+                    .or_default()
+                    .extend(importers.iter().cloned());
             }
         }
 

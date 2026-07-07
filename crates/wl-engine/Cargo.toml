@@ -29,6 +29,13 @@ proc-macro2 = { workspace = true }
 syn = { workspace = true }
 # dylint::run's error type — wrapped, not exposed in our API shapes.
 anyhow = { workspace = true }
+# semantic tier: the per-config assemblies build concurrently — one rayon task
+# per `[engine] config` (they share only the read-only `IdentityIndex`) — and
+# the join's hot lookups are fast-hash (fixed-seed `foldhash`) `IndexMap`s
+# rather than BTreeMap<String> string compares over ~100k defs per edge.
+rayon = { workspace = true }
+indexmap = { workspace = true }
+foldhash = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
