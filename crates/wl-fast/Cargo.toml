@@ -21,6 +21,8 @@ toml_edit = { workspace = true }
 # broken-`mod`-declaration records.
 proc-macro2 = { workspace = true }
 syn = { workspace = true }
+# `shipped_source`'s per-file code-line counts (test regions subtracted).
+tokei = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

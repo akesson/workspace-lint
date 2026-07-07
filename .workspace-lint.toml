@@ -37,7 +37,7 @@ unknown-lint = "deny"
 # Applies to every crate's `src/` tree, not just the binary — the resolver no
 # longer exempts itself from the 500-line discipline. Counts *shipped* source
 # only (the same production-only metric `crate-size` uses: `#[cfg(test)]` items,
-# `#[test]` fns, and dev-target trees are excluded — see `lints::shipped_source`),
+# `#[test]` fns, and dev-target trees are excluded — see `wl_fast::shipped_source`),
 # so a file's number reflects maintained product code, not its test mass.
 [[file-size.rules]]
 glob = "crates/*/src/**/*.rs"
@@ -49,7 +49,7 @@ glob = "crates/*"
 # TOML fixtures) is skipped, and so is test code — the `tests/`/`benches/`/
 # `examples/` dev-target trees and in-file `#[cfg(test)]` items / `#[test]`
 # fns (a crate-size budget is about maintained product code, not the test
-# mass that dwarfs it — see `wl_lints::shipped_source`, shared with `file-size`).
+# mass that dwarfs it — see `wl_fast::shipped_source`, shared with `file-size`).
 # The binary used to be the binding crate and grew past 6k as lints piled up;
 # it was split into `wl-lints` (every lint impl) and `wl-diagnostic` (the
 # diagnostic vocabulary + renderers), leaving the binary as just the pipeline +

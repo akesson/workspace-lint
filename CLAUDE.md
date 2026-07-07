@@ -46,9 +46,10 @@ nightly `extractor/` package:
   `#[cfg]`-gated byte ranges exist, with parsed predicates — the substrate of
   `wl-engine::coverage`'s cfg-shadow index: regions no `[engine]` config
   compiles, used by unused-pub's "possibly used under `cfg(...)`" note and
-  the `--fix-auto-delete` veto), and the `WL_TIMING` `timing` instrument.
-  Extracted from `wl-engine` when the two tiers outgrew one crate-size
-  budget.
+  the `--fix-auto-delete` veto), `shipped_source` (the `#[cfg(test)]`-aware
+  shipped-line counter behind file-size / crate-size / duplicate-code's
+  test-mass exclusion), and the `WL_TIMING` `timing` instrument. Extracted
+  from `wl-engine` when the two tiers outgrew one crate-size budget.
 - **`wl-ir`** — the serde-only IR contract between the extractor and the
   assembler (publishable; schema-versioned).
 - **`workspace-lint-marker`** — zero-dep crate exporting the `expect!` / `allow!`

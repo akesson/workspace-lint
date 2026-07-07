@@ -43,8 +43,10 @@ pub mod git;
 /// Small cross-cutting helpers shared across lints and the binary.
 pub mod util;
 
-/// Production-only line counting shared by `crate-size` and `file-size`.
-mod shipped_source;
+/// Production-only line counting shared by `crate-size`, `file-size`, and
+/// `duplicate-code` (lives in `wl-fast` with the other syntactic scanners;
+/// imported here so lint modules keep their `crate::shipped_source` paths).
+use wl_engine::fast::shipped_source;
 
 pub use lints_id::LintId;
 
