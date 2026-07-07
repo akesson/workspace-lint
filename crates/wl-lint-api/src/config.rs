@@ -2,7 +2,7 @@
 //! lint levels, the `[lints]` table, and glob patterns that validate at
 //! deserialize time.
 
-use globset::Glob;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, de};
 use std::collections::HashMap;
 
@@ -137,6 +137,25 @@ impl GlobPattern {
     }
 }
 
+/// Build one `GlobSet` from already-compiled patterns, or `None` when there
+/// are no patterns — the "no filter configured" state callers branch on.
+/// Callers that want an (empty, matches-nothing) set regardless chain
+/// `.unwrap_or_default()`. The single home for the `GlobSetBuilder` loop
+/// every lint used to hand-roll.
+pub fn glob_set<'a>(patterns: impl IntoIterator<Item = &'a GlobPattern>) -> Option<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    let mut any = false;
+    for pattern in patterns {
+        builder.add(pattern.compiled().clone());
+        any = true;
+    }
+    any.then(|| {
+        builder
+            .build()
+            .unwrap_or_else(|e| crate::util::fail(format!("failed to build glob filter: {e}")))
+    })
+}
+
 impl<'de> Deserialize<'de> for GlobPattern {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -169,6 +188,38 @@ impl From<&str> for GlobPattern {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glob_set_returns_none_for_empty() {
+        assert!(glob_set(&[]).is_none());
+    }
+
+    #[test]
+    fn glob_set_matches_canonical_path_patterns() {
+        let set = glob_set(&[GlobPattern::from("*Error")]).unwrap();
+        assert!(set.is_match("MyError"));
+        assert!(!set.is_match("Thing"));
+    }
+
+    #[test]
+    fn globs_glob_set_is_empty_set_for_no_patterns() {
+        assert!(!Globs::default().glob_set().is_match("anything"));
+    }
+
+    #[test]
+    fn per_crate_resolves_override_then_global() {
+        let pc = PerCrate::new(
+            "global",
+            [("special".to_string(), "override")].into_iter().collect(),
+        );
+        assert_eq!(*pc.for_crate("special"), "override");
+        assert_eq!(*pc.for_crate("other"), "global");
+    }
+}
+
 /// One or more glob patterns: accepts either a bare string or a list, so
 /// `depends-on = "**/*.rs"` and `depends-on = ["a", "b"]` both parse.
 #[derive(Debug, Clone, Default)]
@@ -184,6 +235,35 @@ impl From<&str> for Globs {
 impl Globs {
     pub fn iter(&self) -> std::slice::Iter<'_, GlobPattern> {
         self.0.iter()
+    }
+
+    /// One matches-nothing-when-empty `GlobSet` over the patterns — the
+    /// always-a-set flavor of [`glob_set`] for include/exclude lists where
+    /// "no patterns" and "matches nothing" coincide.
+    pub fn glob_set(&self) -> GlobSet {
+        glob_set(self.iter()).unwrap_or_default()
+    }
+}
+
+/// A lint's config resolved per crate: workspace-wide params plus per-crate
+/// `[crates.<name>.<lint>]` sections, each *wholesale* replacing the global
+/// config for that crate. The shared home for the `global` / `per_crate`
+/// field pair and the `get(...).unwrap_or(global)` resolution every
+/// crate-scoped lint used to carry.
+pub struct PerCrate<C> {
+    global: C,
+    overrides: HashMap<String, C>,
+}
+
+impl<C> PerCrate<C> {
+    pub fn new(global: C, overrides: HashMap<String, C>) -> Self {
+        Self { global, overrides }
+    }
+
+    /// The effective config for a crate (keyed by Cargo package name):
+    /// its override, or the global config.
+    pub fn for_crate(&self, name: &str) -> &C {
+        self.overrides.get(name).unwrap_or(&self.global)
     }
 }
 

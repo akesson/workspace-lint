@@ -37,7 +37,7 @@ use globset::{Glob, GlobMatcher};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::{at_crate, at_line};
 use wl_lint_api::config::LintLevel;
-use wl_lint_api::{Lint, LintContext, LintId, Requirements};
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 pub mod config;
 mod ir;
@@ -56,33 +56,20 @@ impl Architecture {
     }
 }
 
-impl Lint for Architecture {
-    fn id(&self) -> LintId {
-        LintId::Architecture
-    }
+impl LintImpl for Architecture {
+    const ID: LintId = LintId::Architecture;
+    // Semantic judgment; fast for member names (rule `from` globs match
+    // *package* names) and workspace-relative anchor paths.
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: true,
+    };
 
-    fn requirements(&self) -> Requirements {
-        Requirements {
-            needs_semantic: true,
-            // Member names (rule `from` globs match *package* names) and
-            // workspace-relative anchor paths.
-            needs_fast: true,
-        }
-    }
-
-    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let fast = cx.fast.expect("architecture requires the FastModel");
-        // The runner skips the tier for a memberless workspace — mirror that
-        // instead of expecting a model that deliberately wasn't built.
-        if fast.members().is_empty() {
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        let Some((fast, semantic)) = cx.semantic_models(Self::ID) else {
             return Vec::new();
-        }
-        ir::check(
-            &self.config,
-            fast,
-            cx.semantic
-                .expect("architecture requires the SemanticModel"),
-        )
+        };
+        ir::check(&self.config, fast, semantic)
     }
 }
 

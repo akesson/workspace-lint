@@ -33,7 +33,7 @@
 //! `legacy.rs` exactly — fixtures pin the two backends to byte-identical
 //! output wherever their verdicts agree.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use wl_engine::fast::{DeclaredDep, DepSection, FastModel, Manifest};
 use wl_engine::semantic::{DepUsage, SemanticModel};
@@ -42,10 +42,10 @@ use super::UnusedDepsConfig;
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::{Applicability, Span, Suggestion};
 use wl_lint_api::LintId;
+use wl_lint_api::config::PerCrate;
 
 pub(super) fn check(
-    global: &UnusedDepsConfig,
-    per_crate: &HashMap<String, UnusedDepsConfig>,
+    per_crate: &PerCrate<UnusedDepsConfig>,
     fast: &FastModel,
     model: &SemanticModel,
 ) -> Vec<Diagnostic> {
@@ -56,7 +56,7 @@ pub(super) fn check(
     for krate in fast.members() {
         // A per-crate `[crates.<name>.unused-deps]` wholesale-replaces the
         // global params for this crate; otherwise the global config applies.
-        let config = per_crate.get(&krate.name).unwrap_or(global);
+        let config = per_crate.for_crate(&krate.name);
         let manifest = krate.manifest();
         let deps = collect_deps(manifest, &config.ignore);
         if deps.is_empty() {

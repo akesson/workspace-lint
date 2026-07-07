@@ -51,6 +51,38 @@ pub trait Lint: 'static {
     fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic>;
 }
 
+/// The declarative face of [`Lint`], for the common case where a lint's
+/// identity and requirements are compile-time constants: implement this and
+/// the blanket `impl<T: LintImpl> Lint for T` supplies the trait-object
+/// surface the registry boxes. Only a lint whose id or requirements are
+/// *runtime*-dependent would implement [`Lint`] directly (none do today).
+pub trait LintImpl: 'static {
+    /// The lint's [`LintId`] (see [`Lint::id`]).
+    const ID: LintId;
+    /// What shared models the runner must load (see [`Lint::requirements`]).
+    /// Defaults to needing nothing.
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: false,
+        needs_semantic: false,
+    };
+    /// The check itself (see [`Lint::check`]).
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic>;
+}
+
+impl<T: LintImpl> Lint for T {
+    fn id(&self) -> LintId {
+        T::ID
+    }
+
+    fn requirements(&self) -> Requirements {
+        T::REQUIRES
+    }
+
+    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        self.run(cx)
+    }
+}
+
 /// Static description of what shared resources a lint needs. Inspected
 /// before any check runs so the runner can skip expensive setup (notably
 /// the rustc-backed extraction) when no enabled lint requires it.
@@ -76,6 +108,14 @@ pub struct LintContext<'a> {
 }
 
 impl<'a> LintContext<'a> {
+    /// The [`FastModel`] a `needs_fast` lint runs on. Panics (a wiring bug,
+    /// not a user error) if the lint is run without it — the declared
+    /// [`Requirements`] oblige the runner to load it first.
+    pub fn fast_model(&self, id: LintId) -> &'a FastModel {
+        self.fast
+            .unwrap_or_else(|| panic!("{} requires the FastModel", id.short()))
+    }
+
     /// Both models a semantic lint runs on, or `None` for a memberless
     /// workspace — the runner skips the semantic tier there (nothing to
     /// extract or judge), so lints must bail instead of expecting a model
@@ -84,17 +124,15 @@ impl<'a> LintContext<'a> {
     /// models on a workspace that *has* members.
     pub fn semantic_models(
         &self,
-        lint: &str,
+        id: LintId,
     ) -> Option<(&'a FastModel, &'a wl_engine::SemanticModel)> {
-        let fast = self
-            .fast
-            .unwrap_or_else(|| panic!("{lint} requires the FastModel"));
+        let fast = self.fast_model(id);
         if fast.members().is_empty() {
             return None;
         }
         let semantic = self
             .semantic
-            .unwrap_or_else(|| panic!("{lint} requires the SemanticModel"));
+            .unwrap_or_else(|| panic!("{} requires the SemanticModel", id.short()));
         Some((fast, semantic))
     }
 }

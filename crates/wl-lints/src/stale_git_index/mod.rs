@@ -9,7 +9,7 @@ use std::path::Path;
 
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_workspace;
-use wl_lint_api::{Lint, LintContext, LintId};
+use wl_lint_api::{LintContext, LintId, LintImpl};
 
 #[cfg(test)]
 mod tests;
@@ -28,12 +28,10 @@ impl Default for StaleGitIndex {
     }
 }
 
-impl Lint for StaleGitIndex {
-    fn id(&self) -> LintId {
-        LintId::StaleGitIndex
-    }
+impl LintImpl for StaleGitIndex {
+    const ID: LintId = LintId::StaleGitIndex;
 
-    fn check(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
+    fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
         check()
     }
 }

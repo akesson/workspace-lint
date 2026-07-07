@@ -15,7 +15,7 @@ use wl_engine::fast::{CrateInfo, FastModel, Module};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::{at_file, at_line};
 use wl_diagnostic::render::display_path;
-use wl_lint_api::{Lint, LintContext, LintId, Requirements};
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 pub struct ModuleTree;
 
@@ -31,23 +31,15 @@ impl Default for ModuleTree {
     }
 }
 
-impl Lint for ModuleTree {
-    fn id(&self) -> LintId {
-        LintId::ModuleTree
-    }
+impl LintImpl for ModuleTree {
+    const ID: LintId = LintId::ModuleTree;
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: false,
+    };
 
-    fn requirements(&self) -> Requirements {
-        Requirements {
-            needs_fast: true,
-            ..Requirements::default()
-        }
-    }
-
-    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let fast = cx
-            .fast
-            .expect("module-tree lint requires FastModel (Requirements::needs_fast)");
-        check(fast)
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        check(cx.fast_model(Self::ID))
     }
 }
 

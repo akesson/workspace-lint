@@ -4,7 +4,7 @@ use std::process::Command;
 
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_workspace;
-use wl_lint_api::{Lint, LintContext, LintId};
+use wl_lint_api::{LintContext, LintId, LintImpl};
 
 pub mod config;
 #[cfg(test)]
@@ -32,12 +32,10 @@ impl CliCrateVersion {
     }
 }
 
-impl Lint for CliCrateVersion {
-    fn id(&self) -> LintId {
-        LintId::CliCrateVersion
-    }
+impl LintImpl for CliCrateVersion {
+    const ID: LintId = LintId::CliCrateVersion;
 
-    fn check(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
+    fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
         check(&self.config)
     }
 }

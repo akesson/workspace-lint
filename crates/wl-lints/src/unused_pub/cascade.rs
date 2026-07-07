@@ -25,6 +25,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use wl_lint_api::config::{PerCrate, glob_set};
+
 use wl_engine::coverage::CfgShadow;
 use wl_engine::fast::FastModel;
 use wl_engine::semantic::{PrivateOrphan, RemovalSet, SemanticModel};
@@ -34,7 +36,7 @@ use wl_diagnostic::{Applicability, Diagnostic};
 use wl_lint_api::LintId;
 
 use super::config::UnusedPubConfig;
-use super::ir::{PubFinding, build_glob_set, findings};
+use super::ir::{PubFinding, findings};
 use wl_lint_api::surgery::deletion::{DeleteOutcome, delete_suggestion};
 use wl_lint_api::surgery::import_surgery;
 
@@ -50,8 +52,7 @@ pub struct CascadeResult {
 /// its target must not seed a removal); the main suppression pass runs later
 /// and does the real filtering + stale-expect accounting over this output.
 pub fn run(
-    global: &UnusedPubConfig,
-    per_crate: &HashMap<String, UnusedPubConfig>,
+    config: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
     model: &SemanticModel,
     shadow: &CfgShadow,
@@ -83,7 +84,7 @@ pub fn run(
     let final_findings = loop {
         let removal = RemovalSet::new(removed.iter());
         let cands = model.pub_candidates_excluding(&removal);
-        let batch = findings(global, per_crate, fast, cands, true);
+        let batch = findings(config, fast, cands, true);
         // Seeds for this round: genuinely-removable (Unused + MachineApplicable
         // deletion) findings that aren't already removed, aren't silenced, and
         // aren't macro-import-blocked.
@@ -117,7 +118,7 @@ pub fn run(
                 shadowed.insert(o.id.clone(), note);
                 continue;
             }
-            let Some(f) = collateral_finding(&o, global, per_crate, fast) else {
+            let Some(f) = collateral_finding(&o, config, fast) else {
                 continue;
             };
             if f.removable && !suppressed(&f.diagnostic) {
@@ -180,7 +181,7 @@ pub fn run(
         if blocked.contains(&o.id) {
             continue;
         }
-        if let Some(f) = collateral_finding(&o, global, per_crate, fast) {
+        if let Some(f) = collateral_finding(&o, config, fast) {
             diagnostics.push(f.diagnostic);
         }
     }
@@ -200,17 +201,16 @@ pub fn run(
 /// of scope: the orphan must not seed a removal and gets no finding.
 fn collateral_finding(
     o: &PrivateOrphan,
-    global: &UnusedPubConfig,
-    per_crate: &HashMap<String, UnusedPubConfig>,
+    per_crate: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
 ) -> Option<PubFinding> {
     let krate = fast.members().iter().find(|k| k.code_name() == o.krate)?;
-    let config = per_crate.get(&krate.name).unwrap_or(global);
+    let config = per_crate.for_crate(&krate.name);
     if config
         .exclude_crates
         .iter()
         .any(|c| c == &krate.name || c == &o.krate)
-        || build_glob_set(&config.allowlist).is_some_and(|al| al.is_match(&o.id))
+        || glob_set(&config.allowlist).is_some_and(|al| al.is_match(&o.id))
     {
         return None;
     }
@@ -218,7 +218,7 @@ fn collateral_finding(
     let full = o.full_span.as_ref()?;
     let file = fast.root().join(&span.file);
     if file.starts_with(fast.target_directory())
-        || build_glob_set(&config.exclude_paths)
+        || glob_set(&config.exclude_paths)
             .is_some_and(|ex| ex.is_match(file.to_string_lossy().as_ref()))
     {
         return None;

@@ -479,8 +479,7 @@ fn run_unused_pub_cascade(
     };
 
     let result = wl_lints::unused_pub::cascade::run(
-        &global,
-        &per_crate,
+        &wl_lint_api::config::PerCrate::new(global, per_crate),
         fast,
         semantic,
         shadow,

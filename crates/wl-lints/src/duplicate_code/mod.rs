@@ -21,13 +21,10 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use globset::{GlobSet, GlobSetBuilder};
-
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_line;
 use wl_engine::fast::{FastModel, TargetKind};
-use wl_lint_api::config::Globs;
-use wl_lint_api::{Lint, LintContext, LintId, Requirements};
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 pub mod config;
 
@@ -45,21 +42,15 @@ impl DuplicateCode {
     }
 }
 
-impl Lint for DuplicateCode {
-    fn id(&self) -> LintId {
-        LintId::DuplicateCode
-    }
+impl LintImpl for DuplicateCode {
+    const ID: LintId = LintId::DuplicateCode;
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: false,
+    };
 
-    fn requirements(&self) -> Requirements {
-        Requirements {
-            needs_fast: true,
-            needs_semantic: false,
-        }
-    }
-
-    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let fast = cx.fast.expect("duplicate-code declares needs_fast");
-        let files = enumerate(fast, &self.config);
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        let files = enumerate(cx.fast_model(Self::ID), &self.config);
         let groups = find_clones(&files, &options(&self.config));
         emit(&groups)
     }
@@ -86,8 +77,8 @@ fn options(config: &DuplicateCodeConfig) -> Options {
 /// `mod` blocks share their parent's file and a file can be reached from
 /// several targets (`lib.rs` + `main.rs` sharing modules via `#[path]`).
 fn enumerate(fast: &FastModel, config: &DuplicateCodeConfig) -> Vec<ScanFile> {
-    let include = globset(&config.include);
-    let exclude = globset(&config.exclude);
+    let include = config.include.glob_set();
+    let exclude = config.exclude.glob_set();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut out = Vec::new();
     for krate in fast.members() {
@@ -129,16 +120,6 @@ fn enumerate(fast: &FastModel, config: &DuplicateCodeConfig) -> Vec<ScanFile> {
         }
     }
     out
-}
-
-fn globset(globs: &Globs) -> GlobSet {
-    let mut builder = GlobSetBuilder::new();
-    for glob in globs.iter() {
-        builder.add(glob.compiled().clone());
-    }
-    builder
-        .build()
-        .expect("patterns were individually compiled at deserialize time")
 }
 
 /// One diagnostic per group, anchored at the group's first instance — groups

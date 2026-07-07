@@ -26,10 +26,10 @@
 //! tighten surface, deletion breaks the impl), mirroring rustc's own
 //! `dead_code` scope.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use globset::{GlobSet, GlobSetBuilder};
+use globset::GlobSet;
 use wl_engine::fast::{CrateInfo, FastModel, Publish};
 use wl_engine::semantic::{Category, PubCandidate, PubUsage, SemanticModel};
 use wl_engine::wl_ir;
@@ -37,7 +37,7 @@ use wl_engine::wl_ir;
 use wl_diagnostic::builder::{at_crate, at_line};
 use wl_diagnostic::{Applicability, Diagnostic, PubVerdict};
 use wl_lint_api::LintId;
-use wl_lint_api::config::GlobPattern;
+use wl_lint_api::config::{PerCrate, glob_set};
 
 use wl_engine::coverage::CfgShadow;
 
@@ -60,8 +60,7 @@ pub(crate) struct PubFinding {
 }
 
 pub(super) fn check(
-    global: &UnusedPubConfig,
-    per_crate: &HashMap<String, UnusedPubConfig>,
+    config: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
     model: &SemanticModel,
     shadow: Option<&CfgShadow>,
@@ -69,17 +68,10 @@ pub(super) fn check(
     // Deletion is a `--fix-auto-delete` concern, and that path replaces this
     // plain-check output with the cascade's — so the plain run always renders
     // the tighten fallback for `Unused` items, never a deletion.
-    findings_with_shadow(
-        global,
-        per_crate,
-        fast,
-        model.pub_candidates(),
-        false,
-        shadow,
-    )
-    .into_iter()
-    .map(|f| f.diagnostic)
-    .collect()
+    findings_with_shadow(config, fast, model.pub_candidates(), false, shadow)
+        .into_iter()
+        .map(|f| f.diagnostic)
+        .collect()
 }
 
 /// The candidate-driven core of the lint — shared by the plain [`check`] (fed
@@ -89,13 +81,12 @@ pub(super) fn check(
 /// `auto_delete` selects the structural fix for `Unused` items: whole-item
 /// deletion (the cascade) vs the shown-but-not-applied tighten fallback.
 pub(crate) fn findings(
-    global: &UnusedPubConfig,
-    per_crate: &HashMap<String, UnusedPubConfig>,
+    config: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
     candidates: Vec<PubCandidate>,
     auto_delete: bool,
 ) -> Vec<PubFinding> {
-    findings_with_shadow(global, per_crate, fast, candidates, auto_delete, None)
+    findings_with_shadow(config, fast, candidates, auto_delete, None)
 }
 
 /// [`findings`] with the report-time cfg-shadow index: an `Unused` candidate
@@ -103,8 +94,7 @@ pub(crate) fn findings(
 /// "possibly used under `cfg(...)`" note instead of the generic blind-spot
 /// one. The cascade passes `None` — its veto handles shadowing itself.
 fn findings_with_shadow(
-    global: &UnusedPubConfig,
-    per_crate: &HashMap<String, UnusedPubConfig>,
+    per_crate: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
     candidates: Vec<PubCandidate>,
     auto_delete: bool,
@@ -130,7 +120,7 @@ fn findings_with_shadow(
         // A per-crate `[crates.<name>.unused-pub]` wholesale-replaces the
         // global params for this crate; the glob sets / kind filter are built
         // from the resolved config, so they're computed per crate.
-        let config = per_crate.get(&krate.name).unwrap_or(global);
+        let config = per_crate.for_crate(&krate.name);
         let crate_code = krate.code_name();
         if config
             .exclude_crates
@@ -158,8 +148,8 @@ fn findings_with_shadow(
             target_directory: fast.target_directory(),
             crate_code: &crate_code,
             kind_filter: kind_filter.as_ref(),
-            allowlist: build_glob_set(&config.allowlist).as_ref().cloned(),
-            exclude_paths: build_glob_set(&config.exclude_paths).as_ref().cloned(),
+            allowlist: glob_set(&config.allowlist),
+            exclude_paths: glob_set(&config.exclude_paths),
             suppress_intra_crate: config.suppress_intra_crate,
             auto_delete,
             exempt_external_api,
@@ -497,19 +487,4 @@ fn publish_hint(krate: &CrateInfo, crate_code: &str, count: usize) -> Diagnostic
          (or a registry); see the unused-pub docs",
     )
     .build()
-}
-
-pub(super) fn build_glob_set(patterns: &[GlobPattern]) -> Option<GlobSet> {
-    if patterns.is_empty() {
-        return None;
-    }
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        builder.add(pattern.compiled().clone());
-    }
-    Some(
-        builder.build().unwrap_or_else(|e| {
-            wl_lint_api::util::fail(format!("failed to build glob filter: {e}"))
-        }),
-    )
 }

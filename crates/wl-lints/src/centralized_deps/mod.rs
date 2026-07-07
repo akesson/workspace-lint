@@ -3,7 +3,7 @@ use wl_engine::fast::toml_edit::Item;
 use wl_engine::fast::{DepSection, FastModel, Manifest};
 
 use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion};
-use wl_lint_api::{Lint, LintContext, LintId, Requirements};
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 #[cfg(test)]
 mod tests;
@@ -22,23 +22,15 @@ impl Default for CentralizedDeps {
     }
 }
 
-impl Lint for CentralizedDeps {
-    fn id(&self) -> LintId {
-        LintId::CentralizedDeps
-    }
+impl LintImpl for CentralizedDeps {
+    const ID: LintId = LintId::CentralizedDeps;
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: false,
+    };
 
-    fn requirements(&self) -> Requirements {
-        Requirements {
-            needs_fast: true,
-            ..Requirements::default()
-        }
-    }
-
-    fn check(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let fast = cx
-            .fast
-            .expect("centralized-deps lint requires FastModel (Requirements::needs_fast)");
-        check(fast)
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        check(cx.fast_model(Self::ID))
     }
 }
 
