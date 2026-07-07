@@ -100,6 +100,7 @@ fn findings_with_shadow(
     auto_delete: bool,
     shadow: Option<&CfgShadow>,
 ) -> Vec<PubFinding> {
+    let generated = generated_set(fast);
     let mut by_crate: BTreeMap<&str, Vec<&PubCandidate>> = BTreeMap::new();
     for c in &candidates {
         by_crate.entry(c.krate.as_str()).or_default().push(c);
@@ -146,6 +147,7 @@ fn findings_with_shadow(
         let ctx = CheckCtx {
             root: fast.root(),
             target_directory: fast.target_directory(),
+            generated: &generated,
             crate_code: &crate_code,
             kind_filter: kind_filter.as_ref(),
             allowlist: glob_set(&config.allowlist),
@@ -180,12 +182,30 @@ fn findings_with_shadow(
     out
 }
 
+/// Workspace-relative paths of checked-in generated (`include!`d) files.
+/// Candidates there are excluded at the source of every finding path — inside
+/// [`findings`] rather than by the binary's stream-level
+/// `drop_generated_anchored`, which runs *before* the cascade replaces the
+/// unused-pub findings and so can't keep generated findings out of a
+/// `--fix-auto-delete` run (nor out of the publish-hint rollup and machine-fix
+/// tally, which count pre-drop). Both sides of the membership test share the
+/// include-resolver's lexical form (a relative include stays `src/../gen/x.rs`),
+/// so exact equality on workspace-relative paths is the right comparison.
+pub(crate) fn generated_set(fast: &FastModel) -> HashSet<PathBuf> {
+    fast.generated_files()
+        .map(|p| fast.crate_relative_path(p))
+        .collect()
+}
+
 struct CheckCtx<'a> {
     /// Workspace root — joins the IR's workspace-relative span files into the
     /// absolute paths diagnostics anchor to (matching the syn backend).
     root: &'a Path,
     /// Cargo's target directory — everything under it is build-generated.
     target_directory: &'a Path,
+    /// Workspace-relative paths of checked-in generated (`include!`d) files —
+    /// analyzed, but never an author-editable finding surface.
+    generated: &'a HashSet<PathBuf>,
     crate_code: &'a str,
     kind_filter: Option<&'a HashSet<&'static str>>,
     allowlist: Option<GlobSet>,
@@ -253,6 +273,14 @@ fn candidate_skipped_by_filters(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> bool
     // finding surface.
     if let Some(span) = &cand.span
         && ctx.abs_file(span).starts_with(ctx.target_directory)
+    {
+        return true;
+    }
+    // Same policy for checked-in generated files (`include!`d from the
+    // source tree): the generator owns them, so a finding there isn't
+    // actionable and a deletion would be overwritten.
+    if let Some(span) = &cand.span
+        && ctx.generated.contains(Path::new(&span.file))
     {
         return true;
     }

@@ -234,6 +234,39 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
+        // unused-pub: a deletion the unmask guard vetoed, field flavor — the
+        // item holds the last READ of a surviving type's field, so deleting it
+        // would trip rustc `dead_code` on the fixed tree.
+        (
+            "unused_pub_delete_unmask_field",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub fn `open_state` in crate `widgets` appears unused — consider removing",
+                PathBuf::from("crates/widgets/src/lib.rs"),
+                13,
+            )
+            .help("remove the item or its `pub` visibility")
+            .note(
+                "deleting this would leave field `open` of surviving `widgets::Panel` never-read, tripping `dead_code` on the fixed tree — remove the field first or delete by hand",
+            )
+            .build(),
+        ),
+        // unused-pub: a deletion the unmask guard vetoed, clippy flavor —
+        // removing `is_empty` out from under a surviving `len`.
+        (
+            "unused_pub_delete_unmask_len",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub fn `is_empty` in crate `store` appears unused — consider removing",
+                PathBuf::from("crates/store/src/buf.rs"),
+                17,
+            )
+            .help("remove the item or its `pub` visibility")
+            .note(
+                "deleting `is_empty` would trip clippy `len_without_is_empty` on `store::Buf`'s surviving `len` — remove or keep the pair together",
+            )
+            .build(),
+        ),
         // unused-pub: the dangling-`use` surgery the cascade emits — a deleted
         // item's import leaf is excised so the tree still compiles (no E0432).
         (
@@ -724,6 +757,38 @@ mod tests {
             help: if intentional, silence with:
               |
             14 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
+        fn unused_pub_delete_unmask_field() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_delete_unmask_field")), @r"
+            warning: pub fn `open_state` in crate `widgets` appears unused — consider removing
+             --> crates/widgets/src/lib.rs:13:1
+              |
+              = help: remove the item or its `pub` visibility
+              = note: deleting this would leave field `open` of surviving `widgets::Panel` never-read, tripping `dead_code` on the fixed tree — remove the field first or delete by hand
+            help: if intentional, silence with:
+              |
+            13 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
+        fn unused_pub_delete_unmask_len() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_delete_unmask_len")), @r"
+            warning: pub fn `is_empty` in crate `store` appears unused — consider removing
+             --> crates/store/src/buf.rs:17:1
+              |
+              = help: remove the item or its `pub` visibility
+              = note: deleting `is_empty` would trip clippy `len_without_is_empty` on `store::Buf`'s surviving `len` — remove or keep the pair together
+            help: if intentional, silence with:
+              |
+            17 + workspace_lint::expect!(unused_pub);
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");

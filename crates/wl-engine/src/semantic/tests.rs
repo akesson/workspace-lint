@@ -1117,7 +1117,10 @@ fn dangling_imports_targets_removed_defs_only() {
         ],
     );
     let m = model(vec![("default", vec![app])]);
-    let dangling = m.dangling_imports(&RemovalSet::new(["app::inner::helper"]));
+    let dangling = m.dangling_imports(
+        &RemovalSet::new(["app::inner::helper"]),
+        &Default::default(),
+    );
     assert_eq!(dangling.len(), 1, "only the helper import dangles");
     let d = &dangling[0];
     assert_eq!(d.elem.lo, 100, "the helper leaf, not the kept one");
@@ -1126,6 +1129,83 @@ fn dangling_imports_targets_removed_defs_only() {
         "brace-leaf: decl == elem (the excise discriminator)"
     );
     assert!(!d.reexport);
+}
+
+/// A `use` declared inside a generated (`include!`d) file is surgery's no-go
+/// zone: its target is excision-blocked (the cascade must never delete an item
+/// whose import cleanup would mean editing a file the generator owns), and the
+/// import itself never dangles. Without the generated set both revert to the
+/// plain behavior — the same edges are blockable and excisable.
+#[test]
+fn generated_file_imports_block_excision_and_never_dangle() {
+    let mut import = import_edge(&["app"], &["app", "inner", "helper"], "K_HLP", true, 100);
+    // Relocate the decl into the generated file; `include!` splices it into
+    // `app`'s module scope, so `from` stays the including module.
+    for s in [&mut import.decl_span, &mut import.elem_span] {
+        s.as_mut().unwrap().file = "crates/app/src/gen.rs".into();
+    }
+    let app = frag(
+        "app",
+        vec![item(
+            &["app", "inner", "helper"],
+            "K_HLP",
+            "fn",
+            Some("mod"),
+        )],
+        vec![import],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let generated: std::collections::HashSet<std::path::PathBuf> =
+        [std::path::PathBuf::from("crates/app/src/gen.rs")].into();
+
+    assert_eq!(
+        m.import_excision_blocked(&generated)
+            .get("app::inner::helper"),
+        Some(&ExcisionBlock::GeneratedFile)
+    );
+    assert!(
+        m.dangling_imports(&RemovalSet::new(["app::inner::helper"]), &generated)
+            .is_empty(),
+        "surgery must not touch a generated file"
+    );
+
+    assert!(m.import_excision_blocked(&Default::default()).is_empty());
+    assert_eq!(
+        m.dangling_imports(
+            &RemovalSet::new(["app::inner::helper"]),
+            &Default::default()
+        )
+        .len(),
+        1,
+        "same edges, no generated set: the plain first-order dangle"
+    );
+}
+
+/// When one target is named both by a macro-generated `use` and by one in a
+/// generated file, the macro-generated reason wins (the stricter claim — no
+/// edit surface exists anywhere), regardless of edge order.
+#[test]
+fn excision_block_macro_reason_beats_generated_file() {
+    let mut in_generated = import_edge(&["app"], &["app", "helper"], "K_HLP", true, 100);
+    for s in [&mut in_generated.decl_span, &mut in_generated.elem_span] {
+        s.as_mut().unwrap().file = "crates/app/src/gen.rs".into();
+    }
+    let mut from_macro = import_edge(&["app"], &["app", "helper"], "K_HLP", true, 200);
+    from_macro.decl_span.as_mut().unwrap().from_expansion = true;
+    let app = frag(
+        "app",
+        vec![item(&["app", "helper"], "K_HLP", "fn", Some("mod"))],
+        // Generated-file edge first, so the merge (not insertion order) must
+        // produce the macro reason.
+        vec![in_generated, from_macro],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let generated: std::collections::HashSet<std::path::PathBuf> =
+        [std::path::PathBuf::from("crates/app/src/gen.rs")].into();
+    assert_eq!(
+        m.import_excision_blocked(&generated).get("app::helper"),
+        Some(&ExcisionBlock::MacroGenerated)
+    );
 }
 
 /// An item whose every use-site is test-cfg-gated (`IntraCrate` reached only
@@ -1275,7 +1355,7 @@ fn dangling_imports_second_order_last_user_removed() {
         ],
     );
     let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
-    let dangling = m.dangling_imports(&RemovalSet::new(["app::user"]));
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default());
     assert_eq!(
         dangling.len(),
         1,
@@ -1293,7 +1373,7 @@ fn dangling_imports_second_order_last_user_removed() {
     ));
     let m = model(vec![("default", vec![lib.clone(), app_kept])]);
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::user"]))
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
             .is_empty(),
         "keeper still references Theme — import stays"
     );
@@ -1318,7 +1398,7 @@ fn dangling_imports_second_order_last_user_removed() {
     );
     let m = model(vec![("default", vec![lib, app_unrelated])]);
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::keeper"]))
+        m.dangling_imports(&RemovalSet::new(["app::keeper"]), &Default::default())
             .is_empty(),
         "pre-existing unused import is out of scope"
     );
@@ -1352,12 +1432,13 @@ fn dangling_imports_second_order_trait_method_users() {
     );
     let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
     assert_eq!(
-        m.dangling_imports(&RemovalSet::new(["app::caller"])).len(),
+        m.dangling_imports(&RemovalSet::new(["app::caller"]), &Default::default())
+            .len(),
         1,
         "the only method-call user is removed — the trait import dangles"
     );
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::other"]))
+        m.dangling_imports(&RemovalSet::new(["app::other"]), &Default::default())
             .is_empty(),
         "caller survives — the member call keeps the trait import (prefix credit)"
     );
@@ -1402,12 +1483,13 @@ fn dangling_imports_second_order_inherent_method_via_self_type() {
     );
     let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
     assert_eq!(
-        m.dangling_imports(&RemovalSet::new(["app::user"])).len(),
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
+            .len(),
         1,
         "the only `Widget::paint` caller is removed — the type import dangles"
     );
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::other"]))
+        m.dangling_imports(&RemovalSet::new(["app::other"]), &Default::default())
             .is_empty(),
         "caller survives — the member call credits the self type"
     );
@@ -1440,7 +1522,8 @@ fn dangling_imports_second_order_external_target() {
     );
     let m = model(vec![("default", vec![app.clone()])]);
     assert_eq!(
-        m.dangling_imports(&RemovalSet::new(["app::user"])).len(),
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
+            .len(),
         1,
         "the only `.context()` caller is removed — the external import dangles"
     );
@@ -1454,7 +1537,7 @@ fn dangling_imports_second_order_external_target() {
     ));
     let m = model(vec![("default", vec![app_kept])]);
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::user"]))
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
             .is_empty(),
         "keeper still calls `.context()` — the import stays"
     );
@@ -1473,7 +1556,7 @@ fn dangling_imports_second_order_external_target() {
     );
     let m = model(vec![("default", vec![app_pre])]);
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::keeper"]))
+        m.dangling_imports(&RemovalSet::new(["app::keeper"]), &Default::default())
             .is_empty(),
         "no removed user — the pre-existing unused import is the author's"
     );
@@ -1517,7 +1600,7 @@ fn dangling_imports_second_order_scoped_to_importing_module() {
         ],
     );
     let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
-    let dangling = m.dangling_imports(&RemovalSet::new(["app::user"]));
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default());
     assert_eq!(
         dangling.len(),
         1,
@@ -1530,7 +1613,7 @@ fn dangling_imports_second_order_scoped_to_importing_module() {
 
     // Remove the test fn instead: the nested module's own import dangles,
     // the outer import is kept by its surviving root user.
-    let dangling = m.dangling_imports(&RemovalSet::new(["app::tests::t"]));
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::tests::t"]), &Default::default());
     assert_eq!(dangling.len(), 1);
     assert_eq!(
         dangling[0].elem.lo, 500,
@@ -1566,13 +1649,16 @@ fn dangling_imports_glob_reimport_bridges_module_scopes() {
     );
     let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::user"]))
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
             .is_empty(),
         "the test fn reaches the outer import via `use super::*` — it stays"
     );
     assert_eq!(
-        m.dangling_imports(&RemovalSet::new(["app::user", "app::tests::t"]))
-            .len(),
+        m.dangling_imports(
+            &RemovalSet::new(["app::user", "app::tests::t"]),
+            &Default::default()
+        )
+        .len(),
         1,
         "both users (one via the glob) removed — the outer import dangles"
     );
@@ -1588,7 +1674,7 @@ fn dangling_imports_glob_reimport_bridges_module_scopes() {
         500,
     ));
     let m = model(vec![("default", vec![lib, app_own])]);
-    let dangling = m.dangling_imports(&RemovalSet::new(["app::user"]));
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default());
     assert_eq!(
         dangling.len(),
         1,
@@ -1625,7 +1711,8 @@ fn dangling_imports_ignore_lowered_signature_edges() {
     );
     let m = model(vec![("default", vec![lib, app])]);
     assert_eq!(
-        m.dangling_imports(&RemovalSet::new(["app::user"])).len(),
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
+            .len(),
         1,
         "the surviving lowered-signature edge is not a source use — the import dangles"
     );
@@ -1672,7 +1759,8 @@ fn dangling_imports_inherent_method_calls_do_not_shield() {
     );
     let m = model(vec![("default", vec![lib.clone(), app.clone()])]);
     assert_eq!(
-        m.dangling_imports(&RemovalSet::new(["app::user"])).len(),
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
+            .len(),
         1,
         "keeper's `.time()` never resolved through the import — it dangles"
     );
@@ -1684,7 +1772,7 @@ fn dangling_imports_inherent_method_calls_do_not_shield() {
     }
     let m = model(vec![("default", vec![lib, app_written])]);
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::user"]))
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
             .is_empty(),
         "a written `TimeView::time` path resolves through the import — it stays"
     );
@@ -1724,7 +1812,7 @@ fn dangling_imports_trait_method_calls_do_shield() {
     );
     let m = model(vec![("default", vec![lib, app])]);
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::user"]))
+        m.dangling_imports(&RemovalSet::new(["app::user"]), &Default::default())
             .is_empty(),
         "keeper's `.shout()` needs StrExt in scope — the trait import stays"
     );
@@ -1795,8 +1883,11 @@ fn dangling_imports_trait_impl_body_credits_lexical_module() {
     );
     let m = model(vec![("default", vec![lib.clone()])]);
     assert!(
-        m.dangling_imports(&RemovalSet::new(["app::list::List::dead_sort"]))
-            .is_empty(),
+        m.dangling_imports(
+            &RemovalSet::new(["app::list::List::dead_sort"]),
+            &Default::default()
+        )
+        .is_empty(),
         "from_iter's `.year()` still needs DateFn in scope — the import stays"
     );
 
@@ -1806,8 +1897,11 @@ fn dangling_imports_trait_impl_body_credits_lexical_module() {
     last_user.references.pop();
     let m = model(vec![("default", vec![last_user])]);
     assert_eq!(
-        m.dangling_imports(&RemovalSet::new(["app::list::List::dead_sort"]))
-            .len(),
+        m.dangling_imports(
+            &RemovalSet::new(["app::list::List::dead_sort"]),
+            &Default::default()
+        )
+        .len(),
         1,
         "no surviving user — the import dangles"
     );
@@ -1981,6 +2075,118 @@ fn narrowing_type_with_unread_field_is_gated() {
     assert!(!dead_fields(&m), "a read lifts the gate");
     let m = model(vec![("default", vec![mk("_file", false)])]);
     assert!(!dead_fields(&m), "underscore fields are dead_code-exempt");
+}
+
+/// The deletion-unmask twin of the narrow guards (the `PopoverMenuClose.is_open`
+/// case from the 2026-07-07 LeaveDates validation): removing the LAST reader of
+/// a surviving type's private field would trip `dead_code` on the fixed tree —
+/// the reader must be vetoed. No veto when the owner goes too, and pre-existing
+/// write-only fields (no `newly` edge to attribute) stay the author's business.
+#[test]
+fn deletion_unmask_flags_last_field_reader() {
+    let mk = |with_read: bool| {
+        let mut refs = vec![edge(
+            &["alpha", "keeper"],
+            &["alpha", "Panel"],
+            "K_S",
+            false,
+        )];
+        if with_read {
+            refs.push(edge(
+                &["alpha", "reader"],
+                &["alpha", "Panel", "open"],
+                "K_F",
+                false,
+            ));
+        }
+        frag(
+            "alpha",
+            vec![
+                item(&["alpha", "Panel"], "K_S", "struct", Some("mod")),
+                private_item(&["alpha", "Panel", "open"], "K_F", "field", Some("other")),
+                item(&["alpha", "reader"], "K_R", "fn", Some("mod")),
+                item(&["alpha", "keeper"], "K_K", "fn", Some("mod")),
+            ],
+            refs,
+        )
+    };
+    let newly = vec!["alpha::reader".to_string()];
+
+    let m = model(vec![("default", vec![mk(true)])]);
+    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::reader"]), &newly);
+    assert!(
+        matches!(
+            unmasks.get("alpha::reader"),
+            Some(DeletionUnmask::UnreadField { owner, field })
+                if owner == "alpha::Panel" && field == "open"
+        ),
+        "the last field reader is vetoed, attributed to owner+field: {unmasks:?}"
+    );
+
+    // Owner deleted in the same trial: nothing survives to fire on.
+    let both = vec!["alpha::reader".to_string(), "alpha::Panel".to_string()];
+    let m = model(vec![("default", vec![mk(true)])]);
+    assert!(
+        m.deletion_unmasks(&RemovalSet::new(["alpha::reader", "alpha::Panel"]), &both)
+            .is_empty(),
+        "co-deleting the owner clears the veto"
+    );
+
+    // Pre-existing write-only field: no read edge to kill, nothing to attribute.
+    let m = model(vec![("default", vec![mk(false)])]);
+    assert!(
+        m.deletion_unmasks(&RemovalSet::new(["alpha::reader"]), &newly)
+            .is_empty(),
+        "a field that was never read is not this deletion's doing"
+    );
+}
+
+/// The `PasswordData::is_empty` case: deleting a pub `is_empty` out from under
+/// a surviving pub `len(&self)` unmasks clippy `len_without_is_empty` on the
+/// survivor — vetoed. Deleting the pair together is fine.
+#[test]
+fn deletion_unmask_flags_is_empty_leaving_len() {
+    let mk = || {
+        frag(
+            "alpha",
+            vec![
+                item(&["alpha", "List"], "K_L", "struct", Some("mod")),
+                method(&["alpha", "List", "len"], "K_LEN", Some("K_L"), "ref", None),
+                method(
+                    &["alpha", "List", "is_empty"],
+                    "K_IE",
+                    Some("K_L"),
+                    "ref",
+                    None,
+                ),
+            ],
+            vec![edge(&["alpha", "keeper"], &["alpha", "List"], "K_L", false)],
+        )
+    };
+    let one = vec!["alpha::List::is_empty".to_string()];
+    let m = model(vec![("default", vec![mk()])]);
+    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::List::is_empty"]), &one);
+    assert!(
+        matches!(
+            unmasks.get("alpha::List::is_empty"),
+            Some(DeletionUnmask::LenWithoutIsEmpty { owner }) if owner == "alpha::List"
+        ),
+        "deleting is_empty alone is vetoed: {unmasks:?}"
+    );
+
+    let both = vec![
+        "alpha::List::is_empty".to_string(),
+        "alpha::List::len".to_string(),
+    ];
+    let m = model(vec![("default", vec![mk()])]);
+    assert!(
+        m.deletion_unmasks(
+            &RemovalSet::new(["alpha::List::is_empty", "alpha::List::len"]),
+            &both
+        )
+        .is_empty(),
+        "deleting the pair together leaves no survivor to fire on"
+    );
 }
 
 // --- private collateral: the second-order dead code a cascade strands ---
@@ -2409,7 +2615,7 @@ fn dangling_imports_resolve_foreign_config() {
         ("default", vec![alpha_default]),
         ("benches", vec![bench]),
     ]);
-    let dangling = m.dangling_imports(&RemovalSet::new(["alpha::measured"]));
+    let dangling = m.dangling_imports(&RemovalSet::new(["alpha::measured"]), &Default::default());
     assert_eq!(dangling.len(), 1, "the foreign-config import must dangle");
     assert_eq!(dangling[0].elem.lo, 300);
 }
@@ -2447,7 +2653,7 @@ fn dangling_imports_resolve_cross_config() {
         ("default", vec![alpha_default]),
         ("tests", vec![alpha_tests, beta_tests]),
     ]);
-    let dangling = m.dangling_imports(&RemovalSet::new(["alpha::helper"]));
+    let dangling = m.dangling_imports(&RemovalSet::new(["alpha::helper"]), &Default::default());
     assert_eq!(
         dangling.len(),
         1,

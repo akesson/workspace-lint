@@ -1,0 +1,12 @@
+# The `--fix-auto-delete` twin of `generated_anchored_not_reported` (see the
+# comment there): the cascade rebuilds the finding set from the semantic model,
+# and must exclude generated-file anchors exactly like the plain run —
+# `gen_unused` / `gen_intra` never surface even as the cascade transitively
+# frees them; only the handwritten `real_unused` is reported (and deleted).
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+# Single-config matrix: this case is not about the engine matrix.
+[engine]
+configs = ["cargo build"]

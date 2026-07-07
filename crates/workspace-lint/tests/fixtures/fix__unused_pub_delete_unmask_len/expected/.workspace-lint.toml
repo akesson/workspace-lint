@@ -1,0 +1,14 @@
+# The deletion-unmask veto, clippy flavor (the LeaveDates
+# `PasswordData::is_empty` incident): `Buf::is_empty` is unused, but deleting
+# it out from under the surviving `Buf::len` unmasks clippy
+# `len_without_is_empty` — a `-D warnings` failure on the fixed tree. The veto
+# keeps it (downgraded, with the pair note) while `dead_helper` — no unmask
+# consequence — is still deleted in the same run.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

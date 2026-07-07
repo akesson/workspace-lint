@@ -31,6 +31,7 @@
 //! delete a live one.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use super::SemanticModel;
 use super::assembly::Assembly;
@@ -220,7 +221,18 @@ impl SemanticModel {
     ///   import may have users in cfg universes the engine never extracts,
     ///   and is the author's to clean, not ours. Glob imports themselves are
     ///   never flagged (no leaf span to excise; rustc will point at them).
-    pub fn dangling_imports(&self, removed: &RemovalSet) -> Vec<DanglingImport> {
+    ///
+    /// `generated_files` (workspace-relative) declares surgery's no-go zone:
+    /// an `include!`d file shares its includer's module scope, so a deletion
+    /// there can second-order-dangle a `use` *declared in the generated file*
+    /// — but editing it would be overwritten by the generator, so such decls
+    /// are skipped (first-order danglings can't arise: their targets are
+    /// excision-blocked).
+    pub fn dangling_imports(
+        &self,
+        removed: &RemovalSet,
+        generated_files: &std::collections::HashSet<PathBuf>,
+    ) -> Vec<DanglingImport> {
         use std::collections::HashSet;
         let usage = self.import_target_usage(removed);
         let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
@@ -235,6 +247,9 @@ impl SemanticModel {
                     else {
                         continue;
                     };
+                    if generated_files.contains(Path::new(decl.file.as_str())) {
+                        continue;
+                    }
                     // Out-of-workspace targets fall back to the display-path
                     // pseudo-identity `import_target_usage` tracks them under.
                     // They can never be first-order dangling (`removed` holds
@@ -389,26 +404,60 @@ impl SemanticModel {
     }
 
     /// Identities that must NOT be auto-deleted because a `use` naming them
-    /// can't be excised: the declaration lives in a **macro expansion**
-    /// (`decl_span.from_expansion`), so deleting the item would dangle an
-    /// import no edit can reach (E0432). The cascade excludes these from its
-    /// removable seeds up front, avoiding a mid-run un-delete ripple. (A
-    /// `pub use` re-export target is already guarded at the candidate filter.)
-    pub fn import_excision_blocked(&self) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
+    /// can't be excised — deleting the item would dangle an import no edit can
+    /// reach (E0432). Two causes, distinguished so the veto note can name the
+    /// right one: the declaration lives in a **macro expansion**
+    /// (`decl_span.from_expansion`), or in a **generated file** (surgery must
+    /// never edit a file its generator will overwrite). The cascade excludes
+    /// these from its removable seeds up front, avoiding a mid-run un-delete
+    /// ripple. (A `pub use` re-export target is already guarded at the
+    /// candidate filter.)
+    pub fn import_excision_blocked(
+        &self,
+        generated_files: &std::collections::HashSet<PathBuf>,
+    ) -> std::collections::HashMap<String, ExcisionBlock> {
+        let mut out = std::collections::HashMap::new();
         for (_, asm) in &self.configs {
             for frag in asm.archived_fragments() {
                 for e in frag.references.iter() {
                     if !e.import {
                         continue;
                     }
-                    let blocked = e.decl_span.as_ref().is_some_and(|d| d.from_expansion);
-                    if blocked && let Some(id) = asm.target_identity(e) {
-                        out.insert(id.to_string());
+                    let Some(decl) = e.decl_span.as_ref() else {
+                        continue;
+                    };
+                    let block = if decl.from_expansion {
+                        ExcisionBlock::MacroGenerated
+                    } else if generated_files.contains(Path::new(decl.file.as_str())) {
+                        ExcisionBlock::GeneratedFile
+                    } else {
+                        continue;
+                    };
+                    if let Some(id) = asm.target_identity(e) {
+                        // Macro-generated wins on conflict: it's the stricter
+                        // claim (no edit surface exists anywhere at all).
+                        out.entry(id.to_string())
+                            .and_modify(|b| {
+                                if block == ExcisionBlock::MacroGenerated {
+                                    *b = block;
+                                }
+                            })
+                            .or_insert(block);
                     }
                 }
             }
         }
         out
     }
+}
+
+/// Why an identity's `use` declarations put it beyond the deletion cascade —
+/// see [`SemanticModel::import_excision_blocked`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcisionBlock {
+    /// A `use` naming it is macro-generated: no edit surface exists.
+    MacroGenerated,
+    /// A `use` naming it lives in a generated (`include!`d) file the
+    /// generator owns.
+    GeneratedFile,
 }

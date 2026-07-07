@@ -23,10 +23,10 @@ mod store;
 mod union;
 
 pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
-pub use clippy_guard::NarrowUnmask;
+pub use clippy_guard::{DeletionUnmask, NarrowUnmask};
 pub use collateral::PrivateOrphan;
 pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
-pub use imports::DanglingImport;
+pub use imports::{DanglingImport, ExcisionBlock};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage};
 pub use removal::RemovalSet;

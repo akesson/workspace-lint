@@ -187,6 +187,25 @@ fn fix_unused_pub_cfg_veto() {
 }
 
 #[test]
+fn fix_unused_pub_delete_unmask_field() {
+    // The deletion-unmask veto, field flavor (LeaveDates 2026-07-07,
+    // `PopoverMenuClose.is_open`): unused `open_state` holds the LAST read of
+    // the surviving `Panel`'s private `open` field — deleting it trips rustc
+    // `dead_code` on the fixed tree, so the cascade vetoes it (MaybeIncorrect
+    // + the field note) while `dead_helper` is still deleted in the same run.
+    run_fix_fixture("fix__unused_pub_delete_unmask_field");
+}
+
+#[test]
+fn fix_unused_pub_delete_unmask_len() {
+    // The deletion-unmask veto, clippy flavor (LeaveDates 2026-07-07,
+    // `PasswordData::is_empty`): deleting unused `Buf::is_empty` out from
+    // under the surviving `Buf::len` unmasks clippy `len_without_is_empty` —
+    // vetoed, while `dead_helper` is still deleted in the same run.
+    run_fix_fixture("fix__unused_pub_delete_unmask_len");
+}
+
+#[test]
 fn fix_unused_pub_collateral() {
     // The cascade's second-order surfaces (LeaveDates 2026-07-05 follow-ups):
     // deleting `dead` strands the private `helper` → `inner` chain (rustc

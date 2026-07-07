@@ -1,0 +1,10 @@
+# The `--fix-auto-delete` cascade REPLACES the plain unused-pub findings, so it
+# must apply the same generated-file exclusion the plain run does (the binary's
+# stream-level drop runs before the cascade and can't help). Deleting
+# `real_unused` transitively frees `gen_intra`, but that identity anchors in
+# the generated file — no finding, no deletion. Clean git tree required for the
+# deletion to be MachineApplicable.
+args = ["--fix-auto-delete"]
+
+[git]
+init = true

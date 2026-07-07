@@ -625,6 +625,12 @@ impl Assembly {
         self.resolve_key(e).and_then(|k| self.defs.get(k))
     }
 
+    /// This config's stable key for a cross-config identity (a `::`-joined
+    /// display path), if the config defines it.
+    pub(super) fn key_for_identity(&self, id: &str) -> Option<&str> {
+        self.id_key.get(id).map(String::as_str)
+    }
+
     /// Is `id` (a `::`-joined display path) a module in this config? The
     /// scope-boundary test of the dangling-import check: a `use` statement's
     /// reach ends at its enclosing module, so the reference scope-chain walk

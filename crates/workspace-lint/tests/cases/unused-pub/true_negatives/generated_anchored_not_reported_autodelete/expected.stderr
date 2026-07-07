@@ -1,0 +1,21 @@
+workspace-lint --fix: applying 1 structural fix
+workspace-lint --fix: modified 1 file
+note: run `cargo fmt` to tidy the fixed files
+note: applied fixes can enable further tightenings — re-run until no fixes remain
+warning: pub fn `real_unused` in crate `demo` appears unused — consider removing
+ --> <TMP>/crates/demo/src/lib.rs:7:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+help: delete the unused item
+  |
+7 - pub fn real_unused() {
+  …
+  |
+help: if intentional, silence with:
+  |
+7 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[warn(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 1 warning (run `workspace-lint --fix` to apply 1 suggestion)
