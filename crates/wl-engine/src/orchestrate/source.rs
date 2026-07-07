@@ -35,11 +35,15 @@ impl ExtractorSource {
         Self::Vendored { cache_root }
     }
 
-    /// Ensure the extractor package exists on disk; returns its package dir
-    /// (the directory holding the extractor's `Cargo.toml`).
-    pub(super) fn materialize(&self) -> Result<PathBuf, EngineError> {
+    /// Ensure the extractor package exists on disk. Returns the package dir (the
+    /// directory holding the extractor's `Cargo.toml`) and whether the vendored
+    /// sources were already fresh: `true` when nothing had to be rewritten, so a
+    /// dylib previously built from them is current and the rebuild can be
+    /// skipped. `Repo` sources are live checkouts we never assume fresh, so it
+    /// always reports `false`.
+    pub(super) fn materialize(&self) -> Result<(PathBuf, bool), EngineError> {
         match self {
-            Self::Repo { package_dir } => Ok(package_dir.clone()),
+            Self::Repo { package_dir } => Ok((package_dir.clone(), false)),
             Self::Vendored { cache_root } => {
                 // Keyed by binary version: a new release re-materializes; a
                 // stale cache can never feed an old extractor to a new
@@ -53,11 +57,16 @@ impl ExtractorSource {
                 // Unix (SIGBUS in that driver mid-compile) and fails the
                 // link with a sharing violation on Windows.
                 let root = cache_root.join(env!("CARGO_PKG_VERSION"));
+                let mut sources_fresh = true;
                 for (rel, bytes) in VENDORED_FILES {
                     let dest = root.join(rel);
                     if std::fs::read(&dest).is_ok_and(|existing| existing.as_slice() == *bytes) {
                         continue;
                     }
+                    // A rewrite means the cached sources differed from this
+                    // binary's embedded copy — the previously built dylib (if
+                    // any) is stale, so the caller must rebuild.
+                    sources_fresh = false;
                     let write = |source| EngineError::Materialize {
                         dir: dest.clone(),
                         source,
@@ -67,7 +76,7 @@ impl ExtractorSource {
                     }
                     std::fs::write(&dest, bytes).map_err(write)?;
                 }
-                Ok(root.join("extractor"))
+                Ok((root.join("extractor"), sources_fresh))
             }
         }
     }
@@ -120,6 +129,14 @@ pub(super) fn build_dylib(package_dir: &Path) -> Result<PathBuf, EngineError> {
     find_dylib(&package_dir.join("target/debug"))
 }
 
+/// The extractor dylib already built in `package_dir`'s target dir, if present
+/// — a pure directory read: no cargo spawn and no mtime mutation (the dylib's
+/// mtime is the relink generation key). Returns the same path [`build_dylib`]
+/// produces, so a warm run can skip the rebuild and reuse it directly.
+pub(super) fn existing_dylib(package_dir: &Path) -> Option<PathBuf> {
+    find_dylib(&package_dir.join("target/debug")).ok()
+}
+
 /// Locate the toolchain-suffixed dylib dylint_linting's build script produced.
 /// Prefix and extension are per-OS (`libwl_extractor@….dylib`/`.so`,
 /// `wl_extractor@….dll`); the extension filter keeps Windows' sibling
@@ -152,7 +169,11 @@ mod tests {
         let source = ExtractorSource::Vendored {
             cache_root: tmp.path().to_path_buf(),
         };
-        let pkg = source.materialize().unwrap();
+        let (pkg, fresh) = source.materialize().unwrap();
+        assert!(
+            !fresh,
+            "first materialize into an empty cache writes every file"
+        );
         assert!(pkg.join("Cargo.toml").is_file());
         assert!(pkg.join("Cargo.lock").is_file());
         assert!(pkg.join("rust-toolchain.toml").is_file());
@@ -191,8 +212,13 @@ mod tests {
             .unwrap();
         f.set_modified(sentinel).unwrap();
         drop(f);
-        let again = source.materialize().unwrap();
+        let (again, fresh) = source.materialize().unwrap();
         assert_eq!(pkg, again);
+        assert!(
+            fresh,
+            "re-materialization of an unchanged cache must report sources fresh (nothing rewritten) \
+             — this is the signal that gates the warm-run dylib-build skip"
+        );
         assert_eq!(
             std::fs::metadata(&lib_rs).unwrap().modified().unwrap(),
             sentinel,

@@ -232,11 +232,26 @@ impl Engine {
         crate::timing::phase("preflight[rustup]", || {
             toolchain::preflight(Self::pinned_toolchain())
         })?;
-        let package_dir =
+        let (package_dir, sources_fresh) =
             crate::timing::phase("materialize[vendored src]", || self.source.materialize())?;
         let dylib = relink::RelinkedDylib::new(crate::timing::phase(
             "build_dylib[cargo build nightly]",
-            || source::build_dylib(&package_dir),
+            || {
+                // Warm-run fast path: when `materialize` rewrote nothing, the
+                // vendored sources on disk are byte-identical to this binary's
+                // embedded copy, so a dylib already built from them is current —
+                // reuse it instead of re-spawning `cargo build` just to
+                // reconfirm. `existing_dylib` is a pure directory read (no cargo
+                // spawn, no mtime touch — the mtime is the relink generation
+                // key). If the sources changed (a dev extractor edit) or no
+                // dylib is present yet, fall through and build. `Repo` sources
+                // are live, so `materialize` reports them never-fresh.
+                if sources_fresh && let Some(dylib) = source::existing_dylib(&package_dir) {
+                    Ok(dylib)
+                } else {
+                    source::build_dylib(&package_dir)
+                }
+            },
         )?);
 
         // One `cargo metadata` (with `resolve`) serves both the completeness
