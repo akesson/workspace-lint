@@ -141,6 +141,14 @@ pub(crate) enum CheckRule {
         /// Report only groups spanning at least two crates
         #[arg(long, default_value_t = false)]
         cross_crate_only: bool,
+        /// Minimum distinct verbatim identifiers a region must reference
+        /// (noise filter; 0 disables)
+        #[arg(long, default_value_t = DuplicateCodeConfig::default().min_distinct_anchors)]
+        min_distinct_anchors: usize,
+        /// Minimum fraction of the region's token stream not repeating an
+        /// earlier window of the same region (noise filter; 0.0 disables)
+        #[arg(long, default_value_t = DuplicateCodeConfig::default().min_non_repeating_ratio)]
+        min_non_repeating_ratio: f64,
         /// Workspace-relative globs to scan (default: every member source file)
         #[arg(long)]
         include: Vec<String>,
@@ -226,6 +234,8 @@ impl CheckRule {
                 exact_literals,
                 include_test_code,
                 cross_crate_only,
+                min_distinct_anchors,
+                min_non_repeating_ratio,
                 include,
                 exclude,
             } => Box::new(DuplicateCode::new(DuplicateCodeConfig::from_cli(
@@ -235,6 +245,8 @@ impl CheckRule {
                 exact_literals,
                 include_test_code,
                 cross_crate_only,
+                min_distinct_anchors,
+                min_non_repeating_ratio,
                 &include,
                 &exclude,
             ))),
@@ -342,6 +354,8 @@ mod tests {
             exact_literals: false,
             include_test_code: false,
             cross_crate_only: true,
+            min_distinct_anchors: 4,
+            min_non_repeating_ratio: 0.5,
             include: vec![],
             exclude: vec!["**/generated/**".into()],
         }

@@ -30,6 +30,7 @@ use wl_engine::fast::{FastModel, TargetKind};
 
 pub mod config;
 mod detect;
+mod encode;
 #[cfg(test)]
 mod tests;
 
@@ -75,6 +76,8 @@ fn options(config: &DuplicateCodeConfig) -> Options {
         ignore_literals: config.ignore_literals,
         ignore_test_code: config.ignore_test_code,
         cross_crate_only: config.cross_crate_only,
+        min_distinct_anchors: config.min_distinct_anchors,
+        min_non_repeating_ratio: config.min_non_repeating_ratio,
     }
 }
 

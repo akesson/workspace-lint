@@ -155,9 +155,25 @@ min-instances = 2        # copies needed before a group is reported
 ignore-literals = true   # `+ 1` vs `+ 5` still matches
 ignore-test-code = true  # skip tests/benches/examples and #[cfg(test)] items
 cross-crate-only = false # true = only groups spanning ≥ 2 crates
+min-distinct-anchors = 4      # noise filter: distinct verbatim names required
+min-non-repeating-ratio = 0.5 # noise filter: fraction of non-repeated windows
 include = []             # workspace-relative globs to scan (empty = all)
 exclude = []             # globs to skip (wins over include)
 ```
+
+Two noise filters (both on by default; zero disables) separate real
+copy-paste from *normal* duplication, following the filtering practice of
+token-based clone detectors (CCFinderX's RNR/TKS metrics):
+
+- `min-distinct-anchors` — a region must reference at least N distinct
+  *verbatim* names (called functions, types, fields, methods; keywords don't
+  count). A struct literal or a `HashMap` fill table carries plenty of
+  tokens but almost no distinct names — structure-only matches like these
+  are convergent boilerplate, not copies.
+- `min-non-repeating-ratio` — at least this fraction of the region's
+  normalized token stream must not repeat an earlier window of the *same*
+  region. One row stamped out N times (an insert table, assert stutter) is
+  self-repetition, not duplication worth extracting.
 
 To try it on any workspace without touching config, use the ad-hoc form (one
 flag per field; `--exact-literals` / `--include-test-code` invert the
@@ -172,10 +188,12 @@ workspace-lint check duplicate-code --min-lines 12 --exact-literals
 Known limits (deliberate): an edited statement mid-clone splits the match
 into the identical runs on either side of it — each reported only if it
 clears the thresholds on its own (near-miss "Type-3" detection is out of
-scope); `macro_rules!` bodies are not
-scanned; struct-pattern shorthand (`Point { x }`) erases the field name in
-the pattern position, which can over-match otherwise-identical functions
-destructuring different fields.
+scope); `macro_rules!` bodies are not scanned; and under `ignore-literals`,
+two match tables mapping the same enum's variants to *different* strings
+collapse to one structure and fire as a clone — the variant names are
+distinct anchors and distinct rows aren't self-repetition, so the noise
+filters deliberately don't catch this (tracked as a known false positive;
+set `ignore-literals = false` where it bites).
 
 ### freshness
 

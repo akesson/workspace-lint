@@ -31,6 +31,26 @@ pub struct DuplicateCodeConfig {
     /// "helper copy-pasted between crates" case.
     #[serde(default, rename = "cross-crate-only")]
     pub cross_crate_only: bool,
+    /// Minimum distinct *verbatim* identifiers a region must reference — the
+    /// names normalization keeps (callees, types, fields, methods; keywords
+    /// don't count). Filters "big but empty" boilerplate: a struct literal or
+    /// a `HashMap` fill table carries plenty of tokens but almost no distinct
+    /// names, and duplicating it is normal. 0 disables.
+    #[serde(
+        default = "default_min_distinct_anchors",
+        rename = "min-distinct-anchors"
+    )]
+    pub min_distinct_anchors: usize,
+    /// Minimum fraction (0.0–1.0) of a region's normalized token stream that
+    /// is NOT a repeat of an earlier window in the same region — the classic
+    /// RNR filter from token-based clone detection. Suppresses
+    /// one-row-stamped-N-times regions (insert tables, assert stutter).
+    /// 0.0 disables.
+    #[serde(
+        default = "default_min_non_repeating_ratio",
+        rename = "min-non-repeating-ratio"
+    )]
+    pub min_non_repeating_ratio: f64,
     /// Workspace-relative globs to scan. Empty (the default) means every
     /// member source file.
     #[serde(default)]
@@ -62,6 +82,8 @@ impl DuplicateCodeConfig {
         exact_literals: bool,
         include_test_code: bool,
         cross_crate_only: bool,
+        min_distinct_anchors: usize,
+        min_non_repeating_ratio: f64,
         include: &[String],
         exclude: &[String],
     ) -> Self {
@@ -72,6 +94,8 @@ impl DuplicateCodeConfig {
             ignore_literals: !exact_literals,
             ignore_test_code: !include_test_code,
             cross_crate_only,
+            min_distinct_anchors,
+            min_non_repeating_ratio,
             include: Globs(include.iter().map(|p| GlobPattern::from_cli(p)).collect()),
             exclude: Globs(exclude.iter().map(|p| GlobPattern::from_cli(p)).collect()),
         }
@@ -88,6 +112,14 @@ fn default_min_tokens() -> usize {
 
 fn default_min_instances() -> usize {
     2
+}
+
+fn default_min_distinct_anchors() -> usize {
+    4
+}
+
+fn default_min_non_repeating_ratio() -> f64 {
+    0.5
 }
 
 fn default_true() -> bool {
@@ -110,12 +142,16 @@ mod tests {
             false,
             false,
             false,
+            table.min_distinct_anchors,
+            table.min_non_repeating_ratio,
             &[],
             &[],
         );
         assert_eq!(cli.ignore_literals, table.ignore_literals);
         assert_eq!(cli.ignore_test_code, table.ignore_test_code);
         assert_eq!(cli.cross_crate_only, table.cross_crate_only);
+        assert_eq!(cli.min_distinct_anchors, table.min_distinct_anchors);
+        assert_eq!(cli.min_non_repeating_ratio, table.min_non_repeating_ratio);
         assert!(cli.include.0.is_empty() && cli.exclude.0.is_empty());
     }
 }

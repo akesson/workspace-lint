@@ -1,7 +1,0 @@
-[lints]
-default = "allow"
-duplicate-code = "deny"
-
-[duplicate-code]
-min-lines = 4
-min-tokens = 20

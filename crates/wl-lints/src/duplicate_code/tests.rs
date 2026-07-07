@@ -7,7 +7,10 @@ use std::path::PathBuf;
 
 use super::detect::{Options, ScanFile, find_clones};
 
-/// Low thresholds so small snippets qualify; individual tests override.
+/// Low thresholds so small snippets qualify; individual tests override. The
+/// two noise filters are OFF here so every matching-semantics test keeps
+/// pinning normalization/grouping behavior alone — the filters have their own
+/// dedicated tests at the bottom.
 fn opts() -> Options {
     Options {
         min_lines: 1,
@@ -16,6 +19,8 @@ fn opts() -> Options {
         ignore_literals: true,
         ignore_test_code: true,
         cross_crate_only: false,
+        min_distinct_anchors: 0,
+        min_non_repeating_ratio: 0.0,
     }
 }
 
@@ -353,6 +358,186 @@ fn trait_default_methods_are_candidates() {
     let a = "trait T {\n    fn run(&self, x: u32) -> u32 {\n        let y = x + 1;\n        y * self.base()\n    }\n    fn base(&self) -> u32;\n}";
     let b = "trait U {\n    fn run(&self, q: u32) -> u32 {\n        let r = q + 9;\n        r * self.base()\n    }\n    fn base(&self) -> u32;\n}";
     assert!(!clones_between(a, b, &opts()).is_empty());
+}
+
+#[test]
+fn anchor_floor_suppresses_name_poor_clones() {
+    // A fill-table pair: structurally identical, but the only distinct
+    // verbatim names are `Map`, `u32`, `create`, `insert` — exactly 4.
+    // Keywords (`fn`, `let`, `mut`) must not count, or the floor-5 assertion
+    // below would pass the pair.
+    let a = "fn fill(input: u32) -> Map {\n\
+             \x20   let mut m = create();\n\
+             \x20   m.insert(input, 1);\n\
+             \x20   m.insert(input, 2);\n\
+             \x20   m\n\
+             }";
+    let b = "fn build(seed: u32) -> Map {\n\
+             \x20   let mut t = create();\n\
+             \x20   t.insert(seed, 5);\n\
+             \x20   t.insert(seed, 6);\n\
+             \x20   t\n\
+             }";
+    let at = |floor: usize| Options {
+        min_distinct_anchors: floor,
+        ..opts()
+    };
+    assert!(!clones_between(a, b, &at(4)).is_empty(), "4 anchors ≥ 4");
+    assert!(clones_between(a, b, &at(5)).is_empty(), "4 anchors < 5");
+}
+
+#[test]
+fn repetition_ratio_suppresses_stamped_row_tables() {
+    // One row stamped out eight times: under `ignore-literals` every insert
+    // normalizes identically, so most of the stream repeats its own earlier
+    // windows. Self-repetition is not duplication worth extracting — the
+    // whole-fn, block, AND run candidates inside must all be filtered.
+    //
+    // Runs at the shipped size thresholds, not the toy ones: the ratio and
+    // size gates are designed to compose. A 2-row sub-run repeats too little
+    // to trip the ratio, but at 18 tokens it never clears `min-tokens` — only
+    // table-sized candidates surface, and those are exactly the repetitive
+    // ones.
+    let a = "fn seed_table() -> Table {\n\
+             \x20   let mut m = fresh();\n\
+             \x20   m.insert(\"a\", 1);\n\
+             \x20   m.insert(\"b\", 2);\n\
+             \x20   m.insert(\"c\", 3);\n\
+             \x20   m.insert(\"d\", 4);\n\
+             \x20   m.insert(\"e\", 5);\n\
+             \x20   m.insert(\"f\", 6);\n\
+             \x20   m.insert(\"g\", 7);\n\
+             \x20   m.insert(\"h\", 8);\n\
+             \x20   m\n\
+             }";
+    let b = "fn defaults() -> Table {\n\
+             \x20   let mut t = fresh();\n\
+             \x20   t.insert(\"s\", 9);\n\
+             \x20   t.insert(\"y\", 8);\n\
+             \x20   t.insert(\"z\", 7);\n\
+             \x20   t.insert(\"w\", 6);\n\
+             \x20   t.insert(\"v\", 5);\n\
+             \x20   t.insert(\"u\", 4);\n\
+             \x20   t.insert(\"q\", 3);\n\
+             \x20   t.insert(\"p\", 2);\n\
+             \x20   t\n\
+             }";
+    let sized = Options {
+        min_lines: 8,
+        min_tokens: 40,
+        ..opts()
+    };
+    let filtered = Options {
+        min_non_repeating_ratio: 0.5,
+        ..sized
+    };
+    assert!(!clones_between(a, b, &sized).is_empty(), "matches raw");
+    assert!(
+        clones_between(a, b, &filtered).is_empty(),
+        "filtered at 0.5"
+    );
+}
+
+#[test]
+fn anchor_rich_clone_passes_both_filters_at_defaults() {
+    // A realistic copied pipeline: seven distinct callees/types, no repeated
+    // windows. Must survive the shipped defaults (floor 4, ratio 0.5).
+    let a = "fn load(root: &Path) -> Config {\n\
+             \x20   let raw = read_source(root);\n\
+             \x20   let parsed = parse_layers(raw);\n\
+             \x20   let merged = merge_defaults(parsed);\n\
+             \x20   validate(&merged);\n\
+             \x20   finalize(merged)\n\
+             }";
+    let b = "fn boot(dir: &Path) -> Config {\n\
+             \x20   let text = read_source(dir);\n\
+             \x20   let layers = parse_layers(text);\n\
+             \x20   let full = merge_defaults(layers);\n\
+             \x20   validate(&full);\n\
+             \x20   finalize(full)\n\
+             }";
+    let defaults = Options {
+        min_distinct_anchors: 4,
+        min_non_repeating_ratio: 0.5,
+        ..opts()
+    };
+    assert!(!clones_between(a, b, &defaults).is_empty());
+}
+
+#[test]
+fn a_few_repeated_lines_do_not_disqualify_a_real_clone() {
+    // Genuine clone with ONE repeated statement (`refresh(cache);` twice):
+    // a small repeated fraction must stay under the 0.5 bar.
+    let a = "fn sync(cache: &mut Cache) -> Report {\n\
+             \x20   let snapshot = capture(cache);\n\
+             \x20   refresh(cache);\n\
+             \x20   let delta = diff_since(snapshot);\n\
+             \x20   apply_rules(&delta);\n\
+             \x20   refresh(cache);\n\
+             \x20   let summary = summarize(delta);\n\
+             \x20   render_report(summary)\n\
+             }";
+    let b = "fn pull(store: &mut Cache) -> Report {\n\
+             \x20   let seen = capture(store);\n\
+             \x20   refresh(store);\n\
+             \x20   let changed = diff_since(seen);\n\
+             \x20   apply_rules(&changed);\n\
+             \x20   refresh(store);\n\
+             \x20   let digest = summarize(changed);\n\
+             \x20   render_report(digest)\n\
+             }";
+    let filtered = Options {
+        min_non_repeating_ratio: 0.5,
+        ..opts()
+    };
+    assert!(!clones_between(a, b, &filtered).is_empty());
+}
+
+#[test]
+fn repetitive_statement_run_is_filtered_incrementally() {
+    // The stamped rows sit mid-body in fns that differ before and after, so
+    // only RUN candidates cover them — this pins the per-start incremental
+    // metric tracking, not just the one-shot fn/block path. `min-tokens` is
+    // realistic (a qualifying run is 7+ rows and deeply self-repeating);
+    // `min-lines` stays at 1 so the ratio — not the line gate — is what
+    // kills the runs.
+    let a = "fn f() {\n\
+             \x20   prologue_alpha();\n\
+             \x20   record(1);\n\
+             \x20   record(2);\n\
+             \x20   record(3);\n\
+             \x20   record(4);\n\
+             \x20   record(5);\n\
+             \x20   record(6);\n\
+             \x20   record(7);\n\
+             \x20   record(8);\n\
+             \x20   epilogue_alpha();\n\
+             }";
+    let b = "fn g() {\n\
+             \x20   prologue_beta();\n\
+             \x20   record(9);\n\
+             \x20   record(10);\n\
+             \x20   record(11);\n\
+             \x20   record(12);\n\
+             \x20   record(13);\n\
+             \x20   record(14);\n\
+             \x20   record(15);\n\
+             \x20   record(16);\n\
+             \x20   epilogue_beta();\n\
+             }";
+    let sized = Options {
+        min_tokens: 40,
+        ..opts()
+    };
+    let filtered = Options {
+        min_non_repeating_ratio: 0.5,
+        ..sized
+    };
+    assert!(!clones_between(a, b, &sized).is_empty(), "runs match raw");
+    assert!(
+        clones_between(a, b, &filtered).is_empty(),
+        "filtered at 0.5"
+    );
 }
 
 #[test]
