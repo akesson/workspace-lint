@@ -18,7 +18,7 @@ options. This file covers the internal architecture.
 
 ## Workspace layout
 
-Six crates under `crates/` (`members = ["crates/*"]`), plus the excluded
+Seven crates under `crates/` (`members = ["crates/*"]`), plus the excluded
 nightly `extractor/` package:
 
 - **`workspace-lint`** — the binary. The diagnostic pipeline, config loading,
@@ -35,11 +35,16 @@ nightly `extractor/` package:
   `SilenceAnchor` / `Suggestion`), the `DiagnosticBuilder`, and the three
   renderers (`human` / `json` / `github`). A leaf crate consumed by both
   `wl-lints` and the binary pipeline.
-- **`wl-engine`** — stable library: both tiers' data layer. `fast/` is the
-  build-free `FastModel` (cargo metadata, manifests, a lean syntactic module
-  walker); `semantic/` assembles extracted IR fragments into the
-  `SemanticModel` (cross-crate join on `DefPathHash`, cfg-matrix union);
-  `orchestrate/` vendors, builds, and drives the extractor dylib.
+- **`wl-engine`** — stable library: the rustc-backed tier. `semantic/`
+  assembles extracted IR fragments into the `SemanticModel` (cross-crate join
+  on `DefPathHash`, cfg-matrix union); `orchestrate/` parses the `[engine]
+  configs` cargo commands (`command.rs`), then vendors, builds, and drives the
+  extractor dylib. Re-exports `wl-fast` as `wl_engine::fast` (+ `timing`), so
+  consumers see one engine surface.
+- **`wl-fast`** — leaf crate: the build-free `FastModel` (cargo metadata,
+  manifests, a lean syntactic module walker) and the `WL_TIMING` `timing`
+  instrument. Extracted from `wl-engine` when the two tiers outgrew one
+  crate-size budget.
 - **`wl-ir`** — the serde-only IR contract between the extractor and the
   assembler (publishable; schema-versioned).
 - **`workspace-lint-marker`** — zero-dep crate exporting the `expect!` / `allow!`
@@ -164,11 +169,15 @@ Two phases, forced by rustc's per-crate compilation model:
   them to `~/.cache/workspace-lint/<binary-version>/`, builds the dylib once
   per toolchain, and runs one `dylint::run` (a wrapped `cargo check`) per
   `[engine] configs` entry with `--workspace` (a non-virtual workspace would
-  otherwise make members mere dependency units — unlintable when warm). Each
+  otherwise make members mere dependency units — unlintable when warm). An
+  entry is a *real cargo command* (`"cargo build"`, `"cargo test"`, `"cargo
+  build --target <triple> -p <pkg>"`) parsed by `orchestrate/command.rs`
+  into a normalized `ConfigSpec` (strict closed parser; the default matrix
+  is `["cargo build", "cargo test"]`). Each
   crate's `LateLintPass` writes an `IrFragment` (defs + resolved reference
   edges, `wl-ir` schema) to `target/workspace-lint/ir/<config>/` under a
-  canonical name (`<crate>[@bin][+test].json` — a package's bin may share the
-  lib's crate name; build scripts emit references-only `<pkg>@build.json`,
+  canonical name (`<crate>[@bin][+test].wlir` — a package's bin may share the
+  lib's crate name; build scripts emit references-only `<pkg>@build.wlir`,
   package-keyed since every one is crate `build_script_build`). Members
   compiled a second time as Build-mode host deps (another member's build.rs
   or a proc-macro consumer) are skipped — their `DefPathHash` generation

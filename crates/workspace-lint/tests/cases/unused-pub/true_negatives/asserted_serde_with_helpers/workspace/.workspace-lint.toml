@@ -8,3 +8,8 @@ unused-pub = "warn"
 # flipping them to intra-crate, which suppress-intra-crate then hides.
 [unused-pub]
 suppress-intra-crate = true
+
+# Pinned single-config matrix: this case is not about the engine matrix —
+# keep the fixture single-pass (the absent-table default is build+test).
+[engine]
+configs = ["cargo build"]

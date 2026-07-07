@@ -1,10 +1,11 @@
 [unused-pub]
 # `alpha::helper` is called ONLY from `beta`'s `#[cfg(test)]` code, through a
-# dev-dependency — a genuine cross-crate use. But only the engine's `--tests`
-# config compiles the referring test harness, and that harness links alpha's
-# PLAIN rlib, so the reference carries alpha's plain-generation `DefPathHash`.
-# Cargo freshness leaves that plain fragment only in the `default` config's IR
-# dir (the fresh plain lib is never re-extracted under `--tests`), so a
+# dev-dependency — a genuine cross-crate use. But only the engine's
+# `cargo test` config compiles the referring test harness, and that harness
+# links alpha's PLAIN rlib, so the reference carries alpha's plain-generation
+# `DefPathHash`. Cargo freshness leaves that plain fragment only in the
+# `default` config's IR dir (the fresh plain lib is never re-extracted under
+# `--tests`), so a
 # per-config-only join would drop the edge and flag `helper` "appears unused".
 # The cross-config global hash join resolves it — this fixture guards that
 # (pre-fix it emitted the false positive).
@@ -14,6 +15,6 @@ default = "allow"
 unused-pub = "warn"
 
 # The referring use lives under `cfg(test)`: the engine must compile the
-# `--tests` config to see beta's test harness reference alpha at all.
+# `cargo test` config to see beta's test harness reference alpha at all.
 [engine]
-configs = ["default", "--tests"]
+configs = ["cargo build", "cargo test"]

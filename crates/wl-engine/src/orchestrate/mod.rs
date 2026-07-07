@@ -10,53 +10,16 @@
 //! environment variable (the spawned driver inherits it) and the current
 //! directory (dylint checks the CWD workspace).
 
+mod command;
 mod guard;
 mod relink;
 mod source;
 mod toolchain;
 
+pub use command::{CommandError, ConfigSpec, FeatureSel, Kinds, parse_command};
 pub use source::ExtractorSource;
 
 use std::path::PathBuf;
-
-/// One cargo configuration to extract under (SPIKE §7: one run = one cfg; the
-/// flags are load-bearing because cfg-stripping happens before the driver sees
-/// `TyCtxt`). The `id` names the IR subdirectory; `cargo_args` are forwarded
-/// verbatim to `cargo check`.
-#[derive(Debug, Clone)]
-pub struct CfgSelector {
-    pub id: String,
-    pub cargo_args: Vec<String>,
-}
-
-impl CfgSelector {
-    /// The default configuration (plain `cargo check`).
-    pub fn default_cfg() -> Self {
-        Self {
-            id: "default".into(),
-            cargo_args: Vec::new(),
-        }
-    }
-
-    /// The `--tests` configuration: unit-test harnesses + integration tests,
-    /// keyed `<crate>[@bin]+test.wlir` by the extractor (`sess.opts.test`).
-    pub fn tests() -> Self {
-        Self {
-            id: "tests".into(),
-            cargo_args: vec!["--tests".into()],
-        }
-    }
-
-    /// The `--benches` configuration: bench targets. A default-harness bench
-    /// compiles in test mode (keyed `+test` like unit tests); a
-    /// `harness = false` bench compiles as a plain bin.
-    pub fn benches() -> Self {
-        Self {
-            id: "benches".into(),
-            cargo_args: vec!["--benches".into()],
-        }
-    }
-}
 
 /// What to extract: the target workspace, the config matrix (first entry is
 /// the primary config — it defines the candidate set downstream), an optional
@@ -65,7 +28,7 @@ impl CfgSelector {
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub workspace_root: PathBuf,
-    pub configs: Vec<CfgSelector>,
+    pub configs: Vec<ConfigSpec>,
     pub packages: Vec<String>,
     /// Root for the per-config fragment dirs (`<ir_root>/<config id>/`).
     /// Keep this path stable across runs — the warm-cache economics (SPIKE
@@ -283,7 +246,7 @@ impl Engine {
             })?;
             runs.push(ConfigRun {
                 id: selector.id.clone(),
-                cargo_args: selector.cargo_args.clone(),
+                cargo_args: selector.cargo_args(),
                 ir_dir,
             });
         }
@@ -361,7 +324,7 @@ impl Engine {
     /// re-run once.
     fn run_config(
         &self,
-        selector: &CfgSelector,
+        selector: &ConfigSpec,
         ir_dir: &std::path::Path,
         dylib: &relink::RelinkedDylib,
         packages: &[String],
@@ -382,7 +345,7 @@ impl Engine {
             // Derive the dylib path per invocation: after a bump, the re-run
             // must hand dylint the NEW generation path or the `DYLINT_LIBS`
             // env-dep channel never fires.
-            let opts = dylint_opts(&dylib.current(), packages, &selector.cargo_args, &log);
+            let opts = dylint_opts(&dylib.current(), packages, &selector.cargo_args(), &log);
             dylint::run(&opts).map_err(|source| {
                 if let Ok(captured) = std::fs::read_to_string(&log) {
                     eprint!("{captured}");
@@ -398,7 +361,7 @@ impl Engine {
         let Some(targets) = targets else {
             return Ok(()); // guard skipped: unmodeled target-selection flag
         };
-        let expected = targets.expected_fragments(&selector.cargo_args);
+        let expected = targets.expected_fragments(selector.kinds);
         // A complete whole-workspace run must produce *exactly* `expected` —
         // anything else in the dir is a leftover from a renamed crate, a
         // removed target, or an older binary's fragment naming, and the loader

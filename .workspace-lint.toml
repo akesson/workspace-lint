@@ -53,9 +53,10 @@ glob = "crates/*"
 # The binary used to be the binding crate and grew past 6k as lints piled up;
 # it was split into `wl-lints` (every lint impl) and `wl-diagnostic` (the
 # diagnostic vocabulary + renderers), leaving the binary as just the pipeline +
-# config + registry (~2.1k). `wl-lints` (~4.0k, at the ceiling) and
-# `wl-engine` (~3.1k) are the largest crates, so
-# the ceiling sits at 4000 — enough headroom for a modest addition anywhere,
+# config + registry (~2.1k). `wl-engine` tripped the ceiling next (the
+# commands-as-configs parser pushed it past 4k) and shed its build-free tier
+# into `wl-fast`; `wl-lints` (~4.0k after `duplicate-code`) now sits at the
+# ceiling. It stays at 4000: enough headroom for a modest addition anywhere,
 # tight enough that the next real growth spurt trips it and prompts the next
 # extraction rather than a higher ceiling.
 max-code-lines = 4000
@@ -73,13 +74,15 @@ max-code-lines = 4000
 # was needed.
 [duplicate-code]
 
-# The rustc engine's config matrix (one `cargo check` compile per entry; the
-# verdict unions across them). `--tests` is load-bearing for `unused-deps`:
-# dev-dependencies are judged only when a test target actually compiles —
-# without it they'd be silently skipped, weaker than the syn backend this
-# replaced. It also retires test-only `unused-pub` leads once that lint ports.
+# The rustc engine's config matrix: the real cargo commands this repo runs
+# (one `cargo check`-fidelity compile per entry; the verdict unions across
+# them). `cargo test` is load-bearing for `unused-deps`: dev-dependencies are
+# judged only when a test target actually compiles — without it they'd be
+# silently skipped, weaker than the syn backend this replaced. It also retires
+# test-only `unused-pub` leads. (This matches the default matrix; declared
+# explicitly as living documentation.)
 [engine]
-configs = ["default", "--tests"]
+configs = ["cargo build", "cargo test"]
 
 # `unused-deps` `ignore` is scoped per-crate (a worked example of the
 # `[crates.<name>]` tier): these deps are unused only in the `workspace-lint`

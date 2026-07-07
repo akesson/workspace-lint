@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::EngineConfig;
+use super::{EngineConfig, Kinds};
 
 /// The linted targets of the selected packages, from cargo metadata — the
 /// config-independent half of the expected-fragment computation.
@@ -47,45 +47,24 @@ pub(super) struct TargetSet {
 impl TargetSet {
     /// Compute the target set from an already-read `cargo metadata` and a
     /// package selection. Returns `None` (guard skipped, with a warning) when
-    /// any config carries a target-selection flag we don't model, so the guard
-    /// never fires spuriously.
+    /// any config compiles a target-kind universe we don't model, so the guard
+    /// never fires spuriously. The command parser already rejects every other
+    /// unmodelable target-selection flag (`--lib`, `--all-targets`, …) at the
+    /// config surface, so kind is the only axis left to check here.
     pub(super) fn discover(
         md: &cargo_metadata::Metadata,
         packages: &[String],
         cfg: &EngineConfig,
     ) -> Option<Self> {
-        // Flags that change which *targets* compile, beyond the `--tests` we
-        // model. (Feature flags — `--features`, `--all-features`,
-        // `--no-default-features` — change cfg/content, not the target set.)
-        // `--benches` stays unmodeled: a bench fragment's `+test` suffix
-        // depends on the target's `harness` flag, which cargo_metadata 0.23
-        // no longer exposes — the guard skips (with a warning) rather than
-        // guess wrong and force spurious re-lints.
-        const UNMODELED: &[&str] = &[
-            "--lib",
-            "--bins",
-            "--bin",
-            "--examples",
-            "--example",
-            "--benches",
-            "--bench",
-            "--test",
-            "--all-targets",
-            "--doc",
-            "-p",
-            "--package",
-            "--workspace",
-            "--exclude",
-        ];
+        // `Benches` stays unmodeled: a bench fragment's `+test` suffix depends
+        // on the target's `harness` flag, which cargo_metadata 0.23 no longer
+        // exposes — the guard skips (with a warning) rather than guess wrong
+        // and force spurious re-lints.
         for selector in &cfg.configs {
-            if let Some(flag) = selector
-                .cargo_args
-                .iter()
-                .find(|a| UNMODELED.contains(&a.as_str()))
-            {
+            if selector.kinds == Kinds::Benches {
                 eprintln!(
-                    "wl-engine: completeness guard skipped — unmodeled target-selection flag \
-                     `{flag}` in config `{}`",
+                    "wl-engine: completeness guard skipped — bench harness kinds aren't \
+                     modeled (config `{}`)",
                     selector.id
                 );
                 return None;
@@ -158,10 +137,9 @@ impl TargetSet {
     /// manifest `test` flag, so a `test = false` target never compiles in
     /// test mode (its cross-crate uses are still credited — the assembler's
     /// foreign-reach channel covers configs that lack the defining crate).
-    pub(super) fn expected_fragments(&self, cargo_args: &[String]) -> BTreeSet<String> {
-        let tests = cargo_args.iter().any(|a| a == "--tests");
+    pub(super) fn expected_fragments(&self, kinds: Kinds) -> BTreeSet<String> {
         let mut expected = BTreeSet::new();
-        if tests {
+        if kinds == Kinds::Tests {
             for name in self.harnessed.iter().chain(&self.test_targets) {
                 expected.insert(format!("{name}+test.wlir"));
             }
@@ -213,7 +191,7 @@ pub(super) fn missing_build_fragments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrate::CfgSelector;
+    use crate::orchestrate::ConfigSpec;
 
     fn repo_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -233,7 +211,7 @@ mod tests {
             .unwrap()
     }
 
-    fn engine_cfg(configs: Vec<CfgSelector>) -> EngineConfig {
+    fn engine_cfg(configs: Vec<ConfigSpec>) -> EngineConfig {
         EngineConfig {
             workspace_root: repo_root(),
             configs,
@@ -246,10 +224,10 @@ mod tests {
     /// network): the default config expects one fragment per member crate.
     #[test]
     fn expected_set_matches_this_workspace() {
-        let cfg = engine_cfg(vec![CfgSelector::default_cfg(), CfgSelector::tests()]);
+        let cfg = engine_cfg(vec![ConfigSpec::host_default(), ConfigSpec::host_tests()]);
         let set = TargetSet::discover(&repo_metadata(), &[], &cfg).unwrap();
 
-        let default = set.expected_fragments(&[]);
+        let default = set.expected_fragments(Kinds::Default);
         for frag in [
             "workspace_lint@bin.wlir",
             "workspace_lint_marker.wlir",
@@ -265,7 +243,7 @@ mod tests {
 
         // --tests: every compile unit flips to +test AND integration-test
         // targets appear (this repo has several under crates/workspace-lint).
-        let tests = set.expected_fragments(&["--tests".to_string()]);
+        let tests = set.expected_fragments(Kinds::Tests);
         assert!(tests.contains("workspace_lint@bin+test.wlir"));
         assert!(tests.contains("dogfood+test.wlir"), "{tests:?}");
         assert!(tests.iter().all(|f| f.ends_with("+test.wlir")));
@@ -306,7 +284,7 @@ mod tests {
     /// Scoped runs scope the build set with the same package filter.
     #[test]
     fn package_filter_scopes_build_fragments() {
-        let cfg = engine_cfg(vec![CfgSelector::default_cfg()]);
+        let cfg = engine_cfg(vec![ConfigSpec::host_default()]);
         let with_build =
             TargetSet::discover(&repo_metadata(), &["wl-engine".to_string()], &cfg).unwrap();
         assert_eq!(with_build.build_fragments().len(), 1);
@@ -317,23 +295,22 @@ mod tests {
     /// A package filter narrows the expected set to that crate's targets.
     #[test]
     fn package_filter_narrows_expectations() {
-        let cfg = engine_cfg(vec![CfgSelector::default_cfg()]);
+        let cfg = engine_cfg(vec![ConfigSpec::host_default()]);
         let set = TargetSet::discover(&repo_metadata(), &["wl-ir".to_string()], &cfg).unwrap();
-        assert_eq!(set.expected_fragments(&[]).len(), 1);
-        assert!(set.expected_fragments(&[]).contains("wl_ir.wlir"));
+        assert_eq!(set.expected_fragments(Kinds::Default).len(), 1);
+        assert!(
+            set.expected_fragments(Kinds::Default)
+                .contains("wl_ir.wlir")
+        );
     }
 
-    /// An unmodeled target-selection flag anywhere in the matrix skips the
-    /// guard entirely rather than risking a spurious failure.
+    /// A bench-kind config anywhere in the matrix skips the guard entirely
+    /// (bench harness kinds aren't modeled) rather than risking a spurious
+    /// failure. Every other unmodelable flag is rejected by the command
+    /// parser before a spec exists.
     #[test]
-    fn unmodeled_flag_skips_guard() {
-        let cfg = engine_cfg(vec![
-            CfgSelector::default_cfg(),
-            CfgSelector {
-                id: "lib-only".into(),
-                cargo_args: vec!["--lib".into()],
-            },
-        ]);
+    fn bench_kind_skips_guard() {
+        let cfg = engine_cfg(vec![ConfigSpec::host_default(), ConfigSpec::host_benches()]);
         assert!(TargetSet::discover(&repo_metadata(), &[], &cfg).is_none());
     }
 
@@ -348,9 +325,9 @@ mod tests {
             test_targets: BTreeSet::new(),
             build_units: BTreeSet::new(),
         };
-        let default = set.expected_fragments(&[]);
+        let default = set.expected_fragments(Kinds::Default);
         assert!(default.contains("alpha.wlir") && default.contains("beta.wlir"));
-        let tests = set.expected_fragments(&["--tests".to_string()]);
+        let tests = set.expected_fragments(Kinds::Tests);
         assert_eq!(
             tests.iter().map(String::as_str).collect::<Vec<_>>(),
             ["beta+test.wlir"],

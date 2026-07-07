@@ -126,26 +126,30 @@ pub(super) fn audit(raw: &str, config_path: &str, config: &Config) -> Vec<Diagno
     out
 }
 
-/// `[engine] configs` entries must name a known cargo configuration — an
-/// unknown one would otherwise be silently skipped when the semantic tier
+/// `[engine] configs` entries must parse as supported cargo commands — a
+/// rejected one would otherwise be silently skipped when the semantic tier
 /// builds its extraction matrix (see [`super::EngineSection::selectors`]).
-/// Validated from the typed config (like the enabled-but-unconfigured check):
-/// an absent table defaults to `["default"]`, which is always clean.
+/// The parser's error text carries the entry-specific guidance (old-vocabulary
+/// mapping, unsupported-flag reasons, …). Validated from the typed config
+/// (like the enabled-but-unconfigured check): an absent table defaults to the
+/// build+test matrix, which is always clean.
 fn audit_engine_configs(config: &Config, config_path: &str, out: &mut Vec<Diagnostic>) {
     for entry in &config.engine.configs {
-        if super::EngineSection::selector_for(entry).is_some() {
+        let Err(err) = wl_engine::parse_command(entry) else {
             continue;
-        }
-        let mut d = at_file(
-            LintId::Config.id(),
-            format!("unknown engine config `{entry}` in `[engine] configs`"),
-            config_path,
+        };
+        out.push(
+            at_file(
+                LintId::Config.id(),
+                format!("invalid engine config `{entry}` in `[engine] configs`: {err}"),
+                config_path,
+            )
+            .help(
+                "an engine config is a real cargo command the project runs, e.g. `cargo build`, \
+                 `cargo test`, or `cargo build --target wasm32-unknown-unknown -p <pkg>`",
+            )
+            .build(),
         );
-        if let Some(sugg) = closest(entry, super::EngineSection::KNOWN) {
-            d = d.help(format!("did you mean `{sugg}`?"));
-        }
-        d = d.help("accepted configs: `default` (plain cargo check), `--tests`, and `--benches`");
-        out.push(d.build());
     }
 }
 
@@ -457,7 +461,7 @@ assume-all-public = false
 publish-hint-threshold = 3
 
 [engine]
-configs = ["default", "--tests"]
+configs = ["cargo build", "cargo test"]
 
 [crates.demo.lints]
 default = "warn"

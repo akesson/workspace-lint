@@ -226,8 +226,9 @@ when anything in its resolved dependency closure is referenced, so `clap`
 counts even though every symbol resolves into `clap_builder`) and
 rename-aware (`package = "…"` followed). Doc-fence code blocks and feature
 plumbing also credit a dep. Dev-dependencies are judged only when a
-`--tests` entry is in the [`[engine]` config matrix](#the-semantic-engine)
-— without one they are skipped, never guessed.
+test-compiling entry (`cargo test`) is in the
+[`[engine]` config matrix](#the-semantic-engine) — without one they are
+skipped, never guessed. The default matrix includes one.
 
 ```toml
 [unused-deps]
@@ -465,9 +466,10 @@ workspace-lint init
 
 Writes a commented starter `.workspace-lint.toml` in the current directory. It
 enables the batteries-included structural lints, escalates `centralized-deps` to
-`deny`, activates the engine matrix at `["default", "--tests"]` (so test-gated
-usage and dev-dependencies are judged — drop `"--tests"` for a single, faster
-pass), and includes ready-to-uncomment blocks for every policy lint.
+`deny`, declares the engine matrix at `["cargo build", "cargo test"]` (so
+test-gated usage and dev-dependencies are judged — drop `"cargo test"` for a
+single, faster pass), and includes ready-to-uncomment blocks for every policy
+lint.
 
 `init` must be run at the **workspace root**: the root `Cargo.toml` must declare
 a `[workspace]` table and the current directory must be that root (not a member
@@ -567,19 +569,38 @@ on the compiler's own resolution, in two phases:
 
 ### The config matrix
 
+Each entry is a **real cargo command the project runs** — the declared
+matrix *is* the support matrix, in the vocabulary you already use:
+
 ```toml
 [engine]
-# One `cargo check` per entry; verdicts union across them. The first entry
-# is primary. Accepted: "default" (plain check), "--tests", "--benches".
-configs = ["default", "--tests"]
+# One extraction pass per entry; verdicts union across them. The first
+# entry is primary. Absent table = ["cargo build", "cargo test"].
+configs = [
+    "cargo build",
+    "cargo nextest run",
+    "cargo build --target wasm32-unknown-unknown -p app",
+]
 ```
+
+Supported verbs: `build` / `check` / `clippy` (the plain lib+bins
+universe), `test` / `nextest run` (the test universe), `bench`. Supported
+flags: `--target`, `-p`/`--package`, `--features` / `--all-features` /
+`--no-default-features`, `--workspace`. The engine reproduces each
+command's compilation universe with a `cargo check`-fidelity pass — sound
+because check compiles the same units under the same cfgs; only codegen
+differs (`cargo nextest run` and `cargo test` normalize to one pass). The
+parser is deliberately strict: anything it doesn't positively recognize is
+a config error with guidance, never silently dropped — a swallowed flag
+would silently change which code the lints judge.
 
 `#[cfg]`-gated code exists only under the config that compiles it, so the
 matrix is what keeps test-gated usage from reading as dead: an item used
-only from `#[cfg(test)]` code is *used* under `--tests` and the union
-clears it. `--tests` is also what makes dev-dependencies judgeable at all.
-The output names which configs ran — code compiled under configs outside
-the matrix can still cause false positives, and the diagnostics say so.
+only from `#[cfg(test)]` code is *used* under `cargo test` and the union
+clears it. A test entry is also what makes dev-dependencies judgeable at
+all — which is why the default matrix includes one. The output names which
+configs ran — code compiled under configs outside the matrix can still
+cause false positives, and the diagnostics say so.
 
 ### Toolchain requirement
 

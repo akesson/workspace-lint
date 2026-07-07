@@ -16,4 +16,4 @@ default = "allow"
 unused-pub = "warn"
 
 [engine]
-configs = ["default", "--tests"]
+configs = ["cargo build", "cargo test"]

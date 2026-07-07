@@ -13,7 +13,7 @@
 //! One `#[test]` only: `Engine::extract` documents process-global effects
 //! (WL_IR_OUT + a scoped chdir), so it must not race a sibling test.
 
-use wl_engine::{CfgSelector, Engine, EngineConfig, ExtractorSource, SemanticModel};
+use wl_engine::{ConfigSpec, Engine, EngineConfig, ExtractorSource, SemanticModel};
 
 #[test]
 fn vendored_extract_this_repo() {
@@ -37,7 +37,7 @@ fn vendored_extract_this_repo() {
     let runs = engine
         .extract(&EngineConfig {
             workspace_root: repo_root.clone(),
-            configs: vec![CfgSelector::default_cfg()],
+            configs: vec![ConfigSpec::host_default()],
             // One small crate: e2e proves the flow, not the fan-out (the
             // whole-workspace path is exercised daily by spike.yml + scripts).
             packages: vec!["wl-ir".into()],

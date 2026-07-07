@@ -102,7 +102,7 @@ fn corpus_full_tier_subset() {
 [unused-pub]\n\
 \n\
 [engine]\n\
-configs = [\"default\"]\n\
+configs = [\"cargo build\"]\n\
 \n\
 [lints]\n\
 default = \"allow\"\n\

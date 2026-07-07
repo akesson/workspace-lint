@@ -89,11 +89,14 @@ centralized-deps = "deny"
 # from = ["domain-*"]
 # deny = ["*::infra::*"]
 
-# --- Semantic engine matrix: one `cargo check` per entry, verdicts unioned.
-# "--tests" also judges test-gated usage and dev-dependencies; it costs a second
-# compile pass, so drop it to just "default" if you want a single, faster run.
+# --- Semantic engine matrix: the real cargo commands this project runs — the
+# declared matrix IS the support matrix (one `cargo check`-fidelity compile per
+# entry, verdicts unioned). "cargo test" also judges test-gated usage and
+# dev-dependencies; it costs a second compile pass, so drop it to just
+# "cargo build" if you want a single, faster run. Cross-compiled projects add
+# their target commands, e.g. "cargo build --target wasm32-unknown-unknown -p <pkg>".
 [engine]
-configs = ["default", "--tests"]
+configs = ["cargo build", "cargo test"]
 "#;
 
 /// Scaffold [`DEFAULT_CONFIG`] into the cwd. See the module docs for the guard

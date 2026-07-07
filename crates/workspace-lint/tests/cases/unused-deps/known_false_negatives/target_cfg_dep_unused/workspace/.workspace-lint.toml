@@ -3,3 +3,8 @@
 [lints]
 default = "allow"
 unused-deps = "deny"
+
+# Pinned single-config matrix: this case is not about the engine matrix —
+# keep the fixture single-pass (the absent-table default is build+test).
+[engine]
+configs = ["cargo build"]

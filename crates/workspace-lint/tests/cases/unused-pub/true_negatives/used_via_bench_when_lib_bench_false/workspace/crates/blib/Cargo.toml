@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 # The differentiator vs `used_via_glob_import_in_bench`: with `bench = false`
-# the `--benches` config does NOT build the lib as a benchmark (a cfg(test)-on
+# the `cargo bench` config does NOT build the lib as a benchmark (a cfg(test)-on
 # unit), so the benches IR dir holds no `blib` fragment at all — the bench's
 # references can only be credited through the engine's foreign-reach channel.
 [lib]

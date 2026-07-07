@@ -562,7 +562,7 @@ fn run_single_check(
 /// failure aborts the run before the fast-tier lints report. Reordering so
 /// fast lints still report their findings first is deferred to the first
 /// semantic-lint port, where the behavior becomes testable.
-fn load_semantic_model(configs: Vec<wl_engine::CfgSelector>) -> wl_engine::SemanticModel {
+fn load_semantic_model(configs: Vec<wl_engine::ConfigSpec>) -> wl_engine::SemanticModel {
     let root = std::path::absolute(".")
         .unwrap_or_else(|e| util::fail(format!("failed to resolve the workspace root: {e}")));
     let engine = wl_engine::Engine::new(wl_engine::ExtractorSource::vendored());

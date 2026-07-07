@@ -67,15 +67,17 @@ pub(crate) struct Config {
     pub engine: EngineSection,
 }
 
-/// The `[engine]` table: the cargo-configuration matrix the full (rustc-backed)
+/// The `[engine]` table: the cargo-command matrix the full (rustc-backed)
 /// tier extracts under. Only consulted when a semantic lint is enabled (or the
 /// hidden `--engine-dump` runs) — a plain run never touches the engine.
 #[derive(Deserialize, Clone)]
 pub(crate) struct EngineSection {
-    /// Config selectors, first entry = primary (it defines the candidate set
-    /// downstream). Accepted entries: `"default"` (plain `cargo check`) and
-    /// `"--tests"` (alias `"tests"`). Unknown entries draw a `config`
-    /// diagnostic from the audit and are skipped by [`Self::selectors`].
+    /// The real cargo commands the project runs — the declared matrix *is*
+    /// the support matrix (`"cargo build"`, `"cargo test"`,
+    /// `"cargo build --target wasm32-unknown-unknown -p app"`, …). First
+    /// entry = primary (it defines the candidate set downstream). Entries the
+    /// command parser rejects draw a `config` diagnostic from the audit and
+    /// are skipped by [`Self::selectors`].
     #[serde(default = "default_engine_configs")]
     pub configs: Vec<String>,
 }
@@ -88,40 +90,34 @@ impl Default for EngineSection {
     }
 }
 
+/// Fidelity by default: an absent `[engine]` table judges both the plain
+/// build and the test universe — an item used only from `#[cfg(test)]` code
+/// is *used*, and a delete run can't break the test suite it never saw.
 fn default_engine_configs() -> Vec<String> {
-    vec!["default".into()]
+    vec!["cargo build".into(), "cargo test".into()]
 }
 
 impl EngineSection {
-    /// Every accepted `configs` entry spelling (`tests` aliases `--tests`).
-    /// The audit's "did you mean …?" candidates; kept next to
-    /// [`Self::selector_for`] so the two can't drift.
-    pub(crate) const KNOWN: &'static [&'static str] =
-        &["default", "--tests", "tests", "--benches", "benches"];
-
-    /// The engine selector one entry maps to; `None` for an unknown entry
-    /// (already reported by the config audit).
-    pub(crate) fn selector_for(entry: &str) -> Option<wl_engine::CfgSelector> {
-        match entry {
-            "default" => Some(wl_engine::CfgSelector::default_cfg()),
-            "--tests" | "tests" => Some(wl_engine::CfgSelector::tests()),
-            "--benches" | "benches" => Some(wl_engine::CfgSelector::benches()),
-            _ => None,
+    /// The extraction matrix, in declaration order (first = primary),
+    /// deduplicated by normalized universe (`cargo test` ≡ `cargo nextest
+    /// run`). Unparseable entries are skipped (the audit already flagged
+    /// them). An empty result — an explicit `configs = []` or all entries
+    /// invalid — falls back to the default matrix so extraction always has a
+    /// primary.
+    pub(crate) fn selectors(&self) -> Vec<wl_engine::ConfigSpec> {
+        let mut out: Vec<wl_engine::ConfigSpec> = Vec::new();
+        for entry in &self.configs {
+            if let Ok(spec) = wl_engine::parse_command(entry)
+                && !out.iter().any(|s| s.id == spec.id)
+            {
+                out.push(spec);
+            }
         }
-    }
-
-    /// The extraction matrix, in declaration order (first = primary). Unknown
-    /// entries are skipped (the audit already flagged them). An empty result —
-    /// an explicit `configs = []` or all entries unknown — falls back to the
-    /// default config so extraction always has a primary.
-    pub(crate) fn selectors(&self) -> Vec<wl_engine::CfgSelector> {
-        let mut out: Vec<wl_engine::CfgSelector> = self
-            .configs
-            .iter()
-            .filter_map(|e| Self::selector_for(e))
-            .collect();
         if out.is_empty() {
-            out.push(wl_engine::CfgSelector::default_cfg());
+            out = default_engine_configs()
+                .iter()
+                .map(|e| wl_engine::parse_command(e).expect("default matrix parses"))
+                .collect();
         }
         out
     }
