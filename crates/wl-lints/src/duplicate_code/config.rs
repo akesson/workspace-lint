@@ -51,6 +51,15 @@ pub struct DuplicateCodeConfig {
         rename = "min-non-repeating-ratio"
     )]
     pub min_non_repeating_ratio: f64,
+    /// Maximum independent literal parameters extracting the group may need
+    /// (each distinct way the instances' literals co-vary is one parameter of
+    /// the unified fn). Groups needing more are data tables — match arms
+    /// mapping the same variants to different values — not copy-paste, and
+    /// are suppressed. A group carrying a drift violation (a literal breaking
+    /// an otherwise consistent mapping) is NEVER suppressed by this gate.
+    /// Only meaningful under `ignore-literals`; 0 disables.
+    #[serde(default = "default_max_parameters", rename = "max-parameters")]
+    pub max_parameters: usize,
     /// Workspace-relative globs to scan. Empty (the default) means every
     /// member source file.
     #[serde(default)]
@@ -84,6 +93,7 @@ impl DuplicateCodeConfig {
         cross_crate_only: bool,
         min_distinct_anchors: usize,
         min_non_repeating_ratio: f64,
+        max_parameters: usize,
         include: &[String],
         exclude: &[String],
     ) -> Self {
@@ -96,6 +106,7 @@ impl DuplicateCodeConfig {
             cross_crate_only,
             min_distinct_anchors,
             min_non_repeating_ratio,
+            max_parameters,
             include: Globs(include.iter().map(|p| GlobPattern::from_cli(p)).collect()),
             exclude: Globs(exclude.iter().map(|p| GlobPattern::from_cli(p)).collect()),
         }
@@ -122,6 +133,10 @@ fn default_min_non_repeating_ratio() -> f64 {
     0.5
 }
 
+fn default_max_parameters() -> usize {
+    3
+}
+
 fn default_true() -> bool {
     true
 }
@@ -144,6 +159,7 @@ mod tests {
             false,
             table.min_distinct_anchors,
             table.min_non_repeating_ratio,
+            table.max_parameters,
             &[],
             &[],
         );
@@ -152,6 +168,7 @@ mod tests {
         assert_eq!(cli.cross_crate_only, table.cross_crate_only);
         assert_eq!(cli.min_distinct_anchors, table.min_distinct_anchors);
         assert_eq!(cli.min_non_repeating_ratio, table.min_non_repeating_ratio);
+        assert_eq!(cli.max_parameters, table.max_parameters);
         assert!(cli.include.0.is_empty() && cli.exclude.0.is_empty());
     }
 }

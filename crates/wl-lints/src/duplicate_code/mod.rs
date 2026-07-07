@@ -27,8 +27,10 @@ use wl_engine::fast::{FastModel, TargetKind};
 use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 pub mod config;
+mod measure;
 
 pub use config::DuplicateCodeConfig;
+pub use measure::{GroupMeasure, MeasureReport, measure};
 
 use wl_engine::fast::clones::{CloneGroup, Options, Region, ScanFile, find_clones};
 

@@ -40,6 +40,12 @@
 //!   so two such tables matching only because their values collapsed to
 //!   `#str` still fire — the literal-collapse known false positive.
 //!
+//! After grouping, [`divergence`] reads back the concrete literals detection
+//! abstracted away (`capture` slices them from source spans — no re-scan)
+//! and classifies what they say about each group: extraction parameter
+//! count, literal-identical instances, or copy-paste drift. See its module
+//! docs for the taxonomy and guards.
+//!
 //! Known approximations (all lean toward *missing* a clone or the
 //! `known_false_positives` bucket, never toward unsoundness):
 //! - "local" is judged by a flat per-candidate binding set (every `PatIdent`
@@ -65,11 +71,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use proc_macro2::TokenStream;
+use proc_macro2::{LineColumn, TokenStream};
 use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
+mod capture;
+pub mod divergence;
 mod encode;
 #[cfg(test)]
 mod tests;
@@ -115,7 +123,24 @@ pub struct Options {
     pub min_non_repeating_ratio: f64,
 }
 
-/// One occurrence of a clone: a line range in a file.
+/// Which candidate shape produced a region. Groups are kind-homogeneous:
+/// a fn candidate carries signature tokens and a block candidate carries its
+/// braces, so the three shapes never share a fingerprint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CandidateKind {
+    /// A whole fn (signature + body).
+    Fn,
+    /// A braced block.
+    Block,
+    /// A run of ≥2 consecutive statements.
+    Run,
+}
+
+/// One occurrence of a clone: an exact token range in a file. Lines are what
+/// thresholds and diagnostics use; the columns pin the range to its first and
+/// last token so the divergence pass can slice the file's literals without
+/// catching neighbours sharing a line (`Some(3) => {` has tokens left of the
+/// block candidate that starts at its `{`).
 #[derive(Clone, Debug)]
 pub struct Region {
     /// Workspace-relative path (from [`ScanFile::rel_path`]).
@@ -126,6 +151,12 @@ pub struct Region {
     pub line_start: u32,
     /// Last source line of the region (1-based, inclusive).
     pub line_end: u32,
+    /// Column of the region's first token (0-based, proc-macro2 convention).
+    pub col_start: u32,
+    /// Column just past the region's last token on `line_end`.
+    pub col_end: u32,
+    /// The candidate shape this occurrence was found as.
+    pub kind: CandidateKind,
 }
 
 /// A set of structurally identical regions (≥ `min_instances`), sorted by
@@ -255,17 +286,22 @@ impl<'a> Collect<'a> {
         let mut tokens = sig.to_token_stream();
         tokens.extend(block.to_token_stream());
 
-        let line_start = sig.span().start().line as u32;
-        let line_end = block.span().end().line as u32;
-        self.push_candidate(tokens, &binds, line_start, line_end);
+        let start = sig.span().start();
+        let end = block.span().end();
+        self.push_candidate(tokens, &binds, start, end, CandidateKind::Fn);
     }
 
     fn candidate_block(&mut self, block: &syn::Block) {
         let mut binds = HashSet::new();
         collect_binds(block, &mut binds);
-        let line_start = block.span().start().line as u32;
-        let line_end = block.span().end().line as u32;
-        self.push_candidate(block.to_token_stream(), &binds, line_start, line_end);
+        let span = block.span();
+        self.push_candidate(
+            block.to_token_stream(),
+            &binds,
+            span.start(),
+            span.end(),
+            CandidateKind::Block,
+        );
     }
 
     /// Record a candidate for every run of ≥2 consecutive statements. This is
@@ -310,11 +346,11 @@ impl<'a> Collect<'a> {
                 names.iter().map(|n| self.interner.intern(n)).collect()
             })
             .collect();
-        let spans: Vec<(u32, u32)> = stmts
+        let spans: Vec<(LineColumn, LineColumn)> = stmts
             .iter()
             .map(|s| {
                 let span = s.span();
-                (span.start().line as u32, span.end().line as u32)
+                (span.start(), span.end())
             })
             .collect();
 
@@ -327,7 +363,7 @@ impl<'a> Collect<'a> {
                 self.opts.min_distinct_anchors,
                 self.opts.min_non_repeating_ratio > 0.0,
             );
-            let line_start = spans[start].0;
+            let run_start = spans[start].0;
             for end in start..stmts.len() {
                 binds.extend(&stmt_binds[end]);
                 for &t in &flat[end] {
@@ -336,11 +372,11 @@ impl<'a> Collect<'a> {
                 if end == start {
                     continue; // a single statement is not a run
                 }
-                let line_end = spans[end].1;
-                if line_end.saturating_sub(line_start) + 1 < self.opts.min_lines {
+                let run_end = spans[end].1;
+                if lines_of(run_start, run_end) < self.opts.min_lines {
                     continue;
                 }
-                self.push_region(enc.snapshot(), line_start, line_end);
+                self.push_region(enc.snapshot(), run_start, run_end, CandidateKind::Run);
             }
         }
     }
@@ -349,10 +385,11 @@ impl<'a> Collect<'a> {
         &mut self,
         tokens: TokenStream,
         binds: &HashSet<String>,
-        line_start: u32,
-        line_end: u32,
+        start: LineColumn,
+        end: LineColumn,
+        kind: CandidateKind,
     ) {
-        if line_end.saturating_sub(line_start) + 1 < self.opts.min_lines {
+        if lines_of(start, end) < self.opts.min_lines {
             return;
         }
         let binds: Vec<u32> = binds.iter().map(|n| self.interner.intern(n)).collect();
@@ -373,10 +410,16 @@ impl<'a> Collect<'a> {
         for &t in &flat {
             enc.feed(t, &binds, &mut rename);
         }
-        self.push_region(enc.snapshot(), line_start, line_end);
+        self.push_region(enc.snapshot(), start, end, kind);
     }
 
-    fn push_region(&mut self, m: Measured, line_start: u32, line_end: u32) {
+    fn push_region(
+        &mut self,
+        m: Measured,
+        start: LineColumn,
+        end: LineColumn,
+        kind: CandidateKind,
+    ) {
         if m.tokens < self.opts.min_tokens
             || m.distinct_anchors < self.opts.min_distinct_anchors
             || m.non_repeating < self.opts.min_non_repeating_ratio
@@ -389,8 +432,11 @@ impl<'a> Collect<'a> {
             region: Region {
                 file: self.file.rel_path.clone(),
                 krate: self.file.krate.clone(),
-                line_start,
-                line_end,
+                line_start: start.line as u32,
+                line_end: end.line as u32,
+                col_start: start.column as u32,
+                col_end: end.column as u32,
+                kind,
             },
         });
     }
@@ -442,6 +488,11 @@ impl<'a, 'ast> Visit<'ast> for Collect<'a> {
         self.candidate_stmt_runs(b);
         visit::visit_block(self, b);
     }
+}
+
+/// Source lines a `[start..=end]` token range spans.
+fn lines_of(start: LineColumn, end: LineColumn) -> u32 {
+    (end.line as u32).saturating_sub(start.line as u32) + 1
 }
 
 /// Collect every `PatIdent` binding name in a block's subtree — `let`, `for`,

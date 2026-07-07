@@ -149,6 +149,16 @@ pub(crate) enum CheckRule {
         /// earlier window of the same region (noise filter; 0.0 disables)
         #[arg(long, default_value_t = DuplicateCodeConfig::default().min_non_repeating_ratio)]
         min_non_repeating_ratio: f64,
+        /// Maximum literal parameters extracting a group may need — groups
+        /// needing more are data tables and are suppressed (drift violations
+        /// always survive; 0 disables)
+        #[arg(long, default_value_t = DuplicateCodeConfig::default().max_parameters)]
+        max_parameters: usize,
+        /// Print a measure-only readout (per-group divergence, parameter
+        /// histogram, drift candidates) instead of diagnostics — the
+        /// threshold-tuning view; nothing is suppressed or leveled
+        #[arg(long, default_value_t = false)]
+        stats: bool,
         /// Workspace-relative globs to scan (default: every member source file)
         #[arg(long)]
         include: Vec<String>,
@@ -227,29 +237,10 @@ impl CheckRule {
                 max_code_lines,
                 include,
             } => Box::new(CrateSize::from_cli(glob, max_code_lines, include)),
-            CheckRule::DuplicateCode {
-                min_lines,
-                min_tokens,
-                min_instances,
-                exact_literals,
-                include_test_code,
-                cross_crate_only,
-                min_distinct_anchors,
-                min_non_repeating_ratio,
-                include,
-                exclude,
-            } => Box::new(DuplicateCode::new(DuplicateCodeConfig::from_cli(
-                min_lines,
-                min_tokens,
-                min_instances,
-                exact_literals,
-                include_test_code,
-                cross_crate_only,
-                min_distinct_anchors,
-                min_non_repeating_ratio,
-                &include,
-                &exclude,
-            ))),
+            CheckRule::DuplicateCode { .. } => Box::new(DuplicateCode::new(
+                self.duplicate_code_config()
+                    .expect("the DuplicateCode variant always resolves a config"),
+            )),
             CheckRule::Freshness { glob, depends_on } => {
                 Box::new(Freshness::from_cli(glob, depends_on))
             }
@@ -290,6 +281,50 @@ impl CheckRule {
                 exclude_paths,
                 *suppress_intra_crate,
             )),
+            _ => None,
+        }
+    }
+
+    /// The `DuplicateCodeConfig` a `check duplicate-code` invocation resolves
+    /// to; `None` for every other rule. Exposed separately from
+    /// [`Self::into_lint`] because the `--stats` path measures with the same
+    /// config instead of linting.
+    pub(crate) fn duplicate_code_config(&self) -> Option<DuplicateCodeConfig> {
+        match self {
+            CheckRule::DuplicateCode {
+                min_lines,
+                min_tokens,
+                min_instances,
+                exact_literals,
+                include_test_code,
+                cross_crate_only,
+                min_distinct_anchors,
+                min_non_repeating_ratio,
+                max_parameters,
+                stats: _,
+                include,
+                exclude,
+            } => Some(DuplicateCodeConfig::from_cli(
+                *min_lines,
+                *min_tokens,
+                *min_instances,
+                *exact_literals,
+                *include_test_code,
+                *cross_crate_only,
+                *min_distinct_anchors,
+                *min_non_repeating_ratio,
+                *max_parameters,
+                include,
+                exclude,
+            )),
+            _ => None,
+        }
+    }
+
+    /// `Some(config)` iff this invocation is `check duplicate-code --stats`.
+    pub(crate) fn duplicate_code_stats(&self) -> Option<DuplicateCodeConfig> {
+        match self {
+            CheckRule::DuplicateCode { stats: true, .. } => self.duplicate_code_config(),
             _ => None,
         }
     }
@@ -347,7 +382,7 @@ mod tests {
 
     #[test]
     fn into_lint_duplicate_code() {
-        let lint = CheckRule::DuplicateCode {
+        let rule = CheckRule::DuplicateCode {
             min_lines: 8,
             min_tokens: 40,
             min_instances: 2,
@@ -356,11 +391,38 @@ mod tests {
             cross_crate_only: true,
             min_distinct_anchors: 4,
             min_non_repeating_ratio: 0.5,
+            max_parameters: 3,
+            stats: false,
             include: vec![],
             exclude: vec!["**/generated/**".into()],
-        }
-        .into_lint();
+        };
+        assert!(
+            rule.duplicate_code_stats().is_none(),
+            "without --stats the invocation lints"
+        );
+        let lint = rule.into_lint();
         assert_eq!(lint.id(), LintId::DuplicateCode);
+    }
+
+    /// `--stats` resolves the same config the lint would run with.
+    #[test]
+    fn duplicate_code_stats_resolves_the_cli_config() {
+        let rule = CheckRule::DuplicateCode {
+            min_lines: 4,
+            min_tokens: 20,
+            min_instances: 2,
+            exact_literals: false,
+            include_test_code: false,
+            cross_crate_only: false,
+            min_distinct_anchors: 0,
+            min_non_repeating_ratio: 0.0,
+            max_parameters: 0,
+            stats: true,
+            include: vec![],
+            exclude: vec![],
+        };
+        let config = rule.duplicate_code_stats().expect("--stats resolves");
+        assert_eq!((config.min_lines, config.max_parameters), (4, 0));
     }
 
     /// Every runnable lint must have an ad-hoc `check <short>` subcommand —
