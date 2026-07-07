@@ -92,6 +92,12 @@ impl DepUsage {
                 };
                 let set = exercised.entry(owner.clone()).or_default();
                 for e in frag.references.iter() {
+                    // Trait-scope facts duplicate evidence the method-call
+                    // and import edges already carry — skip, like everywhere
+                    // outside the import model.
+                    if e.trait_scope {
+                        continue;
+                    }
                     if let Some(to) = e.to.first()
                         && to.as_str() != owner.as_str()
                     {

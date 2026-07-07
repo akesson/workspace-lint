@@ -30,6 +30,27 @@ fn dangling(src: &str, leaf: &str, stmt: &str) -> DanglingImport {
         decl,
         elem,
         reexport: false,
+        glob: false,
+    }
+}
+
+/// A glob `DanglingImport`: `stmt` is the whole `use m::*;` text (must occur
+/// once); `decl == elem` with the `glob` discriminator set, exactly as the
+/// engine emits it.
+fn dangling_glob(src: &str, stmt: &str) -> DanglingImport {
+    let slo = src.find(stmt).expect("stmt in src") as u32;
+    let decl = IrSpan {
+        file: "src/lib.rs".into(),
+        lo: slo,
+        hi: slo + stmt.len() as u32,
+        line: 1,
+        from_expansion: false,
+    };
+    DanglingImport {
+        elem: decl.clone(),
+        decl,
+        reexport: false,
+        glob: true,
     }
 }
 
@@ -171,6 +192,31 @@ fn macro_generated_and_reexport_imports_are_skipped() {
     // Neither is excisable → no deletions emitted, source untouched.
     let out = apply(src, vec![mac, rex]);
     assert_eq!(out, src);
+}
+
+#[test]
+fn glob_import_deletes_whole_statement() {
+    let src = "use dioxus::prelude::*;\nuse a::c;\n";
+    let out = apply(src, vec![dangling_glob(src, "use dioxus::prelude::*;")]);
+    assert_eq!(out, "use a::c;\n");
+}
+
+#[test]
+fn glob_import_takes_preceding_attribute_and_blank_line() {
+    let src = "#[cfg(feature = \"web\")]\nuse dioxus::prelude::*;\n\nfn keep() {}\n";
+    let out = apply(src, vec![dangling_glob(src, "use dioxus::prelude::*;")]);
+    assert_eq!(out, "fn keep() {}\n");
+}
+
+#[test]
+fn nested_list_glob_bails_to_residue() {
+    // A nested-list glob's decl span is the collapsed leaf (`inner::*`), not a
+    // statement — the byte scanner must bail rather than mis-delete.
+    let src = "use a::{Gadget, inner::*};\n";
+    let mut d = dangling_glob(src, "inner::*");
+    d.decl.hi = d.decl.lo + "inner::*".len() as u32;
+    let out = apply(src, vec![d]);
+    assert_eq!(out, src, "non-statement-shaped glob decl: untouched");
 }
 
 // --- whole-item deletion (`deletion`): the byte math the tests above build

@@ -18,6 +18,7 @@ mod imports;
 mod join;
 mod meta;
 mod pub_usage;
+mod reach;
 mod removal;
 mod store;
 mod union;

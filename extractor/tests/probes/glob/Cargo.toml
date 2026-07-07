@@ -1,0 +1,16 @@
+# Glob-import cleanup probes (schema 8): pins the resolver/typeck facts the
+# glob-dangling accounting is built on — the glob_map (`glob_used_names`),
+# `used_trait_imports` (`trait_scope` edges), the expansion-chain macro walk,
+# and the glob/nested-glob `decl_span` shapes. A *lint target*, not a
+# workspace member — own empty `[workspace]` table, same pattern as
+# ../expansion. Assertions live in extractor/tests/glob_probe.rs.
+[package]
+name = "probe-glob"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+procmacro = { package = "probe-procmacro", path = "../procmacro" }
+
+[workspace]

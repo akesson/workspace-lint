@@ -339,7 +339,14 @@ removed item (`E0432`) and an import whose last real user was removed (an
 (`use anyhow::Context;` whose only `.context()` caller died): a multi-name
 list keeps its live leaves (`use m::{a, b}` → `use m::{b}`) and a list left
 empty is dropped whole statement — nested groups collapse into their parent —
-so the tree stays compiling *and* `unused_imports`-clean. The judgement
+so the tree stays compiling *and* `unused_imports`-clean. Glob imports
+(`use dioxus::prelude::*;`) are handled by a resolver-grounded accounting:
+the extractor records rustc's own glob_map (which names actually resolved
+through each glob — macros, derives, and trait-method resolutions included)
+plus typeck's used-trait-imports facts, and the whole statement is deleted
+only when every recorded use is explained by removed code and nothing
+surviving could still lean on it; every rule fails toward keeping (an extra
+`unused_imports` warning, never a broken build). The judgement
 mirrors rustc's import resolution: it is scoped per module (a test module
 with its own `use` of the name doesn't keep the parent's alive), follows
 `use super::*` re-imports, and knows that an inherent method call like

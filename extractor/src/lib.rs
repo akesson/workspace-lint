@@ -315,6 +315,7 @@ fn collect_references(tcx: TyCtxt<'_>, crate_code: &str) -> Vec<RefEdge> {
     };
     tcx.hir_walk_toplevel_module(&mut collector);
     collector.collect_signature_projections();
+    collector.collect_trait_scope_imports();
     let mut edges = collector.edges;
     // Dedup on edge *identity* (everything but the span), keeping the first
     // (lowest) span: five calls to the same def are one edge, anchored at the
@@ -336,7 +337,7 @@ fn edge_identity(
     &str,
     &str,
     &str,
-    [bool; 6],
+    [bool; 8],
     Option<&str>,
     Option<&str>,
 ) {
@@ -356,6 +357,11 @@ fn edge_identity(
             // def must NOT merge: only the written form credits the type's
             // import, and the global dedup keeps just one representative.
             e.receiver_resolved,
+            // A trait-scope fact and a written path to the same target are
+            // different evidence classes — the glob accounting reads them
+            // through different rules, so they must both survive dedup.
+            e.trait_scope,
+            e.extern_root,
         ],
         e.alias.as_deref(),
         e.via.as_deref(),
@@ -376,6 +382,15 @@ struct EdgeFlags {
     receiver_resolved: bool,
     /// Single-name imports only: the local binding name (`use a::B as C` ⇒ `C`).
     alias: Option<String>,
+    /// Glob imports only: the resolver's glob_map for this `use` item — see
+    /// [`RefEdge::glob_used_names`].
+    glob_used_names: Vec<String>,
+    /// A typeck `used_trait_imports` fact, not a written path — see
+    /// [`RefEdge::trait_scope`].
+    trait_scope: bool,
+    /// The written path's first segment is an extern crate root — see
+    /// [`RefEdge::extern_root`].
+    extern_root: bool,
     /// The extern crate the written path routes through when it isn't the
     /// defining crate (`use shim::Item` resolving through a re-export) — see
     /// [`RefEdge::via`]. Computed by [`RefCollector::via_crate`].
@@ -408,15 +423,25 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
     /// usage syn counted textually, recovered from `ExpnData`. Covers bang
     /// macros, derives, and attribute macros alike (a derive expansion also
     /// credits its proc-macro crate for unused-deps).
+    ///
+    /// The **whole expansion chain** is walked, not just the innermost
+    /// expansion: `a!` expanding solely to `b!` must credit `a` too — the
+    /// outer macro is what the source names (and what its glob import
+    /// supplies), while only `b` appears in the innermost `ExpnData`.
     fn record_macro_expansion(&mut self, span: RustcSpan, at: HirId) {
-        if !span.from_expansion() {
-            return;
-        }
-        let data = span.ctxt().outer_expn_data();
-        if let ExpnKind::Macro(_, _) = data.kind
-            && let Some(mac) = data.macro_def_id
-        {
-            self.record(at, mac, span);
+        let mut ctxt = span.ctxt();
+        while !ctxt.is_root() {
+            let data = ctxt.outer_expn_data();
+            if let ExpnKind::Macro(_, _) = data.kind
+                && let Some(mac) = data.macro_def_id
+            {
+                self.record(at, mac, span);
+            }
+            let parent = data.call_site.ctxt();
+            if parent == ctxt {
+                break; // defensive: never spin on a self-referential context
+            }
+            ctxt = parent;
         }
     }
 
@@ -512,6 +537,9 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             reexport: flags.reexport,
             glob: flags.glob,
             alias: flags.alias,
+            glob_used_names: flags.glob_used_names,
+            trait_scope: flags.trait_scope,
+            extern_root: flags.extern_root,
             via: flags.via,
             span: span.and_then(|s| span_to_ir(sm, s)),
             decl_span: flags.decl_span.and_then(|s| span_to_ir(sm, s)),
@@ -538,6 +566,67 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
                 .as_str()
                 .replace('-', "_"),
         )
+    }
+
+    /// Is the written path's first segment an extern crate root? Such a
+    /// resolution bypassed every local `use` — see [`RefEdge::extern_root`].
+    /// Unlike [`via_crate`](Self::via_crate), set even when the written root
+    /// IS the defining crate.
+    fn extern_root(&self, segments: &[rustc_hir::PathSegment<'tcx>]) -> bool {
+        segments
+            .first()
+            .and_then(|s| s.res.opt_def_id())
+            .is_some_and(|d| d.is_crate_root() && d.krate != LOCAL_CRATE)
+    }
+
+    /// Typeck's `used_trait_imports` harvest: for every typeck root, the
+    /// `use` items whose target had to be in scope for some method call in
+    /// its body to resolve. Emitted as [`RefEdge::trait_scope`] facts (from
+    /// the body owner, to the `use` item's own resolution target — the trait
+    /// for a single import, the module for a glob). This is the only record
+    /// of a glob kept alive purely by trait-method syntax: the call itself is
+    /// receiver-resolved (no written path) and the glob_map only tracks
+    /// name-resolutions.
+    fn collect_trait_scope_imports(&mut self) {
+        for owner in self.tcx.hir_body_owners() {
+            // Closures and other nested bodies share their root's tables;
+            // query only the roots (each table is read once).
+            if self.tcx.typeck_root_def_id(owner.to_def_id()) != owner.to_def_id() {
+                continue;
+            }
+            let typeck = self.tcx.typeck(owner);
+            // `UnordSet` only yields its contents in a stable order; any
+            // order would do (the final edge sort+dedup normalizes), but the
+            // stable one is free of caveats.
+            let use_ids: Vec<LocalDefId> = self.tcx.with_stable_hashing_context(|mut hcx| {
+                typeck
+                    .used_trait_imports
+                    .items()
+                    .copied()
+                    .into_sorted(&mut hcx)
+            });
+            for use_id in use_ids {
+                let Node::Item(item) = self.tcx.hir_node_by_def_id(use_id) else {
+                    continue;
+                };
+                let ItemKind::Use(path, _) = item.kind else {
+                    continue;
+                };
+                for res in path.res.present_items() {
+                    if let Some(to) = res.opt_def_id() {
+                        self.record_edge(
+                            owner.to_def_id(),
+                            to,
+                            Some(item.span),
+                            EdgeFlags {
+                                trait_scope: true,
+                                ..EdgeFlags::default()
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Second pass over each item's *lowered* signature (`fn_sig`/`type_of` —
@@ -689,12 +778,15 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
         //
         // rustc lowers each brace-list leaf to its own `Single` item, so
         // `visit_use` fires once per leaf and both spans are per-leaf-correct.
-        // Globs and list-stems have no single deletable leaf → both stay `None`.
+        // A glob carries `decl_span` too — its whole-statement delete surface
+        // (the `glob` flag is its discriminator; it has no excisable leaf, so
+        // `elem_span` stays `None`). List-stems carry neither.
         let (glob, alias, decl_span, binding_span) = match self.tcx.hir_node(hir_id) {
             Node::Item(Item {
                 kind: ItemKind::Use(_, UseKind::Glob),
+                span: decl,
                 ..
-            }) => (true, None, None, None),
+            }) => (true, None, Some(*decl), None),
             Node::Item(Item {
                 kind: ItemKind::Use(_, UseKind::Single(ident)),
                 span: decl,
@@ -708,6 +800,24 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
             _ => (false, None, None, None),
         };
         let elem_span = binding_span.map(|b| path.span.to(b));
+        // The resolver's glob_map: which names actually resolved *through*
+        // this glob — the same fact rustc's own `unused_imports` judgment
+        // consults. Sorted: fragment bytes must be deterministic.
+        let glob_used_names = if glob {
+            let mut names: Vec<String> = self
+                .tcx
+                .resolutions(())
+                .glob_map
+                .get(&hir_id.owner.def_id)
+                .into_iter()
+                .flatten()
+                .map(|s| s.to_string())
+                .collect();
+            names.sort();
+            names
+        } else {
+            Vec::new()
+        };
         for res in path.res.present_items() {
             if let Some(to) = res.opt_def_id() {
                 self.record_import(
@@ -719,6 +829,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                         reexport,
                         glob,
                         alias: alias.clone(),
+                        glob_used_names: glob_used_names.clone(),
                         via: self.via_crate(path.segments, to),
                         decl_span,
                         elem_span,
@@ -748,6 +859,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                 Some(path.span),
                 EdgeFlags {
                     via,
+                    extern_root: self.extern_root(path.segments),
                     ..EdgeFlags::default()
                 },
             );

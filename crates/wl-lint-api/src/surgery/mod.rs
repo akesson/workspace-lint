@@ -94,6 +94,24 @@ fn deletion_range(source: &str, d: &DanglingImport) -> Option<Range> {
     if elo >= ehi || dlo >= dhi {
         return None;
     }
+    // A glob is always a whole-statement deletion — but ONLY when its decl
+    // span actually is one (starts at `use` / `pub(…) use`). A nested-list
+    // glob (`use a::{b, c::*}`) lowers to a collapsed leaf span the byte
+    // scanner doesn't model — bail to residue, never a wrong deletion. (The
+    // probe suite pins both span shapes.)
+    if d.glob {
+        if !(source[dlo..dhi].starts_with("use ") || source[dlo..dhi].starts_with("pub")) {
+            return None;
+        }
+        let lo = deletion::extend_over_preceding_attrs(source, dlo);
+        let hi = eat_trailing_newline(src, dhi);
+        return Some(Range {
+            lo: lo as u32,
+            hi: deletion::eat_blank_lines_bytes(src, hi) as u32,
+            line: d.decl.line,
+            braced: false,
+        });
+    }
     // Brace discriminator: the extractor collapses a brace-list leaf's item
     // span to the leaf, so `decl == elem` ⇒ excise in place; otherwise `decl`
     // is the whole `use …;` statement.
