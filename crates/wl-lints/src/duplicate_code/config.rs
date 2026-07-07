@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::config::Globs;
+use crate::config::{GlobPattern, Globs};
 
 /// `[duplicate-code]` — a *policy* lint: the table's presence is the opt-in
 /// (every field has a sensible default, so an empty table is a valid,
@@ -48,6 +48,36 @@ impl Default for DuplicateCodeConfig {
     }
 }
 
+impl DuplicateCodeConfig {
+    /// `check duplicate-code` — one argument per CLI flag. The boolean flags
+    /// arrive in opt-in polarity (`--exact-literals`, `--include-test-code`)
+    /// and invert onto the config's `ignore-*` fields, so a bare invocation
+    /// behaves exactly like a bare `[duplicate-code]` table (pinned by
+    /// `tests::bare_cli_matches_bare_table`).
+    #[allow(clippy::too_many_arguments)] // one parameter per CLI flag: the flag set is the signature
+    pub fn from_cli(
+        min_lines: u32,
+        min_tokens: usize,
+        min_instances: usize,
+        exact_literals: bool,
+        include_test_code: bool,
+        cross_crate_only: bool,
+        include: &[String],
+        exclude: &[String],
+    ) -> Self {
+        Self {
+            min_lines,
+            min_tokens,
+            min_instances,
+            ignore_literals: !exact_literals,
+            ignore_test_code: !include_test_code,
+            cross_crate_only,
+            include: Globs(include.iter().map(|p| GlobPattern::from_cli(p)).collect()),
+            exclude: Globs(exclude.iter().map(|p| GlobPattern::from_cli(p)).collect()),
+        }
+    }
+}
+
 fn default_min_lines() -> u32 {
     8
 }
@@ -62,4 +92,30 @@ fn default_min_instances() -> usize {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The flag-polarity inversion in [`DuplicateCodeConfig::from_cli`] must
+    /// keep a no-flag `check duplicate-code` identical to the bare table.
+    #[test]
+    fn bare_cli_matches_bare_table() {
+        let table = DuplicateCodeConfig::default();
+        let cli = DuplicateCodeConfig::from_cli(
+            table.min_lines,
+            table.min_tokens,
+            table.min_instances,
+            false,
+            false,
+            false,
+            &[],
+            &[],
+        );
+        assert_eq!(cli.ignore_literals, table.ignore_literals);
+        assert_eq!(cli.ignore_test_code, table.ignore_test_code);
+        assert_eq!(cli.cross_crate_only, table.cross_crate_only);
+        assert!(cli.include.0.is_empty() && cli.exclude.0.is_empty());
+    }
 }

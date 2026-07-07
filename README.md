@@ -156,6 +156,16 @@ include = []             # workspace-relative globs to scan (empty = all)
 exclude = []             # globs to skip (wins over include)
 ```
 
+To try it on any workspace without touching config, use the ad-hoc form (one
+flag per field; `--exact-literals` / `--include-test-code` invert the
+`ignore-*` defaults):
+
+```sh
+workspace-lint check duplicate-code                     # defaults, zero config
+workspace-lint check duplicate-code --cross-crate-only  # just cross-crate copy-paste
+workspace-lint check duplicate-code --min-lines 12 --exact-literals
+```
+
 Known limits (deliberate): a single inserted/removed statement breaks a match
 (near-miss "Type-3" detection is out of scope); `macro_rules!` bodies are not
 scanned; struct-pattern shorthand (`Point { x }`) erases the field name in
@@ -419,6 +429,7 @@ lint failure (and vice versa).
 ```sh
 workspace-lint check centralized-deps
 workspace-lint check file-size --glob "**/*.rs" --max-code-lines 500
+workspace-lint check duplicate-code --cross-crate-only
 workspace-lint check freshness --glob "**/CLAUDE.md" --depends-on "**/*.rs"
 workspace-lint check unused-deps --ignore prost --ignore tonic
 ```
