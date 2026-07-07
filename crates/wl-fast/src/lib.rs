@@ -10,6 +10,12 @@
 //! syntactic ones (feature-drift, module-tree, the directive scanner's parse
 //! cache, the generated-file drop).
 //!
+//! A leaf crate: no engine, no diagnostics, no rustc anywhere near it.
+//! Extracted from `wl-engine` when the two tiers outgrew one crate-size
+//! budget; `wl-engine` re-exports it as `wl_engine::fast`, so consumers see
+//! the same paths. Also hosts [`timing`] (the `WL_TIMING` phase instrument),
+//! which both tiers and the binary share.
+//!
 //! The manifest layer and the walker are salvaged from `syn-workspace`
 //! (copied, not moved — the duplication is deliberate and disappears when
 //! syn-workspace retires).
@@ -19,6 +25,7 @@ mod include_resolve;
 mod manifest;
 mod metadata;
 mod module_tree;
+pub mod timing;
 mod types;
 
 pub use manifest::{DeclaredDep, DepLocation, DepSection, Manifest, Publish};

@@ -298,7 +298,7 @@ impl Manifest {
     /// Does **not** follow `workspace = true` inheritance — a member entry may
     /// inherit a rename declared in the root `[workspace.dependencies]`. Detect
     /// that with [`Manifest::dep_uses_workspace`] and resolve against
-    /// [`FastModel::root_manifest`](crate::fast::FastModel::root_manifest)'s
+    /// [`FastModel::root_manifest`](crate::FastModel::root_manifest)'s
     /// [`DepSection::WorkspaceDependencies`].
     pub fn dep_package_name(&self, section: DepSection, dep_name: &str) -> Option<String> {
         let table = self

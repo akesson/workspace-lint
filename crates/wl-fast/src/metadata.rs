@@ -315,6 +315,7 @@ mod tests {
             [
                 "wl-diagnostic",
                 "wl-engine",
+                "wl-fast",
                 "wl-ir",
                 "wl-lints",
                 "workspace-lint",
@@ -352,13 +353,13 @@ mod tests {
     #[test]
     fn syntactic_layer_reaches_this_file_and_finds_no_orphans() {
         let model = load_this_workspace();
-        let member = model.member_by_name("wl-engine").unwrap();
-        // `lib.rs → mod fast → mod metadata` resolves to this very file.
+        let member = model.member_by_name("wl-fast").unwrap();
+        // `lib.rs → mod metadata` resolves to this very file.
         assert!(
             member
                 .all_modules()
-                .any(|m| m.file.ends_with("fast/metadata.rs")),
-            "the module walk should reach fast/metadata.rs"
+                .any(|m| m.file.ends_with("wl-fast/src/metadata.rs")),
+            "the module walk should reach wl-fast/src/metadata.rs"
         );
         // A clean crate has no unreachable `src/**.rs` files (the dogfooded
         // module-tree lint denies them).

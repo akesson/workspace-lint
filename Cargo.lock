@@ -2883,14 +2883,24 @@ dependencies = [
  "foldhash",
  "indexmap",
  "memmap2",
- "proc-macro2",
  "rayon",
  "rkyv",
+ "tempfile",
+ "thiserror 2.0.18",
+ "wl-fast",
+ "wl-ir",
+]
+
+[[package]]
+name = "wl-fast"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "proc-macro2",
  "syn",
  "tempfile",
  "thiserror 2.0.18",
  "toml_edit 0.25.12+spec-1.1.0",
- "wl-ir",
 ]
 
 [[package]]
