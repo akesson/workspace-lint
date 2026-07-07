@@ -200,15 +200,10 @@ fn scan_rust_comments(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
         // A single `//` strip leaves `///`/`//!` with a leading `/`/`!`, which
         // the `^\s*workspace-lint:` regex rejects — so doc comments are out.
         let body = raw.trim_start().trim_start_matches("//").trim();
-        let Some(caps) = re.captures(body) else {
+        let Some((kind, lints)) = directive_parts(re, body) else {
             continue;
         };
-        let kind = match &caps[1] {
-            "allow" => DirectiveKind::Allow,
-            "expect" => DirectiveKind::Expect,
-            _ => continue,
-        };
-        for lint in caps[2].split(',').map(str::trim) {
+        for lint in lints.split(',').map(str::trim) {
             if lint.is_empty() {
                 continue;
             }
@@ -362,15 +357,10 @@ fn scan_text(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
             .trim_start_matches("//")
             .trim_start_matches("<!--")
             .trim();
-        let Some(caps) = re.captures(body) else {
+        let Some((kind, lints)) = directive_parts(re, body) else {
             continue;
         };
-        let kind = match &caps[1] {
-            "allow" => DirectiveKind::Allow,
-            "expect" => DirectiveKind::Expect,
-            _ => continue,
-        };
-        let lints: Vec<&str> = caps[2].split(',').map(str::trim).collect();
+        let lints: Vec<&str> = lints.split(',').map(str::trim).collect();
         // For TOML the natural grain is the dep line right below the comment;
         // additionally, a comment anywhere in a `<crate>/Cargo.toml` should
         // suppress diagnostics anchored at that crate (centralized-deps,
@@ -412,6 +402,22 @@ fn scan_text(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
             }
         }
     }
+}
+
+/// Parse an already comment-stripped line into the directive kind and the
+/// raw comma-separated lint list; `None` when the line isn't a directive.
+/// Shared by the Rust-comment and text scanners.
+fn directive_parts<'a>(re: &Regex, body: &'a str) -> Option<(DirectiveKind, &'a str)> {
+    let caps = re.captures(body)?;
+    let kind = match &caps[1] {
+        "allow" => DirectiveKind::Allow,
+        "expect" => DirectiveKind::Expect,
+        _ => return None,
+    };
+    Some((
+        kind,
+        caps.get(2).expect("the regex has two groups").as_str(),
+    ))
 }
 
 fn directive_regex() -> &'static Regex {

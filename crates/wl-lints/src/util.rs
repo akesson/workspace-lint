@@ -53,3 +53,25 @@ pub fn split_command(command: &str) -> Vec<String> {
         std::process::exit(2);
     })
 }
+
+/// Start a crate-anchored diagnostic for a manifest-level finding.
+/// Workspace-relative paths everywhere — both the in-message path handed to
+/// `message` and the suppression anchor — so a per-Cargo.toml
+/// `# workspace-lint: allow(...)` directive can actually match the
+/// diagnostic's `SilenceAnchor::Crate`. `display_path` forces forward slashes
+/// so Windows runs produce the same diagnostic text as Linux/macOS (snapshot
+/// fixtures lock it in). Shared by `centralized-deps` and `unused-deps` —
+/// extracted when `duplicate-code`'s statement-run upgrade flagged the two
+/// hand-rolled copies as clones.
+pub(crate) fn at_crate_manifest(
+    lint_id: &'static str,
+    fast: &wl_engine::fast::FastModel,
+    manifest_dir: &std::path::Path,
+    manifest_path: &std::path::Path,
+    message: impl FnOnce(&str) -> String,
+) -> wl_diagnostic::builder::DiagnosticBuilder {
+    let manifest_dir_rel = fast.crate_relative_path(manifest_dir);
+    let manifest_path_rel = fast.crate_relative_path(manifest_path);
+    let cargo_path_str = wl_diagnostic::render::display_path(&manifest_path_rel);
+    wl_diagnostic::builder::at_crate(lint_id, message(&cargo_path_str), manifest_dir_rel)
+}

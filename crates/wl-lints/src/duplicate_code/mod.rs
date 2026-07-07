@@ -11,10 +11,11 @@
 //! differing literals, picking a home — which is an author decision, so the
 //! lint reports and the human refactors (or `expect!`s a deliberate copy).
 //!
-//! A clone group of N instances is emitted as N line-anchored diagnostics
-//! (the `Diagnostic` model is single-span), each cross-referencing the other
-//! sites in a note — so every site is independently `expect!`-suppressible
-//! and the finding reads correctly from whichever copy you're looking at.
+//! A clone group is emitted as ONE line-anchored diagnostic at its first
+//! instance (by file, line), with every other site cross-referenced in a
+//! note — N mirrored warnings per group read as the tool repeating itself.
+//! The trade: silencing a deliberate duplication takes a single `expect!` at
+//! the anchor site, and the other sites have no directive anchor of their own.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -140,54 +141,37 @@ fn globset(globs: &Globs) -> GlobSet {
         .expect("patterns were individually compiled at deserialize time")
 }
 
-/// One diagnostic per instance (each independently suppressible), sorted by
-/// (file, line) across all groups.
+/// One diagnostic per group, anchored at the group's first instance — groups
+/// arrive from `find_clones` already sorted by that anchor's (file, line).
 fn emit(groups: &[CloneGroup]) -> Vec<Diagnostic> {
     let lint_id = LintId::DuplicateCode.id();
-    let mut diagnostics = Vec::new();
-    for group in groups {
-        for (i, inst) in group.instances.iter().enumerate() {
-            let lines = inst.line_end - inst.line_start + 1;
-            diagnostics.push(
-                at_line(
-                    lint_id,
-                    format!(
-                        "duplicated code: {} structurally identical instances (~{lines} lines)",
-                        group.instances.len(),
-                    ),
-                    inst.file.clone(),
-                    inst.line_start,
-                )
-                .note(format!("also found at: {}", other_sites(group, i)))
-                .note("matching ignores local variable names and literal values")
-                .help("extract the shared logic into one function the copies can call")
-                .build(),
-            );
-        }
-    }
-    diagnostics.sort_by(|a, b| {
-        let key = |d: &Diagnostic| {
-            d.primary
-                .as_ref()
-                .map(|p| (p.file.clone(), p.line_start))
-                .unwrap_or_default()
-        };
-        key(a).cmp(&key(b))
-    });
-    diagnostics
+    groups
+        .iter()
+        .map(|group| {
+            let anchor = &group.instances[0];
+            let lines = anchor.line_end - anchor.line_start + 1;
+            at_line(
+                lint_id,
+                format!(
+                    "duplicated code: {} structurally identical instances (~{lines} lines)",
+                    group.instances.len(),
+                ),
+                anchor.file.clone(),
+                anchor.line_start,
+            )
+            .note(format!("also found at: {}", other_sites(group)))
+            .note("matching ignores local variable names and literal values")
+            .help("extract the shared logic into one function the copies can call")
+            .build()
+        })
+        .collect()
 }
 
-/// `file:line` list of the group's other instances, capped so a pathological
-/// group doesn't turn the note into a wall.
-fn other_sites(group: &CloneGroup, current: usize) -> String {
+/// `file:line` list of the group's instances beyond the anchor, capped so a
+/// pathological group doesn't turn the note into a wall.
+fn other_sites(group: &CloneGroup) -> String {
     const MAX_LISTED: usize = 5;
-    let others: Vec<&Region> = group
-        .instances
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != current)
-        .map(|(_, r)| r)
-        .collect();
+    let others: &[Region] = &group.instances[1..];
     let mut listed: Vec<String> = others
         .iter()
         .take(MAX_LISTED)

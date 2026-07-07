@@ -3,11 +3,18 @@
 //! Type-2 clone detection: two regions match when their *structure* is
 //! identical even if local variable names and literal values differ. The
 //! mechanism is normalization-before-hashing — every candidate region (a whole
-//! fn, or any nested block) is flattened to a canonical token sequence in
-//! which local bindings are α-renamed to positional placeholders (`#0`, `#1`,
-//! … in first-occurrence order) and literals are abstracted to per-kind
-//! placeholders. Identical sequences bucket together by hash; no pairwise
-//! comparison ever happens, so the whole pass is near-linear in source size.
+//! fn, any nested block, or any run of ≥2 consecutive statements) is flattened
+//! to a canonical token sequence in which local bindings are α-renamed to
+//! positional placeholders (`#0`, `#1`, … in first-occurrence order) and
+//! literals are abstracted to per-kind placeholders. Identical sequences
+//! bucket together by hash; no pairwise comparison ever happens.
+//!
+//! Statement *runs* are what keep a real-world clone in one piece: a copied
+//! span that sits mid-body in two otherwise-different fns aligns with no
+//! single AST node, and without run candidates it fragments into whichever
+//! nested blocks happen to clear the thresholds (observed in the wild as k
+//! parallel groups at a constant line offset). The maximal matching run is a
+//! candidate of its own, and subsumption then swallows the fragments.
 //!
 //! What is deliberately *kept verbatim* — the semantic anchors that make a
 //! match meaningful rather than merely isomorphic:
@@ -30,9 +37,16 @@
 //!   rules; binding positions *inside* a macro's own grammar can't be known,
 //!   so names introduced there stay verbatim (the under-matching direction).
 //! - `macro_rules!` bodies are never scanned (their tokens aren't Rust items).
+//! - statement-run candidates collect bindings in *prefix* order (a `let`
+//!   α-renames its name from that statement on) rather than the flat
+//!   per-candidate set — prefix order is what makes one incremental pass per
+//!   start statement affordable, and it is the more scoping-faithful choice.
+//!   Names bound *outside* the run (fn params, earlier `let`s) stay verbatim,
+//!   so a run only matches where its context spells those names identically —
+//!   again the under-matching direction.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{DefaultHasher, Hasher};
 use std::path::PathBuf;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
@@ -95,10 +109,14 @@ pub(crate) fn find_clones(files: &[ScanFile], opts: &Options) -> Vec<CloneGroup>
     // in the key means a 64-bit hash collision would additionally need equal
     // lengths to produce a false group.
     let mut buckets: HashMap<(u64, usize), Vec<Region>> = HashMap::new();
+    // One interner across all files: run fingerprints must agree cross-file,
+    // so the symbol ids they hash have to come from a shared table.
+    let mut interner = Interner::default();
     for file in files {
         let mut collect = Collect {
             opts,
             file,
+            interner: &mut interner,
             out: Vec::new(),
         };
         collect.visit_file(&file.ast);
@@ -177,11 +195,13 @@ struct Candidate {
 }
 
 /// Walks one file's AST, recording a candidate for every fn (signature +
-/// body, the fn's own name α-renamed so a renamed copy still matches) and
-/// every nested block that clears the size thresholds.
+/// body, the fn's own name α-renamed so a renamed copy still matches), every
+/// nested block, and every run of consecutive statements that clears the
+/// size thresholds.
 struct Collect<'a> {
     opts: &'a Options,
     file: &'a ScanFile,
+    interner: &'a mut Interner,
     out: Vec<Candidate>,
 }
 
@@ -212,6 +232,113 @@ impl<'a> Collect<'a> {
         self.push_candidate(block.to_token_stream(), &binds, line_start, line_end);
     }
 
+    /// Record a candidate for every run of ≥2 consecutive statements. This is
+    /// what finds a clone *maximally* when it is a statement span mid-body in
+    /// two fns that differ elsewhere: no single fn/block candidate covers it,
+    /// and the block-shaped pieces inside it would otherwise surface as
+    /// parallel fragment groups. The full run `[0..n)` is included on purpose
+    /// — brace-less, it is what lets a whole block at one site match a
+    /// sub-run of a longer block at another.
+    ///
+    /// Cost control: each statement is flattened ONCE to pre-normalized
+    /// integer tokens ([`FlatTok`]: rename eligibility baked in, idents
+    /// interned), then one incremental pass per start statement accrues
+    /// bindings in prefix order and snapshots the fingerprint at every
+    /// statement boundary. The quadratic part touches no strings and
+    /// allocates nothing per token.
+    fn candidate_stmt_runs(&mut self, block: &syn::Block) {
+        let stmts = &block.stmts;
+        if stmts.len() < 2 {
+            return;
+        }
+        let flat: Vec<Vec<FlatTok>> = stmts
+            .iter()
+            .map(|s| {
+                let mut toks = Vec::new();
+                let mut state = NormState::default();
+                flatten(
+                    s.to_token_stream(),
+                    self.opts.ignore_literals,
+                    self.interner,
+                    &mut state,
+                    &mut toks,
+                );
+                toks
+            })
+            .collect();
+        let stmt_binds: Vec<Vec<u32>> = stmts
+            .iter()
+            .map(|s| {
+                let mut names = HashSet::new();
+                collect_binds_stmt(s, &mut names);
+                names.iter().map(|n| self.interner.intern(n)).collect()
+            })
+            .collect();
+        let spans: Vec<(u32, u32)> = stmts
+            .iter()
+            .map(|s| {
+                let span = s.span();
+                (span.start().line as u32, span.end().line as u32)
+            })
+            .collect();
+
+        for start in 0..stmts.len() - 1 {
+            // Small linear structures beat hash maps here: bind sets and
+            // rename tables are tiny, and this loop is the hot quadratic.
+            let mut binds: Vec<u32> = Vec::new();
+            let mut rename: Vec<u32> = Vec::new();
+            let mut hasher = DefaultHasher::new();
+            let mut count = 0usize;
+            let line_start = spans[start].0;
+            for end in start..stmts.len() {
+                binds.extend(&stmt_binds[end]);
+                for &t in &flat[end] {
+                    count += 1;
+                    match t {
+                        FlatTok::Open(d) => {
+                            hasher.write_u8(1);
+                            hasher.write_u8(d);
+                        }
+                        FlatTok::Close(d) => {
+                            hasher.write_u8(2);
+                            hasher.write_u8(d);
+                        }
+                        FlatTok::Ident { sym, renameable } => {
+                            if renameable && binds.contains(&sym) {
+                                let n =
+                                    rename.iter().position(|&s| s == sym).unwrap_or_else(|| {
+                                        rename.push(sym);
+                                        rename.len() - 1
+                                    });
+                                hasher.write_u8(3);
+                                hasher.write_u32(n as u32);
+                            } else {
+                                hasher.write_u8(4);
+                                hasher.write_u32(sym);
+                            }
+                        }
+                        FlatTok::Punct(c) => {
+                            hasher.write_u8(5);
+                            hasher.write_u32(c as u32);
+                        }
+                        FlatTok::Lit(sym) => {
+                            hasher.write_u8(6);
+                            hasher.write_u32(sym);
+                        }
+                    }
+                }
+                if end == start {
+                    continue; // a single statement is not a run
+                }
+                let line_end = spans[end].1;
+                if line_end.saturating_sub(line_start) + 1 < self.opts.min_lines {
+                    continue;
+                }
+                self.push_region((hasher.clone().finish(), count), line_start, line_end);
+            }
+        }
+    }
+
     fn push_candidate(
         &mut self,
         tokens: TokenStream,
@@ -222,15 +349,27 @@ impl<'a> Collect<'a> {
         if line_end.saturating_sub(line_start) + 1 < self.opts.min_lines {
             return;
         }
-        let norm = normalize(tokens, binds, self.opts.ignore_literals);
-        if norm.len() < self.opts.min_tokens {
+        let mut rename = HashMap::new();
+        let mut state = NormState::default();
+        let mut fp = Fingerprint::default();
+        walk(
+            tokens,
+            binds,
+            self.opts.ignore_literals,
+            &mut rename,
+            &mut state,
+            &mut fp,
+        );
+        self.push_region(fp.snapshot(), line_start, line_end);
+    }
+
+    fn push_region(&mut self, (fingerprint, tokens): (u64, usize), line_start: u32, line_end: u32) {
+        if tokens < self.opts.min_tokens {
             return;
         }
-        let mut hasher = DefaultHasher::new();
-        norm.hash(&mut hasher);
         self.out.push(Candidate {
-            fingerprint: hasher.finish(),
-            tokens: norm.len(),
+            fingerprint,
+            tokens,
             region: Region {
                 file: self.file.rel_path.clone(),
                 krate: self.file.krate.clone(),
@@ -284,6 +423,7 @@ impl<'a, 'ast> Visit<'ast> for Collect<'a> {
 
     fn visit_block(&mut self, b: &'ast syn::Block) {
         self.candidate_block(b);
+        self.candidate_stmt_runs(b);
         visit::visit_block(self, b);
     }
 }
@@ -304,6 +444,13 @@ fn collect_binds_sig(sig: &syn::Signature) -> HashSet<String> {
     binds
 }
 
+/// The binding names one statement introduces, accrued into a run's prefix
+/// binding set.
+fn collect_binds_stmt(stmt: &syn::Stmt, binds: &mut HashSet<String>) {
+    let mut c = BindCollector { binds };
+    c.visit_stmt(stmt);
+}
+
 struct BindCollector<'a> {
     binds: &'a mut HashSet<String>,
 }
@@ -315,22 +462,106 @@ impl<'ast> Visit<'ast> for BindCollector<'_> {
     }
 }
 
-/// Flatten `tokens` to the canonical normalized sequence: structure verbatim,
-/// bound idents α-renamed to `#k` (first-occurrence order), literals
-/// abstracted per kind when `ignore_literals`.
-fn normalize(tokens: TokenStream, binds: &HashSet<String>, ignore_literals: bool) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rename: HashMap<String, usize> = HashMap::new();
-    let mut state = NormState::default();
-    walk(
-        tokens,
-        binds,
-        ignore_literals,
-        &mut rename,
-        &mut state,
-        &mut out,
-    );
-    out
+/// String → dense symbol id, shared across every file in one `find_clones`
+/// call so interned ids are comparable cross-file.
+#[derive(Default)]
+struct Interner(HashMap<String, u32>);
+
+impl Interner {
+    fn intern(&mut self, s: &str) -> u32 {
+        if let Some(&id) = self.0.get(s) {
+            return id;
+        }
+        let id = self.0.len() as u32;
+        self.0.insert(s.to_string(), id);
+        id
+    }
+}
+
+/// One pre-normalized token for the statement-run pass. Everything the
+/// contextual rules can decide per-token is decided at flatten time — the
+/// rename-suppression verdict (`renameable`) and the literal abstraction —
+/// so the quadratic per-start pass only does integer compares. Statement
+/// boundaries carry no `NormState` across them (every statement ends in `;`
+/// or a brace group, both of which reset the state), which is what makes
+/// per-statement flattening equivalent to one continuous walk.
+#[derive(Clone, Copy)]
+enum FlatTok {
+    Open(u8),
+    Close(u8),
+    Ident { sym: u32, renameable: bool },
+    Punct(char),
+    Lit(u32),
+}
+
+/// Flatten `tokens` into [`FlatTok`]s, mirroring [`walk`]'s state machine.
+fn flatten(
+    tokens: TokenStream,
+    ignore_literals: bool,
+    interner: &mut Interner,
+    state: &mut NormState,
+    out: &mut Vec<FlatTok>,
+) {
+    for tt in tokens {
+        match tt {
+            TokenTree::Group(g) => {
+                let d = g.delimiter() as u8;
+                out.push(FlatTok::Open(d));
+                state.reset();
+                flatten(g.stream(), ignore_literals, interner, state, out);
+                out.push(FlatTok::Close(d));
+                state.reset();
+            }
+            TokenTree::Ident(i) => {
+                out.push(FlatTok::Ident {
+                    sym: interner.intern(&i.to_string()),
+                    renameable: !state.suppress_rename(),
+                });
+                state.reset();
+            }
+            TokenTree::Punct(p) => {
+                let c = p.as_char();
+                let colons = if c == ':' { state.colons_run + 1 } else { 0 };
+                let dots = if c == '.' { state.dots_run + 1 } else { 0 };
+                state.reset();
+                state.colons_run = colons;
+                state.dots_run = dots;
+                state.after_quote = c == '\'';
+                out.push(FlatTok::Punct(c));
+            }
+            TokenTree::Literal(l) => {
+                let text = if ignore_literals {
+                    interner.intern(literal_placeholder(&l))
+                } else {
+                    interner.intern(&l.to_string())
+                };
+                out.push(FlatTok::Lit(text));
+                state.reset();
+            }
+        }
+    }
+}
+
+/// Streaming normalized-token fingerprint for the one-shot fn/block
+/// candidates: [`walk`] pushes each normalized token straight into the
+/// hasher, so no `Vec<String>` sequence is ever materialized.
+#[derive(Default)]
+struct Fingerprint {
+    hasher: DefaultHasher,
+    tokens: usize,
+}
+
+impl Fingerprint {
+    fn push(&mut self, tok: &str) {
+        self.hasher.write(tok.as_bytes());
+        // Delimit (0xFF never occurs in UTF-8) so ["ab","c"] ≠ ["a","bc"].
+        self.hasher.write_u8(0xFF);
+        self.tokens += 1;
+    }
+
+    fn snapshot(&self) -> (u64, usize) {
+        (self.hasher.clone().finish(), self.tokens)
+    }
 }
 
 /// Punctuation context feeding the ident-rename suppression rules. All three
@@ -370,16 +601,16 @@ fn walk(
     ignore_literals: bool,
     rename: &mut HashMap<String, usize>,
     state: &mut NormState,
-    out: &mut Vec<String>,
+    out: &mut Fingerprint,
 ) {
     for tt in tokens {
         match tt {
             TokenTree::Group(g) => {
                 let (open, close) = delimiters(g.delimiter());
-                out.push(open.to_string());
+                out.push(open);
                 state.reset();
                 walk(g.stream(), binds, ignore_literals, rename, state, out);
-                out.push(close.to_string());
+                out.push(close);
                 state.reset();
             }
             TokenTree::Ident(i) => {
@@ -387,9 +618,9 @@ fn walk(
                 if !state.suppress_rename() && binds.contains(&s) {
                     let next = rename.len();
                     let n = *rename.entry(s).or_insert(next);
-                    out.push(format!("#{n}"));
+                    out.push(&format!("#{n}"));
                 } else {
-                    out.push(s);
+                    out.push(&s);
                 }
                 state.reset();
             }
@@ -401,13 +632,13 @@ fn walk(
                 state.colons_run = colons;
                 state.dots_run = dots;
                 state.after_quote = c == '\'';
-                out.push(c.to_string());
+                out.push(c.encode_utf8(&mut [0u8; 4]));
             }
             TokenTree::Literal(l) => {
                 if ignore_literals {
-                    out.push(literal_placeholder(&l).to_string());
+                    out.push(literal_placeholder(&l));
                 } else {
-                    out.push(l.to_string());
+                    out.push(&l.to_string());
                 }
                 state.reset();
             }

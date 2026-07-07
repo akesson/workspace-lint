@@ -86,8 +86,8 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note(r#"configured by [[crate-size.rules]] glob = "crates/*""#)
             .build(),
         ),
-        // duplicate-code: one instance of a clone group (each instance gets
-        // its own line-anchored diagnostic, cross-referencing the others).
+        // duplicate-code: one diagnostic per clone group, anchored at its
+        // first instance, the other sites cross-referenced in the note.
         (
             "duplicate_code_group",
             at_line(

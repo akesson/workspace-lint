@@ -41,7 +41,6 @@ use wl_engine::semantic::{DepUsage, SemanticModel};
 use super::UnusedDepsConfig;
 use crate::LintId;
 use wl_diagnostic::Diagnostic;
-use wl_diagnostic::builder::at_crate;
 use wl_diagnostic::{Applicability, Span, Suggestion};
 
 pub(super) fn check(
@@ -88,19 +87,17 @@ pub(super) fn check(
         }
 
         let n = unused.len();
-        // Anchor and message both use the workspace-relative path so a
-        // per-Cargo.toml `# workspace-lint: allow(unused-deps)` directive
-        // matches the crate-anchored diagnostic shape.
-        let manifest_dir_rel = fast.crate_relative_path(&krate.manifest_dir);
-        let manifest_path_rel = fast.crate_relative_path(manifest.path());
-        let cargo_path_str = wl_diagnostic::render::display_path(&manifest_path_rel);
-        let mut builder = at_crate(
+        let mut builder = crate::util::at_crate_manifest(
             lint_id,
-            format!(
-                "{n} possibly unused dependenc{} in {cargo_path_str}",
-                if n == 1 { "y" } else { "ies" },
-            ),
-            manifest_dir_rel,
+            fast,
+            &krate.manifest_dir,
+            manifest.path(),
+            |cargo_path| {
+                format!(
+                    "{n} possibly unused dependenc{} in {cargo_path}",
+                    if n == 1 { "y" } else { "ies" },
+                )
+            },
         );
         for entry in &unused {
             builder = builder.help(format!(

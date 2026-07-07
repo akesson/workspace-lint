@@ -10,10 +10,4 @@ help: if intentional, silence with:
   |
   = note: `#[deny(workspace_lint::duplicate_code)]` on by default
 
-error: duplicated code: 2 structurally identical instances (~6 lines)
- --> crates/beta/src/lib.rs:1:1
-  |
-  = help: extract the shared logic into one function the copies can call
-  = note: also found at: crates/alpha/src/lib.rs:1
-
-workspace-lint: generated 2 errors
+workspace-lint: generated 1 error

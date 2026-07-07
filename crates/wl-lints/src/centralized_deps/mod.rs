@@ -3,7 +3,6 @@ use wl_engine::fast::toml_edit::Item;
 use wl_engine::fast::{DepSection, FastModel, Manifest};
 
 use crate::{Lint, LintContext, LintId, Requirements};
-use wl_diagnostic::builder::at_crate;
 use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion};
 
 #[cfg(test)]
@@ -81,22 +80,17 @@ pub(crate) fn check(fast: &FastModel) -> Vec<Diagnostic> {
 
         if !crate_errors.is_empty() {
             let n = crate_errors.len();
-            // Workspace-relative paths everywhere — both the in-message
-            // path and the suppression anchor — so a per-Cargo.toml
-            // directive (`# workspace-lint: allow(centralized-deps)`)
-            // can actually match the diagnostic's `SilenceAnchor::Crate`.
-            // `display_path` forces forward slashes so Windows runs produce the
-            // same diagnostic text as Linux/macOS (snapshot fixtures lock it in).
-            let manifest_path_rel = fast.crate_relative_path(manifest.path());
-            let manifest_dir_rel = fast.crate_relative_path(&krate.manifest_dir);
-            let cargo_path_str = wl_diagnostic::render::display_path(&manifest_path_rel);
-            let mut builder = at_crate(
+            let mut builder = crate::util::at_crate_manifest(
                 lint_id,
-                format!(
-                    "{n} dependenc{} in {cargo_path_str} should use `workspace = true`",
-                    if n == 1 { "y" } else { "ies" },
-                ),
-                manifest_dir_rel,
+                fast,
+                &krate.manifest_dir,
+                manifest.path(),
+                |cargo_path| {
+                    format!(
+                        "{n} dependenc{} in {cargo_path} should use `workspace = true`",
+                        if n == 1 { "y" } else { "ies" },
+                    )
+                },
             );
             for err in crate_errors {
                 builder = builder.help(err);

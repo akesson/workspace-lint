@@ -125,21 +125,24 @@ include = ["*.rs"]
 ### duplicate-code
 
 Name-invariant (Type-2) duplicate detection: flags groups of structurally
-identical code regions — whole functions/methods and nested blocks — **even
-when local variable names and literal values differ**. Each region is
-normalized (local bindings α-renamed to positional placeholders in
-first-occurrence order, literals abstracted per kind) and hashed; identical
-structures bucket together, so the pass is near-linear and finds cross-crate
-copy-paste for free. Renames must be *consistent*: swapping two variables
+identical code regions — whole functions/methods, nested blocks, and runs of
+consecutive statements — **even when local variable names and literal values
+differ**. Each region is normalized (local bindings α-renamed to positional
+placeholders in first-occurrence order, literals abstracted per kind) and
+hashed; identical structures bucket together, so the pass is near-linear and
+finds cross-crate copy-paste for free. Statement runs are what keep a clone
+in one piece: a span copied mid-body into two otherwise-different functions
+is reported once, maximally — not as fragments of whichever nested blocks
+happen to match. Renames must be *consistent*: swapping two variables
 changes the structure and correctly breaks the match. Called functions,
 types, and field/method names are kept verbatim — two blocks that call
 different functions are never clones.
 
-Each instance of a clone group gets its own line-anchored diagnostic listing
-the other sites, so every copy is independently silenceable with
-`workspace_lint::expect!(duplicate_code)`. Advisory only: `--fix` never
-rewrites duplicates — resolving one means extracting a shared function, which
-is an author decision.
+Each clone group gets ONE line-anchored diagnostic at its first site (by
+file and line), listing the other sites in a note; silence a deliberate
+duplication with `workspace_lint::expect!(duplicate_code)` at that anchor
+site. Advisory only: `--fix` never rewrites duplicates — resolving one means
+extracting a shared function, which is an author decision.
 
 Build-free (runs under `--fast-only`). The table's presence enables the lint;
 all fields are optional:
@@ -166,8 +169,10 @@ workspace-lint check duplicate-code --cross-crate-only  # just cross-crate copy-
 workspace-lint check duplicate-code --min-lines 12 --exact-literals
 ```
 
-Known limits (deliberate): a single inserted/removed statement breaks a match
-(near-miss "Type-3" detection is out of scope); `macro_rules!` bodies are not
+Known limits (deliberate): an edited statement mid-clone splits the match
+into the identical runs on either side of it — each reported only if it
+clears the thresholds on its own (near-miss "Type-3" detection is out of
+scope); `macro_rules!` bodies are not
 scanned; struct-pattern shorthand (`Point { x }`) erases the field name in
 the pattern position, which can over-match otherwise-identical functions
 destructuring different fields.

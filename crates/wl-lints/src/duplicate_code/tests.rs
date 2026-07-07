@@ -59,9 +59,15 @@ fn name_reuse_pattern_is_part_of_the_structure() {
 fn inconsistent_rename_does_not_match() {
     // Same tokens modulo names, but the *pattern* of name reuse differs:
     // `a + b` vs `y + x` (operand order swapped relative to binding order).
+    // min-tokens 15: the two `let` statements ARE a genuine 14-token clone
+    // run — the test is about the whole fn (~25 tokens) not matching.
     let a = "fn f() -> u32 {\n    let a = g();\n    let b = h();\n    a + b\n}";
     let b = "fn f() -> u32 {\n    let x = g();\n    let y = h();\n    y + x\n}";
-    assert!(clones_between(a, b, &opts()).is_empty());
+    let sized = Options {
+        min_tokens: 15,
+        ..opts()
+    };
+    assert!(clones_between(a, b, &sized).is_empty());
 }
 
 #[test]
@@ -175,6 +181,109 @@ fn inner_block_copied_to_a_third_place_survives_subsumption() {
             .iter()
             .any(|r| r.file.ends_with("b.rs"))
     );
+}
+
+#[test]
+fn statement_run_is_found_maximally_not_as_fragments() {
+    // The copied span is a mid-body statement RUN: the enclosing fns differ
+    // before and after it, so no fn/block candidate covers it whole. The run
+    // candidate must — as ONE group spanning the full run at both sites
+    // (sub-runs of it are subsumed; the trailing `0`/`1` tails stay out
+    // because the statement before them differs).
+    let a = "fn f(input: &[u32]) -> u32 {\n\
+             \x20   let seed = prepare(input);\n\
+             \x20   let mut acc = seed;\n\
+             \x20   for v in input {\n\
+             \x20       acc = combine(acc, *v);\n\
+             \x20       acc = acc % 97;\n\
+             \x20   }\n\
+             \x20   let out = finish(acc);\n\
+             \x20   emit(out);\n\
+             \x20   cleanup_alpha();\n\
+             \x20   0\n\
+             }";
+    let b = "fn g(input: &[u32]) -> u32 {\n\
+             \x20   let seed = prepare_other(input);\n\
+             \x20   let mut total = seed;\n\
+             \x20   for item in input {\n\
+             \x20       total = combine(total, *item);\n\
+             \x20       total = total % 13;\n\
+             \x20   }\n\
+             \x20   let res = finish(total);\n\
+             \x20   emit(res);\n\
+             \x20   teardown_beta();\n\
+             \x20   1\n\
+             }";
+    let groups = clones_between(a, b, &opts());
+    assert_eq!(groups.len(), 1, "one maximal run group, no fragments");
+    let g = &groups[0];
+    assert_eq!(g.instances.len(), 2);
+    // `let mut acc = seed;` (line 3) through `emit(out);` (line 9), both files.
+    assert!(
+        g.instances
+            .iter()
+            .all(|r| r.line_start == 3 && r.line_end == 9)
+    );
+}
+
+#[test]
+fn whole_block_matches_a_sub_run_of_a_longer_block() {
+    // a's entire fn body reappears mid-body in b. No braces align (b's block
+    // is longer), so the match is a's brace-less full interior run against
+    // b's sub-run.
+    let a = "fn f(xs: &[u32]) {\n\
+             \x20   let mut acc = start();\n\
+             \x20   for x in xs {\n\
+             \x20       acc = fold(acc, *x);\n\
+             \x20   }\n\
+             \x20   finish(acc);\n\
+             }";
+    let b = "fn g(xs: &[u32]) {\n\
+             \x20   log_begin();\n\
+             \x20   let mut total = start();\n\
+             \x20   for y in xs {\n\
+             \x20       total = fold(total, *y);\n\
+             \x20   }\n\
+             \x20   finish(total);\n\
+             \x20   publish();\n\
+             }";
+    let groups = clones_between(a, b, &opts());
+    assert_eq!(groups.len(), 1);
+    let g = &groups[0];
+    let a_site = g
+        .instances
+        .iter()
+        .find(|r| r.file.ends_with("a.rs"))
+        .expect("a.rs instance");
+    let b_site = g
+        .instances
+        .iter()
+        .find(|r| r.file.ends_with("b.rs"))
+        .expect("b.rs instance");
+    assert_eq!((a_site.line_start, a_site.line_end), (2, 6));
+    assert_eq!((b_site.line_start, b_site.line_end), (3, 7));
+}
+
+#[test]
+fn run_locals_bound_outside_the_run_are_anchors() {
+    // `seed` is bound BEFORE the copied statements with per-file names, and
+    // used inside them: from the run's perspective it is free, so the runs
+    // must NOT match (the under-matching direction, documented in detect.rs).
+    let a = "fn f() -> u32 {\n\
+             \x20   let seed = alpha();\n\
+             \x20   let mut acc = combine(seed, 1);\n\
+             \x20   acc = wrap(acc, seed);\n\
+             \x20   acc = wrap(acc, seed);\n\
+             \x20   acc + seed\n\
+             }";
+    let b = "fn g() -> u32 {\n\
+             \x20   let source = beta();\n\
+             \x20   let mut acc = combine(source, 2);\n\
+             \x20   acc = wrap(acc, source);\n\
+             \x20   acc = wrap(acc, source);\n\
+             \x20   acc + source\n\
+             }";
+    assert!(clones_between(a, b, &opts()).is_empty());
 }
 
 #[test]
