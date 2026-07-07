@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use super::detect::{Options, ScanFile, find_clones};
+use super::{Options, ScanFile, find_clones};
 
 /// Low thresholds so small snippets qualify; individual tests override. The
 /// two noise filters are OFF here so every matching-semantics test keeps
@@ -33,7 +33,7 @@ fn file(name: &str, krate: &str, src: &str) -> ScanFile {
 }
 
 /// Two single-file sources → the clone groups between them.
-fn clones_between(a: &str, b: &str, opts: &Options) -> Vec<super::detect::CloneGroup> {
+fn clones_between(a: &str, b: &str, opts: &Options) -> Vec<super::CloneGroup> {
     find_clones(
         &[file("a.rs", "crate-a", a), file("b.rs", "crate-b", b)],
         opts,

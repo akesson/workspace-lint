@@ -70,21 +70,28 @@ use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
-use super::encode::{Encoder, FlatTok, Interner, Measured, NormState, flatten};
+mod encode;
+#[cfg(test)]
+mod tests;
+
+use self::encode::{Encoder, FlatTok, Interner, Measured, NormState, flatten};
 use crate::shipped_source::{has_test_attr, is_cfg_test, item_attrs};
 
 /// One already-parsed source file to scan. `rel_path` is the
 /// workspace-relative display path (what diagnostics anchor on and what the
 /// suppression scanner round-trips); `krate` is the owning member's cargo
 /// package name, used by the `cross-crate-only` filter and shown in notes.
-pub(crate) struct ScanFile {
+pub struct ScanFile {
+    /// Workspace-relative display path (the diagnostic anchor).
     pub rel_path: PathBuf,
+    /// The owning member's cargo package name.
     pub krate: String,
+    /// The parsed source.
     pub ast: syn::File,
 }
 
-/// Detection thresholds, mirrored 1:1 from `DuplicateCodeConfig`.
-pub(crate) struct Options {
+/// Detection thresholds, mirrored 1:1 from the lint's `DuplicateCodeConfig`.
+pub struct Options {
     /// Minimum source lines a region must span to be a candidate.
     pub min_lines: u32,
     /// Minimum normalized-token count — guards against dense one-liners that
@@ -110,24 +117,30 @@ pub(crate) struct Options {
 
 /// One occurrence of a clone: a line range in a file.
 #[derive(Clone, Debug)]
-pub(crate) struct Region {
+pub struct Region {
+    /// Workspace-relative path (from [`ScanFile::rel_path`]).
     pub file: PathBuf,
+    /// The owning member's cargo package name.
     pub krate: String,
+    /// First source line of the region (1-based, inclusive).
     pub line_start: u32,
+    /// Last source line of the region (1-based, inclusive).
     pub line_end: u32,
 }
 
 /// A set of structurally identical regions (≥ `min_instances`), sorted by
 /// (file, line). `tokens` is the shared normalized-token weight.
-pub(crate) struct CloneGroup {
+pub struct CloneGroup {
+    /// The group's occurrences, sorted by (file, line).
     pub instances: Vec<Region>,
+    /// The shared normalized-token weight.
     pub tokens: usize,
 }
 
 /// Find all clone groups across `files`. Deterministic: groups are ordered by
 /// their first instance's (file, line), instances within a group by the same
 /// key.
-pub(crate) fn find_clones(files: &[ScanFile], opts: &Options) -> Vec<CloneGroup> {
+pub fn find_clones(files: &[ScanFile], opts: &Options) -> Vec<CloneGroup> {
     // Bucket every candidate by (fingerprint, token count). The token count
     // in the key means a 64-bit hash collision would additionally need equal
     // lengths to produce a false group.

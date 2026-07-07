@@ -20,16 +20,10 @@ clap = { workspace = true }
 fs-err = { workspace = true }
 globset = { workspace = true }
 ignore = { workspace = true }
-# `duplicate-code`'s token normalizer walks raw `TokenStream`s (proc-macro2,
-# `span-locations` for the line ranges) and flattens AST nodes back to tokens
-# via `quote::ToTokens`.
-proc-macro2 = { workspace = true }
-quote = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 shell-words = { workspace = true }
 strip-ansi-escapes = { workspace = true }
-syn = { workspace = true }
 tokei = { workspace = true }
 toml = { workspace = true }
 wl-diagnostic = { path = "../wl-diagnostic" }
