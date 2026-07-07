@@ -75,6 +75,8 @@ fn section_schema(section: &str) -> Option<Schema> {
                 "ignore-literals",
                 "ignore-test-code",
                 "cross-crate-only",
+                "min-distinct-anchors",
+                "min-non-repeating-ratio",
                 "include",
                 "exclude",
             ],
@@ -429,6 +431,18 @@ command = ["mise", "tasks"]
 glob = "CLAUDE.md"
 marker = "MISE_TASKS"
 auto-stage = true
+
+[duplicate-code]
+min-lines = 8
+min-tokens = 40
+min-instances = 2
+ignore-literals = true
+ignore-test-code = true
+cross-crate-only = false
+min-distinct-anchors = 4
+min-non-repeating-ratio = 0.5
+include = ["crates/**"]
+exclude = ["**/generated/**"]
 
 [unused-deps]
 ignore = ["prost", "tonic"]

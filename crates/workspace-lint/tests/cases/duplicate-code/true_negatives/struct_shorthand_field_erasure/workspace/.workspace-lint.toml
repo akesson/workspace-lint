@@ -1,0 +1,13 @@
+# Formerly a known false positive: struct-pattern shorthand (`Point { x }`)
+# erases the field identity, making the x/y fns structurally identical. The
+# erasure still happens, but the pair references only 3 distinct verbatim
+# names (`Point`, `i64`, `rotate_left`) — under the default
+# `min-distinct-anchors = 4` floor, so the group is suppressed as name-poor
+# boilerplate.
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20

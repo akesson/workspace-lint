@@ -53,20 +53,24 @@ glob = "crates/*"
 # The binary used to be the binding crate and grew past 6k as lints piled up;
 # it was split into `wl-lints` (every lint impl) and `wl-diagnostic` (the
 # diagnostic vocabulary + renderers), leaving the binary as just the pipeline +
-# config + registry (~2.1k). `wl-engine` (~3.1k) is now the largest crate, so
+# config + registry (~2.1k). `wl-lints` (~4.0k, at the ceiling) and
+# `wl-engine` (~3.1k) are the largest crates, so
 # the ceiling sits at 4000 — enough headroom for a modest addition anywhere,
 # tight enough that the next real growth spurt trips it and prompts the next
 # extraction rather than a higher ceiling.
 max-code-lines = 4000
 
 # Name-invariant (Type-2) duplicate detection at the built-in thresholds
-# (min-lines = 8, min-tokens = 40, literals abstracted, test code skipped).
-# Denied so a copy-paste between lints/crates fails dogfood: the fix is
-# extraction, or a load-bearing `expect!` where the twin structure is
-# deliberate. Adoption surfaced four real clone groups (`LintId::short`'s
-# hand-synced twin match, the freshness/expand walk, the unused-deps/-pub
-# check scaffolding, the DegreeView constructors) — all resolved by
-# extraction, so no directive was needed.
+# (min-lines = 8, min-tokens = 40, literals abstracted, test code skipped,
+# and the two default-on noise filters: min-distinct-anchors = 4,
+# min-non-repeating-ratio = 0.5 — boilerplate that is name-poor or
+# self-repeating never surfaces). Denied so a copy-paste between
+# lints/crates fails dogfood: the fix is extraction, or a load-bearing
+# `expect!` where the twin structure is deliberate. Adoption surfaced four
+# real clone groups (`LintId::short`'s hand-synced twin match, the
+# freshness/expand walk, the unused-deps/-pub check scaffolding, the
+# DegreeView constructors) — all resolved by extraction, so no directive
+# was needed.
 [duplicate-code]
 
 # The rustc engine's config matrix (one `cargo check` compile per entry; the

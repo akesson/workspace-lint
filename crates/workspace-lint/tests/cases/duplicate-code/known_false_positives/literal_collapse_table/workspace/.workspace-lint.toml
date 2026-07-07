@@ -1,0 +1,16 @@
+# The literal-collapse loophole: two match tables over the same enum mapping
+# each variant to a DIFFERENT string collapse to one structure under the
+# default `ignore-literals = true` (every value becomes `#str`), so they fire
+# as a clone even though they compute different things. The noise filters
+# don't catch this by design — the variant names are distinct anchors (well
+# above the floor) and distinct rows aren't self-repetition. The real fix is
+# the planned extraction-cost metric (placeholder positions where instances
+# disagree = parameters of the unified fn). Workaround today:
+# `ignore-literals = false`.
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20
