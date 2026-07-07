@@ -191,7 +191,15 @@ fn other_sites(group: &CloneGroup, current: usize) -> String {
     let mut listed: Vec<String> = others
         .iter()
         .take(MAX_LISTED)
-        .map(|r| format!("{}:{}", r.file.display(), r.line_start))
+        .map(|r| {
+            // `display_path` forces forward slashes so the note text matches
+            // the renderer's span paths on Windows.
+            format!(
+                "{}:{}",
+                wl_diagnostic::render::display_path(&r.file),
+                r.line_start
+            )
+        })
         .collect();
     if others.len() > MAX_LISTED {
         listed.push(format!("and {} more", others.len() - MAX_LISTED));
