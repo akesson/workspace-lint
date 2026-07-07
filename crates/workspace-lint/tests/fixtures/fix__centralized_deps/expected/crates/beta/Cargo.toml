@@ -1,0 +1,9 @@
+[package]
+name = "beta"
+version = "0.1.0"
+
+[dependencies]
+# Same agreed version as alpha — rewritten against the seeded workspace key.
+rand = { workspace = true }
+# Disagrees with alpha's "1" — see alpha/Cargo.toml.
+clashing = "2"

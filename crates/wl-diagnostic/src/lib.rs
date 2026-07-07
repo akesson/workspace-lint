@@ -88,6 +88,14 @@ impl Span {
 }
 
 /// Concrete suggested rewrite. `MachineApplicable` ones drive `--fix`.
+///
+/// Everything here is *structural* by contract — replacements, deletions, and
+/// pure insertions (a zero-width span, e.g. the centralized-deps
+/// `[workspace.dependencies]` seed) alike. Silence directives must never be
+/// pushed as a `Suggestion`: renderers synthesize them from the
+/// [`SilenceAnchor`] (`Diagnostic::silence_suggestion`), which is what keeps
+/// "`--fix` never writes a silence directive" a structural property of this
+/// list rather than a filter over it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
     pub span: Span,

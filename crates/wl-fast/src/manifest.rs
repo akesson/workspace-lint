@@ -268,6 +268,62 @@ impl Manifest {
             .unwrap_or_default()
     }
 
+    /// Byte position + text for inserting `<name> = "<version>"` into this
+    /// (root) manifest's `[workspace.dependencies]` at the alphabetically
+    /// sorted position — the workspace half of the centralized-deps two-file
+    /// auto-fix (the member half is [`Manifest::format_workspace_dep`]).
+    /// Creates the table at end-of-file when absent (always-valid TOML).
+    /// Returns `(line, byte_pos, insert_text)`.
+    pub fn workspace_dep_insertion(&self, name: &str, version: &str) -> (u32, u32, String) {
+        let entry = format!("{name} = \"{version}\"\n");
+        if let Some(table) = self.section_table(DepSection::WorkspaceDependencies) {
+            // The first existing key alphabetically after `name` marks the
+            // insertion line; with none, insert after the last entry.
+            let mut before: Option<usize> = None;
+            let mut last_end: Option<usize> = None;
+            for (key, item) in table.iter() {
+                let Some(span) = item.span() else { continue };
+                if key > name {
+                    before = Some(before.map_or(span.start, |b: usize| b.min(span.start)));
+                } else {
+                    last_end = Some(last_end.map_or(span.end, |e: usize| e.max(span.end)));
+                }
+            }
+            let pos = match (before, last_end) {
+                // Start of the successor entry's line.
+                (Some(b), _) => self.raw[..b].rfind('\n').map(|i| i + 1).unwrap_or(0),
+                // Just past the last predecessor entry's line.
+                (None, Some(e)) => self.raw[e..]
+                    .find('\n')
+                    .map(|i| e + i + 1)
+                    .unwrap_or(self.raw.len()),
+                // Empty table: right after its header line.
+                (None, None) => {
+                    let header = self.raw.find("[workspace.dependencies]").unwrap_or(0);
+                    self.raw[header..]
+                        .find('\n')
+                        .map(|i| header + i + 1)
+                        .unwrap_or(self.raw.len())
+                }
+            };
+            let line = self.raw[..pos].bytes().filter(|&b| b == b'\n').count() as u32 + 1;
+            return (line, pos as u32, entry);
+        }
+        // No table at all: append one at end-of-file.
+        let pos = self.raw.len();
+        let line = self.raw[..pos].bytes().filter(|&b| b == b'\n').count() as u32 + 1;
+        let lead = if self.raw.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        (
+            line,
+            pos as u32,
+            format!("{lead}[workspace.dependencies]\n{entry}"),
+        )
+    }
+
     /// The version string for `dep_name` in `section`, if the entry uses
     /// the plain-string form (`serde = "1.0"`) or an inline table with a
     /// `version` key (`serde = { version = "1.0", ... }`).

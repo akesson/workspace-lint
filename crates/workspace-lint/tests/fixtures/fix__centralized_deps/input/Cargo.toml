@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/alpha"]
+members = ["crates/alpha", "crates/beta"]
 
 [workspace.dependencies]
 serde = "1"

@@ -49,7 +49,7 @@ fn string_version_in_workspace() {
     );
     let msg = check_dep("serde", &item, DepSection::Dependencies, &ws(&["serde"]));
     assert!(msg.is_some());
-    assert!(msg.unwrap().contains("use { workspace = true }"));
+    assert!(msg.unwrap().message.contains("use { workspace = true }"));
 }
 
 #[test]
@@ -61,7 +61,11 @@ fn string_version_not_in_workspace() {
     );
     let msg = check_dep("rand", &item, DepSection::Dependencies, &ws(&["serde"]));
     assert!(msg.is_some());
-    assert!(msg.unwrap().contains("not in [workspace.dependencies]"));
+    assert!(
+        msg.unwrap()
+            .message
+            .contains("not in [workspace.dependencies]")
+    );
 }
 
 #[test]
@@ -93,7 +97,7 @@ fn table_version_in_workspace() {
     );
     let msg = check_dep("serde", &item, DepSection::Dependencies, &ws(&["serde"]));
     assert!(msg.is_some());
-    assert!(msg.unwrap().contains("use { workspace = true }"));
+    assert!(msg.unwrap().message.contains("use { workspace = true }"));
 }
 
 #[test]
@@ -105,7 +109,11 @@ fn table_version_not_in_workspace() {
     );
     let msg = check_dep("serde", &item, DepSection::Dependencies, &ws(&[]));
     assert!(msg.is_some());
-    assert!(msg.unwrap().contains("not in [workspace.dependencies]"));
+    assert!(
+        msg.unwrap()
+            .message
+            .contains("not in [workspace.dependencies]")
+    );
 }
 
 #[test]
@@ -117,7 +125,7 @@ fn git_dep_in_workspace() {
     );
     let msg = check_dep("bar", &item, DepSection::Dependencies, &ws(&["bar"]));
     assert!(msg.is_some());
-    assert!(msg.unwrap().contains("own git source"));
+    assert!(msg.unwrap().message.contains("own git source"));
 }
 
 #[test]
@@ -138,7 +146,7 @@ fn section_appears_in_message() {
         "foo",
     );
     let msg = check_dep("foo", &item, DepSection::DevDependencies, &ws(&[])).unwrap();
-    assert!(msg.contains("[dev-dependencies]"));
+    assert!(msg.message.contains("[dev-dependencies]"));
 }
 
 #[test]

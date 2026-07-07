@@ -39,17 +39,20 @@ pub(crate) struct FixSummary {
     pub(crate) deleted_any: bool,
 }
 
-/// Apply machine-applicable structural suggestions to disk. The
-/// `byte_end > byte_start` filter excludes the degenerate zero-width
-/// silence-hint suggestion from structural fixes.
+/// Apply machine-applicable structural suggestions to disk. Everything in
+/// `Diagnostic::suggestions` is structural by construction — replacements,
+/// deletions, and pure insertions (a zero-width span, e.g. the
+/// centralized-deps `[workspace.dependencies]` seed) alike. Silence hints
+/// never enter that list: the renderers synthesize them from the
+/// `SilenceAnchor` at render time (`Diagnostic::silence_suggestion`), which is
+/// what keeps "`--fix` never writes a silence directive" structural rather
+/// than filtered.
 pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
     let mut structural_count = 0usize;
     let mut candidates: Vec<Suggestion> = Vec::new();
     for d in diagnostics {
         for s in &d.suggestions {
-            if s.applicability == Applicability::MachineApplicable
-                && s.span.byte_end > s.span.byte_start
-            {
+            if s.applicability == Applicability::MachineApplicable {
                 structural_count += 1;
                 candidates.push(s.clone());
             }
