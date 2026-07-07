@@ -1,0 +1,18 @@
+[unused-pub]
+# `utils::tz_offset_minutes` is called only from app's
+# `#[cfg(target_arch = "wasm32")]` block, which the declared host-only matrix
+# never compiles — the verdict is a KNOWN false positive. The mitigation this
+# case pins: the finding carries the specific "possibly used under cfg(...)"
+# note (naming the uncovered predicate and the config entry that would cover
+# it) instead of the generic blind-spot disclaimer, and `--fix-auto-delete`
+# vetoes the deletion on the same evidence. Declaring
+# `cargo build --target wasm32-unknown-unknown -p app` retires the finding
+# entirely (exercised by the fix__unused_pub_cfg_veto fixture and tier-2
+# tests — not here, to keep the cases harness off rustup targets).
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+[engine]
+configs = ["cargo build"]

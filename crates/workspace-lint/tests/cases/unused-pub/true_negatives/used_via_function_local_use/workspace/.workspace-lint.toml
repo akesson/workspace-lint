@@ -10,3 +10,8 @@ suppress-intra-crate = true
 [lints]
 default = "allow"
 unused-pub = "warn"
+
+# Pinned single-config matrix: this case is not about the engine matrix —
+# keep the fixture single-pass (the absent-table default is build+test).
+[engine]
+configs = ["cargo build"]

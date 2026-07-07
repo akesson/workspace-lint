@@ -174,6 +174,19 @@ fn fix_unused_pub_trait_import() {
 }
 
 #[test]
+fn fix_unused_pub_cfg_veto() {
+    // The cfg-shadow deletion veto (the LeaveDates `utc_offset` incident):
+    // `utils::tz_offset_minutes` is unused in every DECLARED config (host
+    // `cargo build` only), but app mentions it inside a
+    // `#[cfg(target_arch = "wasm32")]` block the matrix never compiles.
+    // Deleting it would break a build the engine never saw, so the cascade
+    // downgrades the deletion (MaybeIncorrect + the uncovered-cfg note) and
+    // the item survives — while the genuinely-unmentioned `dead_helper` is
+    // still deleted in the same run.
+    run_fix_fixture("fix__unused_pub_cfg_veto");
+}
+
+#[test]
 fn fix_unused_pub_collateral() {
     // The cascade's second-order surfaces (LeaveDates 2026-07-05 follow-ups):
     // deleting `dead` strands the private `helper` → `inner` chain (rustc

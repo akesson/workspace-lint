@@ -13,6 +13,8 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 wl-ir = { path = "../wl-ir" }
+# The build-free fast tier, re-exported as `wl_engine::fast` (+ `timing`).
+wl-fast = { path = "../wl-fast" }
 dylint = { workspace = true }
 cargo_metadata = { workspace = true }
 thiserror = { workspace = true }
@@ -20,13 +22,6 @@ thiserror = { workspace = true }
 # archive in place (see FragmentBytes / semantic::store).
 memmap2 = { workspace = true }
 rkyv = { workspace = true }
-# fast tier: the parsed-Cargo.toml layer (re-exported as `fast::toml_edit`).
-toml_edit = { workspace = true }
-# fast tier: the syntactic module-tree walker parses member sources with syn;
-# proc-macro2's `span-locations` feature supplies the line numbers on
-# broken-`mod`-declaration records.
-proc-macro2 = { workspace = true }
-syn = { workspace = true }
 # dylint::run's error type — wrapped, not exposed in our API shapes.
 anyhow = { workspace = true }
 # semantic tier: the per-config assemblies build concurrently — one rayon task
@@ -38,4 +33,7 @@ indexmap = { workspace = true }
 foldhash = { workspace = true }
 
 [dev-dependencies]
+# Synthetic `cargo metadata` fixtures for the closure tests (Metadata is
+# Deserialize, so a hand-built resolve graph needs no cargo/network).
+serde_json = { workspace = true }
 tempfile = { workspace = true }

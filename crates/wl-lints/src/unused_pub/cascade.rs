@@ -14,12 +14,18 @@
 //!  - **Suppression / macro guards.** An `expect!`/`allow!`-silenced item is
 //!    never removed (so its callees stay live), and an item some macro-expanded
 //!    `use` names — which no edit can excise — is never deleted either.
+//!  - **Cfg-shadow veto.** Deletion needs a higher standard of proof than
+//!    reporting: an item plausibly mentioned inside a `#[cfg(...)]` region no
+//!    declared engine config compiles is *possibly used* on a target the
+//!    engine never saw — it is never deleted, and the diagnostic says which
+//!    cfg to cover.
 //!
 //! Removal is monotone (dropping edges only ever *reduces* in-degree), so the
 //! loop terminates, bounded by the candidate count.
 
 use std::collections::{HashMap, HashSet};
 
+use wl_engine::coverage::CfgShadow;
 use wl_engine::fast::FastModel;
 use wl_engine::semantic::{PrivateOrphan, RemovalSet, SemanticModel};
 
@@ -48,11 +54,25 @@ pub fn run(
     per_crate: &HashMap<String, UnusedPubConfig>,
     fast: &FastModel,
     model: &SemanticModel,
+    shadow: &CfgShadow,
     suppressed: &dyn Fn(&Diagnostic) -> bool,
 ) -> CascadeResult {
     // Items an un-editable `use` names (macro-generated): deleting them would
     // dangle an import surgery can't reach, so they never seed a removal.
     let blocked = model.import_excision_blocked();
+    // Cfg-shadow veto: identity → the note explaining which uncovered cfg
+    // mentions it. Populated lazily as candidates surface (the mention query
+    // needs each candidate's name/scope), consulted exactly like `blocked`.
+    let mut shadowed: HashMap<String, String> = HashMap::new();
+    let shadow_note = |id: &str| -> Option<String> {
+        let region = shadow.mention_id(id)?;
+        Some(format!(
+            "mentioned under `cfg({})` ({}), which no declared `[engine]` config compiles — \
+             possibly used on a target the engine never saw; not deleting. Add a matching \
+             command to `[engine] configs`, or remove manually",
+            region.predicate, region.file,
+        ))
+    };
 
     // The cascade round in which each removed item was *first* freed: round 0 is
     // directly-unused (layer-1), round >0 is transitively freed by an earlier
@@ -76,6 +96,13 @@ pub fn run(
             if suppressed(&f.diagnostic) {
                 continue; // silenced → won't be applied → callees stay live
             }
+            if shadowed.contains_key(id) {
+                continue;
+            }
+            if let Some(note) = shadow_note(id) {
+                shadowed.insert(id.clone(), note);
+                continue; // possibly used under an uncovered cfg — never seed
+            }
             newly.push(id.clone());
         }
         // Private collateral: defs the removals so far strand (rustc
@@ -83,7 +110,11 @@ pub fn run(
         // removal under exactly the pub rules — the deletion must actually be
         // applicable — so a freed private helper's own callees cascade too.
         for o in model.private_orphans(&removal) {
-            if removed.contains(&o.id) || blocked.contains(&o.id) {
+            if removed.contains(&o.id) || blocked.contains(&o.id) || shadowed.contains_key(&o.id) {
+                continue;
+            }
+            if let Some(note) = shadow_note(&o.id) {
+                shadowed.insert(o.id.clone(), note);
                 continue;
             }
             let Some(f) = collateral_finding(&o, global, per_crate, fast) else {
@@ -107,6 +138,7 @@ pub fn run(
         .into_iter()
         .map(|f| {
             let is_blocked = f.id.as_deref().is_some_and(|id| blocked.contains(id));
+            let shadow_note = f.id.as_deref().and_then(|id| shadowed.get(id));
             let transitive = f
                 .id
                 .as_deref()
@@ -117,7 +149,15 @@ pub fn run(
                 // MachineApplicable delete (findings can't see the import
                 // graph) — downgrade it so `--fix` skips the delete that would
                 // dangle a macro-generated `use`.
-                downgrade_deletion(&mut d);
+                downgrade_deletion(
+                    &mut d,
+                    "a `use` of this item is macro-generated and can't be auto-removed; \
+                     delete the item and its import by hand",
+                );
+            } else if let Some(note) = shadow_note {
+                // Possibly used under an uncovered cfg — the veto keeps the
+                // item and explains which config would prove it either way.
+                downgrade_deletion(&mut d, note);
             } else if transitive {
                 // Not obviously dead in the source (something *does* reference
                 // it) — it only becomes unused because that referrer is deleted
@@ -210,7 +250,7 @@ fn collateral_finding(
 
 /// Turn a MachineApplicable item deletion into a `MaybeIncorrect` one so
 /// `--fix` leaves it, and explain why.
-fn downgrade_deletion(d: &mut Diagnostic) {
+fn downgrade_deletion(d: &mut Diagnostic, note: &str) {
     let mut changed = false;
     for s in &mut d.suggestions {
         if s.applicability == Applicability::MachineApplicable && s.replacement.is_empty() {
@@ -219,10 +259,6 @@ fn downgrade_deletion(d: &mut Diagnostic) {
         }
     }
     if changed {
-        d.notes.push(
-            "a `use` of this item is macro-generated and can't be auto-removed; \
-             delete the item and its import by hand"
-                .into(),
-        );
+        d.notes.push(note.into());
     }
 }

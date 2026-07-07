@@ -6,33 +6,37 @@
 //! plain stable code, no `rustc_private` — assembles those fragments into the
 //! workspace-global semantic model the lints query.
 //!
-//! This crate is the stable data layer for both of the binary's tiers:
+//! This crate is the rustc-backed tier's pair of phases:
 //!
-//! - [`fast`] — the build-free fast tier's data layer: the workspace shape
-//!   from `cargo metadata --no-deps`, each member's parsed manifest, and the
-//!   lean syntactic module trees (module-file resolution, cfg-feature and
-//!   broken-`mod` records, orphan files, literal-`include!` splicing).
-//! - [`orchestrate`] — Phase-1 orchestration: vendored-source materialization,
-//!   toolchain preflight, the per-config extraction loop (embedded
-//!   `dylint::run`), and the completeness guard.
+//! - [`orchestrate`] — Phase-1 orchestration: the `[engine] configs` cargo
+//!   command parser (`command.rs` → [`ConfigSpec`]), vendored-source
+//!   materialization, toolchain preflight, the per-config extraction loop
+//!   (embedded `dylint::run`), and the completeness guard.
 //! - [`semantic`] — the Phase-2 assembler: fragments → per-config cross-crate
 //!   join (`DefPathHash`) → cfg-matrix union (`(crate, def_path)`) → the
 //!   verdict-producing queries the semantic lints consume.
 //!
-//! Keeping all tiers in one crate enforces the "Phase 2 is plain data"
-//! boundary structurally — wl-engine never depends on the app layer
-//! (diagnostics, config, rendering).
+//! The build-free [`fast`] tier lives in its own leaf crate (`wl-fast`),
+//! re-exported here — alongside its [`timing`] instrument — so consumers keep
+//! their `wl_engine::fast::…` paths and see one engine surface. Neither crate
+//! depends on the app layer (diagnostics, config, rendering) — "Phase 2 is
+//! plain data" stays a structural boundary.
 
-pub mod fast;
+pub mod coverage;
 pub mod orchestrate;
 pub mod semantic;
-pub mod timing;
 
-pub use fast::FastModel;
+/// The build-free fast tier (see the `wl-fast` crate).
+pub use wl_fast as fast;
+/// The `WL_TIMING` phase instrument, shared by both tiers and the binary.
+pub use wl_fast::timing;
+
 pub use orchestrate::{
-    CfgSelector, ConfigRun, Engine, EngineConfig, EngineError, ExtractionRuns, ExtractorSource,
+    CommandError, ConfigRun, ConfigSpec, Engine, EngineConfig, EngineError, ExtractionRuns,
+    ExtractorSource, Kinds, parse_command,
 };
 pub use semantic::{SemanticError, SemanticModel};
+pub use wl_fast::FastModel;
 // The IR contract is part of the semantic API surface (spans, fragments), so
 // consumers get it from the engine — no separate wl-ir dependency needed.
 pub use wl_ir;

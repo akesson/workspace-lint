@@ -1,0 +1,15 @@
+# The cfg-shadow deletion veto: `utils::tz_offset_minutes` is unused in every
+# DECLARED config (host build only), but `app` mentions it inside a
+# `#[cfg(target_arch = "wasm32")]` block the matrix never compiles — deleting
+# it would break the wasm build the engine never saw (the LeaveDates
+# `utc_offset` incident). The veto keeps it (downgraded to a report with the
+# uncovered-cfg note) while the genuinely-dead `dead_helper` — mentioned
+# nowhere, cfg'd or otherwise — is still deleted in the same run.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

@@ -5,4 +5,4 @@ default = "allow"
 unused-pub = "deny"
 
 [engine]
-configs = ["default"]
+configs = ["cargo build"]

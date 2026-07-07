@@ -10,63 +10,26 @@
 //! environment variable (the spawned driver inherits it) and the current
 //! directory (dylint checks the CWD workspace).
 
+mod closure;
+mod command;
 mod guard;
 mod relink;
 mod source;
 mod toolchain;
 
+pub use command::{CommandError, ConfigSpec, FeatureSel, Kinds, parse_command};
 pub use source::ExtractorSource;
 
 use std::path::PathBuf;
 
-/// One cargo configuration to extract under (SPIKE §7: one run = one cfg; the
-/// flags are load-bearing because cfg-stripping happens before the driver sees
-/// `TyCtxt`). The `id` names the IR subdirectory; `cargo_args` are forwarded
-/// verbatim to `cargo check`.
-#[derive(Debug, Clone)]
-pub struct CfgSelector {
-    pub id: String,
-    pub cargo_args: Vec<String>,
-}
-
-impl CfgSelector {
-    /// The default configuration (plain `cargo check`).
-    pub fn default_cfg() -> Self {
-        Self {
-            id: "default".into(),
-            cargo_args: Vec::new(),
-        }
-    }
-
-    /// The `--tests` configuration: unit-test harnesses + integration tests,
-    /// keyed `<crate>[@bin]+test.wlir` by the extractor (`sess.opts.test`).
-    pub fn tests() -> Self {
-        Self {
-            id: "tests".into(),
-            cargo_args: vec!["--tests".into()],
-        }
-    }
-
-    /// The `--benches` configuration: bench targets. A default-harness bench
-    /// compiles in test mode (keyed `+test` like unit tests); a
-    /// `harness = false` bench compiles as a plain bin.
-    pub fn benches() -> Self {
-        Self {
-            id: "benches".into(),
-            cargo_args: vec!["--benches".into()],
-        }
-    }
-}
-
 /// What to extract: the target workspace, the config matrix (first entry is
-/// the primary config — it defines the candidate set downstream), an optional
-/// package selection (empty ⇒ all members), and where the per-config IR
-/// directories go.
+/// the primary config — it defines the candidate set downstream; package
+/// selection is per-config, on each [`ConfigSpec`]), and where the per-config
+/// IR directories go.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub workspace_root: PathBuf,
-    pub configs: Vec<CfgSelector>,
-    pub packages: Vec<String>,
+    pub configs: Vec<ConfigSpec>,
     /// Root for the per-config fragment dirs (`<ir_root>/<config id>/`).
     /// Keep this path stable across runs — the warm-cache economics (SPIKE
     /// §12.9) depend on cargo reusing dylint's target dir.
@@ -80,6 +43,27 @@ pub struct ConfigRun {
     pub id: String,
     pub cargo_args: Vec<String>,
     pub ir_dir: PathBuf,
+}
+
+/// One config's extraction plan: the member closure cargo compiles in its
+/// universe (empty ⇒ whole workspace) and its own completeness target set
+/// (`None` ⇒ guard skipped for this config only).
+struct ConfigPlan {
+    packages: Vec<String>,
+    targets: Option<guard::TargetSet>,
+}
+
+/// The build-fragment sharing key: configs with the same `(target, features)`
+/// compile their build units identically (one compile per universe), so
+/// enforcement and dedup operate within a group and never across.
+fn universe_key(spec: &ConfigSpec) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        spec.target.as_deref().unwrap_or("host"),
+        spec.features.features.join(","),
+        spec.features.all_features,
+        spec.features.no_default_features,
+    )
 }
 
 /// The result of [`Engine::extract`]: one [`ConfigRun`] per requested config,
@@ -124,6 +108,14 @@ pub enum EngineError {
     )]
     DylintLinkMissing,
 
+    #[error(
+        "the config matrix compiles for `{triple}`, but the pinned toolchain lacks that \
+         target's std\n\
+         \n\
+             rustup target add {triple} --toolchain {pin}"
+    )]
+    TargetMissing { pin: String, triple: String },
+
     #[error("rustup is not installed (or not on PATH) — install it from https://rustup.rs")]
     RustupMissing,
 
@@ -163,6 +155,14 @@ pub enum EngineError {
         source: Box<cargo_metadata::Error>,
     },
 
+    #[error(
+        "config `{config}` selects package `{package}`, which is not a workspace member\n\
+         \n\
+         hint: `-p` in an [engine] config names workspace members (the engine expands \
+         each to the members it compiles with)"
+    )]
+    UnknownPackage { package: String, config: String },
+
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -193,6 +193,9 @@ impl EngineError {
             ],
             Self::ComponentMissing { pin, component } => {
                 vec!["rustup", "component", "add", component, "--toolchain", pin]
+            }
+            Self::TargetMissing { pin, triple } => {
+                vec!["rustup", "target", "add", triple, "--toolchain", pin]
             }
             Self::DylintLinkMissing => vec!["cargo", "install", "dylint-link", "--locked"],
             _ => return None,
@@ -229,8 +232,13 @@ impl Engine {
     /// changes the current directory to the target workspace (restored on
     /// return, including the error paths, via an RAII guard).
     pub fn extract(&self, cfg: &EngineConfig) -> Result<ExtractionRuns, EngineError> {
+        let triples: std::collections::BTreeSet<String> = cfg
+            .configs
+            .iter()
+            .filter_map(|s| s.target.clone())
+            .collect();
         crate::timing::phase("preflight[rustup]", || {
-            toolchain::preflight(Self::pinned_toolchain())
+            toolchain::preflight(Self::pinned_toolchain(), &triples)
         })?;
         let (package_dir, sources_fresh) =
             crate::timing::phase("materialize[vendored src]", || self.source.materialize())?;
@@ -254,11 +262,14 @@ impl Engine {
             },
         )?);
 
-        // One `cargo metadata` (with `resolve`) serves both the completeness
-        // guard (below) and the semantic assembler (`WorkspaceMeta`, via the
-        // returned `ExtractionRuns`): the resolve graph is a superset of the
-        // guard's member/target facts, so a single exec — computed before the
-        // chdir, with an explicit manifest path — covers both.
+        // One `cargo metadata` (with `resolve`) serves the completeness guard,
+        // the closure expansion of host-universe configs, and the semantic
+        // assembler (`WorkspaceMeta`, via the returned `ExtractionRuns`): the
+        // resolve graph is a superset of the guard's member/target facts, so a
+        // single exec — computed before the chdir, with an explicit manifest
+        // path — covers all three. Each distinct `--target` triple gets one
+        // extra `--filter-platform` exec (a different universe resolves a
+        // different dep graph).
         let metadata = crate::timing::phase("cargo_metadata[+resolve]", || {
             cargo_metadata::MetadataCommand::new()
                 .manifest_path(cfg.workspace_root.join("Cargo.toml"))
@@ -268,33 +279,83 @@ impl Engine {
                     source: Box::new(source),
                 })
         })?;
-        let targets = guard::TargetSet::discover(&metadata, &cfg.packages, cfg);
+        let mut universe_mds: std::collections::BTreeMap<String, cargo_metadata::Metadata> =
+            std::collections::BTreeMap::new();
+        for triple in &triples {
+            let md = crate::timing::phase(
+                format_args!("cargo_metadata[--filter-platform {triple}]"),
+                || closure::universe_metadata(&cfg.workspace_root, triple),
+            )?;
+            universe_mds.insert(triple.clone(), md);
+        }
+
+        // Per-config plan: the package closure cargo compiles in that config's
+        // universe (empty = whole workspace) and the config's own target set.
+        let mut plans: Vec<ConfigPlan> = Vec::new();
+        for spec in &cfg.configs {
+            let umd = spec
+                .target
+                .as_ref()
+                .map(|t| &universe_mds[t])
+                .unwrap_or(&metadata);
+            let packages = if spec.packages.is_empty() {
+                Vec::new()
+            } else {
+                closure::member_closure(umd, spec)?
+            };
+            // `Benches` stays guard-unmodeled (a bench fragment's `+test`
+            // suffix depends on the harness flag, which cargo_metadata 0.23
+            // no longer exposes) — but the skip is per-config now: one bench
+            // entry no longer disables the guard for the whole matrix.
+            let targets = if spec.kinds == Kinds::Benches {
+                eprintln!(
+                    "wl-engine: completeness guard skipped — bench harness kinds aren't \
+                     modeled (config `{}`)",
+                    spec.id
+                );
+                None
+            } else {
+                Some(guard::TargetSet::discover(umd, &packages))
+            };
+            plans.push(ConfigPlan { packages, targets });
+        }
+        let all_members: std::collections::BTreeSet<String> = metadata
+            .workspace_packages()
+            .iter()
+            .map(|p| p.name.replace('-', "_"))
+            .collect();
 
         let _cwd = CwdGuard::enter(&cfg.workspace_root)?;
         let mut runs = Vec::new();
-        for selector in &cfg.configs {
-            let ir_dir = cfg.ir_root.join(&selector.id);
+        for (spec, plan) in cfg.configs.iter().zip(&plans) {
+            let ir_dir = cfg.ir_root.join(&spec.id);
             std::fs::create_dir_all(&ir_dir).map_err(|source| EngineError::Io {
                 context: format!("creating IR dir {}", ir_dir.display()),
                 source,
             })?;
-            crate::timing::phase(format_args!("run_config[{}]", selector.id), || {
-                self.run_config(selector, &ir_dir, &dylib, &cfg.packages, targets.as_ref())
+            crate::timing::phase(format_args!("run_config[{}]", spec.id), || {
+                self.run_config(spec, &ir_dir, &dylib, plan, &all_members)
             })?;
             runs.push(ConfigRun {
-                id: selector.id.clone(),
-                cargo_args: selector.cargo_args.clone(),
+                id: spec.id.clone(),
+                cargo_args: spec.cargo_args(),
                 ir_dir,
             });
         }
-        // Build-script fragments get their own, cross-config completeness
-        // pass: a build unit compiles once per shared cargo target dir
-        // (identical flags under every config), so its fragment lands only in
-        // whichever config's run first compiled it — a per-config expectation
-        // would force a full re-lint of every later config on every cold run.
-        if let Some(ts) = targets.as_ref() {
-            self.ensure_build_fragments(cfg, &runs, &dylib, ts)?;
-            dedup_build_fragments(&runs, &ts.build_fragments());
+        // Build-script fragments get their own completeness pass, scoped to a
+        // **universe group** (configs sharing `(target, features)`): a build
+        // unit compiles once per universe — identical flags across that
+        // group's configs — so its fragment lands only in whichever group
+        // member's run first compiled it. Across *different* universes the
+        // copies are semantically distinct (a `--features` flag re-runs the
+        // build script), so neither enforcement nor dedup may cross groups.
+        let mut groups: std::collections::BTreeMap<String, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (i, spec) in cfg.configs.iter().enumerate() {
+            groups.entry(universe_key(spec)).or_default().push(i);
+        }
+        for idxs in groups.values() {
+            self.ensure_build_fragments(cfg, &plans, &runs, idxs, &dylib, &all_members)?;
         }
         Ok(ExtractionRuns {
             runs,
@@ -303,53 +364,67 @@ impl Engine {
         })
     }
 
-    /// Enforce build-fragment presence across the run's config dirs: missing
-    /// everywhere → one forced re-lint of the first config (the generation
+    /// Enforce build-fragment presence across one universe group's config
+    /// dirs: missing everywhere → one forced re-lint of each group config
+    /// whose expected build set covers a missing fragment (the generation
     /// bump refreshes build units exactly like lib units — verified in the
     /// step-0 spike), then a hard error. Mirrors `run_config`'s per-config
-    /// guard.
+    /// guard. Also dedups the group's surviving copies (newest wins).
     fn ensure_build_fragments(
         &self,
         cfg: &EngineConfig,
+        plans: &[ConfigPlan],
         runs: &[ConfigRun],
+        group: &[usize],
         dylib: &relink::RelinkedDylib,
-        targets: &guard::TargetSet,
+        all_members: &std::collections::BTreeSet<String>,
     ) -> Result<(), EngineError> {
-        let names = targets.build_fragments();
+        let names: std::collections::BTreeSet<String> = group
+            .iter()
+            .filter_map(|&i| plans[i].targets.as_ref())
+            .flat_map(|t| t.build_fragments())
+            .collect();
         if names.is_empty() {
             return Ok(());
         }
-        let dirs: Vec<std::path::PathBuf> = runs.iter().map(|r| r.ir_dir.clone()).collect();
+        let group_runs: Vec<ConfigRun> = group.iter().map(|&i| runs[i].clone()).collect();
+        let dirs: Vec<std::path::PathBuf> = group_runs.iter().map(|r| r.ir_dir.clone()).collect();
         let missing = guard::missing_build_fragments(&dirs, &names);
-        if missing.is_empty() {
-            return Ok(());
+        if !missing.is_empty() {
+            eprintln!(
+                "wl-engine: {} build-script fragment(s) missing from every config dir of the \
+                 universe (cargo freshness skipped their lint pass): {missing:?} — forcing a \
+                 re-lint",
+                missing.len(),
+            );
+            dylib.bump().map_err(|source| EngineError::Io {
+                context: format!("bumping dylib mtime {}", dylib.canonical().display()),
+                source,
+            })?;
+            for &i in group {
+                let covers = plans[i]
+                    .targets
+                    .as_ref()
+                    .is_some_and(|t| t.build_fragments().iter().any(|n| missing.contains(n)));
+                if covers {
+                    self.run_config(
+                        &cfg.configs[i],
+                        &runs[i].ir_dir,
+                        dylib,
+                        &plans[i],
+                        all_members,
+                    )?;
+                }
+            }
+            let still = guard::missing_build_fragments(&dirs, &names);
+            if !still.is_empty() {
+                return Err(EngineError::Incomplete {
+                    config: cfg.configs[group[0]].id.clone(),
+                    missing: still,
+                });
+            }
         }
-        let Some((first_selector, first_run)) = cfg.configs.first().zip(runs.first()) else {
-            return Ok(()); // no configs ran — nothing to enforce against
-        };
-        eprintln!(
-            "wl-engine: {} build-script fragment(s) missing from every config dir (cargo \
-             freshness skipped their lint pass): {missing:?} — forcing a re-lint",
-            missing.len(),
-        );
-        dylib.bump().map_err(|source| EngineError::Io {
-            context: format!("bumping dylib mtime {}", dylib.canonical().display()),
-            source,
-        })?;
-        self.run_config(
-            first_selector,
-            &first_run.ir_dir,
-            dylib,
-            &cfg.packages,
-            Some(targets),
-        )?;
-        let still = guard::missing_build_fragments(&dirs, &names);
-        if !still.is_empty() {
-            return Err(EngineError::Incomplete {
-                config: first_selector.id.clone(),
-                missing: still,
-            });
-        }
+        dedup_build_fragments(&group_runs, &names);
         Ok(())
     }
 
@@ -361,12 +436,14 @@ impl Engine {
     /// re-run once.
     fn run_config(
         &self,
-        selector: &CfgSelector,
+        selector: &ConfigSpec,
         ir_dir: &std::path::Path,
         dylib: &relink::RelinkedDylib,
-        packages: &[String],
-        targets: Option<&guard::TargetSet>,
+        plan: &ConfigPlan,
+        all_members: &std::collections::BTreeSet<String>,
     ) -> Result<(), EngineError> {
+        let packages = &plan.packages;
+        let targets = plan.targets.as_ref();
         // SAFETY: single-threaded by the documented contract of `extract`.
         unsafe { std::env::set_var("WL_IR_OUT", ir_dir) };
         // The spawned `cargo check`'s stderr — compile progress, the
@@ -382,7 +459,7 @@ impl Engine {
             // Derive the dylib path per invocation: after a bump, the re-run
             // must hand dylint the NEW generation path or the `DYLINT_LIBS`
             // env-dep channel never fires.
-            let opts = dylint_opts(&dylib.current(), packages, &selector.cargo_args, &log);
+            let opts = dylint_opts(&dylib.current(), packages, &selector.cargo_args(), &log);
             dylint::run(&opts).map_err(|source| {
                 if let Ok(captured) = std::fs::read_to_string(&log) {
                     eprint!("{captured}");
@@ -398,14 +475,12 @@ impl Engine {
         let Some(targets) = targets else {
             return Ok(()); // guard skipped: unmodeled target-selection flag
         };
-        let expected = targets.expected_fragments(&selector.cargo_args);
+        let expected = targets.expected_fragments(selector.kinds);
         // A complete whole-workspace run must produce *exactly* `expected` —
         // anything else in the dir is a leftover from a renamed crate, a
         // removed target, or an older binary's fragment naming, and the loader
         // reads every `*.wlir`, so a stale fragment would silently assemble
-        // dead code into every future run. Prune (only when unscoped: a
-        // package-filtered run legitimately shares the dir with siblings'
-        // fragments).
+        // dead code into every future run.
         if packages.is_empty() {
             // Build fragments live in whichever config dir first compiled
             // them (see `ensure_build_fragments`) — every config's keep-set
@@ -413,6 +488,12 @@ impl Engine {
             let mut keep = expected.clone();
             keep.extend(targets.build_fragments());
             prune_stale_fragments(ir_dir, &keep);
+        } else {
+            // A package-scoped dir's exact population is bet on the closure's
+            // precision, so prune only what is provably stale: fragments of
+            // crates that are no longer workspace members at all (renames —
+            // the one class that otherwise over-credits forever).
+            prune_nonmember_fragments(ir_dir, all_members);
         }
         let missing = guard::missing_fragments(ir_dir, &expected);
         if missing.is_empty() {
@@ -455,6 +536,32 @@ fn prune_stale_fragments(ir_dir: &std::path::Path, expected: &std::collections::
         let name = entry.file_name().to_string_lossy().into_owned();
         if !expected.contains(&name) {
             eprintln!("wl-engine: pruning stale IR fragment {name}");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Delete `*.wlir` files whose crate is no longer any workspace member (the
+/// stem up to the first `@`/`+` marker is the crate/package code name). The
+/// conservative prune for package-scoped dirs: renamed crates can't assemble
+/// forever, and closure imprecision can never delete a valid fragment.
+fn prune_nonmember_fragments(
+    ir_dir: &std::path::Path,
+    members: &std::collections::BTreeSet<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(ir_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("wlir") {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stem = name.trim_end_matches(".wlir");
+        let krate = stem.split_once(['@', '+']).map(|(k, _)| k).unwrap_or(stem);
+        if !members.contains(krate) {
+            eprintln!("wl-engine: pruning stale IR fragment {name} (no such member)");
             let _ = std::fs::remove_file(&path);
         }
     }

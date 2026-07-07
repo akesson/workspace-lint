@@ -38,9 +38,9 @@ fn engine_dump_prints_stats_and_exits_zero() {
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
 
-    // The dogfood config has no `[engine]` table, so the default matrix runs.
+    // The dogfood config declares the build+test matrix (same as the default).
     assert!(
-        stdout.contains("configs: default"),
+        stdout.contains("configs: default, tests"),
         "missing configs line in:\n{stdout}"
     );
     for line in [

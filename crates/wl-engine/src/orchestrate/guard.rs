@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::EngineConfig;
+use super::Kinds;
 
 /// The linted targets of the selected packages, from cargo metadata — the
 /// config-independent half of the expected-fragment computation.
@@ -46,58 +46,39 @@ pub(super) struct TargetSet {
 
 impl TargetSet {
     /// Compute the target set from an already-read `cargo metadata` and a
-    /// package selection. Returns `None` (guard skipped, with a warning) when
-    /// any config carries a target-selection flag we don't model, so the guard
-    /// never fires spuriously.
-    pub(super) fn discover(
-        md: &cargo_metadata::Metadata,
-        packages: &[String],
-        cfg: &EngineConfig,
-    ) -> Option<Self> {
-        // Flags that change which *targets* compile, beyond the `--tests` we
-        // model. (Feature flags — `--features`, `--all-features`,
-        // `--no-default-features` — change cfg/content, not the target set.)
-        // `--benches` stays unmodeled: a bench fragment's `+test` suffix
-        // depends on the target's `harness` flag, which cargo_metadata 0.23
-        // no longer exposes — the guard skips (with a warning) rather than
-        // guess wrong and force spurious re-lints.
-        const UNMODELED: &[&str] = &[
-            "--lib",
-            "--bins",
-            "--bin",
-            "--examples",
-            "--example",
-            "--benches",
-            "--bench",
-            "--test",
-            "--all-targets",
-            "--doc",
-            "-p",
-            "--package",
-            "--workspace",
-            "--exclude",
-        ];
-        for selector in &cfg.configs {
-            if let Some(flag) = selector
-                .cargo_args
-                .iter()
-                .find(|a| UNMODELED.contains(&a.as_str()))
-            {
-                eprintln!(
-                    "wl-engine: completeness guard skipped — unmodeled target-selection flag \
-                     `{flag}` in config `{}`",
-                    selector.id
-                );
-                return None;
-            }
-        }
-
+    /// package selection. Per-config now: the caller decides whether a
+    /// config's kind is modelable at all (`Benches` isn't — a bench
+    /// fragment's `+test` suffix depends on the harness flag cargo_metadata
+    /// 0.23 no longer exposes); the command parser already rejects every
+    /// other unmodelable target-selection flag (`--lib`, `--all-targets`, …)
+    /// at the config surface.
+    pub(super) fn discover(md: &cargo_metadata::Metadata, packages: &[String]) -> Self {
         let member_ids: BTreeSet<String> = md
             .workspace_members
             .iter()
             .map(|id| id.to_string())
             .collect();
         let want_pkg = |name: &str| packages.is_empty() || packages.iter().any(|p| p == name);
+        // A target with `required-features` compiles only when they're all
+        // enabled; expecting a fragment cargo never builds would force a
+        // futile re-lint, then hard-error. The resolve graph carries each
+        // package's enabled feature set. No resolve (`--no-deps` metadata) ⇒
+        // exclude such targets — under-expecting is the guard-safe direction.
+        let enabled: std::collections::BTreeMap<String, BTreeSet<String>> = md
+            .resolve
+            .as_ref()
+            .map(|r| {
+                r.nodes
+                    .iter()
+                    .map(|n| {
+                        (
+                            n.id.to_string(),
+                            n.features.iter().map(|f| f.to_string()).collect(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let mut set = Self {
             compile_units: BTreeSet::new(),
@@ -110,6 +91,14 @@ impl TargetSet {
                 continue;
             }
             for t in &p.targets {
+                if !t.required_features.is_empty() {
+                    let ok = enabled
+                        .get(&p.id.to_string())
+                        .is_some_and(|fs| t.required_features.iter().all(|f| fs.contains(f)));
+                    if !ok {
+                        continue;
+                    }
+                }
                 let name = t.name.replace('-', "_");
                 // Compare kinds via Display so we don't couple to
                 // cargo_metadata's enum representation (as the spike did).
@@ -145,7 +134,7 @@ impl TargetSet {
                 }
             }
         }
-        Some(set)
+        set
     }
 
     /// The fragment filenames one config must produce, exactly as the
@@ -158,10 +147,9 @@ impl TargetSet {
     /// manifest `test` flag, so a `test = false` target never compiles in
     /// test mode (its cross-crate uses are still credited — the assembler's
     /// foreign-reach channel covers configs that lack the defining crate).
-    pub(super) fn expected_fragments(&self, cargo_args: &[String]) -> BTreeSet<String> {
-        let tests = cargo_args.iter().any(|a| a == "--tests");
+    pub(super) fn expected_fragments(&self, kinds: Kinds) -> BTreeSet<String> {
         let mut expected = BTreeSet::new();
-        if tests {
+        if kinds == Kinds::Tests {
             for name in self.harnessed.iter().chain(&self.test_targets) {
                 expected.insert(format!("{name}+test.wlir"));
             }
@@ -213,7 +201,6 @@ pub(super) fn missing_build_fragments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrate::CfgSelector;
 
     fn repo_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -224,7 +211,9 @@ mod tests {
 
     /// `cargo metadata` for this repo, feeding `discover` (offline: `--no-deps`
     /// needs no lockfile or network, and the guard reads only member facts —
-    /// identical under `--no-deps` and `resolve`).
+    /// identical under `--no-deps` and `resolve`, except `required-features`
+    /// targets, which need the resolve's enabled-feature sets and this repo
+    /// has none of).
     fn repo_metadata() -> cargo_metadata::Metadata {
         cargo_metadata::MetadataCommand::new()
             .manifest_path(repo_root().join("Cargo.toml"))
@@ -233,23 +222,13 @@ mod tests {
             .unwrap()
     }
 
-    fn engine_cfg(configs: Vec<CfgSelector>) -> EngineConfig {
-        EngineConfig {
-            workspace_root: repo_root(),
-            configs,
-            packages: Vec::new(),
-            ir_root: std::path::PathBuf::from("unused"),
-        }
-    }
-
     /// Against this very repository (offline: `--no-deps` needs no lockfile or
     /// network): the default config expects one fragment per member crate.
     #[test]
     fn expected_set_matches_this_workspace() {
-        let cfg = engine_cfg(vec![CfgSelector::default_cfg(), CfgSelector::tests()]);
-        let set = TargetSet::discover(&repo_metadata(), &[], &cfg).unwrap();
+        let set = TargetSet::discover(&repo_metadata(), &[]);
 
-        let default = set.expected_fragments(&[]);
+        let default = set.expected_fragments(Kinds::Default);
         for frag in [
             "workspace_lint@bin.wlir",
             "workspace_lint_marker.wlir",
@@ -265,7 +244,7 @@ mod tests {
 
         // --tests: every compile unit flips to +test AND integration-test
         // targets appear (this repo has several under crates/workspace-lint).
-        let tests = set.expected_fragments(&["--tests".to_string()]);
+        let tests = set.expected_fragments(Kinds::Tests);
         assert!(tests.contains("workspace_lint@bin+test.wlir"));
         assert!(tests.contains("dogfood+test.wlir"), "{tests:?}");
         assert!(tests.iter().all(|f| f.ends_with("+test.wlir")));
@@ -306,35 +285,21 @@ mod tests {
     /// Scoped runs scope the build set with the same package filter.
     #[test]
     fn package_filter_scopes_build_fragments() {
-        let cfg = engine_cfg(vec![CfgSelector::default_cfg()]);
-        let with_build =
-            TargetSet::discover(&repo_metadata(), &["wl-engine".to_string()], &cfg).unwrap();
+        let with_build = TargetSet::discover(&repo_metadata(), &["wl-engine".to_string()]);
         assert_eq!(with_build.build_fragments().len(), 1);
-        let without = TargetSet::discover(&repo_metadata(), &["wl-ir".to_string()], &cfg).unwrap();
+        let without = TargetSet::discover(&repo_metadata(), &["wl-ir".to_string()]);
         assert!(without.build_fragments().is_empty());
     }
 
     /// A package filter narrows the expected set to that crate's targets.
     #[test]
     fn package_filter_narrows_expectations() {
-        let cfg = engine_cfg(vec![CfgSelector::default_cfg()]);
-        let set = TargetSet::discover(&repo_metadata(), &["wl-ir".to_string()], &cfg).unwrap();
-        assert_eq!(set.expected_fragments(&[]).len(), 1);
-        assert!(set.expected_fragments(&[]).contains("wl_ir.wlir"));
-    }
-
-    /// An unmodeled target-selection flag anywhere in the matrix skips the
-    /// guard entirely rather than risking a spurious failure.
-    #[test]
-    fn unmodeled_flag_skips_guard() {
-        let cfg = engine_cfg(vec![
-            CfgSelector::default_cfg(),
-            CfgSelector {
-                id: "lib-only".into(),
-                cargo_args: vec!["--lib".into()],
-            },
-        ]);
-        assert!(TargetSet::discover(&repo_metadata(), &[], &cfg).is_none());
+        let set = TargetSet::discover(&repo_metadata(), &["wl-ir".to_string()]);
+        assert_eq!(set.expected_fragments(Kinds::Default).len(), 1);
+        assert!(
+            set.expected_fragments(Kinds::Default)
+                .contains("wl_ir.wlir")
+        );
     }
 
     /// A `test = false` target is expected under the default config but never
@@ -348,9 +313,9 @@ mod tests {
             test_targets: BTreeSet::new(),
             build_units: BTreeSet::new(),
         };
-        let default = set.expected_fragments(&[]);
+        let default = set.expected_fragments(Kinds::Default);
         assert!(default.contains("alpha.wlir") && default.contains("beta.wlir"));
-        let tests = set.expected_fragments(&["--tests".to_string()]);
+        let tests = set.expected_fragments(Kinds::Tests);
         assert_eq!(
             tests.iter().map(String::as_str).collect::<Vec<_>>(),
             ["beta+test.wlir"],

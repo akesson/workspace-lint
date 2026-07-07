@@ -39,6 +39,8 @@ use crate::config::GlobPattern;
 use wl_diagnostic::builder::{at_crate, at_line};
 use wl_diagnostic::{Applicability, Diagnostic, PubVerdict};
 
+use wl_engine::coverage::CfgShadow;
+
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
 use super::deletion::pick_deletion_fix;
@@ -62,14 +64,22 @@ pub(super) fn check(
     per_crate: &HashMap<String, UnusedPubConfig>,
     fast: &FastModel,
     model: &SemanticModel,
+    shadow: Option<&CfgShadow>,
 ) -> Vec<Diagnostic> {
     // Deletion is a `--fix-auto-delete` concern, and that path replaces this
     // plain-check output with the cascade's — so the plain run always renders
     // the tighten fallback for `Unused` items, never a deletion.
-    findings(global, per_crate, fast, model.pub_candidates(), false)
-        .into_iter()
-        .map(|f| f.diagnostic)
-        .collect()
+    findings_with_shadow(
+        global,
+        per_crate,
+        fast,
+        model.pub_candidates(),
+        false,
+        shadow,
+    )
+    .into_iter()
+    .map(|f| f.diagnostic)
+    .collect()
 }
 
 /// The candidate-driven core of the lint — shared by the plain [`check`] (fed
@@ -84,6 +94,21 @@ pub(crate) fn findings(
     fast: &FastModel,
     candidates: Vec<PubCandidate>,
     auto_delete: bool,
+) -> Vec<PubFinding> {
+    findings_with_shadow(global, per_crate, fast, candidates, auto_delete, None)
+}
+
+/// [`findings`] with the report-time cfg-shadow index: an `Unused` candidate
+/// mentioned in a region no config compiles gets the specific
+/// "possibly used under `cfg(...)`" note instead of the generic blind-spot
+/// one. The cascade passes `None` — its veto handles shadowing itself.
+fn findings_with_shadow(
+    global: &UnusedPubConfig,
+    per_crate: &HashMap<String, UnusedPubConfig>,
+    fast: &FastModel,
+    candidates: Vec<PubCandidate>,
+    auto_delete: bool,
+    shadow: Option<&CfgShadow>,
 ) -> Vec<PubFinding> {
     let mut by_crate: BTreeMap<&str, Vec<&PubCandidate>> = BTreeMap::new();
     for c in &candidates {
@@ -138,6 +163,7 @@ pub(crate) fn findings(
             suppress_intra_crate: config.suppress_intra_crate,
             auto_delete,
             exempt_external_api,
+            shadow,
         };
         let mut crate_findings = Vec::new();
         for cand in cands {
@@ -179,11 +205,17 @@ struct CheckCtx<'a> {
     /// Whether library-public items in this crate are exempt as external API
     /// surface (the crate is published, or `assume-all-public` is set).
     exempt_external_api: bool,
+    /// Report-time cfg-shadow index (`None` in the cascade path).
+    shadow: Option<&'a CfgShadow>,
 }
 
 impl CheckCtx<'_> {
     fn abs_file(&self, span: &wl_ir::Span) -> PathBuf {
         self.root.join(&span.file)
+    }
+
+    fn shadow_mention(&self, id: &str) -> Option<&wl_engine::coverage::ShadowRegion> {
+        self.shadow.and_then(|s| s.mention_id(id))
     }
 }
 
@@ -298,11 +330,26 @@ fn build_diagnostic(
     };
 
     let file = ctx.abs_file(span);
-    let builder = at_line(LintId::UnusedPub.id(), message, file.clone(), span.line)
-        .help(suggestion)
-        .note(
+    let builder =
+        at_line(LintId::UnusedPub.id(), message, file.clone(), span.line).help(suggestion);
+    // The specific blind spot beats the generic disclaimer: a shadowed
+    // mention names the exact uncovered cfg (and the config entry that would
+    // cover it); otherwise the standing caveat applies.
+    let builder = match (verdict == PubVerdict::Unused)
+        .then(|| ctx.shadow_mention(&cand.id))
+        .flatten()
+    {
+        Some(region) => builder.note(format!(
+            "possibly used: mentioned under `cfg({})` ({}), which no declared `[engine]` \
+             config compiles — add a matching cargo command to `[engine] configs` to judge \
+             that code",
+            region.predicate,
+            region.file,
+        )),
+        None => builder.note(
             "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
-        );
+        ),
+    };
     let (builder, removable) =
         apply_structural_fix(builder, cand, ctx.auto_delete, &file, span, verdict);
     (builder.build(), removable)

@@ -4,3 +4,7 @@ unused-deps = "warn"
 
 [unused-deps]
 ignore = []
+
+# Pinned single-config matrix (fixture is not about the engine matrix).
+[engine]
+configs = ["cargo build"]

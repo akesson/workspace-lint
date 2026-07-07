@@ -548,77 +548,107 @@ fn selector_ids(section: &EngineSection) -> Vec<String> {
 }
 
 #[test]
-fn engine_defaults_to_single_default_config() {
-    // Absent table and present-table-absent-key both mean `["default"]`.
-    assert_eq!(parse("").engine.configs, ["default"]);
-    assert_eq!(parse("[engine]\n").engine.configs, ["default"]);
+fn engine_defaults_to_build_plus_test() {
+    // Absent table and present-table-absent-key both mean fidelity-by-default:
+    // the plain build AND the test universe.
+    assert_eq!(parse("").engine.configs, ["cargo build", "cargo test"]);
+    assert_eq!(
+        parse("[engine]\n").engine.configs,
+        ["cargo build", "cargo test"]
+    );
+    assert_eq!(selector_ids(&parse("").engine), ["default", "tests"]);
 }
 
 #[test]
-fn engine_selectors_map_entries_in_order() {
-    let config = parse("[engine]\nconfigs = [\"default\", \"--tests\"]\n");
+fn engine_selectors_map_commands_in_order() {
+    let config = parse("[engine]\nconfigs = [\"cargo build\", \"cargo test\"]\n");
     assert_eq!(selector_ids(&config.engine), ["default", "tests"]);
     // First entry = primary: declaration order is preserved.
-    let config = parse("[engine]\nconfigs = [\"tests\", \"default\"]\n");
+    let config = parse("[engine]\nconfigs = [\"cargo test\", \"cargo build\"]\n");
     assert_eq!(selector_ids(&config.engine), ["tests", "default"]);
 }
 
 #[test]
-fn engine_selectors_accept_tests_alias() {
-    let config = parse("[engine]\nconfigs = [\"tests\"]\n");
-    let selectors = config.engine.selectors();
-    assert_eq!(selectors.len(), 1);
-    assert_eq!(selectors[0].id, "tests");
-    assert_eq!(selectors[0].cargo_args, ["--tests"]);
+fn engine_selectors_dedup_equivalent_commands() {
+    // nextest compiles the `cargo test --no-run` set: same universe, one pass.
+    let config =
+        parse("[engine]\nconfigs = [\"cargo build\", \"cargo nextest run\", \"cargo test\"]\n");
+    assert_eq!(selector_ids(&config.engine), ["default", "tests"]);
 }
 
 #[test]
-fn engine_selectors_fall_back_to_default_when_empty() {
-    // An explicit empty list — and an all-unknown list (the audit already
-    // reported the entries) — still yields a primary config.
+fn engine_selectors_fall_back_to_default_matrix_when_empty() {
+    // An explicit empty list — and an all-invalid list (the audit already
+    // reported the entries) — still yields the default matrix.
     for toml in [
         "[engine]\nconfigs = []\n",
         "[engine]\nconfigs = [\"nonsense\"]\n",
     ] {
-        assert_eq!(selector_ids(&parse(toml).engine), ["default"]);
+        assert_eq!(selector_ids(&parse(toml).engine), ["default", "tests"]);
     }
 }
 
 #[test]
-fn audit_engine_clean_for_known_configs() {
-    let diags = audit_of("[engine]\nconfigs = [\"default\", \"--tests\", \"tests\"]\n");
+fn audit_engine_clean_for_supported_commands() {
+    let diags = audit_of(
+        "[engine]\nconfigs = [\"cargo build\", \"cargo nextest run\", \
+         \"cargo build --target wasm32-unknown-unknown -p app\"]\n",
+    );
     assert!(diags.is_empty(), "unexpected: {diags:?}");
 }
 
 #[test]
-fn audit_flags_unknown_engine_config() {
-    let diags = audit_of("[engine]\nconfigs = [\"default\", \"--test\"]\n");
+fn audit_flags_invalid_engine_config() {
+    let diags = audit_of("[engine]\nconfigs = [\"cargo build\", \"cargo run\"]\n");
     let d = diags
         .iter()
         .find(|d| d.lint.ends_with("::config"))
         .expect("expected a config diagnostic");
-    assert!(d.message.contains("--test"));
-    assert!(d.helps.iter().any(|h| h.contains("--tests")));
+    assert!(d.message.contains("cargo run"));
+    assert!(d.message.contains("unsupported cargo subcommand"));
+}
+
+#[test]
+fn audit_maps_old_vocabulary_to_commands() {
+    // The pre-command selector names carry their replacement in the message.
+    let diags = audit_of("[engine]\nconfigs = [\"default\", \"--tests\"]\n");
+    let msgs: Vec<&str> = diags
+        .iter()
+        .filter(|d| d.lint.ends_with("::config"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(msgs.len(), 2, "{msgs:?}");
+    assert!(msgs[0].contains("`cargo build`"), "{}", msgs[0]);
+    assert!(msgs[1].contains("`cargo test`"), "{}", msgs[1]);
+}
+
+#[test]
+fn audit_warns_when_scoped_config_is_primary() {
+    // The first entry is the primary; leading with the wasm-scoped command
+    // makes it every shared crate's home. Same matrix, reordered, is clean.
+    let diags = audit_of(
+        "[engine]\nconfigs = [\"cargo build --target wasm32-unknown-unknown -p app\", \
+         \"cargo build\"]\n",
+    );
+    let d = diags
+        .iter()
+        .find(|d| d.message.contains("the first entry is the primary config"))
+        .expect("expected the reorder warning");
+    assert!(d.helps.iter().any(|h| h.contains("main build first")));
+    let diags = audit_of(
+        "[engine]\nconfigs = [\"cargo build\", \
+         \"cargo build --target wasm32-unknown-unknown -p app\"]\n",
+    );
+    assert!(diags.is_empty(), "unexpected: {diags:?}");
 }
 
 #[test]
 fn audit_flags_unknown_engine_field() {
-    let diags = audit_of("[engine]\nconfig = [\"default\"]\n");
+    let diags = audit_of("[engine]\nconfig = [\"cargo build\"]\n");
     assert!(
         diags
             .iter()
             .any(|d| d.lint.ends_with("::config") && d.message.contains("`config`")),
         "unexpected: {diags:?}"
     );
-}
-
-#[test]
-fn engine_known_list_matches_selector_for() {
-    // The audit suggests from KNOWN; every suggestion must actually map.
-    for entry in EngineSection::KNOWN {
-        assert!(
-            EngineSection::selector_for(entry).is_some(),
-            "`{entry}` is in KNOWN but has no selector"
-        );
-    }
 }

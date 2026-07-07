@@ -44,7 +44,7 @@ const DEV_TARGET_DIRS: &[&str] = &["tests", "benches", "examples"];
 /// (`<crate>/tests/…`, `<crate>/benches/…`, `<crate>/examples/…`). A nested
 /// `src/…/tests.rs` is intentionally NOT matched here — its `#[cfg(test)]`
 /// content is removed by the in-file scan instead.
-pub(crate) fn in_dev_target_dir(crate_dir: &Path, file: &Path) -> bool {
+pub fn in_dev_target_dir(crate_dir: &Path, file: &Path) -> bool {
     let Ok(rel) = file.strip_prefix(crate_dir) else {
         return false; // unexpected path shape — count it (never under-count).
     };
@@ -61,7 +61,7 @@ pub(crate) fn in_dev_target_dir(crate_dir: &Path, file: &Path) -> bool {
 ///
 /// A `.rs` file with no `Cargo.toml` ancestor (outside any crate) is treated as
 /// shipped — never under-count.
-pub(crate) fn in_dev_target_dir_rootless(file: &Path) -> bool {
+pub fn in_dev_target_dir_rootless(file: &Path) -> bool {
     let mut ancestor = file.parent();
     while let Some(dir) = ancestor {
         if dir.join("Cargo.toml").is_file() {
@@ -78,7 +78,7 @@ type ParsedFile<'a> = (&'a PathBuf, String, Vec<(usize, usize)>);
 
 /// Sum shipped (non-test) Rust code lines across `rust_files`. Thin wrapper over
 /// [`shipped_lines_by_file`]; `crate-size` wants one crate total.
-pub(crate) fn count_rust_shipped(rust_files: &[PathBuf]) -> usize {
+pub fn count_rust_shipped(rust_files: &[PathBuf]) -> usize {
     shipped_lines_by_file(rust_files).values().sum()
 }
 
@@ -86,8 +86,8 @@ pub(crate) fn count_rust_shipped(rust_files: &[PathBuf]) -> usize {
 /// classification. `file-size` needs the per-file breakdown; `crate-size` sums
 /// it. Out-of-line `#[cfg(test)] mod x;` target files are dropped from the map
 /// entirely (they have no shipped lines); for the rest, the production lines
-/// (everything outside the test ranges) are counted via [`production_code`].
-pub(crate) fn shipped_lines_by_file(rust_files: &[PathBuf]) -> HashMap<PathBuf, usize> {
+/// (everything outside the test ranges) are counted via `production_code`.
+pub fn shipped_lines_by_file(rust_files: &[PathBuf]) -> HashMap<PathBuf, usize> {
     // Pass 1: parse each file once; record its test line ranges and collect the
     // sibling files declared as out-of-line test modules (resolvable only with
     // the whole file set in hand).
@@ -201,7 +201,7 @@ impl<'ast> Visit<'ast> for TestRegionScan<'_> {
 /// gate counts as test-only code (the conservative, never-under-count choice).
 /// Shared with `duplicate-code`'s `ignore-test-code` skip so the two lints
 /// agree on what "test code" means.
-pub(crate) fn is_cfg_test(attr: &syn::Attribute) -> bool {
+pub fn is_cfg_test(attr: &syn::Attribute) -> bool {
     if !attr.path().is_ident("cfg") {
         return false;
     }
@@ -212,7 +212,7 @@ pub(crate) fn is_cfg_test(attr: &syn::Attribute) -> bool {
 /// True when any attribute marks a test fn: a path ending in `test`
 /// (`#[test]`, `#[tokio::test]`) or the `#[wasm_bindgen_test]` marker.
 /// Shared with `duplicate-code` (see [`is_cfg_test`]).
-pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
+pub fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         a.path()
             .segments
@@ -245,7 +245,7 @@ fn out_of_line_mod_files(dir: &Path, name: &str) -> [PathBuf; 2] {
 
 /// Outer attributes of a syn item (mirrors the resolver's own `item_attrs`).
 /// Shared with `duplicate-code` (see [`is_cfg_test`]).
-pub(crate) fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+pub fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     match item {
         syn::Item::Const(i) => &i.attrs,
         syn::Item::Enum(i) => &i.attrs,

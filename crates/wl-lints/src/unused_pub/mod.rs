@@ -76,6 +76,6 @@ impl Lint for UnusedPub {
         let Some((fast, semantic)) = cx.semantic_models("unused-pub") else {
             return Vec::new();
         };
-        ir::check(&self.global, &self.per_crate, fast, semantic)
+        ir::check(&self.global, &self.per_crate, fast, semantic, cx.cfg_shadow)
     }
 }

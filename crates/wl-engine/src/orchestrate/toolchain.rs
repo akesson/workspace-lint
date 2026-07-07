@@ -1,16 +1,19 @@
 //! Preflight: fail with the exact remediation *before* any build starts.
 //!
 //! The full tier needs (a) the pinned nightly with `rustc-dev` +
-//! `llvm-tools-preview` (the dylib links `rustc_private`) and (b) the
-//! `dylint-link` linker wrapper on PATH. All four checks are cheap
-//! (subprocess-free where possible) and their failures render the exact
+//! `llvm-tools-preview` (the dylib links `rustc_private`), (b) the
+//! `dylint-link` linker wrapper on PATH, and (c) — for every `--target`
+//! declared in the config matrix — that target's std installed for the pin
+//! (the extraction `cargo check` runs on the pinned nightly). All checks are
+//! cheap (subprocess-free where possible) and their failures render the exact
 //! commands to run — see the `EngineError` variants' `Display`.
 
+use std::collections::BTreeSet;
 use std::process::Command;
 
 use super::EngineError;
 
-pub(super) fn preflight(pin: &str) -> Result<(), EngineError> {
+pub(super) fn preflight(pin: &str, triples: &BTreeSet<String>) -> Result<(), EngineError> {
     let toolchains = rustup(&["toolchain", "list"])?;
     if !toolchains.lines().any(|l| l.starts_with(pin)) {
         return Err(EngineError::ToolchainMissing { pin: pin.into() });
@@ -22,6 +25,17 @@ pub(super) fn preflight(pin: &str) -> Result<(), EngineError> {
                 pin: pin.into(),
                 component: component.into(),
             });
+        }
+    }
+    if !triples.is_empty() {
+        let installed = rustup(&["target", "list", "--installed", "--toolchain", pin])?;
+        for triple in triples {
+            if !installed.lines().any(|l| l.trim() == triple) {
+                return Err(EngineError::TargetMissing {
+                    pin: pin.into(),
+                    triple: triple.clone(),
+                });
+            }
         }
     }
     if !on_path("dylint-link") {
@@ -73,6 +87,16 @@ mod tests {
                 .contains("rustup component add rustc-dev --toolchain nightly-2026-04-16")
         );
 
+        let e = EngineError::TargetMissing {
+            pin: "nightly-2026-04-16".into(),
+            triple: "wasm32-unknown-unknown".into(),
+        };
+        assert!(
+            e.to_string().contains(
+                "rustup target add wasm32-unknown-unknown --toolchain nightly-2026-04-16"
+            )
+        );
+
         let e = EngineError::DylintLinkMissing;
         assert!(e.to_string().contains("cargo install dylint-link --locked"));
     }
@@ -91,6 +115,10 @@ mod tests {
             EngineError::ComponentMissing {
                 pin: "nightly-2026-04-16".into(),
                 component: "rustc-dev".into(),
+            },
+            EngineError::TargetMissing {
+                pin: "nightly-2026-04-16".into(),
+                triple: "wasm32-unknown-unknown".into(),
             },
             EngineError::DylintLinkMissing,
         ];

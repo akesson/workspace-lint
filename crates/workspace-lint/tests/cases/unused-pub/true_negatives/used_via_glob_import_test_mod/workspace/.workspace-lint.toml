@@ -13,6 +13,6 @@ default = "allow"
 unused-pub = "warn"
 
 # The unit-test module only exists under `cfg(test)`: the engine must compile
-# the `--tests` config to see the `use super::*` + bare-name call at all.
+# the `cargo test` config to see the `use super::*` + bare-name call at all.
 [engine]
-configs = ["default", "--tests"]
+configs = ["cargo build", "cargo test"]

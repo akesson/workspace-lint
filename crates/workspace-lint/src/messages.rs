@@ -180,6 +180,24 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
+        // unused-pub: unused in every DECLARED config, but mentioned inside a
+        // cfg region no config compiles — the specific blind spot replaces the
+        // generic disclaimer, and `--fix-auto-delete` vetoes the deletion with
+        // the same information.
+        (
+            "unused_pub_cfg_shadowed",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub fn `tz_offset_minutes` in crate `utils` appears unused — consider removing",
+                PathBuf::from("crates/utils/src/lib.rs"),
+                9,
+            )
+            .help("remove the item or its `pub` visibility")
+            .note(
+                "possibly used: mentioned under `cfg(target_arch = \"wasm32\")` (crates/app/src/main.rs), which no declared `[engine]` config compiles — add a matching cargo command to `[engine] configs` to judge that code",
+            )
+            .build(),
+        ),
         // unused-pub: same-crate-only — suggest pub(crate).
         (
             "unused_pub_tighten_visibility",
@@ -676,6 +694,22 @@ mod tests {
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
+        }
+
+        #[test]
+        fn unused_pub_cfg_shadowed() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_cfg_shadowed")), @r#"
+            warning: pub fn `tz_offset_minutes` in crate `utils` appears unused — consider removing
+             --> crates/utils/src/lib.rs:9:1
+              |
+              = help: remove the item or its `pub` visibility
+              = note: possibly used: mentioned under `cfg(target_arch = "wasm32")` (crates/app/src/main.rs), which no declared `[engine]` config compiles — add a matching cargo command to `[engine] configs` to judge that code
+            help: if intentional, silence with:
+              |
+            9 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            "#);
         }
 
         #[test]

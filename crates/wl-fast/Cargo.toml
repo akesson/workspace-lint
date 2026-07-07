@@ -1,0 +1,28 @@
+[package]
+name = "wl-fast"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+# Publishable-intent flag (unused-pub convention, mirroring wl-engine): the
+# fast tier is library API surface, not workspace-internal plumbing. Not in
+# the CI publish dry-run gate — it ships only as part of the binary.
+publish = true
+repository = "https://github.com/akesson/workspace-lint"
+description = "workspace-lint's build-free fast tier: cargo metadata shape, parsed manifests, and the lean syntactic module walker."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+cargo_metadata = { workspace = true }
+thiserror = { workspace = true }
+# The parsed-Cargo.toml layer (re-exported as `wl_fast::toml_edit`).
+toml_edit = { workspace = true }
+# The syntactic module-tree walker parses member sources with syn;
+# proc-macro2's `span-locations` feature supplies the line numbers on
+# broken-`mod`-declaration records.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+# `shipped_source`'s per-file code-line counts (test regions subtracted).
+tokei = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

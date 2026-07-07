@@ -298,7 +298,7 @@ impl Manifest {
     /// Does **not** follow `workspace = true` inheritance — a member entry may
     /// inherit a rename declared in the root `[workspace.dependencies]`. Detect
     /// that with [`Manifest::dep_uses_workspace`] and resolve against
-    /// [`FastModel::root_manifest`](crate::fast::FastModel::root_manifest)'s
+    /// [`FastModel::root_manifest`](crate::FastModel::root_manifest)'s
     /// [`DepSection::WorkspaceDependencies`].
     pub fn dep_package_name(&self, section: DepSection, dep_name: &str) -> Option<String> {
         let table = self
@@ -432,6 +432,42 @@ impl Manifest {
             }
         }
         refs
+    }
+
+    /// The features this package enables under **default features**: the
+    /// transitive closure of `default` within its own `[features]` table
+    /// (bare entries name sibling features; `dep:`/`?`/`/` forms activate
+    /// dependencies, not local features, and are skipped). `cfg(feature)`
+    /// always refers to the *enclosing* package's features, so this local
+    /// closure is exactly the set a plain `cargo build` compiles with.
+    pub fn default_features(&self) -> BTreeSet<String> {
+        let mut enabled = BTreeSet::new();
+        let Some(features) = self
+            .doc
+            .as_table()
+            .get("features")
+            .and_then(Item::as_table_like)
+        else {
+            return enabled;
+        };
+        let mut queue = vec!["default".to_string()];
+        while let Some(name) = queue.pop() {
+            if !enabled.insert(name.clone()) {
+                continue;
+            }
+            let Some(values) = features.get(&name).and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for entry in values.iter() {
+                if let Some(raw) = entry.as_str()
+                    && !raw.starts_with("dep:")
+                    && !raw.contains('/')
+                {
+                    queue.push(raw.trim().to_string());
+                }
+            }
+        }
+        enabled
     }
 
     /// Locate the line for a specific dep key inside the given section.

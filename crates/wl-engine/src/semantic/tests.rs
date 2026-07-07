@@ -2455,3 +2455,111 @@ fn dangling_imports_resolve_cross_config() {
     );
     assert_eq!(dangling[0].elem.lo, 100);
 }
+
+// --- Stage-2 config semantics: --target universes + per-crate home config ---
+
+/// A `--target` config is its own DefPathHash universe (different
+/// `-C metadata` under `target/<triple>/`): the wasm generation of a def
+/// never hash-matches the host generation. Usage *within* the wasm config
+/// still joins exactly on its own hashes, and the cross-config verdict
+/// unions on the `(crate, def_path)` identity — so a host-unused item whose
+/// only caller is wasm-cfg-gated is credited (the `utc_offset` shape from
+/// the LeaveDates validation).
+#[test]
+fn target_config_usage_retires_host_lead_despite_hash_split() {
+    let utils_host = frag(
+        "utils",
+        vec![item(&["utils", "tz_offset"], "K_HOST", "fn", Some("mod"))],
+        vec![],
+    );
+    // Same identity, different universe ⇒ different key; the caller's edge
+    // carries the wasm-generation key and resolves inside its own config.
+    let utils_wasm = frag(
+        "utils",
+        vec![item(&["utils", "tz_offset"], "K_WASM", "fn", Some("mod"))],
+        vec![],
+    );
+    let app_wasm = frag(
+        "app",
+        vec![],
+        vec![edge(
+            &["app", "clock"],
+            &["utils", "tz_offset"],
+            "K_WASM",
+            false,
+        )],
+    );
+    let host_only = model(vec![("default", vec![utils_host.clone()])]);
+    assert_eq!(
+        lead_ids(&host_only.union_verdict()),
+        ["utils::tz_offset"],
+        "host alone must report the lead — the wasm config is what clears it"
+    );
+    let m = model(vec![
+        ("default", vec![utils_host]),
+        ("default@wasm32-unknown-unknown", vec![utils_wasm, app_wasm]),
+    ]);
+    assert!(
+        lead_ids(&m.union_verdict()).is_empty(),
+        "the wasm config's usage must retire the host lead via the identity union"
+    );
+}
+
+/// A crate only a `--target` config compiles (a wasm-only member) has that
+/// config as its HOME: its pub API is judged there instead of silently
+/// escaping judgment because the primary config never extracted it.
+#[test]
+fn wasm_only_crate_is_judged_via_its_covering_config() {
+    let shared = frag(
+        "shared",
+        vec![item(&["shared", "used"], "K_S", "fn", Some("mod"))],
+        vec![],
+    );
+    let shared_user = frag(
+        "app",
+        vec![],
+        vec![edge(&["app", "main"], &["shared", "used"], "K_S", false)],
+    );
+    let wasm_only = frag(
+        "wasmonly",
+        vec![item(&["wasmonly", "dead"], "K_W", "fn", Some("mod"))],
+        vec![],
+    );
+    let m = model(vec![
+        ("default", vec![shared, shared_user]),
+        ("default@wasm32-unknown-unknown", vec![wasm_only]),
+    ]);
+    assert_eq!(
+        lead_ids(&m.union_verdict()),
+        ["wasmonly::dead"],
+        "the wasm-only crate's unused pub must be judged by its covering config"
+    );
+}
+
+/// Integration-test / bench target crates have no home config: their pubs are
+/// harness plumbing, never candidates — even when a test-kind config is the
+/// only (and thus primary) config.
+#[test]
+fn test_target_crates_contribute_usage_but_never_candidates() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "helper"], "K_A", "fn", Some("mod"))],
+        vec![],
+    );
+    let itest = frag_target(
+        "itest",
+        "test",
+        vec![item(&["itest", "common_helper"], "K_T", "fn", Some("mod"))],
+        vec![edge(&["itest", "case"], &["alpha", "helper"], "K_A", false)],
+    );
+    let m = model(vec![("tests", vec![alpha, itest])]);
+    assert!(
+        lead_ids(&m.union_verdict()).is_empty(),
+        "alpha::helper is used by the test crate; itest::common_helper must not \
+         surface as a candidate at all"
+    );
+    assert!(
+        m.pub_candidates().iter().all(|c| c.krate != "itest"),
+        "test-target crates are never candidate sources"
+    );
+}

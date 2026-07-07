@@ -43,8 +43,10 @@ pub mod git;
 /// Small cross-cutting helpers shared across lints and the binary.
 pub mod util;
 
-/// Production-only line counting shared by `crate-size` and `file-size`.
-mod shipped_source;
+/// Production-only line counting shared by `crate-size`, `file-size`, and
+/// `duplicate-code` (lives in `wl-fast` with the other syntactic scanners;
+/// imported here so lint modules keep their `crate::shipped_source` paths).
+use wl_engine::fast::shipped_source;
 
 pub use lints_id::LintId;
 
@@ -92,6 +94,11 @@ pub struct Requirements {
 pub struct LintContext<'a> {
     pub fast: Option<&'a FastModel>,
     pub semantic: Option<&'a wl_engine::SemanticModel>,
+    /// The cfg-shadow index (regions no `[engine]` config compiles), built by
+    /// the runner alongside the semantic tier. `unused-pub` uses it to mark
+    /// `Unused` findings that are *possibly used* under an uncovered cfg
+    /// (the report-time twin of the `--fix-auto-delete` veto).
+    pub cfg_shadow: Option<&'a wl_engine::coverage::CfgShadow>,
 }
 
 impl<'a> LintContext<'a> {
