@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 use tokei::{Config as TokeiConfig, Languages};
 use wl_engine::fast::FastModel;
 
-use crate::config::GlobPattern;
-use crate::{Lint, LintContext, LintId, Requirements};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_crate;
+use wl_lint_api::config::GlobPattern;
+use wl_lint_api::{Lint, LintContext, LintId, Requirements};
 
 pub mod config;
 #[cfg(test)]

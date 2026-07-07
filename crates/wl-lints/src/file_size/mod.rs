@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokei::{Config as TokeiConfig, Languages};
 
-use crate::config::GlobPattern;
 use crate::shipped_source;
-use crate::{Lint, LintContext, LintId};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_file;
+use wl_lint_api::config::GlobPattern;
+use wl_lint_api::{Lint, LintContext, LintId};
 
 pub mod config;
 #[cfg(test)]

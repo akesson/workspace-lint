@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::config::LintLevel;
+use wl_lint_api::config::LintLevel;
 
 #[derive(Deserialize, Default, Clone)]
 pub struct ArchitectureConfig {

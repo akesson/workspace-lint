@@ -29,14 +29,14 @@ use wl_engine::coverage::CfgShadow;
 use wl_engine::fast::FastModel;
 use wl_engine::semantic::{PrivateOrphan, RemovalSet, SemanticModel};
 
-use crate::LintId;
 use wl_diagnostic::builder::at_line;
 use wl_diagnostic::{Applicability, Diagnostic};
+use wl_lint_api::LintId;
 
 use super::config::UnusedPubConfig;
-use super::deletion::{DeleteOutcome, delete_suggestion};
 use super::ir::{PubFinding, build_glob_set, findings};
-use super::surgery::import_surgery;
+use wl_lint_api::surgery::deletion::{DeleteOutcome, delete_suggestion};
+use wl_lint_api::surgery::import_surgery;
 
 pub struct CascadeResult {
     /// The converged unused-pub diagnostics — replace the plain-check set.

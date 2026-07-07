@@ -39,9 +39,9 @@ use wl_engine::fast::{DeclaredDep, DepSection, FastModel, Manifest};
 use wl_engine::semantic::{DepUsage, SemanticModel};
 
 use super::UnusedDepsConfig;
-use crate::LintId;
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::{Applicability, Span, Suggestion};
+use wl_lint_api::LintId;
 
 pub(super) fn check(
     global: &UnusedDepsConfig,
@@ -87,7 +87,7 @@ pub(super) fn check(
         }
 
         let n = unused.len();
-        let mut builder = crate::util::at_crate_manifest(
+        let mut builder = wl_lint_api::util::at_crate_manifest(
             lint_id,
             fast,
             &krate.manifest_dir,
@@ -137,7 +137,7 @@ pub(super) fn find_unused_deps(
             // backend's separator-stripped fallback applied to the manifest
             // side only (see legacy.rs for the rationale).
             !syntactic.contains(normalized)
-                && !syntactic.contains(&crate::util::separator_stripped(normalized))
+                && !syntactic.contains(&wl_lint_api::util::separator_stripped(normalized))
         })
         .flat_map(|(_, entries)| entries)
         .filter(|entry| {

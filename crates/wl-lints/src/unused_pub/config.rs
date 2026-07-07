@@ -1,7 +1,7 @@
 use clap::ValueEnum;
 use serde::Deserialize;
 
-use crate::config::GlobPattern;
+use wl_lint_api::config::GlobPattern;
 
 /// Item kinds the `unused-pub` lint can filter on. Shared by the `kinds`
 /// config field and the CLI `--kinds` flag; an invalid value fails fast with

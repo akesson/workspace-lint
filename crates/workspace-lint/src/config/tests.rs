@@ -1,5 +1,5 @@
 use super::*;
-use wl_lints::config::GlobPattern;
+use wl_lint_api::config::GlobPattern;
 use wl_lints::unused_pub::KindFilter;
 
 fn parse(toml: &str) -> Config {

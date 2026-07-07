@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::config::{ExpandConfig, ExpandRule};
-use wl_lints::Lint;
+use wl_lint_api::Lint;
 use wl_lints::{
     centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion,
@@ -304,7 +304,7 @@ impl CheckRule {
     ) -> ExpandConfig {
         ExpandConfig {
             rules: vec![ExpandRule {
-                command: wl_lints::util::split_command(&command),
+                command: wl_lint_api::util::split_command(&command),
                 glob,
                 marker,
                 auto_stage,
@@ -316,7 +316,7 @@ impl CheckRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wl_lints::LintId;
+    use wl_lint_api::LintId;
 
     #[test]
     fn into_lint_centralized_deps() {

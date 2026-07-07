@@ -7,9 +7,9 @@
 
 use std::path::Path;
 
-use crate::{Lint, LintContext, LintId};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_workspace;
+use wl_lint_api::{Lint, LintContext, LintId};
 
 #[cfg(test)]
 mod tests;
@@ -50,7 +50,10 @@ pub(crate) fn check() -> Vec<Diagnostic> {
 /// it. `-z` gives NUL-separated paths with no quoting, so non-ASCII / spaced
 /// names are handled verbatim (git otherwise C-quotes them by default).
 fn check_in(base: &Path) -> Vec<Diagnostic> {
-    let Ok(output) = crate::git::command(base).args(["ls-files", "-z"]).output() else {
+    let Ok(output) = wl_lint_api::git::command(base)
+        .args(["ls-files", "-z"])
+        .output()
+    else {
         return Vec::new();
     };
     if !output.status.success() {

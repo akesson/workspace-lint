@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::config::{GlobPattern, Globs};
+use wl_lint_api::config::{GlobPattern, Globs};
 
 /// `[duplicate-code]` — a *policy* lint: the table's presence is the opt-in
 /// (every field has a sensible default, so an empty table is a valid,
