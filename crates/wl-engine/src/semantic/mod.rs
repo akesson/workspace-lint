@@ -96,13 +96,16 @@ impl SemanticModel {
         // every per-config assembly so a `+test`/bench/integration edge can
         // resolve a target extracted only into another config's dir.
         let ids = join::IdentityIndex::build(&configs);
-        Ok(Self {
-            configs: configs
-                .into_iter()
-                .map(|(id, frags)| (id, Assembly::build(frags, std::sync::Arc::clone(&ids))))
-                .collect(),
-            meta,
-        })
+        // The per-config assemblies are independent (they share only the
+        // read-only `IdentityIndex` via `Arc`), so build them concurrently —
+        // one rayon task per `[engine] config`. `collect` into a `Vec`
+        // preserves matrix order (primary first), which `primary()` relies on.
+        use rayon::prelude::*;
+        let configs: Vec<(String, Assembly)> = configs
+            .into_par_iter()
+            .map(|(id, frags)| (id, Assembly::build(frags, std::sync::Arc::clone(&ids))))
+            .collect();
+        Ok(Self { configs, meta })
     }
 
     /// The primary config's assembly (defines the candidate set).

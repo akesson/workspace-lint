@@ -38,15 +38,15 @@
 
 use std::collections::BTreeMap;
 
-use super::assembly::Assembly;
+use super::assembly::{Assembly, DefMap, FastMap};
 use super::def_info::DefInfo;
 
 /// Owner → assoc-fn members: inherent members hang off their nominal self
 /// type, trait-declaration members off the trait. (Trait-impl members carry
 /// neither handle, so they're absent by construction.)
 pub(super) fn assoc_members_index(
-    defs: &BTreeMap<String, DefInfo>,
-    trait_parent: &BTreeMap<String, String>,
+    defs: &DefMap,
+    trait_parent: &FastMap<String, String>,
 ) -> BTreeMap<String, Vec<String>> {
     let mut assoc_members: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, def) in defs {
@@ -64,6 +64,13 @@ pub(super) fn assoc_members_index(
                 .push(key.clone());
         }
     }
+    // `defs` iterates in insertion order (it is an `IndexMap`), so sort each
+    // member list by key to make the enumeration deterministic and independent
+    // of that order — `owner_unmask` returns the *first* violating member, so
+    // its identity must not depend on fragment/item iteration order.
+    for members in assoc_members.values_mut() {
+        members.sort();
+    }
     assoc_members
 }
 
@@ -73,8 +80,8 @@ pub(super) fn assoc_members_index(
 /// (`Enum::Variant::field`) hops once more (variants aren't emitted).
 /// Underscore-prefixed fields are `dead_code`-exempt and stay out.
 pub(super) fn fields_of_index(
-    defs: &BTreeMap<String, DefInfo>,
-    id_key: &BTreeMap<String, String>,
+    defs: &DefMap,
+    id_key: &FastMap<String, String>,
 ) -> BTreeMap<String, Vec<String>> {
     let mut fields_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, def) in defs {
@@ -97,6 +104,11 @@ pub(super) fn fields_of_index(
                 .or_default()
                 .push(key.clone());
         }
+    }
+    // Deterministic order regardless of `defs` (an `IndexMap`) iteration —
+    // `has_unread_field` only `any()`s over these, but keep it order-stable.
+    for fields in fields_of.values_mut() {
+        fields.sort();
     }
     fields_of
 }

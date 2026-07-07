@@ -17,9 +17,9 @@
 //! the same identity before accumulating, so every count still lands under a
 //! local def and the `(crate, def_path)` identity union decides as before.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use super::assembly::FastMap;
 use super::store::FragmentBytes;
 
 /// Stable `DefPathHash` → the cross-config identity (`crate::module::…::name`)
@@ -28,7 +28,7 @@ use super::store::FragmentBytes;
 /// [`super::assembly::Assembly`] so each can resolve a foreign-generation edge
 /// target to a known identity.
 pub(super) struct IdentityIndex {
-    identity_of: BTreeMap<String, String>,
+    identity_of: FastMap<String, String>,
 }
 
 impl IdentityIndex {
@@ -36,7 +36,7 @@ impl IdentityIndex {
     /// globally unique, so a key seen in two configs names the same def and the
     /// two identities agree by construction — first-write (matrix order) wins.
     pub(super) fn build(configs: &[(String, Vec<FragmentBytes>)]) -> Arc<Self> {
-        let mut identity_of: BTreeMap<String, String> = BTreeMap::new();
+        let mut identity_of: FastMap<String, String> = FastMap::default();
         for (_, frags) in configs {
             for fb in frags {
                 let frag = fb.archived();
