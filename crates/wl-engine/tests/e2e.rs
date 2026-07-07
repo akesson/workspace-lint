@@ -63,7 +63,7 @@ fn vendored_extract_this_repo() {
     // Phase 2 over the real extraction (the orchestrate→semantic seam):
     // assembly succeeds, and wl-ir's schema types read as published API
     // surface (its crate declares publish intent), never as hard-dead.
-    let model = SemanticModel::load(&runs, &repo_root).expect("assemble");
+    let model = SemanticModel::load(&runs).expect("assemble");
     assert_eq!(model.config_ids().collect::<Vec<_>>(), ["default"]);
     let verdict = model.union_verdict();
     assert!(
