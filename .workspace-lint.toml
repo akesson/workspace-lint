@@ -61,10 +61,15 @@ glob = "crates/*"
 # `shipped_source`) and everything a lint builds on that isn't judgment (the
 # `Lint`/`LintId` vocabulary, config primitives, git/util helpers, and the
 # deletion/import-excision fix surgery — now `wl-lint-api`), keeping every
-# lint's judgment + diagnostics together. The ceiling stays at 4000: enough
-# headroom for a modest addition anywhere, tight enough that the next real
-# growth spurt trips it and prompts the next extraction rather than a higher
-# ceiling.
+# lint's judgment + diagnostics together. `wl-engine` tripped again after the
+# schema-8 glob work and shed its whole **Phase-1 tier** — the extractor
+# orchestration (vendor/build/drive + completeness guard), the
+# commands-as-configs parser, and the cfg-shadow `coverage` index — into
+# `wl-orchestrate`, leaving `wl-engine` the pure Phase-2 assembler that
+# re-exports it (so `dylint`/`anyhow` leave the assembler's dep graph). The
+# ceiling stays at 4000: enough headroom for a modest addition anywhere, tight
+# enough that the next real growth spurt trips it and prompts the next
+# extraction rather than a higher ceiling.
 max-code-lines = 4000
 
 # Name-invariant (Type-2) duplicate detection at the built-in thresholds

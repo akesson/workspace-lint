@@ -234,6 +234,7 @@ mod tests {
             "workspace_lint_marker.wlir",
             "wl_ir.wlir",
             "wl_engine.wlir",
+            "wl_orchestrate.wlir",
         ] {
             assert!(default.contains(frag), "{frag} missing from {default:?}");
         }
@@ -253,14 +254,14 @@ mod tests {
         // Build fragments are the cross-config half: package-keyed, config-
         // independent, and NEVER in the per-config expected set (a build unit
         // compiles once per shared target dir). This repo has exactly one
-        // build script: crates/wl-engine/build.rs (the extractor embedder).
+        // build script: crates/wl-orchestrate/build.rs (the extractor embedder).
         let build = set.build_fragments();
         assert_eq!(
             build.iter().map(String::as_str).collect::<Vec<_>>(),
-            ["wl_engine@build.wlir"]
+            ["wl_orchestrate@build.wlir"]
         );
-        assert!(!default.contains("wl_engine@build.wlir"));
-        assert!(!tests.contains("wl_engine@build.wlir"));
+        assert!(!default.contains("wl_orchestrate@build.wlir"));
+        assert!(!tests.contains("wl_orchestrate@build.wlir"));
     }
 
     /// Build-fragment enforcement is satisfied by ANY current config dir, and
@@ -271,21 +272,21 @@ mod tests {
         let default_dir = tmp.path().join("default");
         let tests_dir = tmp.path().join("tests"); // never created
         std::fs::create_dir_all(&default_dir).unwrap();
-        let names: BTreeSet<String> = ["wl_engine@build.wlir".to_string()].into();
+        let names: BTreeSet<String> = ["wl_orchestrate@build.wlir".to_string()].into();
 
         let dirs = vec![default_dir.clone(), tests_dir];
         assert_eq!(
             missing_build_fragments(&dirs, &names),
-            vec!["wl_engine@build.wlir"]
+            vec!["wl_orchestrate@build.wlir"]
         );
-        std::fs::write(default_dir.join("wl_engine@build.wlir"), b"{}").unwrap();
+        std::fs::write(default_dir.join("wl_orchestrate@build.wlir"), b"{}").unwrap();
         assert!(missing_build_fragments(&dirs, &names).is_empty());
     }
 
     /// Scoped runs scope the build set with the same package filter.
     #[test]
     fn package_filter_scopes_build_fragments() {
-        let with_build = TargetSet::discover(&repo_metadata(), &["wl-engine".to_string()]);
+        let with_build = TargetSet::discover(&repo_metadata(), &["wl-orchestrate".to_string()]);
         assert_eq!(with_build.build_fragments().len(), 1);
         let without = TargetSet::discover(&repo_metadata(), &["wl-ir".to_string()]);
         assert!(without.build_fragments().is_empty());

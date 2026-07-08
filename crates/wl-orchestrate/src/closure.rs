@@ -142,7 +142,7 @@ fn member_id_by_name<'a>(md: &'a cargo_metadata::Metadata, name: &str) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrate::command::parse_command;
+    use crate::command::parse_command;
 
     /// Hand-built `cargo metadata` JSON: `members` become workspace packages,
     /// `externals` registry packages; `edges` is `(from, to, kind)` with kind

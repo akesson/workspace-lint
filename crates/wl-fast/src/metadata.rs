@@ -340,6 +340,7 @@ mod tests {
                 "wl-ir",
                 "wl-lint-api",
                 "wl-lints",
+                "wl-orchestrate",
                 "workspace-lint",
                 "workspace-lint-marker",
             ]

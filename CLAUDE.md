@@ -18,7 +18,7 @@ options. This file covers the internal architecture.
 
 ## Workspace layout
 
-Eight crates under `crates/` (`members = ["crates/*"]`), plus the excluded
+Nine crates under `crates/` (`members = ["crates/*"]`), plus the excluded
 nightly `extractor/` package:
 
 - **`workspace-lint`** — the binary. The diagnostic pipeline, config loading,
@@ -42,16 +42,27 @@ nightly `extractor/` package:
   `SilenceAnchor` / `Suggestion`), the `DiagnosticBuilder`, and the three
   renderers (`human` / `json` / `github`). A leaf crate consumed by both
   `wl-lints` and the binary pipeline.
-- **`wl-engine`** — stable library: the rustc-backed tier. `semantic/`
-  assembles extracted IR fragments into the `SemanticModel` (cross-crate join
-  on `DefPathHash`, cfg-matrix union); `orchestrate/` parses the `[engine]
-  configs` cargo commands (`command.rs`), then vendors, builds, and drives the
-  extractor dylib. Re-exports `wl-fast` as `wl_engine::fast` (+ `timing`), so
-  consumers see one engine surface.
+- **`wl-engine`** — stable library: the rustc-backed tier's **Phase-2
+  assembler** and the single engine surface. `semantic/` assembles extracted
+  IR fragments into the `SemanticModel` (cross-crate join on `DefPathHash`,
+  cfg-matrix union). Re-exports `wl-orchestrate` as `wl_engine::orchestrate`
+  (+ `coverage`) and `wl-fast` as `wl_engine::fast` (+ `timing`), so consumers
+  keep one `wl_engine::…` entry point across both phases. `dylint`/`anyhow` are
+  Phase-1-only and *not* in this crate's dep graph — "Phase 2 is plain data"
+  is now a structural boundary, not just a convention.
+- **`wl-orchestrate`** — stable library: the rustc-backed tier's **Phase-1
+  orchestration**. Parses the `[engine] configs` cargo commands
+  (`command.rs` → `ConfigSpec`), then vendors (its `build.rs` embeds the
+  `extractor/` + `wl-ir` sources), builds, and drives the extractor dylib —
+  one `dylint::run` per config, completeness-guarded — producing the
+  `ExtractionRuns` the assembler consumes. Also hosts `coverage` (the
+  cfg-shadow index: which `#[cfg]` regions no declared config compiles).
+  Extracted from `wl-engine` when the Phase-1 machinery + the
+  commands-as-configs parser pushed it past the crate-size ceiling.
 - **`wl-fast`** — leaf crate: the build-free `FastModel` (cargo metadata,
   manifests, a lean syntactic module walker), the `cfg_regions` scan (which
   `#[cfg]`-gated byte ranges exist, with parsed predicates — the substrate of
-  `wl-engine::coverage`'s cfg-shadow index: regions no `[engine]` config
+  `wl-orchestrate::coverage`'s cfg-shadow index: regions no `[engine]` config
   compiles, used by unused-pub's "possibly used under `cfg(...)`" note and
   the `--fix-auto-delete` veto), `shipped_source` (the `#[cfg(test)]`-aware
   shipped-line counter behind file-size / crate-size / duplicate-code's
@@ -69,11 +80,14 @@ nightly `extractor/` package:
   `extractor/tests`.
 
 Strict layering: `workspace-lint` → `wl-lints` → `wl-lint-api` →
-{`wl-diagnostic`, `wl-engine`}. `wl-lints`, `wl-lint-api`, and `wl-diagnostic`
-are `publish = false`, so the deny-level `unused-pub` dogfood judges their
-`pub` APIs workspace-internally (which is why a helper reachable only from
-another crate's *test* code needs an allowlist entry — see the `render_one`
-note in `.workspace-lint.toml`).
+{`wl-diagnostic`, `wl-engine`} → `wl-orchestrate`. `wl-lints`, `wl-lint-api`,
+`wl-diagnostic`, and `wl-orchestrate` are `publish = false`, so the deny-level
+`unused-pub` dogfood judges their `pub` APIs workspace-internally (which is why
+a helper reachable only from another crate's *test* code needs an allowlist
+entry — see the `render_one` note in `.workspace-lint.toml`). `wl-engine` is
+`publish = true` (its `pub` API is treated as external, hence exempt) — the
+Phase-1 crate is `publish = false` precisely so that exemption doesn't hide
+dead orchestration API, the way it once did.
 
 `workspace-lint-marker` and `wl-ir` are published; CI gates them with
 `cargo publish --dry-run`.
@@ -179,14 +193,15 @@ points — is correct. Renderers are in `wl_diagnostic::render::{human,json,gith
 
 Two phases, forced by rustc's per-crate compilation model:
 
-- **Phase 1 — extract** (`wl-engine::orchestrate`): the binary vendors the
+- **Phase 1 — extract** (the `wl-orchestrate` crate, re-exported as
+  `wl_engine::orchestrate`): the binary vendors the
   `extractor/` sources (embedded at compile time via build.rs), materializes
   them to `~/.cache/workspace-lint/<binary-version>/`, builds the dylib once
   per toolchain, and runs one `dylint::run` (a wrapped `cargo check`) per
   `[engine] configs` entry with `--workspace` (a non-virtual workspace would
   otherwise make members mere dependency units — unlintable when warm). An
   entry is a *real cargo command* (`"cargo build"`, `"cargo test"`, `"cargo
-  build --target <triple> -p <pkg>"`) parsed by `orchestrate/command.rs`
+  build --target <triple> -p <pkg>"`) parsed by `wl-orchestrate`'s `command.rs`
   into a normalized `ConfigSpec` (strict closed parser; the default matrix
   is `["cargo build", "cargo test"]`). Each
   crate's `LateLintPass` writes an `IrFragment` (defs + resolved reference
@@ -200,7 +215,7 @@ Two phases, forced by rustc's per-crate compilation model:
   fragments valid without re-runs; the **completeness guard** covers the one
   hole (`WL_IR_OUT` isn't in cargo's fingerprint): expected-vs-present check,
   one forced re-lint, then a hard error. The re-lint force lever is a dylib
-  *generation* bump (`orchestrate/relink.rs`): the dylib reaches dylint via
+  *generation* bump (`wl-orchestrate`'s `relink.rs`): the dylib reaches dylint via
   an mtime-keyed hard-link path, so a mtime bump changes the `DYLINT_LIBS`
   value every member unit env-dep-tracks — including units whose dep-info
   lost the dylib *file*-dep by recompiling as a non-primary unit (dylint's
@@ -225,7 +240,7 @@ Two phases, forced by rustc's per-crate compilation model:
   configs, verdicts union on the `(crate, def_path)` identity (hash and
   identity are duals: the hash is exact within the universe, the identity
   stable across re-extraction). Derived indexes (reachability,
-  re-export chains, signature exposure, dispatch, dep matrix) live here, not
+  re-export chains, signature exposure, dispatch) live here, not
   in the extractor: the emit vocabulary stays minimal ground facts, every
   derivation testable on stable.
 

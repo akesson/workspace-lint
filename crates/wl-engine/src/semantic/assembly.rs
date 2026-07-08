@@ -48,17 +48,11 @@ pub struct Assembly {
     /// [`DegreeMaps`]. `pub(super)` so the union/collateral folds can read
     /// `foreign_reach` alongside the recomputed overlays.
     pub(super) degrees: DegreeMaps,
-    /// (from-crate, defining-crate) → edge count, workspace-internal only,
-    /// counting ALL edges (imports included — importing B's item uses B).
-    pub(super) dep_matrix: BTreeMap<(String, String), usize>,
     /// Crates referenced by *some other* fragment crate (the dependency-leaf
     /// proxy — the boundary fallback when no metadata is available).
     referenced: BTreeSet<String>,
     /// `use`/re-export edges discounted from the reverse index.
     pub(super) import_edges: usize,
-    /// Trait-item key → the impl-item keys implementing it (the dispatch
-    /// linkage: a dispatched trait method reaches every impl of it).
-    impls_of: BTreeMap<String, Vec<String>>,
     /// Trait-*member* key → the owning trait declaration's key. A method-call
     /// edge resolves to the member def (`parent_kind == "trait"`, never a
     /// candidate); the trait itself is only reachable through its members at
@@ -120,7 +114,6 @@ pub struct Assembly {
 struct EdgeFold {
     in_degree: BTreeMap<String, usize>,
     intra_degree: BTreeMap<String, usize>,
-    dep_matrix: BTreeMap<(String, String), usize>,
     referenced: BTreeSet<String>,
     import_edges: usize,
     signature_exposed: BTreeSet<String>,
@@ -169,11 +162,10 @@ impl Assembly {
             .map(|f| f.crate_name.as_str().to_owned())
             .collect();
         // 1) Global def index (keyed by the cross-crate-stable DefPathHash) +
-        //    the trait→impls linkage + the module-visibility table (the
-        //    pub-module-hop substrate) + `id_key` (identity → this config's
-        //    key, the landing map for a cross-config global-join hit).
+        //    the module-visibility table (the pub-module-hop substrate) +
+        //    `id_key` (identity → this config's key, the landing map for a
+        //    cross-config global-join hit).
         let mut defs = DefMap::default();
-        let mut impls_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut module_vis = BTreeMap::new();
         let mut id_key: FastMap<String, String> = FastMap::default();
         let mut trait_members: Vec<(String, String)> = Vec::new();
@@ -181,12 +173,6 @@ impl Assembly {
             let frag = fb.archived();
             for it in frag.items.iter() {
                 let category = Category::of(it.parent_kind.as_deref(), it.trait_item.as_deref());
-                if let Some(ti) = it.trait_item.as_deref() {
-                    impls_of
-                        .entry(ti.to_owned())
-                        .or_default()
-                        .push(it.key.as_str().to_owned());
-                }
                 if it.parent_kind.as_deref() == Some("trait") && it.path.len() > 1 {
                     trait_members.push((
                         it.key.as_str().to_owned(),
@@ -281,10 +267,8 @@ impl Assembly {
             crates,
             defs,
             degrees: DegreeMaps::default(),
-            dep_matrix: BTreeMap::new(),
             referenced: BTreeSet::new(),
             import_edges: 0,
-            impls_of,
             assoc_members,
             fields_of,
             trait_parent,
@@ -350,7 +334,6 @@ impl Assembly {
         }
 
         asm.degrees = fold.take_degrees();
-        asm.dep_matrix = fold.dep_matrix;
         asm.referenced = fold.referenced;
         asm.import_edges = fold.import_edges;
         asm.import_targets = fold.import_targets;
@@ -425,8 +408,8 @@ impl Assembly {
     /// any def it segment-covers, so a callee that def solely reached falls to
     /// zero in-degree; the build pass passes `None`. Two edge policies:
     /// `in_degree`/`intra_degree` count only real use-sites (`!import`) so a
-    /// `pub use` can't mask a dead name; `dep_matrix`/`referenced` count every
-    /// cross-crate edge (importing B's item is a use of B).
+    /// `pub use` can't mask a dead name; `referenced` counts every cross-crate
+    /// edge (importing B's item is a use of B).
     fn fold_edges(&self, removed: Option<&RemovalSet>) -> EdgeFold {
         let mut f = EdgeFold::default();
         for fb in &self.fragments {
@@ -472,9 +455,6 @@ impl Assembly {
                 // dependency edge.
                 let from_crate = e.from.first().map(|s| s.as_str()).unwrap_or_default();
                 if from_crate != def.krate {
-                    *f.dep_matrix
-                        .entry((from_crate.to_string(), def.krate.clone()))
-                        .or_insert(0) += 1;
                     f.referenced.insert(def.krate.clone());
                 }
                 if e.import {
@@ -568,7 +548,7 @@ impl Assembly {
     ///
     /// Shares [`Assembly::fold_edges`] with the build pass (so the cross-config
     /// global join applies to the cascade too); the fold's deletion-invariant
-    /// outputs (`dep_matrix`, import maps, …) are recomputed and discarded here.
+    /// outputs (`referenced`, import maps, …) are recomputed and discarded here.
     pub(super) fn refold_excluding(&self, removed: &RemovalSet) -> DegreeMaps {
         self.fold_edges(Some(removed)).take_degrees()
     }
@@ -787,30 +767,6 @@ impl Assembly {
             entry.reached |= reached;
         }
         out
-    }
-
-    /// Workspace-wide count of intra-crate-only references to `key` — kept for
-    /// diagnostics that explain what the cross-crate join changed.
-    pub fn intra_degree(&self, key: &str) -> usize {
-        self.degrees.intra_degree.get(key).copied().unwrap_or(0)
-    }
-
-    /// The impl-item keys implementing a trait item (dispatch linkage).
-    pub fn impls_of(&self, trait_item_key: &str) -> &[String] {
-        self.impls_of
-            .get(trait_item_key)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    /// The workspace crates `krate` references under this config (all edge
-    /// kinds — importing another crate's item is a real use of that crate).
-    pub fn crates_referenced_by(&self, krate: &str) -> BTreeSet<&str> {
-        self.dep_matrix
-            .keys()
-            .filter(|(from, _)| from == krate)
-            .map(|(_, to)| to.as_str())
-            .collect()
     }
 
     /// `use`/re-export edges discounted from the unused-pub reverse index —

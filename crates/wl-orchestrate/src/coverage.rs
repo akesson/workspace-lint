@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use crate::orchestrate::{ConfigSpec, Kinds};
+use crate::{ConfigSpec, Kinds};
 use wl_fast::FastModel;
 use wl_fast::cfg_regions::{CfgAtom, CfgPredicate, CfgRegion, scan_target};
 
@@ -108,17 +108,13 @@ impl CfgShadow {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.regions.is_empty()
-    }
-
     /// Does any shadowed region in a crate that can name `candidate_crate`'s
     /// items (a dependent, or itself) plausibly mention the candidate?
     /// `segments` is `[name]` for free items and `[parent, name]` for assoc
     /// items (matched as `Parent::name` or the `.name(` / `.name::<`
     /// method-call forms — a bare method name alone would veto every unused
     /// `new` in the workspace).
-    /// [`Self::mention`] keyed by a candidate identity
+    /// The `mention` query keyed by a candidate identity
     /// (`crate::module::…::name`): assoc items — a type-like (uppercase)
     /// second-to-last segment — query the qualified forms, free items their
     /// bare name.
@@ -137,7 +133,11 @@ impl CfgShadow {
         }
     }
 
-    pub fn mention(&self, candidate_crate: &str, segments: &[&str]) -> Option<&ShadowRegion> {
+    pub(crate) fn mention(
+        &self,
+        candidate_crate: &str,
+        segments: &[&str],
+    ) -> Option<&ShadowRegion> {
         let visible_from = self.visible.get(candidate_crate)?;
         self.regions
             .iter()
@@ -406,7 +406,7 @@ fn render(pred: &CfgPredicate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrate::parse_command;
+    use crate::parse_command;
     use wl_fast::cfg_regions::{CfgAtom, CfgPredicate};
 
     fn kv(key: &str, value: &str) -> CfgPredicate {
