@@ -50,6 +50,7 @@ impl DuplicateCode {
 
 impl LintImpl for DuplicateCode {
     const ID: LintId = LintId::DuplicateCode;
+    const DOC: &'static str = include_str!("DOC.md");
     // Semantic: the classifier's merge family confirms two "identical" fns are
     // interchangeable against the rustc call graph (an IR-only fact). The lint
     // is either skipped (`--fast-only`) or runs at full accuracy — never a

@@ -33,6 +33,7 @@ impl Default for ModuleTree {
 
 impl LintImpl for ModuleTree {
     const ID: LintId = LintId::ModuleTree;
+    const DOC: &'static str = include_str!("DOC.md");
     const REQUIRES: Requirements = Requirements {
         needs_fast: true,
         needs_semantic: false,

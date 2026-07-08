@@ -58,6 +58,7 @@ impl Architecture {
 
 impl LintImpl for Architecture {
     const ID: LintId = LintId::Architecture;
+    const DOC: &'static str = include_str!("DOC.md");
     // Semantic judgment; fast for member names (rule `from` globs match
     // *package* names) and workspace-relative anchor paths.
     const REQUIRES: Requirements = Requirements {

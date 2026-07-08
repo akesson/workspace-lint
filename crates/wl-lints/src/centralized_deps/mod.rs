@@ -24,6 +24,7 @@ impl Default for CentralizedDeps {
 
 impl LintImpl for CentralizedDeps {
     const ID: LintId = LintId::CentralizedDeps;
+    const DOC: &'static str = include_str!("DOC.md");
     const REQUIRES: Requirements = Requirements {
         needs_fast: true,
         needs_semantic: false,

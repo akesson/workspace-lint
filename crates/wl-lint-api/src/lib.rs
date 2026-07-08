@@ -65,6 +65,13 @@ pub trait LintImpl: 'static {
         needs_fast: false,
         needs_semantic: false,
     };
+    /// The lint's full user-facing documentation (Markdown). Sourced from the
+    /// lint dir's `DOC.md` via `include_str!` so the prose lives beside the
+    /// judgment it describes and can't drift out of the tree. Surfaced by
+    /// `workspace-lint explain <lint>` and the `check <lint> --help` long help,
+    /// and schema-checked by the binary's `docs` tests. No default — a new
+    /// lint must ship its documentation.
+    const DOC: &'static str;
     /// The check itself (see [`Lint::check`]).
     fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic>;
 }

@@ -16,8 +16,9 @@
 //!   = note: `#[warn(workspace_lint::<lint_ident>)]` on by default
 //! ```
 //!
-//! Followed by a final summary line: `warning: workspace-lint generated N
-//! warnings`.
+//! Followed by a final summary line (`workspace-lint: generated N warnings`)
+//! and, whenever anything fired, a pointer to `workspace-lint explain <lint>`
+//! listing the lints that reported.
 
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -199,6 +200,18 @@ fn write_summary(diagnostics: &[Diagnostic], out: &mut dyn Write) -> io::Result<
     } else {
         writeln!(out, "workspace-lint: generated {head}")?;
     }
+    // Point at `explain` for the lints that fired, rustc-style ("Some errors
+    // have detailed explanations: …"). Every lint is documented, so it's a
+    // plain pointer, not a "some of these" caveat. Human format only — the
+    // machine formats already carry the lint id per finding.
+    let mut lints: Vec<&str> = diagnostics.iter().map(Diagnostic::lint_short).collect();
+    lints.sort_unstable();
+    lints.dedup();
+    writeln!(
+        out,
+        "workspace-lint: run `workspace-lint explain <lint>` for the full documentation ({})",
+        lints.join(", ")
+    )?;
     Ok(())
 }
 
@@ -290,5 +303,24 @@ mod tests {
     fn empty_diagnostics_says_all_passed() {
         let s = render_all(&[]);
         assert!(s.contains("all passed"));
+    }
+
+    #[test]
+    fn summary_points_at_explain_for_distinct_fired_lints() {
+        let ds = vec![
+            at_workspace("workspace-lint::unused-pub", "y").build(),
+            at_workspace("workspace-lint::file-size", "y").build(),
+            at_workspace("workspace-lint::file-size", "y").build(),
+        ];
+        let s = render_all(&ds);
+        assert!(s.contains(
+            "workspace-lint: run `workspace-lint explain <lint>` for the full documentation \
+             (file-size, unused-pub)"
+        ));
+    }
+
+    #[test]
+    fn clean_run_has_no_explain_pointer() {
+        assert!(!render_all(&[]).contains("explain"));
     }
 }

@@ -10,3 +10,4 @@ error: deleted file `crates/demo/src/b.rs` is still tracked by git
   = help: run `git rm crates/demo/src/b.rs` to stage the removal
 
 workspace-lint: generated 2 errors
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (stale-git-index)

@@ -8,3 +8,4 @@ help: if intentional, silence with:
   = note: `#[deny(workspace_lint::unknown_lint)]` on by default
 
 workspace-lint: generated 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unknown-lint)

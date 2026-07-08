@@ -19,3 +19,4 @@ error: duplicated code: 2 structurally identical instances (~6 lines)
   = note: also found at: crates/demo/src/lib.rs:56
 
 workspace-lint: generated 1 warning, 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (duplicate-code)

@@ -2,8 +2,7 @@
 //! and `# workspace-lint: allow(...)`/`expect(...)` comments from TOML and
 //! Markdown. Rust files additionally accept a **line-comment** directive form
 //! (`// workspace-lint: allow|expect(...)`) so an item-level finding can be
-//! silenced without depending on the `workspace-lint-marker` crate — this is
-//! the form `--fix` writes when deep verification disproves a finding.
+//! silenced without depending on the `workspace-lint-marker` crate.
 //!
 //! Each directive becomes a [`Directive`] entry in the
 //! [`crate::suppress::SuppressionMap`]. Diagnostics whose lint name and
@@ -180,8 +179,7 @@ fn scan_rust(
 /// line. This is the marker-crate-free way to silence an item-level finding
 /// (`unused-pub`): write the comment immediately above the item
 /// and the suppression lookback (up to `LOOKBACK_FORWARD` lines, see
-/// [`crate::suppress`]) binds it to the finding below. It's the form `--fix`
-/// writes for a deep-verification-disproved finding.
+/// [`crate::suppress`]) binds it to the finding below.
 ///
 /// Deliberately narrow to avoid false suppression: the directive text must
 /// *start* the line (after the `//`), so doc comments (`///`, `//!` both leave
@@ -348,8 +346,27 @@ fn scan_text(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
         return;
     };
     let re = directive_regex();
+    // In Markdown, directive-looking lines inside a fenced code block are
+    // documentation examples, not live directives — the scanner strips `#` /
+    // `//` markers, so a `# workspace-lint: expect(...)` shown in a code sample
+    // would otherwise be treated as a real directive (which is why prose docs
+    // once needed an HTML-comment escape hatch). A line whose first non-space
+    // characters are ``` or ~~~ toggles the fence. `.toml` has no such
+    // construct, so its scanning is unchanged.
+    let is_markdown = rel.extension().and_then(|e| e.to_str()) == Some("md");
+    let mut in_fence = false;
     for (idx, raw) in content.lines().enumerate() {
         let line_no = (idx + 1) as u32;
+        if is_markdown {
+            let trimmed = raw.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+        }
         // Trim the leading comment marker if any.
         let body = raw
             .trim_start()

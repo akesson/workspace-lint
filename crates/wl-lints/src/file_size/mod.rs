@@ -36,6 +36,7 @@ impl FileSize {
 
 impl LintImpl for FileSize {
     const ID: LintId = LintId::FileSize;
+    const DOC: &'static str = include_str!("DOC.md");
 
     fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
         check(&self.config)

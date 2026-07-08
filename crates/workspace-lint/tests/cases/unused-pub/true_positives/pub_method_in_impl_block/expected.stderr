@@ -15,3 +15,4 @@ help: if intentional, silence with:
   = note: `#[deny(workspace_lint::unused_pub)]` on by default
 
 workspace-lint: generated 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unused-pub)

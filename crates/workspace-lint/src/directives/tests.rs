@@ -251,6 +251,51 @@ fn parses_html_comment_directive() {
 }
 
 #[test]
+fn md_directive_inside_a_fence_is_ignored() {
+    let tmp = TempDir::new().unwrap();
+    // A directive shown inside a fenced code block is documentation, not a
+    // live directive — the per-lint `DOC.md` pages depend on this.
+    write(
+        tmp.path(),
+        "README.md",
+        "Example:\n```toml\n# workspace-lint: allow(freshness)\n```\nDone.\n",
+    );
+    assert!(
+        scan(tmp.path()).is_empty(),
+        "a directive inside a Markdown fence must not be scanned"
+    );
+}
+
+#[test]
+fn md_directive_after_a_fence_still_fires() {
+    let tmp = TempDir::new().unwrap();
+    // The fence closes; a real directive in prose below it still counts.
+    write(
+        tmp.path(),
+        "README.md",
+        "```toml\n# workspace-lint: allow(unused-deps)\n```\n// workspace-lint: allow(freshness)\n",
+    );
+    let directives = scan(tmp.path());
+    assert_eq!(directives.len(), 1);
+    assert_eq!(directives[0].lint, "freshness");
+}
+
+#[test]
+fn toml_is_unaffected_by_fence_markers() {
+    let tmp = TempDir::new().unwrap();
+    // ``` is not a fence in TOML (only Markdown gets fence handling); a
+    // directive comment after such a line still fires.
+    write(
+        tmp.path(),
+        "config.toml",
+        "# ```\n# workspace-lint: allow(unused-deps)\n",
+    );
+    let directives = scan(tmp.path());
+    assert_eq!(directives.len(), 1);
+    assert_eq!(directives[0].lint, "unused-deps");
+}
+
+#[test]
 fn ignores_unrelated_toml_comments() {
     let tmp = TempDir::new().unwrap();
     write(

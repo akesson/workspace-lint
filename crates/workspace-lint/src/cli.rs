@@ -60,6 +60,15 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         rule: CheckRule,
     },
+    /// Print a lint's full documentation. Accepts the short name
+    /// (`unused-pub`) or the full id (`workspace-lint::unused-pub`), and
+    /// covers all lints — including `architecture` (TOML-only, no `check`
+    /// subcommand) and the pipeline meta lints `config` / `stale-expect` /
+    /// `unknown-lint`. The same text is the `check <lint> --help` long help.
+    Explain {
+        /// Lint name to document (e.g. `unused-pub`).
+        lint: String,
+    },
     /// Scaffold a default `.workspace-lint.toml` at the workspace root
     Init {
         /// Overwrite an existing `.workspace-lint.toml`
@@ -98,8 +107,10 @@ pub(crate) enum Commands {
 #[derive(Subcommand)]
 pub(crate) enum CheckRule {
     /// Check that workspace dependencies are centralized
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::CentralizedDeps))]
     CentralizedDeps,
     /// Check file sizes against limits
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::FileSize))]
     FileSize {
         /// Glob pattern for files to check
         #[arg(long)]
@@ -109,6 +120,7 @@ pub(crate) enum CheckRule {
         max_code_lines: usize,
     },
     /// Check crate sizes against limits
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::CrateSize))]
     CrateSize {
         /// Glob pattern for crates to check
         #[arg(long)]
@@ -121,6 +133,7 @@ pub(crate) enum CheckRule {
         include: Vec<String>,
     },
     /// Check for structurally identical (Type-2) duplicated code
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::DuplicateCode))]
     DuplicateCode {
         /// Minimum source lines a region must span to be considered
         #[arg(long, default_value_t = DuplicateCodeConfig::default().min_lines)]
@@ -180,6 +193,7 @@ pub(crate) enum CheckRule {
         exclude: Vec<String>,
     },
     /// Check that files are fresher than their dependencies
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::Freshness))]
     Freshness {
         /// Glob pattern for files to check
         #[arg(long)]
@@ -189,6 +203,7 @@ pub(crate) enum CheckRule {
         depends_on: String,
     },
     /// Check that a CLI tool version matches the crate version
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::CliCrateVersion))]
     CliCrateVersion {
         /// Command to run (e.g. "wasm-bindgen --version")
         #[arg(long)]
@@ -201,12 +216,14 @@ pub(crate) enum CheckRule {
         crate_name: String,
     },
     /// Check for unused dependencies
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::UnusedDeps))]
     UnusedDeps {
         /// Dependencies to ignore
         #[arg(long)]
         ignore: Vec<String>,
     },
     /// Check for unused public items via the resolver-backed cross-crate index
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::UnusedPub))]
     UnusedPub {
         /// Crates to exclude from analysis
         #[arg(long)]
@@ -226,10 +243,13 @@ pub(crate) enum CheckRule {
         suppress_intra_crate: bool,
     },
     /// Check module-tree structural integrity (broken `mod`s, orphan files)
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::ModuleTree))]
     ModuleTree,
     /// Check for feature drift (declared-but-unused / undeclared features)
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::FeatureDrift))]
     FeatureDrift,
     /// Check for paths tracked by git that no longer exist on disk
+    #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::StaleGitIndex))]
     StaleGitIndex,
 }
 
@@ -462,7 +482,8 @@ mod tests {
         use clap::CommandFactory;
         // Not runnable on demand: `config`/`unknown-lint`/`stale-expect` are
         // pipeline findings (config audit / suppression pass), and
-        // `architecture` rules are too structured for flags — TOML-only.
+        // `architecture` rules are too structured for flags — TOML-only. All
+        // four are still documented via `workspace-lint explain <lint>`.
         let non_checkable = [
             LintId::Architecture,
             LintId::Config,

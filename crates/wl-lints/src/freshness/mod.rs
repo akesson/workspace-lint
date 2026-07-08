@@ -33,6 +33,7 @@ impl Freshness {
 
 impl LintImpl for Freshness {
     const ID: LintId = LintId::Freshness;
+    const DOC: &'static str = include_str!("DOC.md");
 
     fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
         check(&self.config)
