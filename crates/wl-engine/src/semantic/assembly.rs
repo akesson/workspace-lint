@@ -432,6 +432,12 @@ impl Assembly {
         for fb in &self.fragments {
             let frag = fb.archived();
             for e in frag.references.iter() {
+                // A trait-scope fact is import-resolution evidence, not a
+                // use-site: the method call it certifies has its own edge,
+                // so counting it here would double the trait's in-degree.
+                if e.trait_scope {
+                    continue;
+                }
                 // The removed item's own use-sites disappear with it.
                 if removed.is_some_and(|r| r.covers(&e.from)) {
                     continue;
@@ -544,56 +550,6 @@ impl Assembly {
         self.fragments.iter().map(|f| f.archived())
     }
 
-    /// Reachability of a candidate def under this single-config assembly.
-    /// Direct use-site first; then, for a trait-impl item, dispatch expansion
-    /// off its `trait_item`: an external trait is a root (invisible dispatch),
-    /// an internal one is reached iff its method is dispatched anywhere.
-    /// Export-shaped attributes root a def unconditionally (linker-visible,
-    /// no Rust referrer possible). Module-level and inherent-impl items carry
-    /// no `trait_item`, so they fall through to Direct-or-Unreached.
-    pub fn reach_of(&self, key: &str, def: &DefInfo) -> Reach {
-        self.reach_with(key, def, &self.degrees.in_degree)
-    }
-
-    /// [`Assembly::reach_of`] against an explicit in-degree map — the
-    /// unused-pub `--fix` cascade passes a [`RemovalOverlay`]'s recomputed
-    /// in-degree so a def whose only referrers were deleted this pass reads as
-    /// `Unreached` (dispatch reachability follows too: a trait item loses its
-    /// `InternalDispatch` when its last dispatcher is removed).
-    ///
-    /// The dispatch lookups stay **local** (`self.defs` / `in_degree`, not the
-    /// global cross-config index): a global miss falls through to
-    /// `ExternalDispatch` = reached, the sound (never-a-false-lead) direction,
-    /// and trait-impl items are judged but never *flagged* by the lint anyway;
-    /// the identity union already ORs in the primary config's dispatch verdict.
-    pub(super) fn reach_with(
-        &self,
-        key: &str,
-        def: &DefInfo,
-        in_degree: &BTreeMap<String, usize>,
-    ) -> Reach {
-        // Export roots win over Direct: a proc-macro entry point picks up a
-        // phantom intra-crate edge from the compiler-synthesized `_DECLS`
-        // registration, and Direct would let that edge read as "only used
-        // inside the crate" — narrowing a `#[proc_macro_derive]` fn is a hard
-        // compile error.
-        if def.export_root {
-            return Reach::ExportRoot;
-        }
-        if in_degree.contains_key(key) {
-            return Reach::Direct;
-        }
-        if let Some(ti) = &def.trait_item {
-            if !self.defs.contains_key(ti) {
-                return Reach::ExternalDispatch; // trait defined outside the workspace
-            }
-            if in_degree.contains_key(ti) {
-                return Reach::InternalDispatch; // internal trait method is dispatched
-            }
-        }
-        Reach::Unreached
-    }
-
     /// Borrow the prebuilt removal-sensitive indexes — the no-removal degree
     /// source for [`super::pub_usage::compute`].
     pub(super) fn degree_view(&self) -> DegreeView<'_> {
@@ -688,7 +644,7 @@ impl Assembly {
                 continue;
             }
             for e in frag.references.iter() {
-                if e.in_signature {
+                if e.in_signature || e.trait_scope {
                     continue;
                 }
                 // Canonical target: the *definition* path when the target is

@@ -187,6 +187,17 @@ fn fix_unused_pub_cfg_veto() {
 }
 
 #[test]
+fn fix_unused_pub_glob_import() {
+    // The glob-import cleanup (LeaveDates 2026-07-07, `feature-state/util.rs`):
+    // deleting a module's last consumer of `use demo::prelude::*;` removes the
+    // glob statement too — judged by the resolver-grounded accounting
+    // (glob_map names + trait_scope facts), which keeps the glob wherever a
+    // survivor still leans on it (a `widget!` invocation, a trait-method
+    // call) and never touches a pre-existing unused one (causality).
+    run_fix_fixture("fix__unused_pub_glob_import");
+}
+
+#[test]
 fn fix_unused_pub_delete_unmask_field() {
     // The deletion-unmask veto, field flavor (LeaveDates 2026-07-07,
     // `PopoverMenuClose.is_open`): unused `open_state` holds the LAST read of

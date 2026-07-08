@@ -1,0 +1,11 @@
+# Cross-crate `$crate` probe dep: an exported macro_rules! whose expansion
+# names its own crate via `$crate` — the tracing::debug! shape. Used by the
+# glob probe (P6) to pin how such paths reach HIR when expanded in ANOTHER
+# crate (the local-macro case looks different — see ../glob/src/prelude.rs).
+[package]
+name = "probe-macrodep"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]

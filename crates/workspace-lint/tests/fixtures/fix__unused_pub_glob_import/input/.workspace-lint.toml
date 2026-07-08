@@ -1,0 +1,16 @@
+# The glob-import cleanup (the LeaveDates `use dioxus::prelude::*;` incident):
+# deleting a module's last consumer of a glob must remove the glob too (an
+# `unused_imports` warning is a `-D warnings` failure) — but ONLY when the
+# resolver-grounded accounting proves nothing surviving leans on it. Four
+# modules, one rule each: `gone` (all users deleted → glob goes),
+# `kept_macro` (a surviving `widget!` invocation keeps it), `kept_trait`
+# (a surviving trait-method call keeps it), `stale` (a pre-existing unused
+# glob is the author's — causality, never touched).
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

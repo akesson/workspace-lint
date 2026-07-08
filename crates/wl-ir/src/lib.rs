@@ -75,7 +75,18 @@ use serde::{Deserialize, Serialize};
 /// the header gate. Under a layout-exact archive, every *future* field addition
 /// must bump this too (see the compatibility model in the module docs) — the
 /// additive `#[serde(default)]` tolerance no longer applies to the transport.
-pub const SCHEMA_VERSION: u32 = 7;
+/// 8 — the glob-import cleanup substrate: glob `use` edges gained
+/// [`RefEdge::decl_span`] (the whole-statement delete surface) and
+/// [`RefEdge::glob_used_names`] (the resolver's glob_map — which names
+/// actually resolved through this glob), and two new facts landed:
+/// [`RefEdge::trait_scope`] (typeck's `used_trait_imports` — a body's method
+/// resolution needed this `use` item's target in scope) and
+/// [`RefEdge::extern_root`] (the written root bypassed every local import).
+/// A pre-8 fragment carries none of them, so the cascade would silently
+/// never clean a deletion-orphaned `use m::*;` (an `unused_imports` warning
+/// on the fixed tree, a `-D warnings` failure) — the misleading-absence bump
+/// trigger, same as bump 3.
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
@@ -222,6 +233,33 @@ pub struct RefEdge {
     /// records the alias). `None` for glob/list-stem imports and non-imports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// For a **glob** `import` edge: the names rustc's resolver recorded as
+    /// actually resolved *through this glob* (`names_imported_by_glob_use` —
+    /// the resolver's glob_map, the same fact rustc's `unused_imports` and
+    /// clippy's `wildcard_imports` consult), sorted for determinism. Empty ⇒
+    /// the resolver saw no use of the glob at all. This is the
+    /// rendering-independent name evidence the glob-dangling accounting is
+    /// built on: display paths for the same def can diverge
+    /// (`dioxus_core::Element` vs `dioxus::prelude::Element`), final-segment
+    /// names cannot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub glob_used_names: Vec<String>,
+    /// `true` iff this edge records "some body owned by `from` needed the
+    /// target's `use` item in scope for **method resolution**" (typeck's
+    /// `used_trait_imports`). For a single-name `use` the target is the
+    /// trait; for a glob it is the glob's module. NOT a written path:
+    /// consumers must segregate it from name-resolution evidence (it exists
+    /// so a glob kept alive only by trait-method syntax — invisible to both
+    /// written paths and the glob_map — is still visibly load-bearing).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trait_scope: bool,
+    /// `true` iff the written path's first segment resolved to an **extern
+    /// crate root** — the resolution bypassed every local `use`. Generalizes
+    /// [`RefEdge::via`] (which is only set when the written root differs from
+    /// the defining crate). The glob-dangling belt-and-braces rule uses it to
+    /// ignore survivors that cannot have resolved through any import.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub extern_root: bool,
     /// The extern crate named by the path's first segment *as written*, when
     /// it differs from the crate defining the resolved target: `use
     /// shim::Item` where `shim` merely re-exports another crate's `Item`.
@@ -247,7 +285,9 @@ pub struct RefEdge {
     /// leaf belongs to (the enclosing HIR `use` item). Every leaf lowered from
     /// one source declaration shares it, so it is the grouping key the
     /// unused-pub `--fix` uses to tell a sole-leaf import (delete the whole
-    /// statement) from a brace-list leaf (excise just the leaf). `None` for
+    /// statement) from a brace-list leaf (excise just the leaf). A **glob**
+    /// edge carries it too (its whole-statement delete surface; a glob has no
+    /// `elem_span`, so [`RefEdge::glob`] is its discriminator). `None` for
     /// non-import edges and macro-generated `use`s (no editable declaration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decl_span: Option<Span>,
@@ -688,7 +728,7 @@ mod transport_tests {
         );
         assert_eq!(
             size_of::<ArchivedRefEdge>(),
-            164,
+            176,
             "ArchivedRefEdge layout changed"
         );
         assert_eq!(size_of::<ArchivedSpan>(), 24, "ArchivedSpan layout changed");
