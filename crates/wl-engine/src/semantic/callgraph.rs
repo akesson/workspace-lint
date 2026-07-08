@@ -195,7 +195,14 @@ impl CallGraph {
         let mut out = BTreeSet::new();
         for loc in self.covered_out(identity) {
             let (asm, e) = Self::edge_at(configs, loc);
-            if e.import || e.trait_scope {
+            // A `param`-kind edge references a generic/const parameter, not a
+            // call target — and its identity is fn-scoped (`<fn>::impl Trait`,
+            // `<fn>::T`), so it can never equal another fn's, which would break
+            // the callee-set equality (IR-confirm) contract on two otherwise
+            // interchangeable copies. Argument-position `impl Trait` is the
+            // common trigger. Excluding it is also semantically right: you
+            // don't *call* a type parameter.
+            if e.import || e.trait_scope || e.to_kind.as_str() == "param" {
                 continue;
             }
             let (target, resolved) = match asm.target_identity(e) {

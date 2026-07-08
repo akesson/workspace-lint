@@ -162,6 +162,7 @@ fn call_sites_note(cs: &CallSites) -> String {
 pub(crate) struct Classifier<'a> {
     resolver: MetaResolver<'a>,
     type_names: BTreeSet<String>,
+    trait_names: BTreeSet<String>,
     component_macros: BTreeSet<String>,
     model: Option<&'a SemanticModel>,
 }
@@ -174,9 +175,11 @@ impl<'a> Classifier<'a> {
     ) -> Self {
         let mut resolver = MetaResolver::new(files);
         let type_names = resolver.defined_type_names().clone();
+        let trait_names = resolver.defined_trait_names().clone();
         Self {
             resolver,
             type_names,
+            trait_names,
             component_macros: component_macros.iter().cloned().collect(),
             model,
         }
@@ -191,7 +194,7 @@ impl<'a> Classifier<'a> {
 
         // 1. A trait method duplicated across impls → a default method.
         if let Some(ms) = &metas
-            && let Some(c) = default_trait_method(ms)
+            && let Some(c) = default_trait_method(ms, &self.trait_names)
         {
             return c;
         }
@@ -236,8 +239,11 @@ impl<'a> Classifier<'a> {
     }
 }
 
-/// Class 1: every instance is a trait-impl method of the same name and trait.
-fn default_trait_method(ms: &[FnMeta]) -> Option<RefactoringClass> {
+/// Class 1: every instance is a trait-impl method of the same name and trait,
+/// and that trait is workspace-defined — the fix ("add a default method") is
+/// only reachable if you own the trait. A foreign trait (`std`'s `TryFrom`,
+/// `From`, …) can't take a default method here, so it falls through.
+fn default_trait_method(ms: &[FnMeta], trait_names: &BTreeSet<String>) -> Option<RefactoringClass> {
     let first = ms.first()?;
     let FnOwner::TraitImpl { trait_path, .. } = &first.owner else {
         return None;
@@ -251,8 +257,12 @@ fn default_trait_method(ms: &[FnMeta]) -> Option<RefactoringClass> {
             return None;
         }
     }
+    let trait_name = last_segment(&trait_path);
+    if !trait_names.contains(trait_name) {
+        return None;
+    }
     Some(RefactoringClass::DefaultTraitMethod {
-        trait_name: last_segment(&trait_path).to_string(),
+        trait_name: trait_name.to_string(),
         method,
     })
 }
@@ -398,6 +408,25 @@ mod tests {
                 method: "go".into(),
             }
         );
+    }
+
+    /// A trait defined outside the workspace (here `std::convert::TryFrom`)
+    /// can't take a default method, so identical impls of it are NOT
+    /// `DefaultTraitMethod` — the class gates on trait locality.
+    #[test]
+    fn foreign_trait_impls_are_not_default_trait_method() {
+        let src = r#"
+            struct A; struct B;
+            impl TryFrom<u16> for A {
+                type Error = ();
+                fn try_from(v: u16) -> Result<Self, ()> { let x = read(v); let y = x + step(); done(y); Err(()) }
+            }
+            impl TryFrom<u16> for B {
+                type Error = ();
+                fn try_from(v: u16) -> Result<Self, ()> { let x = read(v); let y = x + step(); done(y); Err(()) }
+            }
+        "#;
+        assert_eq!(syntactic(src, &["rsx"]), RefactoringClass::Unclassified);
     }
 
     #[test]

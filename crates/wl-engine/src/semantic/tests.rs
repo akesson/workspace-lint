@@ -3502,6 +3502,53 @@ fn callees_exclude_import_edges() {
 }
 
 #[test]
+fn callees_exclude_param_edges() {
+    // Argument-position `impl Trait` emits a `param`-kind edge to a fn-scoped
+    // synthetic parameter (`<fn>::impl Trait`) — not a call, and fn-local, so
+    // two otherwise-identical fns would get UNEQUAL callee sets and the merge
+    // family would spuriously withhold them. Excluding `param` edges keeps the
+    // IR-confirm equality faithful: the two fns below share one real call and
+    // differ only in their own param edge, so their callee sets must match.
+    let mut left_param = edge(
+        &["app", "left"],
+        &["app", "left", "impl Into<String>"],
+        "K_LP",
+        false,
+    );
+    left_param.to_kind = "param".into();
+    let mut right_param = edge(
+        &["app", "right"],
+        &["app", "right", "impl Into<String>"],
+        "K_RP",
+        false,
+    );
+    right_param.to_kind = "param".into();
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "left"], "K_L", "fn", Some("mod")),
+            item(&["app", "right"], "K_R", "fn", Some("mod")),
+            item(&["app", "shared"], "K_S", "fn", Some("mod")),
+        ],
+        vec![
+            edge(&["app", "left"], &["app", "shared"], "K_S", false),
+            left_param,
+            edge(&["app", "right"], &["app", "shared"], "K_S", false),
+            right_param,
+        ],
+    );
+    let m = model(vec![("default", vec![app])]);
+    assert_eq!(
+        m.callees_of("app::left"),
+        m.callees_of("app::right"),
+        "param edges excluded → the two fns' callee sets match (mergeable)"
+    );
+    let left_set = m.callees_of("app::left");
+    let left: Vec<&str> = left_set.iter().map(|c| c.target.as_str()).collect();
+    assert_eq!(left, ["app::shared"], "the param target is not a callee");
+}
+
+#[test]
 fn references_to_carry_spans_and_flags() {
     // target referenced three ways: a spanned call site, an import, a
     // signature projection.

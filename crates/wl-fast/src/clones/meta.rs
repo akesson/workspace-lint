@@ -67,6 +67,7 @@ pub struct MetaResolver<'a> {
     fns: HashMap<PathBuf, HashMap<(u32, u32), FnMeta>>,
     macros: HashMap<PathBuf, Vec<(String, LineColumn)>>,
     type_names: Option<BTreeSet<String>>,
+    trait_names: Option<BTreeSet<String>>,
 }
 
 impl<'a> MetaResolver<'a> {
@@ -79,6 +80,7 @@ impl<'a> MetaResolver<'a> {
             fns: HashMap::new(),
             macros: HashMap::new(),
             type_names: None,
+            trait_names: None,
         }
     }
 
@@ -112,15 +114,37 @@ impl<'a> MetaResolver<'a> {
     /// type alias) — the workspace-local test for `MethodOnReceiverType`.
     /// Built once across all files.
     pub fn defined_type_names(&mut self) -> &BTreeSet<String> {
-        self.type_names.get_or_insert_with(|| {
-            let mut w = TypeWalker {
-                names: BTreeSet::new(),
-            };
-            for ast in self.asts.values() {
-                w.visit_file(ast);
-            }
-            w.names
-        })
+        self.ensure_defined();
+        self.type_names
+            .as_ref()
+            .expect("populated by ensure_defined")
+    }
+
+    /// Every trait name the scanned workspace defines — the workspace-local
+    /// test for `DefaultTraitMethod` (you can only add a default method to a
+    /// trait you own; a foreign `std` trait like `TryFrom` is off-limits).
+    /// Built once, in the same walk as [`defined_type_names`].
+    pub fn defined_trait_names(&mut self) -> &BTreeSet<String> {
+        self.ensure_defined();
+        self.trait_names
+            .as_ref()
+            .expect("populated by ensure_defined")
+    }
+
+    /// One walk populating both the type-name and trait-name sets.
+    fn ensure_defined(&mut self) {
+        if self.type_names.is_some() {
+            return;
+        }
+        let mut w = TypeWalker {
+            names: BTreeSet::new(),
+            trait_names: BTreeSet::new(),
+        };
+        for ast in self.asts.values() {
+            w.visit_file(ast);
+        }
+        self.type_names = Some(w.names);
+        self.trait_names = Some(w.trait_names);
     }
 
     fn ensure_fns(&mut self, file: &Path) {
@@ -259,6 +283,7 @@ impl<'ast> Visit<'ast> for MacroWalker {
 
 struct TypeWalker {
     names: BTreeSet<String>,
+    trait_names: BTreeSet<String>,
 }
 
 impl<'ast> Visit<'ast> for TypeWalker {
@@ -280,6 +305,11 @@ impl<'ast> Visit<'ast> for TypeWalker {
     fn visit_item_type(&mut self, i: &'ast syn::ItemType) {
         self.names.insert(i.ident.to_string());
         visit::visit_item_type(self, i);
+    }
+
+    fn visit_item_trait(&mut self, i: &'ast syn::ItemTrait) {
+        self.trait_names.insert(i.ident.to_string());
+        visit::visit_item_trait(self, i);
     }
 }
 
