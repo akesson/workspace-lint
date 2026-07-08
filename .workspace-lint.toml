@@ -69,15 +69,18 @@ max-code-lines = 4000
 
 # Name-invariant (Type-2) duplicate detection at the built-in thresholds
 # (min-lines = 8, min-tokens = 40, literals abstracted, test code skipped,
-# and the two default-on noise filters: min-distinct-anchors = 4,
+# the two default-on noise filters: min-distinct-anchors = 4,
 # min-non-repeating-ratio = 0.5 — boilerplate that is name-poor or
-# self-repeating never surfaces). Denied so a copy-paste between
-# lints/crates fails dogfood: the fix is extraction, or a load-bearing
-# `expect!` where the twin structure is deliberate. Adoption surfaced four
-# real clone groups (`LintId::short`'s hand-synced twin match, the
-# freshness/expand walk, the unused-deps/-pub check scaffolding, the
-# DegreeView constructors) — all resolved by extraction, so no directive
-# was needed.
+# self-repeating never surfaces — and the extraction-cost gate
+# max-parameters = 3: a group whose literals vary in more than three
+# independent ways is a data table, not copy-paste, unless one literal
+# breaks an otherwise consistent mapping — probable copy-paste drift, which
+# always surfaces). Denied so a copy-paste between lints/crates fails
+# dogfood: the fix is extraction, or a load-bearing `expect!` where the twin
+# structure is deliberate. Adoption surfaced four real clone groups
+# (`LintId::short`'s hand-synced twin match, the freshness/expand walk, the
+# unused-deps/-pub check scaffolding, the DegreeView constructors) — all
+# resolved by extraction, so no directive was needed.
 [duplicate-code]
 
 # The rustc engine's config matrix: the real cargo commands this repo runs

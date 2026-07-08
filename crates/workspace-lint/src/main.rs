@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod directives;
+mod dup_stats;
 mod expand;
 mod fix;
 mod init;
@@ -166,6 +167,14 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
 /// `workspace-lint check <rule>`: one lint, CLI-configured, sharing the default
 /// run's suppression/leveling/fix tail.
 fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
+    // `--stats` measures instead of linting: every group `find_clones`
+    // returns plus its literal divergence, no suppression or leveling — the
+    // raw view the duplicate-code thresholds are calibrated against.
+    if let Some(config) = rule.duplicate_code_stats() {
+        let report = wl_lints::duplicate_code::measure(&load_fast_model(), &config);
+        print!("{}", dup_stats::render(&report));
+        std::process::exit(0);
+    }
     if fix {
         git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
     }

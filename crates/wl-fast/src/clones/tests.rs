@@ -553,3 +553,156 @@ fn instances_and_groups_are_deterministically_ordered() {
         .collect();
     assert_eq!(files, ["a.rs", "b.rs"], "instances sort by (file, line)");
 }
+
+// ---- literal divergence -------------------------------------------------
+//
+// These exercise `divergence::analyze` end-to-end: detect between two
+// sources, then read the concrete literals back off the group.
+
+use super::CandidateKind;
+use super::divergence::{Divergence, DivergenceAnalyzer};
+
+/// Detect between two sources and analyze the first group's divergence.
+fn divergence_between(a: &str, b: &str) -> Divergence {
+    let files = [file("a.rs", "crate-a", a), file("b.rs", "crate-b", b)];
+    let groups = find_clones(&files, &opts());
+    assert!(!groups.is_empty(), "sources must produce a group");
+    DivergenceAnalyzer::new(&files)
+        .analyze(&groups[0])
+        .expect("capture must align")
+}
+
+#[test]
+fn identical_instances_have_zero_divergence() {
+    let a = "fn alpha(x: u32) -> u32 {\n    let y = x + 7;\n    y * 7\n}";
+    let b = "fn beta(q: u32) -> u32 {\n    let r = q + 7;\n    r * 7\n}";
+    let d = divergence_between(a, b);
+    assert_eq!((d.positions, d.divergent, d.params), (2, 0, 0));
+    assert!(d.violations.is_empty());
+}
+
+#[test]
+fn covarying_literals_are_one_parameter() {
+    // 7 → 9 at both positions: one consistent mapping = one parameter.
+    let a = "fn alpha(x: u32) -> u32 {\n    let y = x + 7;\n    y * 7\n}";
+    let b = "fn beta(q: u32) -> u32 {\n    let r = q + 9;\n    r * 9\n}";
+    let d = divergence_between(a, b);
+    assert_eq!((d.positions, d.divergent, d.params), (2, 2, 1));
+    assert!(d.violations.is_empty());
+}
+
+#[test]
+fn independent_literals_are_separate_parameters() {
+    let a = "fn alpha(x: u32) -> u32 {\n    log(\"up\");\n    x + 7\n}";
+    let b = "fn beta(q: u32) -> u32 {\n    log(\"down\");\n    q + 9\n}";
+    let d = divergence_between(a, b);
+    assert_eq!((d.positions, d.divergent, d.params), (2, 2, 2));
+    assert!(d.violations.is_empty());
+}
+
+#[test]
+fn forgotten_rename_is_a_violation() {
+    // The CP-Miner headline case: the copy renamed "alpha" → "beta" but
+    // missed the third occurrence. The forgotten position AGREES across
+    // instances — drift hides at a non-divergent position.
+    let a = "fn wa(x: u32) {\n    log(\"alpha\", x);\n    send(\"alpha\", x);\n    emit(\"alpha\", x);\n}";
+    let b = "fn wb(q: u32) {\n    log(\"beta\", q);\n    send(\"beta\", q);\n    emit(\"alpha\", q);\n}";
+    let d = divergence_between(a, b);
+    assert_eq!(d.violations.len(), 1, "exactly one drift finding");
+    let v = &d.violations[0];
+    assert_eq!(v.file.display().to_string(), "b.rs");
+    assert_eq!(v.line, 4, "anchored at the forgotten occurrence");
+    assert_eq!(
+        (v.found.as_str(), v.expected.as_str()),
+        ("\"alpha\"", "\"beta\"")
+    );
+}
+
+#[test]
+fn single_position_parameter_is_not_drift() {
+    // A lone divergent position against identity classes is the classic
+    // parameterizable clone — donors must be divergent, so no violation.
+    let a = "fn wa(x: u32) {\n    log(\"k\", x);\n    tick(3, x);\n}";
+    let b = "fn wb(q: u32) {\n    log(\"k\", q);\n    tick(4, q);\n}";
+    let d = divergence_between(a, b);
+    assert_eq!(d.params, 1);
+    assert!(d.violations.is_empty());
+}
+
+#[test]
+fn all_distinct_defect_is_not_drift() {
+    // p2 diverges but its value matches no other instance's mapping side —
+    // prose-shaped, killed by the stale-twin guard.
+    let a =
+        "fn wa(x: u32) {\n    log(\"load\", x);\n    send(\"load\", x);\n    emit(\"load\", x);\n}";
+    let b = "fn wb(q: u32) {\n    log(\"store\", q);\n    send(\"store\", q);\n    emit(\"fetch\", q);\n}";
+    let d = divergence_between(a, b);
+    assert_eq!(d.params, 2, "the defect is its own class");
+    assert!(d.violations.is_empty());
+}
+
+#[test]
+fn sentinel_values_never_anchor_drift() {
+    // Same shape as the forgotten rename, but the value is `0`.
+    let a = "fn wa(x: u32) {\n    log(0, x);\n    send(0, x);\n    emit(0, x);\n}";
+    let b = "fn wb(q: u32) {\n    log(2, q);\n    send(2, q);\n    emit(0, q);\n}";
+    let d = divergence_between(a, b);
+    assert!(d.violations.is_empty());
+}
+
+#[test]
+fn drift_detected_across_three_instances() {
+    let a =
+        "fn wa(x: u32) {\n    log(\"red\", x);\n    send(\"red\", x);\n    emit(\"red\", x);\n}";
+    let b =
+        "fn wb(q: u32) {\n    log(\"red\", q);\n    send(\"red\", q);\n    emit(\"red\", q);\n}";
+    let c =
+        "fn wc(z: u32) {\n    log(\"blue\", z);\n    send(\"blue\", z);\n    emit(\"red\", z);\n}";
+    let files = [
+        file("a.rs", "crate-a", a),
+        file("b.rs", "crate-b", b),
+        file("c.rs", "crate-c", c),
+    ];
+    let groups = find_clones(&files, &opts());
+    let d = DivergenceAnalyzer::new(&files)
+        .analyze(&groups[0])
+        .expect("capture must align");
+    assert_eq!(d.violations.len(), 1);
+    let v = &d.violations[0];
+    assert_eq!(v.file.display().to_string(), "c.rs");
+    assert_eq!(
+        (v.found.as_str(), v.expected.as_str()),
+        ("\"red\"", "\"blue\"")
+    );
+}
+
+#[test]
+fn arm_pattern_literals_stay_outside_block_candidates() {
+    // The block candidates start at their `{`, right of the arm patterns
+    // `3 =>` / `4 =>` on the same line — column slicing must not capture
+    // the pattern literals, or they would read as spurious divergence.
+    let a = "fn wa(x: u32) -> u32 {\n\
+             \x20   let pre = x * 3;\n\
+             \x20   match pre {\n\
+             \x20       3 => { let y = 7; log(\"k\"); y * 2 }\n\
+             \x20       _ => fizz(x),\n\
+             \x20   }\n\
+             }";
+    let b = "fn wb(q: u32) -> u32 {\n\
+             \x20   match q {\n\
+             \x20       4 => { let y = 7; log(\"k\"); y * 2 }\n\
+             \x20       _ => buzz(q, q),\n\
+             \x20   }\n\
+             }";
+    let files = [file("a.rs", "crate-a", a), file("b.rs", "crate-b", b)];
+    let groups = find_clones(&files, &opts());
+    let block = groups
+        .iter()
+        .find(|g| g.instances[0].kind == CandidateKind::Block)
+        .expect("the twin arm blocks must group");
+    let d = DivergenceAnalyzer::new(&files)
+        .analyze(block)
+        .expect("capture must align");
+    assert_eq!(d.positions, 3, "7, \"k\", 2 — and NOT the arm patterns");
+    assert_eq!(d.divergent, 0);
+}

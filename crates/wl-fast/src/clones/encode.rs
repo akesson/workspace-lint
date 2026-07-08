@@ -296,7 +296,9 @@ impl NormState {
 
 /// Per-kind literal placeholder. `true`/`false` never reach here (they are
 /// idents at token level, kept verbatim by design — flag semantics differ).
-fn literal_placeholder(l: &proc_macro2::Literal) -> &'static str {
+/// Shared with `capture`: the divergence pass classifies captured literals
+/// with the same function, so its kind-sequences mirror the fingerprint.
+pub(super) fn literal_placeholder(l: &proc_macro2::Literal) -> &'static str {
     match syn::Lit::new(l.clone()) {
         syn::Lit::Str(_) | syn::Lit::ByteStr(_) | syn::Lit::CStr(_) => "#str",
         syn::Lit::Char(_) | syn::Lit::Byte(_) => "#char",

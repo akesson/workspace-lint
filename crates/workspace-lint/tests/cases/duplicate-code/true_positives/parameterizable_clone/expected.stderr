@@ -1,12 +1,13 @@
-error: duplicated code: 2 structurally identical instances (~10 lines)
- --> crates/demo/src/lib.rs:10:1
+error: duplicated code: 2 structurally identical instances (~9 lines)
+ --> crates/demo/src/lib.rs:1:1
   |
   = help: extract the shared logic into one function the copies can call
-  = note: also found at: crates/demo/src/lib.rs:21
+  = note: also found at: crates/demo/src/lib.rs:11
   = note: matching ignores local variable names and literal values
+  = note: extracting would take ~1 parameter for the differing literals
 help: if intentional, silence with:
   |
-10 + workspace_lint::expect!(duplicate_code);
+1 + workspace_lint::expect!(duplicate_code);
   |
   = note: `#[deny(workspace_lint::duplicate_code)]` on by default
 

@@ -87,7 +87,8 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .build(),
         ),
         // duplicate-code: one diagnostic per clone group, anchored at its
-        // first instance, the other sites cross-referenced in the note.
+        // first instance, the other sites cross-referenced in the note and
+        // the extraction priced by the literal-divergence pass.
         (
             "duplicate_code_group",
             at_line(
@@ -98,6 +99,27 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .note("also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17")
             .note("matching ignores local variable names and literal values")
+            .note("extracting would take ~2 parameters for the differing literals")
+            .help("extract the shared logic into one function the copies can call")
+            .build(),
+        ),
+        // duplicate-code drift: one instance breaks an otherwise consistent
+        // literal mapping — the probable-bug case that bypasses the
+        // max-parameters gate; the defecting site is named.
+        (
+            "duplicate_code_drift",
+            at_line(
+                "workspace-lint::duplicate-code",
+                "duplicated code: 2 structurally identical instances (~12 lines)",
+                PathBuf::from("crates/alpha/src/report.rs"),
+                42,
+            )
+            .note("also found at: crates/beta/src/render.rs:88")
+            .note("matching ignores local variable names and literal values")
+            .note(
+                "possible copy-paste drift: crates/beta/src/render.rs:96 has \"alpha\" \
+                 where the mapping elsewhere expects \"beta\"",
+            )
             .help("extract the shared logic into one function the copies can call")
             .build(),
         ),
@@ -591,12 +613,31 @@ mod tests {
               = help: extract the shared logic into one function the copies can call
               = note: also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17
               = note: matching ignores local variable names and literal values
+              = note: extracting would take ~2 parameters for the differing literals
             help: if intentional, silence with:
               |
             42 + workspace_lint::expect!(duplicate_code);
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
+        }
+
+        #[test]
+        fn duplicate_code_drift() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_drift")), @r#"
+            warning: duplicated code: 2 structurally identical instances (~12 lines)
+             --> crates/alpha/src/report.rs:42:1
+              |
+              = help: extract the shared logic into one function the copies can call
+              = note: also found at: crates/beta/src/render.rs:88
+              = note: matching ignores local variable names and literal values
+              = note: possible copy-paste drift: crates/beta/src/render.rs:96 has "alpha" where the mapping elsewhere expects "beta"
+            help: if intentional, silence with:
+              |
+            42 + workspace_lint::expect!(duplicate_code);
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            "#);
         }
 
         #[test]
@@ -1097,7 +1138,7 @@ mod tests {
 
         #[test]
         fn duplicate_code_group() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_group")), @r#"{"level":"warning","message":"duplicated code: 3 structurally identical instances (~14 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_group")), @r#"{"level":"warning","message":"duplicated code: 3 structurally identical instances (~14 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"extracting would take ~2 parameters for the differing literals","spans":[]}],"rendered":null}"#);
         }
 
         #[test]

@@ -77,6 +77,7 @@ fn section_schema(section: &str) -> Option<Schema> {
                 "cross-crate-only",
                 "min-distinct-anchors",
                 "min-non-repeating-ratio",
+                "max-parameters",
                 "include",
                 "exclude",
             ],
@@ -476,6 +477,7 @@ ignore-test-code = true
 cross-crate-only = false
 min-distinct-anchors = 4
 min-non-repeating-ratio = 0.5
+max-parameters = 3
 include = ["crates/**"]
 exclude = ["**/generated/**"]
 
