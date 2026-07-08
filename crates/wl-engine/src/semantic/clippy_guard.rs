@@ -38,8 +38,10 @@
 
 use std::collections::BTreeMap;
 
+use super::SemanticModel;
 use super::assembly::{Assembly, DefMap, FastMap};
 use super::def_info::DefInfo;
+use super::removal::RemovalSet;
 
 /// Owner → assoc-fn members: inherent members hang off their nominal self
 /// type, trait-declaration members off the trait. (Trait-impl members carry
@@ -234,6 +236,167 @@ impl Assembly {
                 .iter()
                 .any(|m| self.defs[m].path.rsplit("::").next() == Some(name))
         })
+    }
+}
+
+/// Why a deletion must not proceed: the `-D warnings` failure it would unmask
+/// on a **surviving** item. The deletion twin of [`NarrowUnmask`]: where
+/// narrowing un-exports an item and activates lints on *it*, deleting an item
+/// can activate lints on what it leaves behind — the 2026-07-07 LeaveDates
+/// validation hit both shapes (`PopoverMenuClose.is_open` lost its only
+/// reader; `PasswordData::is_empty` was deleted out from under a surviving
+/// `len`). Keyed to the *offending deletion*, so the cascade can veto exactly
+/// the removals that would break a `-D warnings` gate.
+#[derive(Debug, Clone)]
+pub enum DeletionUnmask {
+    /// The deletion removes the last READ of a surviving type's non-pub
+    /// field — rustc `dead_code` flags the now-write-only field.
+    UnreadField {
+        /// The surviving type's identity (display path).
+        owner: String,
+        /// The field's own name.
+        field: String,
+    },
+    /// Deleting a pub `is_empty` while a pub `len(&self)` sibling survives —
+    /// clippy `len_without_is_empty` fires on the survivor.
+    LenWithoutIsEmpty {
+        /// The owning type/trait's identity (display path).
+        owner: String,
+    },
+}
+
+impl SemanticModel {
+    /// The warnings the `trial` removal set would unmask on surviving items,
+    /// attributed to the offending members of `newly` (this round's deletion
+    /// seeds — earlier rounds were already judged). Every check fails toward
+    /// vetoing: a false hit costs one kept item and an explanatory note,
+    /// never a broken gate.
+    ///
+    /// - **Field reads** are judged in each type's home config (mirroring the
+    ///   `Assembly::has_unread_field` narrow guard): a field key whose
+    ///   trial-overlay in-degree is zero, whose owner survives, and whose
+    ///   killing edges come from `newly` members flags those members.
+    ///   Exported fields (pub field of a pub type) are skipped — `dead_code`
+    ///   exempts them; pre-existing write-only fields have no `newly` edge to
+    ///   attribute and stay the author's business.
+    /// - **`len`/`is_empty`** is judged in the first config defining the
+    ///   deleted `is_empty`: only a *pub* `is_empty` masks clippy, and only a
+    ///   surviving *pub* `len(&self)` re-triggers it. Deleting both together
+    ///   is fine (no survivor to fire on).
+    pub fn deletion_unmasks(
+        &self,
+        trial: &RemovalSet,
+        newly: &[String],
+    ) -> BTreeMap<String, DeletionUnmask> {
+        let mut out: BTreeMap<String, DeletionUnmask> = BTreeMap::new();
+        let newly_segs: Vec<(&str, Vec<&str>)> = newly
+            .iter()
+            .map(|id| (id.as_str(), id.split("::").collect()))
+            .collect();
+        let covering = super::covering_configs(&self.configs);
+
+        for (ci, (_, asm)) in self.configs.iter().enumerate() {
+            let mut owner_of: FastMap<&str, &str> = FastMap::default();
+            for (owner, fields) in &asm.fields_of {
+                for f in fields {
+                    owner_of.insert(f.as_str(), owner.as_str());
+                }
+            }
+            if owner_of.is_empty() {
+                continue;
+            }
+            let overlay = asm.refold_excluding(trial);
+            for frag in asm.archived_fragments() {
+                for e in frag.references.iter() {
+                    if e.import || !trial.covers(&e.from) {
+                        continue;
+                    }
+                    let Some(key) = asm.resolve_key(e) else {
+                        continue;
+                    };
+                    let Some(&owner_key) = owner_of.get(key) else {
+                        continue;
+                    };
+                    let fdef = &asm.defs[key];
+                    if overlay.in_degree.contains_key(key) {
+                        continue;
+                    }
+                    let odef = &asm.defs[owner_key];
+                    // `dead_code` only exempts a field that is itself
+                    // exported — pub field of a pub type; a pub field of a
+                    // non-pub type is as flaggable as a private one.
+                    if fdef.public && odef.public {
+                        continue;
+                    }
+                    if covering.get(&odef.krate) != Some(&ci)
+                        || trial.covers(&odef.path.split("::").collect::<Vec<_>>())
+                    {
+                        continue;
+                    }
+                    let field = fdef.path.rsplit("::").next().unwrap_or_default();
+                    for (id, segs) in &newly_segs {
+                        let covers = e.from.len() >= segs.len()
+                            && segs
+                                .iter()
+                                .zip(e.from.iter())
+                                .all(|(a, b)| *a == b.as_str());
+                        if covers {
+                            out.entry((*id).to_string()).or_insert_with(|| {
+                                DeletionUnmask::UnreadField {
+                                    owner: odef.path.clone(),
+                                    field: field.to_string(),
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        for id in newly {
+            if id.rsplit("::").next() != Some("is_empty") || out.contains_key(id) {
+                continue;
+            }
+            for (_, asm) in &self.configs {
+                let Some(key) = asm.key_for_identity(id) else {
+                    continue;
+                };
+                let def = &asm.defs[key];
+                if def.kind != "fn" || !def.public {
+                    break; // a private `is_empty` never masked clippy
+                }
+                let owner = def
+                    .self_type
+                    .as_deref()
+                    .or_else(|| asm.trait_parent.get(key).map(String::as_str));
+                let Some(owner) = owner else { break };
+                let Some(odef) = asm.defs.get(owner) else {
+                    break;
+                };
+                if trial.covers(&odef.path.split("::").collect::<Vec<_>>()) {
+                    break; // the owner goes too — nothing survives to fire on
+                }
+                let len_survives = asm.assoc_members.get(owner).is_some_and(|members| {
+                    members.iter().any(|m| {
+                        let md = &asm.defs[m];
+                        md.public
+                            && md.self_kind.as_deref() == Some("ref")
+                            && md.path.rsplit("::").next() == Some("len")
+                            && !trial.covers(&md.path.split("::").collect::<Vec<_>>())
+                    })
+                });
+                if len_survives {
+                    out.insert(
+                        id.clone(),
+                        DeletionUnmask::LenWithoutIsEmpty {
+                            owner: odef.path.clone(),
+                        },
+                    );
+                }
+                break; // judged in the first config that defines it
+            }
+        }
+        out
     }
 }
 

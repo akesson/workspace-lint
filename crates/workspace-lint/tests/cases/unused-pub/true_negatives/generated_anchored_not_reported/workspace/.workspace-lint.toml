@@ -1,0 +1,14 @@
+# Findings anchored in `generated.rs` (spliced via include!) must be excluded
+# at the lint layer: `gen_unused` (Unused) and `gen_intra` (IntraCrate) get no
+# finding and don't count toward the publish-hint rollup, while the handwritten
+# `real_unused` still fires. The sibling `_autodelete` case runs the same tree
+# through `--fix-auto-delete`, where the cascade rebuilds the finding set — it
+# must exclude the generated anchors identically (this used to leak: the
+# binary-level drop ran before the cascade replaced the findings).
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+# Single-config matrix: this case is not about the engine matrix.
+[engine]
+configs = ["cargo build"]

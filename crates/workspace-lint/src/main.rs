@@ -120,6 +120,10 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     // Generated (`include!`d) code participates in analysis but is not a
     // place users can act on; drop findings anchored in it before
     // suppression so they never consume an `expect!` or skew stale-expect.
+    // (unused-pub also excludes generated candidates at the lint layer —
+    // `ir::generated_set` — because the `--fix-auto-delete` cascade below
+    // *replaces* its findings after this drop; here the drop covers every
+    // other lint's anchors.)
     drop_generated_anchored(fast.as_ref(), &mut diagnostics);
     // Under `--fix-auto-delete` (and only then — plain `--fix` never
     // deletes), converge unused-pub deletions in one pass: deleting
@@ -159,6 +163,16 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
         // width limit), deletions especially so.
         if trimmed_imports || summary.deleted_any || summary.modified > 0 {
             eprintln!("note: run `cargo fmt` to tidy the fixed files");
+        }
+        // A fix run converges by re-running, not in one pass: a narrowing
+        // lowers what its signature exposes (so types it pinned `pub` become
+        // tightenable), and a deletion can flip verdicts the *next* compile
+        // sees. Deletions cascade in-pass; narrow consequences can't. Say so
+        // rather than letting the next run's new fixes read as a bug.
+        if summary.modified > 0 {
+            eprintln!(
+                "note: applied fixes can enable further tightenings — re-run until no fixes remain"
+            );
         }
     }
     report_and_exit(diagnostics, format);

@@ -29,14 +29,16 @@ use wl_lint_api::config::{PerCrate, glob_set};
 
 use wl_engine::coverage::CfgShadow;
 use wl_engine::fast::FastModel;
-use wl_engine::semantic::{PrivateOrphan, RemovalSet, SemanticModel};
+use wl_engine::semantic::{
+    DeletionUnmask, ExcisionBlock, PrivateOrphan, RemovalSet, SemanticModel,
+};
 
 use wl_diagnostic::builder::at_line;
 use wl_diagnostic::{Applicability, Diagnostic};
 use wl_lint_api::LintId;
 
 use super::config::UnusedPubConfig;
-use super::ir::{PubFinding, findings};
+use super::ir::{PubFinding, findings, generated_set};
 use wl_lint_api::surgery::deletion::{DeleteOutcome, delete_suggestion};
 use wl_lint_api::surgery::import_surgery;
 
@@ -58,13 +60,20 @@ pub fn run(
     shadow: &CfgShadow,
     suppressed: &dyn Fn(&Diagnostic) -> bool,
 ) -> CascadeResult {
-    // Items an un-editable `use` names (macro-generated): deleting them would
-    // dangle an import surgery can't reach, so they never seed a removal.
-    let blocked = model.import_excision_blocked();
+    // Items an un-editable `use` names (macro-generated, or declared inside a
+    // generated file the generator owns): deleting them would dangle an import
+    // surgery can't reach, so they never seed a removal.
+    let generated = generated_set(fast);
+    let blocked = model.import_excision_blocked(&generated);
     // Cfg-shadow veto: identity → the note explaining which uncovered cfg
     // mentions it. Populated lazily as candidates surface (the mention query
     // needs each candidate's name/scope), consulted exactly like `blocked`.
     let mut shadowed: HashMap<String, String> = HashMap::new();
+    // Deletion-unmask veto: identity → the `-D warnings` failure its removal
+    // would unmask on a SURVIVING item (a field losing its last read, a `len`
+    // losing its `is_empty`). Populated per round from the trial removal set;
+    // a vetoed item never seeds again (monotone, so the loop still terminates).
+    let mut vetoed: HashMap<String, DeletionUnmask> = HashMap::new();
     let shadow_note = |id: &str| -> Option<String> {
         let region = shadow.mention_id(id)?;
         Some(format!(
@@ -91,13 +100,13 @@ pub fn run(
         let mut newly = Vec::new();
         for f in &batch {
             let Some(id) = &f.id else { continue };
-            if !f.removable || removed.contains(id) || blocked.contains(id) {
+            if !f.removable || removed.contains(id) || blocked.contains_key(id) {
                 continue;
             }
             if suppressed(&f.diagnostic) {
                 continue; // silenced → won't be applied → callees stay live
             }
-            if shadowed.contains_key(id) {
+            if shadowed.contains_key(id) || vetoed.contains_key(id) {
                 continue;
             }
             if let Some(note) = shadow_note(id) {
@@ -111,7 +120,11 @@ pub fn run(
         // removal under exactly the pub rules — the deletion must actually be
         // applicable — so a freed private helper's own callees cascade too.
         for o in model.private_orphans(&removal) {
-            if removed.contains(&o.id) || blocked.contains(&o.id) || shadowed.contains_key(&o.id) {
+            if removed.contains(&o.id)
+                || blocked.contains_key(&o.id)
+                || shadowed.contains_key(&o.id)
+                || vetoed.contains_key(&o.id)
+            {
                 continue;
             }
             if let Some(note) = shadow_note(&o.id) {
@@ -124,6 +137,15 @@ pub fn run(
             if f.removable && !suppressed(&f.diagnostic) {
                 newly.push(o.id.clone());
             }
+        }
+        // Deletion-unmask veto: would this round's removals, on top of what's
+        // already scheduled, activate a warning on something that SURVIVES?
+        // Offenders are pulled out (and stay out); the rest of the round
+        // proceeds — the next iteration re-judges with the smaller set.
+        if !newly.is_empty() {
+            let trial = RemovalSet::new(removed.iter().chain(newly.iter()));
+            vetoed.extend(model.deletion_unmasks(&trial, &newly));
+            newly.retain(|id| !vetoed.contains_key(id));
         }
         if newly.is_empty() {
             break batch; // converged; this batch is the final picture
@@ -138,27 +160,39 @@ pub fn run(
     let mut diagnostics: Vec<Diagnostic> = final_findings
         .into_iter()
         .map(|f| {
-            let is_blocked = f.id.as_deref().is_some_and(|id| blocked.contains(id));
+            let block = f.id.as_deref().and_then(|id| blocked.get(id));
             let shadow_note = f.id.as_deref().and_then(|id| shadowed.get(id));
+            let unmask = f.id.as_deref().and_then(|id| vetoed.get(id));
             let transitive = f
                 .id
                 .as_deref()
                 .is_some_and(|id| freed_round.get(id).is_some_and(|&r| r > 0));
             let mut d = f.diagnostic;
-            if is_blocked {
+            if let Some(block) = block {
                 // A blocked item still surfaces as `Unused` with a
                 // MachineApplicable delete (findings can't see the import
                 // graph) — downgrade it so `--fix` skips the delete that would
-                // dangle a macro-generated `use`.
-                downgrade_deletion(
-                    &mut d,
-                    "a `use` of this item is macro-generated and can't be auto-removed; \
-                     delete the item and its import by hand",
-                );
+                // dangle a `use` surgery can't touch.
+                let note = match block {
+                    ExcisionBlock::MacroGenerated => {
+                        "a `use` of this item is macro-generated and can't be auto-removed; \
+                         delete the item and its import by hand"
+                    }
+                    ExcisionBlock::GeneratedFile => {
+                        "a `use` of this item lives in a generated file its generator owns; \
+                         fix the generator's inputs, then delete the item"
+                    }
+                };
+                downgrade_deletion(&mut d, note);
             } else if let Some(note) = shadow_note {
                 // Possibly used under an uncovered cfg — the veto keeps the
                 // item and explains which config would prove it either way.
                 downgrade_deletion(&mut d, note);
+            } else if let Some(unmask) = unmask {
+                // Deleting it would activate a warning on a SURVIVOR — the
+                // fixed tree would fail a `-D warnings` gate. Keep it, say
+                // exactly what would fire and where.
+                downgrade_deletion(&mut d, &unmask_note(unmask));
             } else if transitive {
                 // Not obviously dead in the source (something *does* reference
                 // it) — it only becomes unused because that referrer is deleted
@@ -178,15 +212,19 @@ pub fn run(
     // ones surface with the skip note, like pub deletions do).
     let removal = RemovalSet::new(removed.iter());
     for o in model.private_orphans(&removal) {
-        if blocked.contains(&o.id) {
+        if blocked.contains_key(&o.id) {
             continue;
         }
         if let Some(f) = collateral_finding(&o, config, fast) {
-            diagnostics.push(f.diagnostic);
+            let mut d = f.diagnostic;
+            if let Some(unmask) = vetoed.get(&o.id) {
+                downgrade_deletion(&mut d, &unmask_note(unmask));
+            }
+            diagnostics.push(d);
         }
     }
 
-    let dangling = model.dangling_imports(&removal);
+    let dangling = model.dangling_imports(&removal, &generated);
     let surgery = import_surgery(dangling, fast.root());
 
     CascadeResult {
@@ -250,6 +288,22 @@ fn collateral_finding(
 
 /// Turn a MachineApplicable item deletion into a `MaybeIncorrect` one so
 /// `--fix` leaves it, and explain why.
+/// The veto note for a [`DeletionUnmask`] — names the exact warning the
+/// deletion would activate on a survivor, in the style of the narrow-guard
+/// notes (`ir.rs`): what fires, on what, and what the human can do instead.
+fn unmask_note(unmask: &DeletionUnmask) -> String {
+    match unmask {
+        DeletionUnmask::UnreadField { owner, field } => format!(
+            "deleting this would leave field `{field}` of surviving `{owner}` never-read, \
+             tripping `dead_code` on the fixed tree — remove the field first or delete by hand"
+        ),
+        DeletionUnmask::LenWithoutIsEmpty { owner } => format!(
+            "deleting `is_empty` would trip clippy `len_without_is_empty` on `{owner}`'s \
+             surviving `len` — remove or keep the pair together"
+        ),
+    }
+}
+
 fn downgrade_deletion(d: &mut Diagnostic, note: &str) {
     let mut changed = false;
     for s in &mut d.suggestions {

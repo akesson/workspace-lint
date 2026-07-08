@@ -1,0 +1,14 @@
+# The deletion-unmask veto, field flavor (the LeaveDates
+# `PopoverMenuClose.is_open` incident): `widgets::open_state` is unused, but it
+# holds the LAST read of `Panel.open` — deleting it leaves the surviving
+# `Panel` with a write-only field, and rustc `dead_code` fails the fixed tree
+# under `-D warnings`. The veto keeps it (downgraded, with the field note)
+# while the genuinely-consequence-free `dead_helper` is still deleted.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

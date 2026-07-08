@@ -350,17 +350,31 @@ would start flagging) is deleted as collateral in the same cascade,
 causality-gated: a private item that was already dead before the fix is the
 author's, not ours, and private structs/enums/fields are never touched. An
 item stays alive if *any* `[engine] configs` entry uses it (the config matrix
-is unioned), if an `expect!` / `allow!` silences it, if the only `use`
-naming it is macro-generated (no editable surface), or if it is **mentioned
+is unioned), if an `expect!` / `allow!` silences it, if a `use`
+naming it is macro-generated or lives in a generated file (no editable
+surface), or if it is **mentioned
 inside a `#[cfg(...)]` region no declared config compiles** — deletion needs
 a higher standard of proof than reporting, so a possibly-wasm-only (or
 windows-only, feature-gated, …) item is never deleted; the diagnostic names
 the uncovered cfg and the `[engine]` entry that would cover it. The same
 evidence sharpens plain report runs: an "appears unused" finding mentioned
 under an uncovered cfg carries a specific "possibly used under `cfg(...)`"
-note instead of the generic disclaimer. Surgery can leave
+note instead of the generic disclaimer. A deletion is also vetoed when the
+fixed tree would newly fail a `-D warnings` gate on something that
+*survives*: removing the last read of a surviving type's field (rustc
+`dead_code` flags the now-write-only field) or removing an `is_empty` out
+from under a surviving `len` (clippy `len_without_is_empty`) — the finding
+stays, downgraded, with a note naming exactly what would fire. Surgery can
+leave
 unformatted residue (collapsed blank lines), so `--fix` prints a `cargo fmt`
 hint whenever it changes anything.
+
+**Re-run to converge.** Deletions cascade within one run, but a *narrowing*'s
+consequences can't: once `pub fn make(opts: CreateOpts)` becomes
+`pub(crate)`, the `CreateOpts` it pinned `pub` (signature exposure) is itself
+tightenable — a verdict only the next compile sees. A fix run that changed
+anything prints a `re-run until no fixes remain` note; expect the second run
+to apply a small tail of tightenings and the third to be clean.
 
 **Clippy-unmask guard.** De-`pub`-ing an item strips clippy's
 `avoid-breaking-exported-api` exemption, so a narrow can activate style lints
