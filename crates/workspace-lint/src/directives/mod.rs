@@ -2,8 +2,7 @@
 //! and `# workspace-lint: allow(...)`/`expect(...)` comments from TOML and
 //! Markdown. Rust files additionally accept a **line-comment** directive form
 //! (`// workspace-lint: allow|expect(...)`) so an item-level finding can be
-//! silenced without depending on the `workspace-lint-marker` crate — this is
-//! the form `--fix` writes when deep verification disproves a finding.
+//! silenced without depending on the `workspace-lint-marker` crate.
 //!
 //! Each directive becomes a [`Directive`] entry in the
 //! [`crate::suppress::SuppressionMap`]. Diagnostics whose lint name and
@@ -180,8 +179,7 @@ fn scan_rust(
 /// line. This is the marker-crate-free way to silence an item-level finding
 /// (`unused-pub`): write the comment immediately above the item
 /// and the suppression lookback (up to `LOOKBACK_FORWARD` lines, see
-/// [`crate::suppress`]) binds it to the finding below. It's the form `--fix`
-/// writes for a deep-verification-disproved finding.
+/// [`crate::suppress`]) binds it to the finding below.
 ///
 /// Deliberately narrow to avoid false suppression: the directive text must
 /// *start* the line (after the `//`), so doc comments (`///`, `//!` both leave

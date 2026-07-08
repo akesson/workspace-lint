@@ -80,14 +80,16 @@ nightly `extractor/` package:
   `extractor/tests`.
 
 Strict layering: `workspace-lint` → `wl-lints` → `wl-lint-api` →
-{`wl-diagnostic`, `wl-engine`} → `wl-orchestrate`. `wl-lints`, `wl-lint-api`,
-`wl-diagnostic`, and `wl-orchestrate` are `publish = false`, so the deny-level
-`unused-pub` dogfood judges their `pub` APIs workspace-internally (which is why
-a helper reachable only from another crate's *test* code needs an allowlist
-entry — see the `render_one` note in `.workspace-lint.toml`). `wl-engine` is
-`publish = true` (its `pub` API is treated as external, hence exempt) — the
-Phase-1 crate is `publish = false` precisely so that exemption doesn't hide
-dead orchestration API, the way it once did.
+{`wl-diagnostic`, `wl-engine`}, and `wl-engine` → `wl-orchestrate` →
+`wl-fast`; the leaves are `wl-diagnostic`, `wl-fast`, and `wl-ir`.
+`wl-lints`, `wl-lint-api`, `wl-diagnostic`, and `wl-orchestrate` are
+`publish = false`, so the deny-level `unused-pub` dogfood judges their `pub`
+APIs workspace-internally (a helper reachable only from another crate's *test*
+code is seen correctly — the assembler's hash join is global across `[engine]
+configs`; see the `render_one` note in `.workspace-lint.toml`). `wl-engine`
+and `wl-fast` are `publish = true` (their `pub` APIs are treated as external,
+hence exempt) — the Phase-1 crate is `publish = false` precisely so that
+exemption doesn't hide dead orchestration API, the way it once did.
 
 `workspace-lint-marker` and `wl-ir` are published; CI gates them with
 `cargo publish --dry-run`.
@@ -165,7 +167,7 @@ Always review the diff before committing a blessed change.
    model-less). A memberless workspace skips the semantic tier entirely.
    See **The engine** below for what the semantic tier does.
 3. **`apply_suppression`** — scans for `expect!` / `allow!` macros and
-   `# workspace-lint: expect(...)` comments (`directives.rs`), builds a
+   `# workspace-lint: expect(...)` comments (the `directives/` module), builds a
    `SuppressionMap` (`suppress.rs`), filters the stream, then appends
    `stale-expect` (unmatched `expect`s) and `unknown-lint` (directives naming a
    nonexistent lint), running both back through the map.

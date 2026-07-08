@@ -1,7 +1,7 @@
 //! Git working-tree gate for `--fix`, and the one place git is ever spawned.
 //!
-//! `--fix` mutates source files in place — both structural rewrites and (when
-//! deep verification disproves a finding) written suppression directives. To
+//! `--fix` mutates source files in place — structural rewrites applied as
+//! byte-range replacements (never written suppression directives). To
 //! keep the whole change reviewable as a single `git diff`, `--fix` refuses to
 //! run when the working tree has uncommitted modifications to **tracked**
 //! files, unless `--allow-dirty` is passed. Untracked files are fine — our

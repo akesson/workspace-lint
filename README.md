@@ -35,7 +35,7 @@ For per-site silencing, also add the zero-dep marker crate to consumer
 workspaces:
 
 ```toml
-[dev-dependencies]
+[dependencies]
 workspace_lint = { package = "workspace-lint-marker", version = "0.1" }
 ```
 
@@ -693,8 +693,10 @@ configs = [
 
 Supported verbs: `build` / `check` / `clippy` (the plain lib+bins
 universe), `test` / `nextest run` (the test universe), `bench`. Supported
-flags: `--target`, `-p`/`--package`, `--features` / `--all-features` /
-`--no-default-features`, `--workspace`. The engine reproduces each
+flags: `--target`, `-p`/`--package`, `--features`/`-F` / `--all-features` /
+`--no-default-features`, `--workspace`/`--all`, and `--tests`/`--benches`;
+universe-neutral flags (`--locked`, `--quiet`, `--jobs`, …) are accepted and
+ignored. The engine reproduces each
 command's compilation universe with a `cargo check`-fidelity pass — sound
 because check compiles the same units under the same cfgs; only codegen
 differs (`cargo nextest run` and `cargo test` normalize to one pass). The
@@ -808,7 +810,7 @@ for every lint:
 [lints]
 default          = "warn"   # baseline for every lint (optional; built-in = "warn")
 file-size        = "deny"   # per-lint override beats `default`
-unused-pub        = "allow"  # loosen one off
+unused-pub       = "allow"  # turn one off
 ```
 
 **Precedence:** a per-lint entry beats `default`, which beats the built-in
@@ -866,9 +868,10 @@ per-crate entry fall through to the global tier.
 **Per-crate params — `unused-deps` and `unused-pub` only.** These are the lints
 whose params are workspace-flat (an `ignore` list, an allowlist, …) with no glob
 escape hatch. `file-size`, `crate-size`, and `freshness` already scope per-crate
-through their globs, so a `[crates.<name>.file-size]` (or crate-size / freshness
-/ cli-crate-version / architecture) block is a [`config`](#always-on-lints)
-error that redirects you to a glob rule — one obvious way, not two. A present
+through their globs, so a `[crates.<name>.file-size]` (or crate-size /
+freshness) block is a [`config`](#always-on-lints) error that redirects you to
+a glob rule — one obvious way, not two. Any other per-crate params block
+(`cli-crate-version`, `architecture`, …) is a `config` error too. A present
 `[crates.<name>.unused-deps]` / `unused-pub` section **wholesale-replaces** the
 global section for that crate (predictable: the crate's config is exactly what's
 written).
@@ -887,8 +890,7 @@ lint stops firing, so silences don't quietly rot.
 
 Rust files accept both a macro form (`workspace_lint::expect!(unused_pub);`) and
 a **line-comment** form (`// workspace-lint: expect(unused-pub)` written above
-the item) — the latter needs no `workspace-lint-marker` dependency, and is the
-form `--fix` writes.
+the item) — the latter needs no `workspace-lint-marker` dependency.
 
 **Rust files** — declarative macro from `workspace-lint-marker`:
 
