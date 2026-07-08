@@ -120,6 +120,15 @@ cargo fmt --all --check
 # Coverage + CRAP gate (complexity-weighted coverage; CI fails on regressions)
 cargo cov                                      # writes lcov.info
 cargo cov-crap --fail-above
+
+# Reproduce the CI CRAP gate locally (the most common CI failure). Run the two
+# together — scoring a stale lcov.info gives FALSE verdicts (functions that
+# moved/are new read as under-covered), so always regenerate first.
+# Deliberately NOT a pre-push hook: `cargo cov` re-runs the whole test suite a
+# second time under instrumentation in a separate ~3.4 GB target dir (it shares
+# nothing with the normal build), ~70 s warm and minutes cold — too heavy to
+# block every push. Run it by hand before pushing complexity-heavy changes.
+cargo cov && cargo cov-crap --fail-above
 ```
 
 ### Blessing snapshots after a deliberate output change
