@@ -26,9 +26,11 @@ use wl_diagnostic::builder::at_line;
 use wl_engine::fast::{FastModel, TargetKind};
 use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
+mod classify;
 pub mod config;
 mod measure;
 
+use classify::{Classifier, RefactoringClass};
 pub use config::DuplicateCodeConfig;
 pub use measure::{GroupMeasure, MeasureReport, measure};
 
@@ -47,13 +49,22 @@ impl DuplicateCode {
 
 impl LintImpl for DuplicateCode {
     const ID: LintId = LintId::DuplicateCode;
+    // Semantic: the classifier's merge family confirms two "identical" fns are
+    // interchangeable against the rustc call graph (an IR-only fact). The lint
+    // is either skipped (`--fast-only`) or runs at full accuracy — never a
+    // degraded variant. `needs_fast` too: enumeration + detection are fast-tier.
     const REQUIRES: Requirements = Requirements {
         needs_fast: true,
-        needs_semantic: false,
+        needs_semantic: true,
     };
 
     fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        let files = enumerate(cx.fast_model(Self::ID), &self.config);
+        // A memberless workspace has no semantic tier — nothing to classify or
+        // (having no members) scan; bail as the other semantic lints do.
+        let Some((fast, semantic)) = cx.semantic_models(Self::ID) else {
+            return Vec::new();
+        };
+        let files = enumerate(fast, &self.config);
         let groups = find_clones(&files, &options(&self.config));
         // Divergence only reads meaningfully when literals were abstracted;
         // under `ignore-literals = false` instances are literal-identical by
@@ -62,11 +73,22 @@ impl LintImpl for DuplicateCode {
             .config
             .ignore_literals
             .then(|| DivergenceAnalyzer::new(&files));
+        // The classifier names each group's fix; disabled, groups keep the
+        // generic help. It consults the call graph for the merge family only.
+        let mut classifier = self
+            .config
+            .classify
+            .then(|| Classifier::new(&files, Some(semantic), &self.config.component_macros));
         groups
             .iter()
             .filter_map(|group| {
                 let divergence = analyzer.as_mut().and_then(|a| a.analyze(group));
-                emit(group, divergence.as_ref(), self.config.max_parameters)
+                emit(
+                    group,
+                    divergence.as_ref(),
+                    self.config.max_parameters,
+                    classifier.as_mut(),
+                )
             })
             .collect()
     }
@@ -153,9 +175,30 @@ fn emit(
     group: &CloneGroup,
     divergence: Option<&Divergence>,
     max_parameters: usize,
+    classifier: Option<&mut Classifier>,
 ) -> Option<Diagnostic> {
     let anchor = &group.instances[0];
     let lines = anchor.line_end - anchor.line_start + 1;
+    // Gate BEFORE classifying so a suppressed data table never pays the
+    // classifier: a drift violation keeps the group unconditionally, otherwise
+    // `params > max-parameters` drops it.
+    if let Some(d) = divergence
+        && d.violations.is_empty()
+        && max_parameters > 0
+        && d.params > max_parameters
+    {
+        return None;
+    }
+    // Classify the survivor. `identical` — differing at most in local names —
+    // gates the merge family (no divergence ⇒ exact-literals mode ⇒ identical).
+    let class = classifier.map(|c| {
+        let identical = divergence.is_none_or(|d| d.params == 0 && d.violations.is_empty());
+        c.classify(group, identical)
+    });
+    let help = match &class {
+        Some(c) => c.help(),
+        None => classify::GENERIC_HELP.to_string(),
+    };
     let mut builder = at_line(
         LintId::DuplicateCode.id(),
         format!(
@@ -167,11 +210,8 @@ fn emit(
     )
     .note(format!("also found at: {}", other_sites(group)))
     .note("matching ignores local variable names and literal values")
-    .help("extract the shared logic into one function the copies can call");
+    .help(help);
     if let Some(d) = divergence {
-        if d.violations.is_empty() && max_parameters > 0 && d.params > max_parameters {
-            return None;
-        }
         for v in d.violations.iter().take(MAX_LISTED) {
             builder = builder.note(format!(
                 "possible copy-paste drift: {}:{} has {} where the mapping elsewhere expects {}",
@@ -188,6 +228,10 @@ fn emit(
                 n => format!("extracting would take ~{n} parameters for the differing literals"),
             });
         }
+    }
+    // The class note is appended after the divergence note (pinned order).
+    if let Some(note) = class.as_ref().and_then(RefactoringClass::note) {
+        builder = builder.note(note);
     }
     Some(builder.build())
 }

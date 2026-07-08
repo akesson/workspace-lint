@@ -154,6 +154,15 @@ pub(crate) enum CheckRule {
         /// always survive; 0 disables)
         #[arg(long, default_value_t = DuplicateCodeConfig::default().max_parameters)]
         max_parameters: usize,
+        /// Don't name the refactoring each group calls for (keep the generic
+        /// "extract" help on every group instead of merge / delete-dead-copy /
+        /// default-trait-method / method-on-type / ui-component)
+        #[arg(long, default_value_t = false)]
+        no_classify: bool,
+        /// Macro names whose duplication reads as UI markup to extract into one
+        /// component (default: `rsx`). Repeatable
+        #[arg(long)]
+        component_macros: Vec<String>,
         /// Print a measure-only readout (per-group divergence, parameter
         /// histogram, drift candidates) instead of diagnostics — the
         /// threshold-tuning view; nothing is suppressed or leveled
@@ -301,6 +310,8 @@ impl CheckRule {
                 min_distinct_anchors,
                 min_non_repeating_ratio,
                 max_parameters,
+                no_classify,
+                component_macros,
                 stats: _,
                 include,
                 exclude,
@@ -314,6 +325,8 @@ impl CheckRule {
                 *min_distinct_anchors,
                 *min_non_repeating_ratio,
                 *max_parameters,
+                *no_classify,
+                component_macros,
                 include,
                 exclude,
             )),
@@ -392,6 +405,8 @@ mod tests {
             min_distinct_anchors: 4,
             min_non_repeating_ratio: 0.5,
             max_parameters: 3,
+            no_classify: false,
+            component_macros: vec![],
             stats: false,
             include: vec![],
             exclude: vec!["**/generated/**".into()],
@@ -417,6 +432,8 @@ mod tests {
             min_distinct_anchors: 0,
             min_non_repeating_ratio: 0.0,
             max_parameters: 0,
+            no_classify: false,
+            component_macros: vec![],
             stats: true,
             include: vec![],
             exclude: vec![],

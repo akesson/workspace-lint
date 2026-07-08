@@ -15,8 +15,8 @@ pub(crate) fn render(report: &MeasureReport) -> String {
     let _ = writeln!(out, "duplicate-code stats: {} groups", report.groups.len());
     let _ = writeln!(
         out,
-        "{:<56} {:>4} {:>5} {:>6} {:>5} {:>8} {:>5} {:>6} {:>5}",
-        "anchor", "inst", "kind", "tokens", "lines", "literals", "divg", "params", "drift"
+        "{:<56} {:>4} {:>5} {:>6} {:>5} {:>8} {:>5} {:>6} {:>5} {:<23}",
+        "anchor", "inst", "kind", "tokens", "lines", "literals", "divg", "params", "drift", "class"
     );
     for g in &report.groups {
         let anchor = format!("{}:{}", display_path(&g.file), g.line);
@@ -31,11 +31,12 @@ pub(crate) fn render(report: &MeasureReport) -> String {
         };
         let _ = writeln!(
             out,
-            "{anchor:<56} {:>4} {:>5} {:>6} {:>5} {literals:>8} {divg:>5} {params:>6} {drift:>5}",
+            "{anchor:<56} {:>4} {:>5} {:>6} {:>5} {literals:>8} {divg:>5} {params:>6} {drift:>5} {:<23}",
             g.instances,
             kind_name(g.kind),
             g.tokens,
             g.lines,
+            g.class,
         );
     }
 
@@ -104,6 +105,23 @@ pub(crate) fn render(report: &MeasureReport) -> String {
         count(CandidateKind::Block),
         count(CandidateKind::Run),
     );
+
+    // Syntactic only: the merge family (merge-identical-fns / delete-dead-copy
+    // / merge-withheld) is a call-graph verdict the build-free readout can't
+    // reach — those groups show as their fallback syntactic class here.
+    let mut class_counts: Vec<(&str, usize)> = Vec::new();
+    for g in &report.groups {
+        match class_counts.iter_mut().find(|(c, _)| *c == g.class) {
+            Some((_, n)) => *n += 1,
+            None => class_counts.push((g.class, 1)),
+        }
+    }
+    class_counts.sort_unstable();
+    let _ = write!(out, "class distribution (syntactic):");
+    for (c, n) in &class_counts {
+        let _ = write!(out, " {c}:{n}");
+    }
+    let _ = writeln!(out);
     out
 }
 
@@ -134,6 +152,7 @@ mod tests {
                 tokens: 60,
                 lines: 9,
                 divergence: None,
+                class: "ui-component",
             }],
             stitchable: [0, 1, 1, 2, 2],
         };
@@ -146,5 +165,7 @@ mod tests {
         assert!(text.contains("drift candidates: 0"));
         assert!(text.contains("stitchable group pairs at gap <=1:0 <=2:1"));
         assert!(text.contains("kind distribution: fn:1 block:0 run:0"));
+        assert!(text.contains("ui-component"), "the class column renders");
+        assert!(text.contains("class distribution (syntactic): ui-component:1"));
     }
 }

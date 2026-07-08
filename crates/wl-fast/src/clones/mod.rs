@@ -79,6 +79,7 @@ use syn::visit::{self, Visit};
 mod capture;
 pub mod divergence;
 mod encode;
+pub mod meta;
 #[cfg(test)]
 mod tests;
 
@@ -157,6 +158,25 @@ pub struct Region {
     pub col_end: u32,
     /// The candidate shape this occurrence was found as.
     pub kind: CandidateKind,
+}
+
+impl Region {
+    /// The region's half-open token bounds as proc-macro2 positions — the
+    /// slice key the post-passes ([`capture`], [`meta`]) filter their per-file
+    /// tables by (a literal / macro / node belongs to the region iff its start
+    /// is `>= start` and `< end`).
+    pub(crate) fn bounds(&self) -> (LineColumn, LineColumn) {
+        (
+            LineColumn {
+                line: self.line_start as usize,
+                column: self.col_start as usize,
+            },
+            LineColumn {
+                line: self.line_end as usize,
+                column: self.col_end as usize,
+            },
+        )
+    }
 }
 
 /// A set of structurally identical regions (≥ `min_instances`), sorted by

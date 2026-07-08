@@ -6,3 +6,8 @@ duplicate-code = "deny"
 min-lines = 4
 min-tokens = 20
 cross-crate-only = true
+
+[engine]
+# duplicate-code is a semantic lint: the classifier confirms merges against
+# the rustc call graph, so the fixture workspace is extracted (build only).
+configs = ["cargo build"]

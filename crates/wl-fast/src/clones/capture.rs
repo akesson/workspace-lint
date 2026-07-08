@@ -65,14 +65,7 @@ impl<'a> LiteralTables<'a> {
         // start position is at or after the region's first token and before
         // the end of its last. Comparing starts only is exact — a token
         // cannot straddle the region boundary, which is itself a token edge.
-        let start = LineColumn {
-            line: region.line_start as usize,
-            column: region.col_start as usize,
-        };
-        let end = LineColumn {
-            line: region.line_end as usize,
-            column: region.col_end as usize,
-        };
+        let (start, end) = region.bounds();
         Some(
             table
                 .iter()
