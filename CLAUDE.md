@@ -196,7 +196,9 @@ Two phases, forced by rustc's per-crate compilation model:
 - **Phase 1 — extract** (the `wl-orchestrate` crate, re-exported as
   `wl_engine::orchestrate`): the binary vendors the
   `extractor/` sources (embedded at compile time via build.rs), materializes
-  them to `~/.cache/workspace-lint/<binary-version>/`, builds the dylib once
+  them to `~/.cache/workspace-lint/extractor/<source-hash>/` (content-addressed
+  by a hash of the embedded sources, so heterogeneous binaries can't poison a
+  shared dir; long-idle variants are reaped), builds the dylib once
   per toolchain, and runs one `dylint::run` (a wrapped `cargo check`) per
   `[engine] configs` entry with `--workspace` (a non-virtual workspace would
   otherwise make members mere dependency units — unlintable when warm). An

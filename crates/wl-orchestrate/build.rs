@@ -5,10 +5,11 @@
 //! snowflake`): the IR schema, the assembler, and the extractor dylib must
 //! agree in lockstep — embedding the sources at compile time makes version
 //! skew structurally impossible, and a dev/CI build automatically carries the
-//! in-repo extractor. At runtime `orchestrate::source` materializes these
-//! files into a per-binary-version cache dir, preserving the repo-relative
-//! layout (`extractor/` + `crates/wl-ir/`) so the extractor's
-//! `path = "../crates/wl-ir"` dependency resolves unchanged.
+//! in-repo extractor. At runtime the `source` module materializes these
+//! files into a content-addressed cache dir (keyed by a hash of the embedded
+//! sources), preserving the repo-relative layout (`extractor/` +
+//! `crates/wl-ir/`) so the extractor's `path = "../crates/wl-ir"` dependency
+//! resolves unchanged.
 //!
 //! The file set is a hand-maintained closed list — the extractor is a
 //! single-file cdylib by design. `tests/` are deliberately not shipped.
