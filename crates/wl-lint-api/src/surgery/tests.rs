@@ -211,7 +211,7 @@ fn glob_import_takes_preceding_attribute_and_blank_line() {
 #[test]
 fn nested_list_glob_bails_to_residue() {
     // A nested-list glob's decl span is the collapsed leaf (`inner::*`), not a
-    // statement — the byte scanner must bail rather than mis-delete.
+    // statement — the byte scanner must bail rather than delete the wrong bytes.
     let src = "use a::{Gadget, inner::*};\n";
     let mut d = dangling_glob(src, "inner::*");
     d.decl.hi = d.decl.lo + "inner::*".len() as u32;
