@@ -2964,6 +2964,8 @@ dependencies = [
 name = "workspace-lint"
 version = "0.1.0"
 dependencies = [
+ "anstream",
+ "anstyle",
  "assert_cmd",
  "cargo-husky",
  "clap",

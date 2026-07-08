@@ -9,15 +9,26 @@
 //!
 //! The docs surface two ways: `workspace-lint explain <lint>` prints one to
 //! stdout, and clap attaches each to its `check <lint> --help` long help. Both
-//! render in a terminal, so the `DOC.md` authoring rules (enforced by the
-//! tests below) are: first line `# <short-name>`; only headings from the
-//! closed schema set (`## What it checks` / `## Configuration` / `## Silencing`
-//! required, `## Fix behavior` / `## Examples` / `## Baseline ratchet` /
-//! `## Known limits` optional); ATX headings and fenced code only — no pipe
-//! tables, no HTML; and prose hard-wrapped so no line outside a code fence
-//! exceeds 80 columns (clap ships without `wrap_help`, so unwrapped lines
+//! go through [`render`] first — a small line-oriented markdown-to-terminal
+//! pass over the closed schema below ([`render_with`] is the color-parametric
+//! core): it drops the `#`/`` ` ``/`*` markers, turns headings bold, code spans
+//! and fences into styling, and `- ` into `• ` bullets, so the raw Markdown
+//! never reaches the terminal. Color is gated on the same NO_COLOR / tty
+//! detection clap uses (`anstream::AutoStream::choice`), so piping to a file
+//! yields clean, marker-free plain text.
+//!
+//! Because the renderer is line-oriented, the `DOC.md` authoring rules
+//! (enforced by the tests below) are: first line `# <short-name>`; only
+//! headings from the closed schema set (`## What it checks` / `## Configuration`
+//! / `## Silencing` required, `## Fix behavior` / `## Examples` / `## Baseline
+//! ratchet` / `## Known limits` optional); ATX headings and fenced code only —
+//! no pipe tables, no HTML; and prose hard-wrapped so no line outside a code
+//! fence exceeds 80 columns (the renderer never re-wraps, so unwrapped lines
 //! would overflow narrow terminals).
 
+use std::fmt::Write as _;
+
+use anstyle::{AnsiColor, Style};
 use wl_lint_api::{LintId, LintImpl};
 use wl_lints::{
     architecture::Architecture, centralized_deps::CentralizedDeps,
@@ -71,7 +82,7 @@ pub(crate) fn resolve(name: &str) -> Result<LintId, Option<&'static str>> {
 pub(crate) fn explain(name: &str) -> ! {
     match resolve(name) {
         Ok(id) => {
-            print!("{}", lint_doc(id));
+            print!("{}", rendered_doc(id));
             std::process::exit(0);
         }
         Err(hint) => {
@@ -81,6 +92,219 @@ pub(crate) fn explain(name: &str) -> ! {
             wl_lint_api::util::fail(format!("error: unknown lint `{name}`{suffix}"));
         }
     }
+}
+
+/// Fully-rendered documentation for `id`, ready to print to the terminal —
+/// [`lint_doc`] run through [`render`]. The one entry point both surfaces
+/// use: `explain` prints it, and each `check <lint>` subcommand carries it as
+/// clap `after_long_help`.
+pub(crate) fn rendered_doc(id: LintId) -> String {
+    render(lint_doc(id))
+}
+
+/// Render a `DOC.md` for the terminal, coloring iff stdout wants it.
+fn render(doc: &str) -> String {
+    render_with(doc, stdout_wants_color())
+}
+
+/// Whether stdout should carry ANSI — the same decision clap makes for its own
+/// help (`NO_COLOR` / `CLICOLOR` / tty), so a doc and clap's scaffold agree.
+fn stdout_wants_color() -> bool {
+    use std::io::IsTerminal;
+    match anstream::AutoStream::choice(&std::io::stdout()) {
+        anstream::ColorChoice::Always | anstream::ColorChoice::AlwaysAnsi => true,
+        anstream::ColorChoice::Never => false,
+        anstream::ColorChoice::Auto => std::io::stdout().is_terminal(),
+    }
+}
+
+/// Inline code spans (`` `like this` ``).
+const CODE: AnsiColor = AnsiColor::Cyan;
+
+/// The color-parametric render core (unit-tested at both settings). The text
+/// content is identical at `color = true` / `false`; color only wraps runs in
+/// ANSI, so stripping the escapes from a colored render yields the plain one.
+///
+/// Block structure is line-oriented (fence / heading / bullet / blank), but
+/// **inline** markup is resolved a whole *paragraph* at a time — a run of
+/// consecutive prose/bullet lines flushed through [`inline`] joined by `\n`.
+/// That is what lets emphasis wrap across a hard line break (`**mark\ngenuinely
+/// published…**`), the way CommonMark allows and the docs actually write; a
+/// per-line pass would leave the split `**` markers stranded.
+fn render_with(doc: &str, color: bool) -> String {
+    let mut out = String::new();
+    let mut para: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    for line in doc.lines() {
+        let trimmed = line.trim_start();
+
+        // A fenced block: swallow the ``` / ~~~ markers, indent + dim the body
+        // so it still reads as code once the fence is gone (crucial in plain
+        // mode, where dim is absent and the indent is the only cue).
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            flush_paragraph(&mut para, color, &mut out);
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            if !line.is_empty() {
+                emit(
+                    &mut out,
+                    &format!("    {line}"),
+                    color,
+                    Style::new().dimmed(),
+                );
+            }
+            out.push('\n');
+            continue;
+        }
+
+        // Title: bold, with a rule under it.
+        if let Some(rest) = line.strip_prefix("# ") {
+            flush_paragraph(&mut para, color, &mut out);
+            emit(&mut out, rest, color, Style::new().bold());
+            out.push('\n');
+            let rule = "\u{2500}".repeat(rest.chars().count());
+            emit(&mut out, &rule, color, Style::new().dimmed());
+            out.push('\n');
+            continue;
+        }
+        // Section heading: bold + underline.
+        if let Some(rest) = line.strip_prefix("## ") {
+            flush_paragraph(&mut para, color, &mut out);
+            emit(&mut out, rest, color, Style::new().bold().underline());
+            out.push('\n');
+            continue;
+        }
+        // Blank line: paragraph boundary (emphasis never crosses it).
+        if line.is_empty() {
+            flush_paragraph(&mut para, color, &mut out);
+            out.push('\n');
+            continue;
+        }
+        // Bullet: `- ` → `• `, preserving indent (both are two columns, so
+        // wrapped continuation lines still align). Buffered, like prose, so a
+        // bullet whose emphasis spills onto its continuation line still closes.
+        let indent = line.len() - trimmed.len();
+        if let Some(item) = trimmed.strip_prefix("- ") {
+            para.push(format!("{}\u{2022} {item}", &line[..indent]));
+            continue;
+        }
+        // Prose (incl. bullet continuation lines): buffer for paragraph flush.
+        para.push(line.to_string());
+    }
+    flush_paragraph(&mut para, color, &mut out);
+    out
+}
+
+/// Flush the buffered paragraph: resolve its inline markup across the joined
+/// lines and append it (with a trailing newline) to `out`. A no-op on an empty
+/// buffer, so it's safe to call at every block boundary.
+fn flush_paragraph(para: &mut Vec<String>, color: bool, out: &mut String) {
+    if para.is_empty() {
+        return;
+    }
+    let joined: Vec<char> = para.join("\n").chars().collect();
+    inline(&joined, color, Style::new(), out);
+    out.push('\n');
+    para.clear();
+}
+
+/// Style the inline markup in a paragraph's `chars`, appending to `out`.
+/// Handles `` `code` `` / `**bold**` / `*italic*` / `[text](url)`, dropping the
+/// markers and (when `color`) wrapping each run in ANSI. Marker pairs may span
+/// the `\n`s the caller joins a paragraph's lines with. `base` is the
+/// accumulated style of the enclosing span, so nesting (`` **bold with `code`**
+/// ``) composes; literal runs flush under `base` so they inherit it too.
+fn inline(chars: &[char], color: bool, base: Style, out: &mut String) {
+    let mut lit = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        // `code`
+        if chars[i] == '`'
+            && let Some(end) = find(chars, i + 1, '`')
+        {
+            emit(out, &lit, color, base);
+            lit.clear();
+            let inner: String = chars[i + 1..end].iter().collect();
+            emit(out, &inner, color, base.fg_color(Some(CODE.into())));
+            i = end + 1;
+            continue;
+        }
+        // **bold** (checked before *italic* so the doubled star isn't misread)
+        if chars[i] == '*'
+            && chars.get(i + 1) == Some(&'*')
+            && let Some(end) = find_bold_close(chars, i + 2)
+        {
+            emit(out, &lit, color, base);
+            lit.clear();
+            inline(&chars[i + 2..end], color, base.bold(), out);
+            i = end + 2;
+            continue;
+        }
+        // *italic*
+        if chars[i] == '*'
+            && let Some(end) = find(chars, i + 1, '*')
+            && end != i + 1
+        {
+            emit(out, &lit, color, base);
+            lit.clear();
+            inline(&chars[i + 1..end], color, base.italic(), out);
+            i = end + 1;
+            continue;
+        }
+        // [text](url) → underlined text + dimmed url
+        if chars[i] == '['
+            && let Some((close, paren)) = find_link(chars, i)
+        {
+            emit(out, &lit, color, base);
+            lit.clear();
+            let text: Vec<char> = chars[i + 1..close].to_vec();
+            let url: String = chars[close + 2..paren].iter().collect();
+            inline(&text, color, base.underline(), out);
+            emit(out, &format!(" ({url})"), color, base.dimmed());
+            i = paren + 1;
+            continue;
+        }
+        lit.push(chars[i]);
+        i += 1;
+    }
+    emit(out, &lit, color, base);
+}
+
+/// Write `text` under `style`: with ANSI when `color`, bare otherwise. An empty
+/// `style` renders to nothing, so plain runs stay escape-free even in color
+/// mode — which is why stripping ANSI recovers the exact plain render.
+fn emit(out: &mut String, text: &str, color: bool, style: Style) {
+    if text.is_empty() {
+        return;
+    }
+    if color {
+        let _ = write!(out, "{}{text}{}", style.render(), style.render_reset());
+    } else {
+        out.push_str(text);
+    }
+}
+
+/// First index `>= from` holding `target`.
+fn find(chars: &[char], from: usize, target: char) -> Option<usize> {
+    (from..chars.len()).find(|&j| chars[j] == target)
+}
+
+/// First `**` at or after `from` (returns the index of its first star).
+fn find_bold_close(chars: &[char], from: usize) -> Option<usize> {
+    (from..chars.len()).find(|&j| chars[j] == '*' && chars.get(j + 1) == Some(&'*'))
+}
+
+/// For a `[` at `open`, the `(close, paren)` of a `[text](url)` link, or `None`
+/// if the shape isn't a link.
+fn find_link(chars: &[char], open: usize) -> Option<(usize, usize)> {
+    let close = find(chars, open + 1, ']')?;
+    if chars.get(close + 1) != Some(&'(') {
+        return None;
+    }
+    let paren = find(chars, close + 2, ')')?;
+    Some((close, paren))
 }
 
 #[cfg(test)]
@@ -188,9 +412,11 @@ mod tests {
         assert_eq!(lint_doc(LintId::UnusedPub), UnusedPub::DOC);
     }
 
-    /// Every `check <lint>` subcommand carries its lint's doc as long help, so
-    /// `check <lint> --help` and `explain <lint>` show the same text. Also
-    /// guards against a new `CheckRule` variant landing without the attribute.
+    /// Every `check <lint>` subcommand carries its lint's *rendered* doc as long
+    /// help, so `check <lint> --help` and `explain <lint>` show the same text.
+    /// Also guards against a new `CheckRule` variant landing without the
+    /// attribute. Compared with ANSI stripped so the assert is deterministic
+    /// regardless of whether the test process's stdout is a tty.
     #[test]
     fn check_subcommand_help_carries_the_lint_doc() {
         let cmd = crate::cli::Cli::command();
@@ -207,10 +433,110 @@ mod tests {
                     panic!("check {name} has no after_long_help (missing attribute)")
                 })
                 .to_string();
+            let plain = String::from_utf8(strip_ansi_escapes::strip(help.as_bytes())).unwrap();
             assert_eq!(
-                help.trim_end(),
-                lint_doc(id).trim_end(),
-                "check {name}'s long help must be its own DOC.md"
+                plain.trim_end(),
+                render_with(lint_doc(id), false).trim_end(),
+                "check {name}'s long help must be its own rendered DOC.md"
+            );
+        }
+    }
+
+    /// The plain render is marker-free: the terminal never sees raw Markdown
+    /// (`#`, fences, `**`, backticks) and bullets become `•`.
+    #[test]
+    fn render_plain_drops_markdown_markers() {
+        let plain = render_with(lint_doc(LintId::UnusedPub), false);
+        assert!(!plain.contains('\u{1b}'), "no ANSI in plain mode");
+        assert!(!plain.contains("```"), "code fences swallowed");
+        assert!(!plain.contains("## "), "heading markers stripped");
+        assert!(plain.contains("What it checks"), "heading text kept");
+        assert!(plain.contains("\u{2022} "), "`- ` became a bullet");
+        // A `pub use`-style inline span keeps its text, loses its backticks.
+        assert!(plain.contains("pub use") && !plain.contains("`pub use`"));
+        // A bold span that wraps a hard line break still loses its markers —
+        // the paragraph-level inline pass, not a stranded `**mark`. The break
+        // itself is preserved, so "mark" and "genuinely" stay on separate
+        // lines; what matters is the `**` around them doesn't survive.
+        assert!(
+            plain.contains("genuinely-published crates with publish = true"),
+            "multi-line bold body renders as one marker-free run"
+        );
+        assert!(!plain.contains("**mark"), "the opening `**` must not leak");
+    }
+
+    /// Every paragraph's inline emphasis is balanced — the precondition the
+    /// paragraph-level renderer relies on. An author who leaves a `**`/`*`/`` `
+    /// `` unclosed (the one way a raw marker could still reach the terminal, and
+    /// a leak none of the render-equivalence tests would catch) trips this.
+    #[test]
+    fn inline_markup_is_balanced_per_paragraph() {
+        /// Drop `` `code` `` spans (their contents aren't emphasis).
+        fn strip_code_spans(s: &str) -> String {
+            let mut out = String::new();
+            let mut in_code = false;
+            for c in s.chars() {
+                match c {
+                    '`' => in_code = !in_code,
+                    _ if !in_code => out.push(c),
+                    _ => {}
+                }
+            }
+            out
+        }
+        for &id in LintId::ALL {
+            // Prose only — fenced blocks are verbatim, never inline-parsed.
+            let mut prose = String::new();
+            let mut in_fence = false;
+            for line in lint_doc(id).lines() {
+                let t = line.trim_start();
+                if t.starts_with("```") || t.starts_with("~~~") {
+                    in_fence = !in_fence;
+                } else if !in_fence {
+                    prose.push_str(line);
+                    prose.push('\n');
+                }
+            }
+            for (n, para) in prose.split("\n\n").enumerate() {
+                let short = id.short();
+                assert_eq!(
+                    para.matches('`').count() % 2,
+                    0,
+                    "{short} paragraph {n}: unbalanced backtick"
+                );
+                let no_code = strip_code_spans(para);
+                assert_eq!(
+                    no_code.matches("**").count() % 2,
+                    0,
+                    "{short} paragraph {n}: unbalanced `**`"
+                );
+                assert_eq!(
+                    no_code.replace("**", "").matches('*').count() % 2,
+                    0,
+                    "{short} paragraph {n}: unbalanced `*`"
+                );
+            }
+        }
+    }
+
+    /// Color mode adds ANSI but no text: stripping the escapes must reproduce
+    /// the plain render exactly (the invariant the help test above leans on).
+    #[test]
+    fn render_color_is_plain_plus_ansi() {
+        for &id in LintId::ALL {
+            let colored = render_with(lint_doc(id), true);
+            assert!(
+                colored.contains('\u{1b}'),
+                "{} colors something",
+                id.short()
+            );
+            let stripped =
+                String::from_utf8(strip_ansi_escapes::strip(colored.as_bytes())).unwrap();
+            assert_eq!(
+                stripped,
+                render_with(lint_doc(id), false),
+                "{}: stripping color must recover the plain render",
+                id.short()
             );
         }
     }

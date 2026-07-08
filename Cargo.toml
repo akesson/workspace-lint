@@ -14,6 +14,12 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 # Bin deps
+# Terminal styling for the `explain` / `check --help` doc renderer. Already in
+# the tree via clap (anstream wraps clap's help), so declaring them direct adds
+# no crates; `anstream::AutoStream::choice` reuses the same NO_COLOR / tty
+# detection clap uses, keeping the doc's color in step with clap's own help.
+anstream = "1"
+anstyle = "1"
 anyhow = "1"
 cargo_metadata = "0.23"
 clap = { version = "4", features = ["derive"] }
