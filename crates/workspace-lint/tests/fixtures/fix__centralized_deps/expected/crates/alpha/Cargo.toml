@@ -5,7 +5,13 @@ version = "0.1.0"
 [dependencies]
 # `serde` IS centralized in [workspace.dependencies], so --fix rewrites it.
 serde = { workspace = true }
-# `rand` is NOT in [workspace.dependencies]: `rand = { workspace = true }` would
-# break the manifest, so the suggestion is MaybeIncorrect and --fix must leave
-# this line untouched.
-rand = "0.8"
+# `rand` is NOT in [workspace.dependencies] but every member agrees on the
+# version: --fix seeds `rand = "0.8"` into the workspace table (sorted, before
+# serde) AND rewrites this line — the two-file fix, applied atomically.
+rand = { workspace = true }
+# `clashing` is wanted at DIFFERENT versions by alpha and beta — no auto-seed
+# (which version would be right?); both lines stay for the humans to align.
+clashing = "1"
+# A renamed dep needs the rename in the workspace entry too — not the simple
+# seed, so it stays a manual case.
+renamed = { package = "other-crate", version = "2" }

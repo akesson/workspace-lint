@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/alpha"]
+members = ["crates/alpha", "crates/beta"]
 
 [workspace.dependencies]
+rand = "0.8"
 serde = "1"

@@ -84,6 +84,16 @@ instead of specifying versions directly. A structural lint — on by default at
 centralized-deps = "deny"   # or "allow" to turn off
 ```
 
+`--fix` handles both halves: a dep whose key already exists in
+`[workspace.dependencies]` is rewritten to `{ workspace = true }` in place
+(`features`/`optional`/`default-features` preserved), and a dep *missing*
+from the workspace table is seeded there too — `name = "version"` inserted at
+the alphabetically sorted position (the table is created at end-of-file if
+absent) with the member rewritten in the same run. The seed is withheld when
+members disagree on the version (align them first — which one would be
+right?) or the dep is renamed (`{ package = "…" }` needs the rename in the
+workspace entry); those stay preview-only suggestions.
+
 ### file-size
 
 Enforces maximum code lines per file (blank lines and comments excluded, counted

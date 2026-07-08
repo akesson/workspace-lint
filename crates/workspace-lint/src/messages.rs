@@ -48,6 +48,52 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
+        // centralized-deps: the two-file fix — the dep is missing from
+        // [workspace.dependencies] and every member agrees on the version, so
+        // one suggestion seeds the workspace table (a pure insertion) and the
+        // member rewrite machine-applies in the same run.
+        (
+            "centralized_deps_workspace_seed",
+            at_crate(
+                "workspace-lint::centralized-deps",
+                "1 dependency in crates/alpha/Cargo.toml should use `workspace = true`",
+                PathBuf::from("crates/alpha"),
+            )
+            .help(
+                r#"[dependencies] rand: version "0.8" not in [workspace.dependencies] — add it there and use { workspace = true }"#,
+            )
+            .suggestion(Suggestion {
+                span: Span {
+                    file: PathBuf::from("Cargo.toml"),
+                    line_start: 5,
+                    line_end: 5,
+                    col_start: 1,
+                    col_end: 1,
+                    byte_start: 60,
+                    byte_end: 60,
+                },
+                message: "add `rand` to [workspace.dependencies]".into(),
+                replacement: "rand = \"0.8\"\n".into(),
+                applicability: Applicability::MachineApplicable,
+                original: None,
+            })
+            .suggestion(Suggestion {
+                span: Span {
+                    file: PathBuf::from("crates/alpha/Cargo.toml"),
+                    line_start: 7,
+                    line_end: 7,
+                    col_start: 1,
+                    col_end: 1,
+                    byte_start: 90,
+                    byte_end: 102,
+                },
+                message: "use { workspace = true } for `rand`".into(),
+                replacement: "rand = { workspace = true }".into(),
+                applicability: Applicability::MachineApplicable,
+                original: Some("rand = \"0.8\"".into()),
+            })
+            .build(),
+        ),
         // centralized-deps: multiple offending deps in one crate.
         (
             "centralized_deps_multiple_deps",
@@ -579,6 +625,30 @@ mod tests {
              --> crates/alpha/Cargo.toml:1:1
               |
               = help: [dependencies] serde: has own version "1.0.200" — use { workspace = true } instead
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(centralized-deps)
+              |
+              = note: `#[warn(workspace_lint::centralized_deps)]` on by default
+            "#);
+        }
+
+        #[test]
+        fn centralized_deps_workspace_seed() {
+            insta::assert_snapshot!(render(&scenario("centralized_deps_workspace_seed")), @r#"
+            warning: 1 dependency in crates/alpha/Cargo.toml should use `workspace = true`
+             --> crates/alpha/Cargo.toml:1:1
+              |
+              = help: [dependencies] rand: version "0.8" not in [workspace.dependencies] — add it there and use { workspace = true }
+            help: add `rand` to [workspace.dependencies]
+              |
+            5 + rand = "0.8"
+              |
+            help: use { workspace = true } for `rand`
+              |
+            7 - rand = "0.8"
+            7 + rand = { workspace = true }
+              |
             help: if intentional, silence with:
               |
             1 + # workspace-lint: expect(centralized-deps)
