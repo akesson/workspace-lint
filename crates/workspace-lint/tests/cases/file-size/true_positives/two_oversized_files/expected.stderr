@@ -19,3 +19,4 @@ error: file exceeds 2 code lines (3)
   = help: only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded
 
 workspace-lint: generated 2 errors
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (file-size)

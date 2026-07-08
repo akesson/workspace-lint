@@ -1,0 +1,158 @@
+# unused-pub
+
+Detects `pub` items that are never used across the workspace, judged on the
+rustc engine's resolved reference graph — it needs **no** SCIP index and
+**no** `rust-analyzer` subprocess, so it runs the same locally and in CI.
+
+A semantic lint — on by default at `warn`. It needs a compiling workspace
+and the extraction tier; `--fast-only` skips it.
+
+## What it checks
+
+Every `pub` item is checked for a reference from elsewhere in the workspace.
+Items re-exported via `pub use` are always skipped (narrowing them would
+break the re-export). So are types that appear in the *public signature* of
+a more-visible item (a `pub fn` return type, a `pub` field, a trait-impl
+associated type, …) — tightening those would not compile
+(E0446 / `private_interfaces`). That exemption also covers a type a builder
+macro promotes into its generated public `build()` signature, recognized
+from the attribute: `typed_builder`'s `#[builder(build_method(into = T))]`
+and `derive_builder`'s `#[builder(build_fn(error = "T"))]`.
+
+**Publish-aware.** The lint can't see consumers outside your workspace, so
+it treats a crate's public API as off-limits **only when the crate declares
+it has external consumers — `publish = true`** (or a registry list) in its
+`Cargo.toml`. Every other crate — `publish = false`, or, by default, *no*
+`publish` field — is treated as **workspace-internal**: its `pub` items are
+checked, and anything not used by another workspace crate is flagged for
+narrowing to `pub(crate)`. This is the whole point of the lint at the
+workspace level — over-exposed internal APIs get caught. So: **mark
+genuinely-published crates with `publish = true`**, and leave internal
+crates as they are.
+
+If a crate accumulates several findings, the lint emits a one-line hint
+suggesting `publish = true` — in case the flood means the crate really is
+published. Set `assume-all-public = true` to opt out entirely and treat
+every crate as having an external API (the pre-publish-aware behavior).
+
+Two findings:
+
+- **used only inside the crate** → suggests narrowing to `pub(crate)`.
+- **unused anywhere** → suggests `pub(crate)` (or deletion, under
+  `--fix-auto-delete`).
+
+## Configuration
+
+The `[unused-pub]` table is optional (the lint is on by default):
+
+```toml
+[unused-pub]
+exclude-crates = ["api"]
+allowlist = ["*Error", "main"]
+kinds = ["function", "struct"]
+exclude-paths = ["generated/**"]
+suppress-intra-crate = false
+assume-all-public = false
+publish-hint-threshold = 3
+```
+
+- `exclude-crates` — crate names to skip entirely.
+- `allowlist` — glob patterns matched against an item's canonical path
+  (e.g. `*Error`, `main`).
+- `kinds` — item kinds to check: `function` (alias `fn`), `struct`, `enum`,
+  `union`, `trait`, `type`, `const`, `static`, `module` (alias `mod`),
+  `macro`. Omit (empty) to check all kinds. An unrecognized kind is a config
+  error.
+- `exclude-paths` — glob patterns for source file paths to skip.
+- `suppress-intra-crate` — when `true`, report only items unused *anywhere*
+  and drop the "used only inside the crate" findings. Default `false`.
+- `assume-all-public` — when `true`, treat *every* crate as having an
+  external public API. The conservative pre-publish-aware behavior. Default
+  `false`.
+- `publish-hint-threshold` — emit the "set `publish = true`" hint once a
+  workspace-internal crate reaches this many findings. `0` disables it.
+  Default `3`.
+
+Any of these can be set per-crate via `[crates.<name>.unused-pub]`, which
+wholesale-replaces the global `[unused-pub]` for that crate.
+
+Ad-hoc (no config) form:
+
+```sh
+workspace-lint check unused-pub --allowlist "*Error" --kinds function
+```
+
+## Fix behavior
+
+`--fix` tightens `pub fn` / `pub struct` / … to `pub(crate)` for items used
+only inside their own crate. It never deletes code.
+
+**One-pass deletion cascade (`--fix-auto-delete`).** This flag is everything
+`--fix` does, plus: the fix for an item that's unused everywhere becomes
+whole-item deletion (doc comment through body) instead of `pub(crate)`
+narrowing — but only when the containing file is git-tracked and clean (git
+is the backup; dirty or untracked files are skipped with a `note:`
+explaining why). It is deliberately a CLI flag with no config equivalent:
+deleting code is a manual, human-invoked operation, and a CI `--fix` run
+must never be able to do it.
+
+Deleting a dead item frees whatever it solely reached, so a single
+`workspace-lint --fix-auto-delete` run converges the *entire* dead chain —
+no commit-and-rerun between layers. When a removal leaves a `use` dangling,
+the import is trimmed in the same pass — both an import *of* a removed item
+(E0432) and an import whose last real user was removed (an `unused_imports`
+warning), including imports of out-of-workspace items: a multi-name list
+keeps its live leaves (`use m::{a, b}` → `use m::{b}`) and a list left empty
+is dropped whole. Glob imports (`use dioxus::prelude::*;`) are handled by a
+resolver-grounded accounting: the extractor records rustc's own glob_map
+(which names actually resolved through each glob) plus typeck's
+used-trait-imports facts, and the whole statement is deleted only when every
+recorded use is explained by removed code and nothing surviving could still
+lean on it; every rule fails toward keeping (an extra `unused_imports`
+warning, never a broken build).
+
+Private code the deleted items alone reached (helpers, consts) is deleted as
+collateral in the same cascade, causality-gated: a private item that was
+already dead before the fix is the author's, not ours, and private
+structs / enums / fields are never touched. An item stays alive if *any*
+`[engine] configs` entry uses it, if an `expect!` / `allow!` silences it, if
+a `use` naming it is macro-generated or lives in a generated file, or if it
+is **mentioned inside a `#[cfg(...)]` region no declared config compiles** —
+deletion needs a higher standard of proof than reporting, so a
+possibly-wasm-only (or windows-only, feature-gated, …) item is never
+deleted; the diagnostic names the uncovered cfg and the `[engine]` entry
+that would cover it.
+
+A deletion is also vetoed when the fixed tree would newly fail a
+`-D warnings` gate on something that *survives* (e.g. removing the last read
+of a surviving type's field, or an `is_empty` out from under a surviving
+`len`) — the finding stays, downgraded, with a note naming what would fire.
+
+**Re-run to converge.** Deletions cascade within one run, but a *narrowing*'s
+consequences can't: once `pub fn make(opts: CreateOpts)` becomes
+`pub(crate)`, the `CreateOpts` it pinned `pub` is itself tightenable — a
+verdict only the next compile sees. A fix run that changed anything prints a
+`re-run until no fixes remain` note; expect the second run to apply a small
+tail of tightenings and the third to be clean.
+
+**Clippy-unmask guard.** De-`pub`-ing an item strips clippy's
+`avoid-breaking-exported-api` exemption, so a narrow can activate style
+lints. `--fix` replays the two observed-in-practice ones
+(`wrong_self_convention` and `len_without_is_empty`) and downgrades an
+unmasking tighten to shown-but-not-applied, with a note naming the method.
+On a `-D warnings` codebase, follow a delete run with `cargo clippy --fix`
+and `cargo fmt`.
+
+## Silencing
+
+Write an `expect` directive immediately above the item — a marker macro in
+Rust, or the marker-free line comment:
+
+```rust
+// workspace-lint: expect(unused-pub)
+pub fn still_load_bearing() {}
+```
+
+Prefer `expect` (warns via `stale-expect` once the item is used or removed)
+over the permanent `allow`. For a whole crate the lint shouldn't judge, use
+`exclude-crates` or mark it `publish = true`.

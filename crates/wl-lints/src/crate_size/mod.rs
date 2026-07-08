@@ -41,6 +41,7 @@ impl CrateSize {
 
 impl LintImpl for CrateSize {
     const ID: LintId = LintId::CrateSize;
+    const DOC: &'static str = include_str!("DOC.md");
     const REQUIRES: Requirements = Requirements {
         needs_fast: true,
         needs_semantic: false,

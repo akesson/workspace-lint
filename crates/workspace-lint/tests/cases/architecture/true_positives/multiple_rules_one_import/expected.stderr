@@ -14,3 +14,4 @@ error: import of `data_models::internal::InternalUser` from `apps-foo` violates 
   = help: `data_models::internal::InternalUser` matches deny pattern of rule `no-data-models-at-all`
 
 workspace-lint: generated 2 errors
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (architecture)

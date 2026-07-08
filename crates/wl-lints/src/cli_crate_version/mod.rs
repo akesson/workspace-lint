@@ -34,6 +34,7 @@ impl CliCrateVersion {
 
 impl LintImpl for CliCrateVersion {
     const ID: LintId = LintId::CliCrateVersion;
+    const DOC: &'static str = include_str!("DOC.md");
 
     fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
         check(&self.config)

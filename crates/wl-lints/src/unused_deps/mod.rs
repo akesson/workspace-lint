@@ -40,6 +40,7 @@ impl UnusedDeps {
 
 impl LintImpl for UnusedDeps {
     const ID: LintId = LintId::UnusedDeps;
+    const DOC: &'static str = include_str!("DOC.md");
     // Semantic judgment; fast for manifests, doc-fence refs, and
     // workspace-relative paths.
     const REQUIRES: Requirements = Requirements {

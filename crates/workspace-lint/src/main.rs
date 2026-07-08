@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod directives;
+mod docs;
 mod dup_stats;
 mod expand;
 mod fix;
@@ -47,6 +48,7 @@ fn main() {
             }
         }
         Some(Commands::Check { rule }) => run_check(rule, &cli, format, fix),
+        Some(Commands::Explain { lint }) => explain(&lint),
         Some(Commands::Expand {
             command,
             glob,
@@ -62,6 +64,25 @@ fn main() {
         }
         Some(Commands::DumpIr { file, json }) => {
             dump_ir(&file, json);
+        }
+    }
+}
+
+/// `workspace-lint explain <lint>`: print the lint's documentation to stdout
+/// (data, like the machine output formats) and exit `0`. An unknown name is an
+/// operational error (exit `2`) with a "did you mean …?" hint. The name
+/// resolution is [`docs::resolve`], unit-tested there.
+fn explain(name: &str) -> ! {
+    match docs::resolve(name) {
+        Ok(id) => {
+            print!("{}", docs::lint_doc(id));
+            std::process::exit(0);
+        }
+        Err(hint) => {
+            let suffix = hint
+                .map(|s| format!(" (did you mean `{s}`?)"))
+                .unwrap_or_default();
+            util::fail(format!("error: unknown lint `{name}`{suffix}"));
         }
     }
 }

@@ -73,40 +73,31 @@ least one did.
 
 ## Checks
 
+Each check below has a one-paragraph summary here and full documentation in
+its own `DOC.md` (linked, and shown by `workspace-lint explain <lint>` or
+`workspace-lint check <lint> --help`).
+
 ### centralized-deps
 
-Verifies that all workspace crates use `workspace = true` for dependencies
-instead of specifying versions directly. A structural lint — on by default at
-`warn`. Escalate or silence it via the `[lints]` table:
+Verifies that every workspace crate declares its dependencies with
+`workspace = true` instead of pinning a version directly, so the whole
+workspace shares one source of truth. A structural lint — on by default at
+`warn`. `--fix` rewrites inline deps and seeds missing ones into
+`[workspace.dependencies]`.
 
 ```toml
 [lints]
 centralized-deps = "deny"   # or "allow" to turn off
 ```
 
-`--fix` handles both halves: a dep whose key already exists in
-`[workspace.dependencies]` is rewritten to `{ workspace = true }` in place
-(`features`/`optional`/`default-features` preserved), and a dep *missing*
-from the workspace table is seeded there too — `name = "version"` inserted at
-the alphabetically sorted position (the table is created at end-of-file if
-absent) with the member rewritten in the same run. The seed is withheld when
-members disagree on the version (align them first — which one would be
-right?) or the dep is renamed (`{ package = "…" }` needs the rename in the
-workspace entry); those stay preview-only suggestions.
+Full docs: [`centralized_deps/DOC.md`](crates/wl-lints/src/centralized_deps/DOC.md) · `workspace-lint explain centralized-deps`
 
 ### file-size
 
-Enforces maximum code lines per file (blank lines and comments excluded, counted
-by [tokei](https://github.com/XAMPPRocky/tokei)).
-
-For `.rs` files matched by a rule, the count is *shipped* source only — the same
-production-only definition `crate-size` uses, so the two budgets agree to the
-line. Excluded: anything gated by exactly `#[cfg(test)]`, `#[test]` /
-`#[wasm_bindgen_test]` functions, files that are out-of-line `#[cfg(test)] mod x;`
-targets, and the `tests/`/`benches/`/`examples/` dev-target trees. Ambiguous code
-is counted (never under-counted): `#[cfg(any(test, …))]` stays in, and a file that
-fails to parse is counted whole. Non-Rust globs (e.g. `**/*.ts`) keep tokei's raw
-whole-file count.
+Enforces a maximum number of *code* lines per file (blank lines and comments
+excluded). For `.rs` files the count is *shipped* source only, so test code
+is excluded and the budget matches `crate-size`. A policy lint — add a rule
+to enable it.
 
 ```toml
 [[file-size.rules]]
@@ -114,16 +105,13 @@ glob = "**/*.rs"
 max-code-lines = 500
 ```
 
+Full docs: [`file_size/DOC.md`](crates/wl-lints/src/file_size/DOC.md) · `workspace-lint explain file-size`
+
 ### crate-size
 
-Enforces maximum *shipped* code lines per crate directory. Counts Rust source
-(via [tokei](https://github.com/XAMPPRocky/tokei)), excluding test code: the
-`tests/`, `benches/`, and `examples/` dev-target directories wholesale, plus
-in-file test items (anything gated by exactly `#[cfg(test)]`, `#[test]` /
-`#[wasm_bindgen_test]` functions, and out-of-line `#[cfg(test)] mod x;` files).
-The budget is about maintained product code, not the test mass that often dwarfs
-it. Override which files count with `include` (non-Rust types are counted as-is —
-no test-stripping).
+Enforces a maximum number of *shipped* code lines per crate directory — the
+maintained product code, not the test mass that often dwarfs it. A policy
+lint — add a rule to enable it.
 
 ```toml
 [[crate-size.rules]]
@@ -131,6 +119,8 @@ glob = "crates/*"
 max-code-lines = 5000
 include = ["*.rs"]
 ```
+
+Full docs: [`crate_size/DOC.md`](crates/wl-lints/src/crate_size/DOC.md) · `workspace-lint explain crate-size`
 
 ### duplicate-code
 
@@ -148,136 +138,32 @@ changes the structure and correctly breaks the match. Called functions,
 types, and field/method names are kept verbatim — two blocks that call
 different functions are never clones.
 
-Each clone group gets ONE line-anchored diagnostic at its first site (by
-file and line), listing the other sites in a note; silence a deliberate
-duplication with `workspace_lint::expect!(duplicate_code)` at that anchor
-site. Advisory only: `--fix` never rewrites duplicates — resolving one means
-extracting a shared function, which is an author decision.
+It goes further than flagging: it **classifies what refactoring each group
+calls for** (keep-one-and-redirect, delete-the-dead-copy, default-trait-
+method, method-on-type, extract-a-component) and reshapes the help
+accordingly. Because that consults the rustc call graph, **`duplicate-code`
+is a semantic lint** — it needs a compiling workspace and `--fast-only`
+skips it (the `--stats` readout is the build-free exception). Advisory only:
+`--fix` never rewrites duplicates. Two noise filters and an extraction-cost
+gate keep it quiet on convergent boilerplate and data tables; see the docs.
 
-**Naming the fix.** Beyond flagging a group, the lint classifies *what
-refactoring it calls for* and reshapes the help accordingly: two copies of
-one function the call graph confirms are interchangeable → *keep one and
-redirect the callers* (with the outside call-site count); a copy nothing
-references → *delete the dead one*; the same method across impls of one
-trait → *a default method on the trait*; free functions all taking one
-workspace type first → *a method on that type*; copies built from the same
-UI macro (`rsx!` by default) → *extract a component*. When two
-token-identical functions resolve *different* callees (a local shadowing a
-same-named function), the merge is withheld with a caution note instead of
-advising a rewrite that would change behavior; a group with no clear named
-fix keeps the generic "extract the shared logic" help. Classification only
-reshapes the help and notes — it never changes which groups fire or at what
-level. Turn it off with `classify = false`.
-
-Because the classifier consults the rustc call graph, **`duplicate-code` is
-a semantic lint**: it needs a compiling workspace and pays extraction (the
-same cost class as `unused-pub`), and `--fast-only` skips it entirely — a
-`check duplicate-code --fast-only` is a hard error, never a silently
-degraded run. (`--stats` below is the exception: it stays build-free.) The
-table's presence enables the lint; all fields are optional:
-
-```toml
-[duplicate-code]
-min-lines = 8            # smallest region (source lines) considered
-min-tokens = 40          # …and its minimum normalized-token weight
-min-instances = 2        # copies needed before a group is reported
-ignore-literals = true   # `+ 1` vs `+ 5` still matches
-ignore-test-code = true  # skip tests/benches/examples and #[cfg(test)] items
-cross-crate-only = false # true = only groups spanning ≥ 2 crates
-min-distinct-anchors = 4      # noise filter: distinct verbatim names required
-min-non-repeating-ratio = 0.5 # noise filter: fraction of non-repeated windows
-max-parameters = 3       # extraction-cost gate: literal parameters allowed
-max-live-out = 1         # run-clone downgrade: return values before it warns
-classify = true          # name the refactoring each group calls for
-component-macros = ["rsx"]  # UI macros whose copies suggest a component
-include = []             # workspace-relative globs to scan (empty = all)
-exclude = []             # globs to skip (wins over include)
-```
-
-Two noise filters (both on by default; zero disables) separate real
-copy-paste from *normal* duplication, following the filtering practice of
-token-based clone detectors (CCFinderX's RNR/TKS metrics):
-
-- `min-distinct-anchors` — a region must reference at least N distinct
-  *verbatim* names (called functions, types, fields, methods; keywords don't
-  count). A struct literal or a `HashMap` fill table carries plenty of
-  tokens but almost no distinct names — structure-only matches like these
-  are convergent boilerplate, not copies.
-- `min-non-repeating-ratio` — at least this fraction of the region's
-  normalized token stream must not repeat an earlier window of the *same*
-  region. One row stamped out N times (an insert table, assert stutter) is
-  self-repetition, not duplication worth extracting.
-
-After grouping, the lint reads back the concrete literals normalization
-abstracted away and prices the extraction:
-
-- Each distinct way the instances' literals co-vary is one **parameter** of
-  the function an extraction would produce. A group needing more than
-  `max-parameters` (default 3; 0 disables) is a *data table* — match arms
-  mapping the same variants to different strings, unrolled codegen rows —
-  and is suppressed. Groups that survive carry the price in a note:
-  `instances are identical (differing at most in local names)` (the most
-  mechanical extraction) or `extracting would take ~N parameter(s)`.
-  Calibrated on eight real crates plus a production app: everything the
-  default suppresses was a table or codegen wall; genuine clones are
-  overwhelmingly literal-identical.
-- One literal breaking an otherwise *consistent* cross-instance mapping —
-  the copy renamed `"alpha"` → `"beta"` but missed one occurrence — is the
-  classic copy-paste-bug signature (CP-Miner; Juergens ICSE'09: about half
-  of inconsistent clone edits are unintentional). Such a group is reported
-  with a `possible copy-paste drift: <site> has X where the mapping
-  elsewhere expects Y` note and is **never** suppressed by `max-parameters`.
-  The rule is deliberately strict (the defect must be one-of-a-kind, the
-  odd value must echo the mapping's other side, and `0`/`1`/`""` never
-  qualify), so expect it to be quiet — when it speaks, look closely.
-
-When the duplicated region is a **statement run** (a copied span mid-body,
-not a whole fn or block), the lint also prices the extraction as a signature:
-the variables it reads that were bound before it become the extracted fn's
-parameters, and the variables it binds that are read afterwards become its
-return values — `an extracted fn would take 2 parameters (items, config) and
-return total`. A run that would return more than `max-live-out` values
-(default 1; 0 disables) extracts into a fn returning a tuple the caller must
-destructure — awkward enough that the finding is **downgraded to a warning**
-so it stops failing CI without disappearing. The downgrade is a lint-chosen
-level, so — like `architecture`'s per-rule severities — a `[lints]` override
-neither re-escalates nor drops it (a per-crate `allow` won't silence a
-downgraded run; only a global `allow` does). The liveness analysis is
-syntactic — a flat lexical approximation, not a real scope stack — so it errs
-toward the *softening* direction, and its parameters are variables where the
-extraction-cost note's are literals (a full extraction would take the sum).
-
-To try it on any workspace without touching config, use the ad-hoc form (one
-flag per field; `--exact-literals` / `--include-test-code` invert the
-`ignore-*` defaults, `--no-classify` turns the classifier off,
-`--component-macros` overrides the UI-macro list; `--max-live-out` sets the
-run-clone downgrade threshold). `--stats` prints a measure-only readout
-(per-group divergence, parameter histogram, drift candidates, a per-run
-live-out column and histogram, threshold sweeps, and each group's *syntactic*
-refactoring class) instead of diagnostics — the view to tune thresholds
-against. It
-stays **build-free** even though the lint itself is now semantic, so the
-call-graph verdicts (merge / delete-dead-copy / withheld) never appear in
-the `--stats` class column — only the classes decidable from syntax:
+The `[duplicate-code]` table (all fields optional) enables it — or try it on
+any workspace with zero config via the ad-hoc form:
 
 ```sh
 workspace-lint check duplicate-code                     # defaults, zero config
-workspace-lint check duplicate-code --cross-crate-only  # just cross-crate copy-paste
-workspace-lint check duplicate-code --min-lines 12 --exact-literals
+workspace-lint check duplicate-code --cross-crate-only  # cross-crate copies only
 workspace-lint check duplicate-code --stats             # threshold-tuning readout
 ```
 
-Known limits (deliberate): an edited statement mid-clone splits the match
-into the identical runs on either side of it — each reported only if it
-clears the thresholds on its own (near-miss "Type-3" detection is out of
-scope); `macro_rules!` bodies are not scanned; and drift detection sees
-literal divergence only — a changed *identifier* produces a different
-structure and silently leaves the group rather than being reported as
-drift.
+Full docs: [`duplicate_code/DOC.md`](crates/wl-lints/src/duplicate_code/DOC.md) · `workspace-lint explain duplicate-code`
 
 ### freshness
 
-Checks that tracked files (e.g. `CLAUDE.md`) are newer than their dependencies. Useful for ensuring documentation stays up to date with source changes.
+Checks that tracked files (e.g. `CLAUDE.md`) are newer than their
+dependencies — a cheap way to keep docs from falling behind their source.
+Skipped when the `CI` environment variable is set. A policy lint — add a
+rule to enable it.
 
 ```toml
 [[freshness.rules]]
@@ -285,11 +171,12 @@ glob = "**/CLAUDE.md"
 depends-on = "**/*.rs"
 ```
 
-Skipped automatically when the `CI` environment variable is set.
+Full docs: [`freshness/DOC.md`](crates/wl-lints/src/freshness/DOC.md) · `workspace-lint explain freshness`
 
 ### cli-crate-version
 
-Verifies that a locally installed CLI tool version matches the version of a crate in the workspace.
+Verifies that a locally installed CLI tool's version matches the version of a
+crate in the workspace. A policy lint — add a rule to enable it.
 
 ```toml
 [[cli-crate-version.rules]]
@@ -298,26 +185,23 @@ pattern = "wasm-bindgen (\\S+)"
 crate = "wasm-bindgen"
 ```
 
+Full docs: [`cli_crate_version/DOC.md`](crates/wl-lints/src/cli_crate_version/DOC.md) · `workspace-lint explain cli-crate-version`
+
 ### unused-deps
 
-Flags dependencies declared in `Cargo.toml` that nothing references. Judged
-on the engine's resolved reference graph, facade-aware (a dep is credited
-when anything in its resolved dependency closure is referenced, so `clap`
-counts even though every symbol resolves into `clap_builder`) and
-rename-aware (`package = "…"` followed). Doc-fence code blocks and feature
-plumbing also credit a dep. Dev-dependencies are judged only when a
-test-compiling entry (`cargo test`) is in the
-[`[engine]` config matrix](#the-semantic-engine) — without one they are
-skipped, never guessed. The default matrix includes one.
+Flags dependencies declared in `Cargo.toml` that nothing references, judged
+on the rustc engine's resolved reference graph (facade-aware, rename-aware,
+crediting doc-fence and feature usage). A semantic lint — on by default at
+`warn`; `--fast-only` skips it. Dev-dependencies are judged only when a
+test-compiling entry is in the
+[`[engine]` config matrix](#the-semantic-engine); the default matrix has one.
 
 ```toml
 [unused-deps]
 ignore = ["prost", "tonic"]
 ```
 
-The `ignore` list can be scoped to a single crate via
-[`[crates.<name>.unused-deps]`](#per-crate-configuration) when a dep is unused in
-only one member.
+Full docs: [`unused_deps/DOC.md`](crates/wl-lints/src/unused_deps/DOC.md) · `workspace-lint explain unused-deps`
 
 ### unused-pub
 
@@ -364,92 +248,16 @@ assume-all-public = false
 publish-hint-threshold = 3
 ```
 
-| Option | Description |
-|--------|-------------|
-| `exclude-crates` | Crate names to skip entirely. |
-| `allowlist` | Glob patterns matched against an item's canonical path (e.g. `*Error`, `main`). |
-| `kinds` | Item kinds to check: `function` (alias `fn`), `struct`, `enum`, `union`, `trait`, `type`, `const`, `static`, `module` (alias `mod`), `macro`. Omit (empty) to check all kinds. An unrecognized kind is a config error. |
-| `exclude-paths` | Glob patterns for source file paths to skip. |
-| `suppress-intra-crate` | When `true`, report only items unused *anywhere* and drop the "used only inside the crate, consider `pub(crate)`" findings. Default `false`. |
-| `assume-all-public` | When `true`, treat *every* crate as having an external public API (skip library-public items regardless of `publish`). The conservative pre-publish-aware behavior. Default `false`. |
-| `publish-hint-threshold` | Emit the "set `publish = true`" hint once a workspace-internal crate reaches this many findings. `0` disables it. Default `3`. |
+`--fix` narrows an item used only inside its crate to `pub(crate)`.
+`--fix-auto-delete` (CLI-only, gated on a clean git tree) instead
+whole-item-deletes items unused everywhere, cascading through the entire
+dead chain in one pass and trimming any `use` left dangling — with a
+cfg-shadow veto, a `-D warnings` guard, re-run-to-converge, and a
+clippy-unmask guard. Options can be scoped per crate via
+[`[crates.<name>.unused-pub]`](#per-crate-configuration). The docs cover the
+deletion cascade in full.
 
-Any of these options can be set per-crate via
-[`[crates.<name>.unused-pub]`](#per-crate-configuration), which wholesale-replaces
-the global `[unused-pub]` for that crate.
-
-**One-pass deletion cascade (`--fix-auto-delete`).** The `--fix-auto-delete`
-flag is everything `--fix` does, plus: the fix for an item that's unused
-everywhere becomes whole-item deletion (doc comment through body) instead of
-`pub(crate)` narrowing — but only when the containing file is git-tracked and
-clean (git is the backup; dirty or untracked files are skipped with a `note:`
-explaining why). It is deliberately a CLI flag with no config equivalent:
-deleting code is a manual, human-invoked operation, and a CI `--fix` run must
-never be able to do it. Deleting a dead item frees whatever it solely
-reached, so a single `workspace-lint --fix-auto-delete` run converges the
-*entire* dead chain — no commit-and-rerun between layers. When a removal leaves a `use`
-dangling, the import is trimmed in the same pass — both an import *of* a
-removed item (`E0432`) and an import whose last real user was removed (an
-`unused_imports` warning), including imports of out-of-workspace items
-(`use anyhow::Context;` whose only `.context()` caller died): a multi-name
-list keeps its live leaves (`use m::{a, b}` → `use m::{b}`) and a list left
-empty is dropped whole statement — nested groups collapse into their parent —
-so the tree stays compiling *and* `unused_imports`-clean. Glob imports
-(`use dioxus::prelude::*;`) are handled by a resolver-grounded accounting:
-the extractor records rustc's own glob_map (which names actually resolved
-through each glob — macros, derives, and trait-method resolutions included)
-plus typeck's used-trait-imports facts, and the whole statement is deleted
-only when every recorded use is explained by removed code and nothing
-surviving could still lean on it; every rule fails toward keeping (an extra
-`unused_imports` warning, never a broken build). The judgement
-mirrors rustc's import resolution: it is scoped per module (a test module
-with its own `use` of the name doesn't keep the parent's alive), follows
-`use super::*` re-imports, and knows that an inherent method call like
-`x.time()` never goes through the type's import while a trait method call
-does need its trait in scope. Private code the
-deleted items alone reached (helpers, consts — the things rustc `dead_code`
-would start flagging) is deleted as collateral in the same cascade,
-causality-gated: a private item that was already dead before the fix is the
-author's, not ours, and private structs/enums/fields are never touched. An
-item stays alive if *any* `[engine] configs` entry uses it (the config matrix
-is unioned), if an `expect!` / `allow!` silences it, if a `use`
-naming it is macro-generated or lives in a generated file (no editable
-surface), or if it is **mentioned
-inside a `#[cfg(...)]` region no declared config compiles** — deletion needs
-a higher standard of proof than reporting, so a possibly-wasm-only (or
-windows-only, feature-gated, …) item is never deleted; the diagnostic names
-the uncovered cfg and the `[engine]` entry that would cover it. The same
-evidence sharpens plain report runs: an "appears unused" finding mentioned
-under an uncovered cfg carries a specific "possibly used under `cfg(...)`"
-note instead of the generic disclaimer. A deletion is also vetoed when the
-fixed tree would newly fail a `-D warnings` gate on something that
-*survives*: removing the last read of a surviving type's field (rustc
-`dead_code` flags the now-write-only field) or removing an `is_empty` out
-from under a surviving `len` (clippy `len_without_is_empty`) — the finding
-stays, downgraded, with a note naming exactly what would fire. Surgery can
-leave
-unformatted residue (collapsed blank lines), so `--fix` prints a `cargo fmt`
-hint whenever it changes anything.
-
-**Re-run to converge.** Deletions cascade within one run, but a *narrowing*'s
-consequences can't: once `pub fn make(opts: CreateOpts)` becomes
-`pub(crate)`, the `CreateOpts` it pinned `pub` (signature exposure) is itself
-tightenable — a verdict only the next compile sees. A fix run that changed
-anything prints a `re-run until no fixes remain` note; expect the second run
-to apply a small tail of tightenings and the third to be clean.
-
-**Clippy-unmask guard.** De-`pub`-ing an item strips clippy's
-`avoid-breaking-exported-api` exemption, so a narrow can activate style lints
-on the fixed tree. `--fix` replays the two observed-in-practice ones —
-`wrong_self_convention` (against the extracted receiver kinds, `Copy`-aware)
-and `len_without_is_empty` — and downgrades an unmasking tighten to
-shown-but-not-applied, with a note naming the method. What remains the
-author's: a now-dead private struct *field* (deleting one means editing every
-construction site), and clippy lints beyond those two. On a `-D warnings`
-codebase, follow a delete run with `cargo clippy --fix` and `cargo fmt`.
-Glob imports (`use m::*`) are never trimmed. Fixes are only written into
-git-tracked files — a gitignored, build.rs-generated file (reached via
-`include!`) has no git backup, so `--fix` skips it and says so.
+Full docs: [`unused_pub/DOC.md`](crates/wl-lints/src/unused_pub/DOC.md) · `workspace-lint explain unused-pub`
 
 ### architecture
 
@@ -469,20 +277,14 @@ reason = "domain must not depend on infrastructure"  # note: line
 suggest = "move the shared type into a `core` crate" # help: line
 ```
 
-Patterns use `::` as the segment separator; `*` matches one segment, `**`
-matches zero or more. Three reference forms are inspected: `use` bindings, glob
-imports (`use mod::*`), and fully-qualified call sites
-(`other_crate::infra::Thing::new()`) that have no `use`. A fully-qualified
-reference is matched against its canonical path *and every prefix* — so
-`Thing::new()` matches a `Thing` deny — and an `exceptions` entry on any prefix
-(e.g. `infra::Id`) exempts the whole reference. A given target is reported at
-most once per rule per module: a violation already surfaced through its `use`
-binding is not repeated by the call-site pass, and N call sites collapse to one
-diagnostic. Canonical paths are the compiler's resolved answer, so every
-re-export chain (`pub use` *and* `pub(crate) use`) resolves to the definition,
-and references generated by macro expansions are judged too, anchored at the
-invocation line. Only each crate's production code is inspected — tests,
-examples, and benches legitimately reach across layers.
+Patterns use `::` as the separator (`*` = one segment, `**` = zero or more).
+`use` bindings, glob imports, and bare fully-qualified call sites are all
+inspected against the compiler's resolved canonical paths, so re-export
+chains and macro-generated references are judged too. Only production code is
+checked. `architecture` is TOML-only — no `check` subcommand — but
+`workspace-lint explain architecture` still works.
+
+Full docs: [`architecture/DOC.md`](crates/wl-lints/src/architecture/DOC.md) · `workspace-lint explain architecture`
 
 ### module-tree
 
@@ -490,6 +292,8 @@ Structural integrity of the `mod` graph. A structural lint — on by default at
 `warn`. Flags a `mod foo;` whose target (`foo.rs`, `foo/mod.rs`, or a
 `#[path = "..."]` override) doesn't exist, and orphan `.rs` files under `src/`
 that no `mod` chain reaches. Escalate or silence via `[lints] module-tree`.
+
+Full docs: [`module_tree/DOC.md`](crates/wl-lints/src/module_tree/DOC.md) · `workspace-lint explain module-tree`
 
 ### feature-drift
 
@@ -500,6 +304,8 @@ Flags features declared in `[features]` but never gated in source, and
 `default` is exempt (cargo handles it specially). Escalate or silence via
 `[lints] feature-drift`.
 
+Full docs: [`feature_drift/DOC.md`](crates/wl-lints/src/feature_drift/DOC.md) · `workspace-lint explain feature-drift`
+
 > **Note:** `pub`-visibility tightening (`pub` → `pub(crate)` for items used
 > only inside their own crate) is part of `unused-pub`, which is resolver-backed
 > and covers that ground plus unused-everywhere items. The former standalone
@@ -509,23 +315,26 @@ Flags features declared in `[features]` but never gated in source, and
 ### Always-on lints
 
 These lints take no configuration and run on every invocation (silence with
-`[lints] <name> = "allow"`):
+`[lints] <name> = "allow"`). Each has full docs via
+`workspace-lint explain <lint>`:
 
 - **stale-git-index** — flags paths still tracked by git (`git ls-files`) that
   no longer exist on disk.
+  [docs](crates/wl-lints/src/stale_git_index/DOC.md)
 - **stale-expect** — fires when an `expect!` / `expect(...)` directive silences
   nothing because the underlying lint stopped firing (see
   [Silencing diagnostics](#silencing-diagnostics)). Only lints that actually
-  ran are judged: directives for a lint skipped by `--fast-only`, disabled via
-  `allow`, or outside a `check <lint>` run are never reported stale. `--fix`
-  deletes a stale directive line for you (unless it also names a still-live or
-  unjudged lint, in which case removing it by hand is left to you).
+  ran are judged. `--fix` deletes a stale directive line for you (unless it
+  also names a still-live or unjudged lint).
+  [docs](crates/workspace-lint/src/docs/stale-expect.md)
 - **config** — a structural problem in the config file itself: an unknown
   section or key (with a "did you mean …?" hint), or a policy lint enabled in
   `[lints]` with no rules table (so it would never fire).
+  [docs](crates/workspace-lint/src/docs/config.md)
 - **unknown-lint** — a lint name that doesn't exist, referenced either in
   `[lints]` or in an `expect!`/`allow!` directive — caught instead of silently
   doing nothing.
+  [docs](crates/workspace-lint/src/docs/unknown-lint.md)
 
 All default to `warn`; escalate or silence them through `[lints]` like any
 other lint. `config` and `unknown-lint` have one exception: a blanket
@@ -565,6 +374,22 @@ workspace-lint check duplicate-code --cross-crate-only
 workspace-lint check freshness --glob "**/CLAUDE.md" --depends-on "**/*.rs"
 workspace-lint check unused-deps --ignore prost --ignore tonic
 ```
+
+`workspace-lint check <lint> --help` prints that lint's full documentation
+after its options (`-h` stays terse).
+
+### Explain a lint
+
+```sh
+workspace-lint explain unused-pub
+workspace-lint explain architecture   # works even for TOML-only lints
+```
+
+Prints a lint's full documentation to stdout — the same text `check <lint>
+--help` shows, and the source of each lint's `DOC.md`. Accepts the short name
+(`unused-pub`) or the full id (`workspace-lint::unused-pub`), and covers every
+lint, including the pipeline meta lints `config` / `stale-expect` /
+`unknown-lint`.
 
 ### Initialize a config
 
@@ -902,13 +727,6 @@ workspace_lint::allow!(file_size);                 // silence permanently — no
 
 **`Cargo.toml`, Markdown, anything non-Rust** — comment directive:
 
-<!--
-The `expect(unused-deps)` line below is illustrative; workspace-lint's own
-scanner would treat it as a real directive against README.md and flag a
-stale-expect on the next run. Silence it for this file:
-workspace-lint: allow(stale-expect)
--->
-
 ```toml
 # workspace-lint: expect(centralized-deps)
 [dependencies]
@@ -941,7 +759,9 @@ removed files in the post-fix tree propagate correctly.
 ## CLI flags
 
 - `workspace-lint` — run all configured checks.
-- `workspace-lint check <rule> [opts]` — run a single check.
+- `workspace-lint check <rule> [opts]` — run a single check
+  (`check <rule> --help` shows that lint's full documentation).
+- `workspace-lint explain <lint>` — print a lint's full documentation.
 - `workspace-lint --message-format <human|json|github>` — pick the renderer.
 - `workspace-lint --fast-only` — run only the build-free lints: no
   compile, no pinned-toolchain requirement. The semantic lints are

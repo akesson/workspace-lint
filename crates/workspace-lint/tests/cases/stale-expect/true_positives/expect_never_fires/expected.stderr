@@ -14,3 +14,4 @@ help: if intentional, silence with:
   = note: `#[deny(workspace_lint::stale_expect)]` on by default
 
 workspace-lint: generated 1 error (run `workspace-lint --fix` to apply 1 suggestion)
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (stale-expect)

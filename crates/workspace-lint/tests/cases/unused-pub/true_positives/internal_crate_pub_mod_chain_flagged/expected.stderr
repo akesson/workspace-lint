@@ -25,3 +25,4 @@ help: tighten to `pub(crate)`
   |
 
 workspace-lint: generated 2 errors (run `workspace-lint --fix` to apply 1 suggestion)
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unused-pub)

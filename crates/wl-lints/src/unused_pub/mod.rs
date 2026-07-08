@@ -57,6 +57,7 @@ impl UnusedPub {
 
 impl LintImpl for UnusedPub {
     const ID: LintId = LintId::UnusedPub;
+    const DOC: &'static str = include_str!("DOC.md");
     // Semantic judgment; fast for manifests (publish resolution) and
     // workspace-relative paths.
     const REQUIRES: Requirements = Requirements {

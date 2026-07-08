@@ -346,8 +346,27 @@ fn scan_text(abs_path: &Path, rel: &Path, out: &mut Vec<Directive>) {
         return;
     };
     let re = directive_regex();
+    // In Markdown, directive-looking lines inside a fenced code block are
+    // documentation examples, not live directives — the scanner strips `#` /
+    // `//` markers, so a `# workspace-lint: expect(...)` shown in a code sample
+    // would otherwise be treated as a real directive (which is why prose docs
+    // once needed an HTML-comment escape hatch). A line whose first non-space
+    // characters are ``` or ~~~ toggles the fence. `.toml` has no such
+    // construct, so its scanning is unchanged.
+    let is_markdown = rel.extension().and_then(|e| e.to_str()) == Some("md");
+    let mut in_fence = false;
     for (idx, raw) in content.lines().enumerate() {
         let line_no = (idx + 1) as u32;
+        if is_markdown {
+            let trimmed = raw.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+        }
         // Trim the leading comment marker if any.
         let body = raw
             .trim_start()
