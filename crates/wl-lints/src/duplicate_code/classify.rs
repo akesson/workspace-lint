@@ -526,4 +526,38 @@ mod tests {
         let mut c = Classifier::new(&files, None, &["rsx".to_string()]);
         assert_eq!(c.classify(group, true), RefactoringClass::Unclassified);
     }
+
+    /// Every class maps to its kebab-case `--stats` label. Nothing else in the
+    /// crate exercises `label` (the `--stats` measure path is integration-only),
+    /// so this pins the column names directly.
+    #[test]
+    fn label_names_every_class() {
+        use RefactoringClass::*;
+        assert_eq!(
+            MergeIdenticalFns { call_sites: None }.label(),
+            "merge-identical-fns"
+        );
+        assert_eq!(DeleteDeadCopy { dead: vec![] }.label(), "delete-dead-copy");
+        assert_eq!(
+            DefaultTraitMethod {
+                trait_name: String::new(),
+                method: String::new(),
+            }
+            .label(),
+            "default-trait-method"
+        );
+        assert_eq!(
+            MethodOnReceiverType { ty: String::new() }.label(),
+            "method-on-receiver-type"
+        );
+        assert_eq!(
+            UiComponent {
+                macro_name: String::new(),
+            }
+            .label(),
+            "ui-component"
+        );
+        assert_eq!(MergeWithheld.label(), "merge-withheld");
+        assert_eq!(Unclassified.label(), "unclassified");
+    }
 }
