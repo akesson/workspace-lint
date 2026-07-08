@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn pinned_toolchain_is_a_dated_nightly() {
-        let pin = super::super::Engine::pinned_toolchain();
+        let pin = crate::Engine::pinned_toolchain();
         assert!(
             pin.starts_with("nightly-2"),
             "expected a dated nightly pin, got {pin}"

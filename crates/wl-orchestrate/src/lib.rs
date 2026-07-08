@@ -2,6 +2,12 @@
 //! workspace, once per declared configuration, and guarantee a complete set of
 //! IR fragments per run.
 //!
+//! This is the first phase of workspace-lint's rustc-fidelity engine; the
+//! Phase-2 assembler (`wl-engine::semantic`) consumes the [`ExtractionRuns`]
+//! this produces. `wl-engine` re-exports this crate as `wl_engine::orchestrate`
+//! (and [`coverage`] as `wl_engine::coverage`), so consumers see one engine
+//! surface — nothing outside this crate names `wl_orchestrate` directly.
+//!
 //! The mechanism is the spike-proven embed flow (`spike/embed`, SPIKE §12.10):
 //! the stable binary calls `dylint::run(opts)` directly — dylint builds/loads
 //! its driver for the pinned toolchain and spawns it per crate; cargo fans out
@@ -9,6 +15,8 @@
 //! that flow and are documented on [`Engine::extract`]: the `WL_IR_OUT`
 //! environment variable (the spawned driver inherits it) and the current
 //! directory (dylint checks the CWD workspace).
+
+pub mod coverage;
 
 mod closure;
 mod command;
@@ -217,7 +225,7 @@ impl Engine {
 
     /// The extractor's pinned toolchain (from `extractor/rust-toolchain.toml`,
     /// surfaced at compile time — the single source of truth).
-    pub fn pinned_toolchain() -> &'static str {
+    pub(crate) fn pinned_toolchain() -> &'static str {
         env!("WL_EXTRACTOR_TOOLCHAIN")
     }
 
@@ -237,12 +245,12 @@ impl Engine {
             .iter()
             .filter_map(|s| s.target.clone())
             .collect();
-        crate::timing::phase("preflight[rustup]", || {
+        wl_fast::timing::phase("preflight[rustup]", || {
             toolchain::preflight(Self::pinned_toolchain(), &triples)
         })?;
         let (package_dir, sources_fresh) =
-            crate::timing::phase("materialize[vendored src]", || self.source.materialize())?;
-        let dylib = relink::RelinkedDylib::new(crate::timing::phase(
+            wl_fast::timing::phase("materialize[vendored src]", || self.source.materialize())?;
+        let dylib = relink::RelinkedDylib::new(wl_fast::timing::phase(
             "build_dylib[cargo build nightly]",
             || {
                 // Warm-run fast path: when `materialize` rewrote nothing, the
@@ -270,7 +278,7 @@ impl Engine {
         // path — covers all three. Each distinct `--target` triple gets one
         // extra `--filter-platform` exec (a different universe resolves a
         // different dep graph).
-        let metadata = crate::timing::phase("cargo_metadata[+resolve]", || {
+        let metadata = wl_fast::timing::phase("cargo_metadata[+resolve]", || {
             cargo_metadata::MetadataCommand::new()
                 .manifest_path(cfg.workspace_root.join("Cargo.toml"))
                 .exec()
@@ -282,7 +290,7 @@ impl Engine {
         let mut universe_mds: std::collections::BTreeMap<String, cargo_metadata::Metadata> =
             std::collections::BTreeMap::new();
         for triple in &triples {
-            let md = crate::timing::phase(
+            let md = wl_fast::timing::phase(
                 format_args!("cargo_metadata[--filter-platform {triple}]"),
                 || closure::universe_metadata(&cfg.workspace_root, triple),
             )?;
@@ -333,7 +341,7 @@ impl Engine {
                 context: format!("creating IR dir {}", ir_dir.display()),
                 source,
             })?;
-            crate::timing::phase(format_args!("run_config[{}]", spec.id), || {
+            wl_fast::timing::phase(format_args!("run_config[{}]", spec.id), || {
                 self.run_config(spec, &ir_dir, &dylib, plan, &all_members)
             })?;
             runs.push(ConfigRun {

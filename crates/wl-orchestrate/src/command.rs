@@ -71,7 +71,7 @@ pub struct FeatureSel {
 }
 
 impl FeatureSel {
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.features.is_empty() && !self.all_features && !self.no_default_features
     }
 
@@ -110,7 +110,7 @@ impl ConfigSpec {
     /// selection, target triple, features). Package selection is NOT here —
     /// it flows through dylint's structured `packages` channel so the
     /// completeness guard can model it.
-    pub fn cargo_args(&self) -> Vec<String> {
+    pub(crate) fn cargo_args(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(flag) = self.kinds.cargo_flag() {
             out.push(flag.to_string());

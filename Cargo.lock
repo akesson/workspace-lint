@@ -2877,19 +2877,17 @@ dependencies = [
 name = "wl-engine"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "cargo_metadata",
- "dylint",
  "foldhash",
  "indexmap",
  "memmap2",
  "rayon",
  "rkyv",
- "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "wl-fast",
  "wl-ir",
+ "wl-orchestrate",
 ]
 
 [[package]]
@@ -2946,6 +2944,19 @@ dependencies = [
  "wl-diagnostic",
  "wl-engine",
  "wl-lint-api",
+]
+
+[[package]]
+name = "wl-orchestrate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cargo_metadata",
+ "dylint",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "wl-fast",
 ]
 
 [[package]]

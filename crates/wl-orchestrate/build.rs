@@ -44,7 +44,7 @@ fn main() {
         let abs = repo_root.join(rel);
         assert!(
             abs.exists(),
-            "vendored extractor file missing: {} — update VENDORED in wl-engine/build.rs",
+            "vendored extractor file missing: {} — update VENDORED in wl-orchestrate/build.rs",
             abs.display()
         );
         println!("cargo::rerun-if-changed={}", abs.display());

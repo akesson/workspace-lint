@@ -1,0 +1,30 @@
+[package]
+name = "wl-orchestrate"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+# Deliberately unpublished: the deny-level unused-pub dogfood judges this
+# crate's pub API workspace-internally. wl-engine is publish = true (its pub
+# API is treated as external, hence exempt) — exactly the blind spot where
+# dead orchestration API accumulated before this split — so the Phase-1 crate
+# opts back into judgement.
+publish = false
+description = "workspace-lint Phase-1 orchestration: drives the vendored dylint extractor over the declared config matrix, plus the matrix's cfg-shadow index."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/akesson/workspace-lint"
+
+[dependencies]
+# The build-free tier: `timing` (the WL_TIMING instrument) plus the FastModel /
+# cfg_regions surface the coverage cfg-shadow scan reads.
+wl-fast = { path = "../wl-fast" }
+dylint = { workspace = true }
+cargo_metadata = { workspace = true }
+thiserror = { workspace = true }
+# dylint::run's error type — wrapped, not exposed in our API shapes.
+anyhow = { workspace = true }
+
+[dev-dependencies]
+# Synthetic `cargo metadata` fixtures for the closure tests (Metadata is
+# Deserialize, so a hand-built resolve graph needs no cargo/network).
+serde_json = { workspace = true }
+tempfile = { workspace = true }

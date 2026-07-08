@@ -8,22 +8,23 @@ rust-version.workspace = true
 # it path-depends on the unpublished wl-ir, so a dry-run cannot resolve.
 publish = true
 repository = "https://github.com/akesson/workspace-lint"
-description = "workspace-lint's engine library: orchestrates the Phase-1 rustc IR extraction (embedded dylint) and assembles the Phase-2 workspace model."
+description = "workspace-lint's engine library: the Phase-2 workspace-model assembler, and the single engine surface re-exporting the Phase-1 orchestrator (wl-orchestrate) and the build-free tier (wl-fast)."
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 wl-ir = { path = "../wl-ir" }
 # The build-free fast tier, re-exported as `wl_engine::fast` (+ `timing`).
 wl-fast = { path = "../wl-fast" }
-dylint = { workspace = true }
+# Phase-1 orchestration, re-exported as `wl_engine::orchestrate` (+ `coverage`).
+# The semantic assembler consumes its `ExtractionRuns`; `dylint`/`anyhow` are
+# its concern, not this crate's — keeping "Phase 2 is plain data" structural.
+wl-orchestrate = { path = "../wl-orchestrate" }
 cargo_metadata = { workspace = true }
 thiserror = { workspace = true }
 # semantic tier: fragments are read zero-copy — mmap the file, access the rkyv
 # archive in place (see FragmentBytes / semantic::store).
 memmap2 = { workspace = true }
 rkyv = { workspace = true }
-# dylint::run's error type — wrapped, not exposed in our API shapes.
-anyhow = { workspace = true }
 # semantic tier: the per-config assemblies build concurrently — one rayon task
 # per `[engine] config` (they share only the read-only `IdentityIndex`) — and
 # the join's hot lookups are fast-hash (fixed-seed `foldhash`) `IndexMap`s
@@ -33,7 +34,6 @@ indexmap = { workspace = true }
 foldhash = { workspace = true }
 
 [dev-dependencies]
-# Synthetic `cargo metadata` fixtures for the closure tests (Metadata is
-# Deserialize, so a hand-built resolve graph needs no cargo/network).
-serde_json = { workspace = true }
+# Semantic-assembler tests (semantic/tests.rs) and the e2e harness materialize
+# into throwaway dirs.
 tempfile = { workspace = true }
