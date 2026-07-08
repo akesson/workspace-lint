@@ -123,21 +123,6 @@ impl ConfigSpec {
         out
     }
 
-    /// Plain host `cargo build` (test convenience; identical to parsing it).
-    pub fn host_default() -> Self {
-        parse_command("cargo build").expect("static command parses")
-    }
-
-    /// Plain host `cargo test` (test convenience).
-    pub fn host_tests() -> Self {
-        parse_command("cargo test").expect("static command parses")
-    }
-
-    /// Plain host `cargo bench` (test convenience).
-    pub fn host_benches() -> Self {
-        parse_command("cargo bench").expect("static command parses")
-    }
-
     fn finish(
         kinds: Kinds,
         target: Option<String>,
