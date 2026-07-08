@@ -10,6 +10,7 @@
 //! rendering belongs to the lints.
 
 mod assembly;
+mod callgraph;
 mod clippy_guard;
 mod collateral;
 mod def_info;
@@ -25,6 +26,7 @@ mod store;
 mod union;
 
 pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
+pub use callgraph::{Callee, EnclosingFn, InboundRef};
 pub use clippy_guard::{DeletionUnmask, NarrowUnmask};
 pub use collateral::PrivateOrphan;
 pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
@@ -34,8 +36,11 @@ pub use pub_usage::{PubCandidate, PubUsage};
 pub use removal::RemovalSet;
 pub use union::{Lead, Retired, UnionVerdict};
 
+use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::OnceLock;
 
+use callgraph::CallGraph;
 use store::FragmentBytes;
 use wl_orchestrate::ExtractionRuns;
 
@@ -80,6 +85,9 @@ pub enum SemanticError {
 pub struct SemanticModel {
     configs: Vec<(String, Assembly)>,
     meta: WorkspaceMeta,
+    /// The call-graph index (`enclosing_fn` / `callees_of` / `references_to`),
+    /// built on first query — nothing pays for it unless a lint asks.
+    call_graph: OnceLock<CallGraph>,
 }
 
 impl SemanticModel {
@@ -125,7 +133,11 @@ impl SemanticModel {
             .into_par_iter()
             .map(|(id, frags)| (id, Assembly::build(frags, std::sync::Arc::clone(&ids))))
             .collect();
-        Ok(Self { configs, meta })
+        Ok(Self {
+            configs,
+            meta,
+            call_graph: OnceLock::new(),
+        })
     }
 
     /// The primary config's assembly (defines the candidate set).
@@ -200,6 +212,37 @@ impl SemanticModel {
     /// `unused-deps` lint layers its manifest-driven judgement on.
     pub fn dep_usage(&self) -> DepUsage {
         DepUsage::compute(&self.configs, &self.meta)
+    }
+
+    /// The call-graph index, built on first use (see [`callgraph`]).
+    fn call_graph(&self) -> &CallGraph {
+        self.call_graph
+            .get_or_init(|| CallGraph::build(&self.configs))
+    }
+
+    /// The innermost `fn` whose whole-item span contains the **on-disk byte**
+    /// `offset` in `file` (workspace-relative, as the IR records spans). The
+    /// refactoring classifier's bridge from a clone instance's source position
+    /// to the fn identity the call-graph queries key on. `None` for a synthetic
+    /// / macro-generated body or an offset inside no fn. Searches every config,
+    /// so a `#[cfg(test)]`-only fn resolves through its own config.
+    pub fn enclosing_fn(&self, file: &Path, offset: u32) -> Option<EnclosingFn> {
+        self.call_graph().enclosing_fn(file, offset)
+    }
+
+    /// Every non-import call target of `identity` and the defs nested under it,
+    /// unioned across configs. Two clone instances whose sets differ are not
+    /// interchangeable (the IR-confirm contract — a locally-shadowed callee of
+    /// the same name resolves to a different def, so the merge is withheld).
+    pub fn callees_of(&self, identity: &str) -> BTreeSet<Callee> {
+        self.call_graph().callees_of(&self.configs, identity)
+    }
+
+    /// Every inbound reference to `identity` (deduped across cfg variants,
+    /// sorted), flags surfaced so the caller can count call sites or find the
+    /// copy no outside code references.
+    pub fn references_to(&self, identity: &str) -> Vec<InboundRef> {
+        self.call_graph().references_to(&self.configs, identity)
     }
 }
 
