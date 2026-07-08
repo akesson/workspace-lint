@@ -1,0 +1,21 @@
+warning: duplicated code: 2 structurally identical instances (~10 lines)
+ --> crates/demo/src/lib.rs:19:1
+  |
+  = help: extract the shared logic into one function the copies can call
+  = note: also found at: crates/demo/src/lib.rs:35
+  = note: matching ignores local variable names and literal values
+  = note: instances are identical (differing at most in local names)
+  = note: an extracted fn would take 1 parameter (items) but needs 3 return values (count, total, errors) — extraction is awkward; consider restructuring
+help: if intentional, silence with:
+  |
+19 + workspace_lint::expect!(duplicate_code);
+  |
+  = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+
+error: duplicated code: 2 structurally identical instances (~6 lines)
+ --> crates/demo/src/lib.rs:49:1
+  |
+  = help: these are copies of the same function — keep one and redirect the other call sites
+  = note: also found at: crates/demo/src/lib.rs:56
+
+workspace-lint: generated 1 warning, 1 error

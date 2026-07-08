@@ -273,6 +273,47 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note("instances resolve different callees — the copies may not be interchangeable")
             .build(),
         ),
+        // duplicate-code statement run: a mid-body run priced as an extraction
+        // signature — the live-in variables become parameters, the one live-out
+        // variable the return value.
+        (
+            "duplicate_code_run_signature",
+            at_line(
+                "workspace-lint::duplicate-code",
+                "duplicated code: 2 structurally identical instances (~6 lines)",
+                PathBuf::from("crates/alpha/src/report.rs"),
+                42,
+            )
+            .note("also found at: crates/beta/src/render.rs:88")
+            .note("matching ignores local variable names and literal values")
+            .help("extract the shared logic into one function the copies can call")
+            .note("instances are identical (differing at most in local names)")
+            .note("an extracted fn would take 2 parameters (items, config) and return total")
+            .build(),
+        ),
+        // duplicate-code statement run needing several return values: extracting
+        // it would return a tuple the caller must destructure, so the finding is
+        // downgraded to a lint-chosen `warn` (level_explicit) and the note says
+        // so.
+        (
+            "duplicate_code_run_live_out_downgrade",
+            at_line(
+                "workspace-lint::duplicate-code",
+                "duplicated code: 2 structurally identical instances (~7 lines)",
+                PathBuf::from("crates/alpha/src/report.rs"),
+                42,
+            )
+            .note("also found at: crates/beta/src/render.rs:88")
+            .note("matching ignores local variable names and literal values")
+            .help("extract the shared logic into one function the copies can call")
+            .note("instances are identical (differing at most in local names)")
+            .note(
+                "an extracted fn would take 1 parameter (items) but needs 3 return values \
+                 (count, total, errors) — extraction is awkward; consider restructuring",
+            )
+            .level_explicit(wl_diagnostic::Level::Warn)
+            .build(),
+        ),
         // freshness: tracked file stale relative to deps.
         (
             "freshness_stale",
@@ -958,6 +999,44 @@ mod tests {
         }
 
         #[test]
+        fn duplicate_code_run_signature() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_run_signature")), @r"
+            warning: duplicated code: 2 structurally identical instances (~6 lines)
+             --> crates/alpha/src/report.rs:42:1
+              |
+              = help: extract the shared logic into one function the copies can call
+              = note: also found at: crates/beta/src/render.rs:88
+              = note: matching ignores local variable names and literal values
+              = note: instances are identical (differing at most in local names)
+              = note: an extracted fn would take 2 parameters (items, config) and return total
+            help: if intentional, silence with:
+              |
+            42 + workspace_lint::expect!(duplicate_code);
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            ");
+        }
+
+        #[test]
+        fn duplicate_code_run_live_out_downgrade() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_run_live_out_downgrade")), @r"
+            warning: duplicated code: 2 structurally identical instances (~7 lines)
+             --> crates/alpha/src/report.rs:42:1
+              |
+              = help: extract the shared logic into one function the copies can call
+              = note: also found at: crates/beta/src/render.rs:88
+              = note: matching ignores local variable names and literal values
+              = note: instances are identical (differing at most in local names)
+              = note: an extracted fn would take 1 parameter (items) but needs 3 return values (count, total, errors) — extraction is awkward; consider restructuring
+            help: if intentional, silence with:
+              |
+            42 + workspace_lint::expect!(duplicate_code);
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            ");
+        }
+
+        #[test]
         fn freshness_stale() {
             insta::assert_snapshot!(render(&scenario("freshness_stale")), @r"
             warning: `crates/api/CLAUDE.md` is older than source files it depends on
@@ -1521,6 +1600,16 @@ mod tests {
         }
 
         #[test]
+        fn duplicate_code_run_signature() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_run_signature")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~6 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"an extracted fn would take 2 parameters (items, config) and return total","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
+        fn duplicate_code_run_live_out_downgrade() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_run_live_out_downgrade")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~7 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"an extracted fn would take 1 parameter (items) but needs 3 return values (count, total, errors) — extraction is awkward; consider restructuring","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
         fn freshness_stale() {
             insta::assert_snapshot!(render(&scenario("freshness_stale")), @r##"{"level":"warning","message":"`crates/api/CLAUDE.md` is older than source files it depends on","code":{"code":"workspace-lint::freshness","explanation":null},"spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(freshness)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"files matching `**/*.rs` in the subtree are newer","spans":[]},{"level":"help","message":"run `workspace-lint done` once the tracked file is up to date","spans":[]}],"rendered":null}"##);
         }
@@ -1637,6 +1726,16 @@ mod tests {
         #[test]
         fn duplicate_code_merge_withheld() {
             insta::assert_snapshot!(render(&scenario("duplicate_code_merge_withheld")), @"::warning file=crates/alpha/src/report.rs,line=42,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicated code: 2 structurally identical instances (~6 lines)");
+        }
+
+        #[test]
+        fn duplicate_code_run_signature() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_run_signature")), @"::warning file=crates/alpha/src/report.rs,line=42,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicated code: 2 structurally identical instances (~6 lines)");
+        }
+
+        #[test]
+        fn duplicate_code_run_live_out_downgrade() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_run_live_out_downgrade")), @"::warning file=crates/alpha/src/report.rs,line=42,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicated code: 2 structurally identical instances (~7 lines)");
         }
 
         #[test]

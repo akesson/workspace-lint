@@ -1,0 +1,16 @@
+# A statement run copied mid-body between two otherwise-different fns: the run
+# reads `items`/`config` (bound before it) and produces `total` (read after),
+# so the extraction-signature note prices it as `take 2 parameters … and
+# return total`. One live-out, so no downgrade — it fires at deny.
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20
+
+[engine]
+# duplicate-code is a semantic lint: the classifier confirms merges against
+# the rustc call graph, so the fixture workspace is extracted (build only).
+configs = ["cargo build"]

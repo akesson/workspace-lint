@@ -35,6 +35,7 @@ pub use config::DuplicateCodeConfig;
 pub use measure::{GroupMeasure, MeasureReport, measure};
 
 use wl_engine::fast::clones::divergence::{Divergence, DivergenceAnalyzer};
+use wl_engine::fast::clones::liveness::{Liveness, LivenessAnalyzer};
 use wl_engine::fast::clones::{CloneGroup, Options, Region, ScanFile, find_clones};
 
 pub struct DuplicateCode {
@@ -79,6 +80,10 @@ impl LintImpl for DuplicateCode {
             .config
             .classify
             .then(|| Classifier::new(&files, Some(semantic), &self.config.component_macros));
+        // Lazy and run-gated internally, so it is built unconditionally: a
+        // group that is not a statement run resolves no liveness and pays
+        // nothing.
+        let mut liveness = LivenessAnalyzer::new(&files);
         groups
             .iter()
             .filter_map(|group| {
@@ -88,6 +93,8 @@ impl LintImpl for DuplicateCode {
                     divergence.as_ref(),
                     self.config.max_parameters,
                     classifier.as_mut(),
+                    &mut liveness,
+                    self.config.max_live_out,
                 )
             })
             .collect()
@@ -171,11 +178,21 @@ fn enumerate(fast: &FastModel, config: &DuplicateCodeConfig) -> Vec<ScanFile> {
 /// - otherwise one actionability note: literal-identical instances (the
 ///   most mechanical extraction) or the parameter count extracting would
 ///   take.
+///
+/// A statement-run group additionally carries an extraction-signature note
+/// (its live-in parameters and live-out return values) and, when it would
+/// return more than `max_live_out` values, is downgraded to `warn` via a
+/// lint-chosen level — an advisory softening that is deliberately kept out of
+/// the classifier so its "classification never changes level" contract holds.
+/// The run's live parameters are variables; the divergence note's are literals,
+/// so the two notes co-exist and a full extraction would take the sum.
 fn emit(
     group: &CloneGroup,
     divergence: Option<&Divergence>,
     max_parameters: usize,
     classifier: Option<&mut Classifier>,
+    liveness: &mut LivenessAnalyzer<'_>,
+    max_live_out: usize,
 ) -> Option<Diagnostic> {
     let anchor = &group.instances[0];
     let lines = anchor.line_end - anchor.line_start + 1;
@@ -229,11 +246,51 @@ fn emit(
             });
         }
     }
+    // A statement-run group prices its extraction as a signature note, and a
+    // multi-return extraction (live-out beyond the threshold) downgrades to a
+    // lint-chosen `warn` so it stops failing CI without vanishing.
+    if let Some(lv) = liveness.analyze(group) {
+        builder = builder.note(extraction_signature_note(&lv));
+        if max_live_out > 0 && lv.max_live_out > max_live_out {
+            builder = builder.level_explicit(wl_diagnostic::Level::Warn);
+        }
+    }
     // The class note is appended after the divergence note (pinned order).
     if let Some(note) = class.as_ref().and_then(RefactoringClass::note) {
         builder = builder.note(note);
     }
     Some(builder.build())
+}
+
+/// The extraction-signature note for a statement-run group: the parameters an
+/// extraction would take (live-in) and the values it would return (live-out),
+/// named from the source. More than one return value reads as awkward and
+/// pairs with the group's downgrade.
+fn extraction_signature_note(lv: &Liveness) -> String {
+    let take = match lv.live_in.len() {
+        0 => "take no parameters".to_string(),
+        1 => format!("take 1 parameter ({})", name_list(&lv.live_in)),
+        n => format!("take {n} parameters ({})", name_list(&lv.live_in)),
+    };
+    let ret = match lv.max_live_out {
+        0 => "and return nothing".to_string(),
+        1 => format!("and return {}", name_list(&lv.live_out)),
+        n => format!(
+            "but needs {n} return values ({}) — extraction is awkward; consider restructuring",
+            name_list(&lv.live_out),
+        ),
+    };
+    format!("an extracted fn would {take} {ret}")
+}
+
+/// A comma-joined name list, capped at [`MAX_LISTED`] with an `and N more`
+/// tail (matching the diagnostic's other site-list caps).
+fn name_list(names: &[String]) -> String {
+    let mut listed: Vec<String> = names.iter().take(MAX_LISTED).cloned().collect();
+    if names.len() > MAX_LISTED {
+        listed.push(format!("and {} more", names.len() - MAX_LISTED));
+    }
+    listed.join(", ")
 }
 
 /// Cap for per-diagnostic site lists (cross-references and drift notes), so
@@ -261,4 +318,51 @@ fn other_sites(group: &CloneGroup) -> String {
         listed.push(format!("and {} more", others.len() - MAX_LISTED));
     }
     listed.join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn liveness(live_in: &[&str], live_out: &[&str], max_live_out: usize) -> Liveness {
+        Liveness {
+            live_in: live_in.iter().map(|s| s.to_string()).collect(),
+            live_out: live_out.iter().map(|s| s.to_string()).collect(),
+            max_live_out,
+        }
+    }
+
+    /// The full parameter/return phrasing matrix, including the zero and
+    /// singular/plural edges and the awkward multi-return clause.
+    #[test]
+    fn extraction_signature_note_matrix() {
+        assert_eq!(
+            extraction_signature_note(&liveness(&["items", "config"], &["total"], 1)),
+            "an extracted fn would take 2 parameters (items, config) and return total",
+        );
+        assert_eq!(
+            extraction_signature_note(&liveness(&["items"], &[], 0)),
+            "an extracted fn would take 1 parameter (items) and return nothing",
+        );
+        assert_eq!(
+            extraction_signature_note(&liveness(&[], &[], 0)),
+            "an extracted fn would take no parameters and return nothing",
+        );
+        assert_eq!(
+            extraction_signature_note(&liveness(&[], &["total"], 1)),
+            "an extracted fn would take no parameters and return total",
+        );
+        assert_eq!(
+            extraction_signature_note(&liveness(&["items"], &["count", "total"], 2)),
+            "an extracted fn would take 1 parameter (items) but needs 2 return values \
+             (count, total) — extraction is awkward; consider restructuring",
+        );
+    }
+
+    /// Beyond `MAX_LISTED` names, the list caps with an `and N more` tail.
+    #[test]
+    fn name_list_caps_long_lists() {
+        let many: Vec<String> = (0..7).map(|i| format!("v{i}")).collect();
+        assert_eq!(name_list(&many), "v0, v1, v2, v3, v4, and 2 more");
+    }
 }

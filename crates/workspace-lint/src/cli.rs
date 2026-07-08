@@ -154,6 +154,10 @@ pub(crate) enum CheckRule {
         /// always survive; 0 disables)
         #[arg(long, default_value_t = DuplicateCodeConfig::default().max_parameters)]
         max_parameters: usize,
+        /// Maximum return values extracting a statement-run group may need
+        /// before the finding is downgraded to warn (0 disables the downgrade)
+        #[arg(long, default_value_t = DuplicateCodeConfig::default().max_live_out)]
+        max_live_out: usize,
         /// Don't name the refactoring each group calls for (keep the generic
         /// "extract" help on every group instead of merge / delete-dead-copy /
         /// default-trait-method / method-on-type / ui-component)
@@ -310,6 +314,7 @@ impl CheckRule {
                 min_distinct_anchors,
                 min_non_repeating_ratio,
                 max_parameters,
+                max_live_out,
                 no_classify,
                 component_macros,
                 stats: _,
@@ -325,6 +330,7 @@ impl CheckRule {
                 *min_distinct_anchors,
                 *min_non_repeating_ratio,
                 *max_parameters,
+                *max_live_out,
                 *no_classify,
                 component_macros,
                 include,
@@ -405,6 +411,7 @@ mod tests {
             min_distinct_anchors: 4,
             min_non_repeating_ratio: 0.5,
             max_parameters: 3,
+            max_live_out: 1,
             no_classify: false,
             component_macros: vec![],
             stats: false,
@@ -432,6 +439,7 @@ mod tests {
             min_distinct_anchors: 0,
             min_non_repeating_ratio: 0.0,
             max_parameters: 0,
+            max_live_out: 2,
             no_classify: false,
             component_macros: vec![],
             stats: true,
@@ -439,7 +447,10 @@ mod tests {
             exclude: vec![],
         };
         let config = rule.duplicate_code_stats().expect("--stats resolves");
-        assert_eq!((config.min_lines, config.max_parameters), (4, 0));
+        assert_eq!(
+            (config.min_lines, config.max_parameters, config.max_live_out),
+            (4, 0, 2)
+        );
     }
 
     /// Every runnable lint must have an ad-hoc `check <short>` subcommand —

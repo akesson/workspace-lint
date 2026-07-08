@@ -60,6 +60,18 @@ pub struct DuplicateCodeConfig {
     /// Only meaningful under `ignore-literals`; 0 disables.
     #[serde(default = "default_max_parameters", rename = "max-parameters")]
     pub max_parameters: usize,
+    /// Maximum return values extracting a statement-run group may need before
+    /// the finding is downgraded to `warn`. A run whose live-out set (values
+    /// bound inside the run and read after it) exceeds this would extract into
+    /// a fn returning a tuple the caller must destructure — awkward enough to
+    /// be advisory, not CI-failing. The downgrade is a lint-chosen level, so —
+    /// like `architecture`'s per-rule severities — a `[lints]` override does
+    /// not re-escalate or drop it (a per-crate `allow` won't silence a
+    /// downgraded run; only a global `allow` un-registers the lint). The
+    /// extraction-signature note itself is always shown for run groups; this
+    /// only gates the downgrade. 0 disables the downgrade.
+    #[serde(default = "default_max_live_out", rename = "max-live-out")]
+    pub max_live_out: usize,
     /// Name the refactoring each group calls for — reshape the help line and
     /// append a class note (merge / delete-dead-copy / default-trait-method /
     /// method-on-type / ui-component). Never changes which groups fire; a
@@ -104,6 +116,7 @@ impl DuplicateCodeConfig {
         min_distinct_anchors: usize,
         min_non_repeating_ratio: f64,
         max_parameters: usize,
+        max_live_out: usize,
         no_classify: bool,
         component_macros: &[String],
         include: &[String],
@@ -119,6 +132,7 @@ impl DuplicateCodeConfig {
             min_distinct_anchors,
             min_non_repeating_ratio,
             max_parameters,
+            max_live_out,
             classify: !no_classify,
             component_macros: if component_macros.is_empty() {
                 default_component_macros()
@@ -155,6 +169,10 @@ fn default_max_parameters() -> usize {
     3
 }
 
+fn default_max_live_out() -> usize {
+    1
+}
+
 fn default_component_macros() -> Vec<String> {
     vec!["rsx".to_string()]
 }
@@ -182,6 +200,7 @@ mod tests {
             table.min_distinct_anchors,
             table.min_non_repeating_ratio,
             table.max_parameters,
+            table.max_live_out,
             false,
             &[],
             &[],
@@ -193,6 +212,7 @@ mod tests {
         assert_eq!(cli.min_distinct_anchors, table.min_distinct_anchors);
         assert_eq!(cli.min_non_repeating_ratio, table.min_non_repeating_ratio);
         assert_eq!(cli.max_parameters, table.max_parameters);
+        assert_eq!(cli.max_live_out, table.max_live_out);
         assert_eq!(cli.classify, table.classify);
         assert_eq!(cli.component_macros, table.component_macros);
         assert!(cli.include.0.is_empty() && cli.exclude.0.is_empty());

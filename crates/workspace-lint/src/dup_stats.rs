@@ -15,8 +15,18 @@ pub(crate) fn render(report: &MeasureReport) -> String {
     let _ = writeln!(out, "duplicate-code stats: {} groups", report.groups.len());
     let _ = writeln!(
         out,
-        "{:<56} {:>4} {:>5} {:>6} {:>5} {:>8} {:>5} {:>6} {:>5} {:<23}",
-        "anchor", "inst", "kind", "tokens", "lines", "literals", "divg", "params", "drift", "class"
+        "{:<56} {:>4} {:>5} {:>6} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:<23}",
+        "anchor",
+        "inst",
+        "kind",
+        "tokens",
+        "lines",
+        "literals",
+        "divg",
+        "params",
+        "drift",
+        "lvout",
+        "class",
     );
     for g in &report.groups {
         let anchor = format!("{}:{}", display_path(&g.file), g.line);
@@ -29,9 +39,13 @@ pub(crate) fn render(report: &MeasureReport) -> String {
             ),
             None => ("-".into(), "-".into(), "-".into(), "-".into()),
         };
+        let lvout = match &g.liveness {
+            Some(l) => l.max_live_out.to_string(),
+            None => "-".into(),
+        };
         let _ = writeln!(
             out,
-            "{anchor:<56} {:>4} {:>5} {:>6} {:>5} {literals:>8} {divg:>5} {params:>6} {drift:>5} {:<23}",
+            "{anchor:<56} {:>4} {:>5} {:>6} {:>5} {literals:>8} {divg:>5} {params:>6} {drift:>5} {lvout:>5} {:<23}",
             g.instances,
             kind_name(g.kind),
             g.tokens,
@@ -97,6 +111,32 @@ pub(crate) fn render(report: &MeasureReport) -> String {
         let _ = write!(out, " <={}:{n}", i + 1);
     }
     let _ = writeln!(out);
+
+    // Live-out distribution over statement-run groups (the only kind with a
+    // liveness signature): how many values each would return if extracted —
+    // the input to the max-live-out downgrade.
+    let with_liveness: Vec<_> = report
+        .groups
+        .iter()
+        .filter_map(|g| g.liveness.as_ref())
+        .collect();
+    let mut lv_histogram: Vec<(usize, usize)> = Vec::new();
+    for l in &with_liveness {
+        match lv_histogram
+            .iter_mut()
+            .find(|(lo, _)| *lo == l.max_live_out)
+        {
+            Some((_, n)) => *n += 1,
+            None => lv_histogram.push((l.max_live_out, 1)),
+        }
+    }
+    lv_histogram.sort_unstable();
+    let _ = write!(out, "live-out histogram (runs):");
+    for (lo, n) in &lv_histogram {
+        let _ = write!(out, " {lo}:{n}");
+    }
+    let _ = writeln!(out);
+
     let count = |k: CandidateKind| report.groups.iter().filter(|g| g.kind == k).count();
     let _ = writeln!(
         out,
@@ -137,34 +177,56 @@ fn kind_name(kind: CandidateKind) -> &'static str {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use wl_engine::fast::clones::liveness::Liveness;
     use wl_lints::duplicate_code::{GroupMeasure, MeasureReport};
 
-    /// The readout carries every section the calibration protocol reads,
-    /// and a `None` divergence renders as dashes, not zeros.
+    /// The readout carries every section the calibration protocol reads, a
+    /// `None` divergence/liveness renders as dashes (not zeros), and a run
+    /// group's live-out count feeds both the `lvout` column and the histogram.
     #[test]
     fn render_covers_all_sections() {
         let report = MeasureReport {
-            groups: vec![GroupMeasure {
-                file: PathBuf::from("crates/x/src/a.rs"),
-                line: 10,
-                instances: 2,
-                kind: CandidateKind::Fn,
-                tokens: 60,
-                lines: 9,
-                divergence: None,
-                class: "ui-component",
-            }],
+            groups: vec![
+                GroupMeasure {
+                    file: PathBuf::from("crates/x/src/a.rs"),
+                    line: 10,
+                    instances: 2,
+                    kind: CandidateKind::Fn,
+                    tokens: 60,
+                    lines: 9,
+                    divergence: None,
+                    liveness: None,
+                    class: "ui-component",
+                },
+                GroupMeasure {
+                    file: PathBuf::from("crates/x/src/b.rs"),
+                    line: 20,
+                    instances: 2,
+                    kind: CandidateKind::Run,
+                    tokens: 50,
+                    lines: 8,
+                    divergence: None,
+                    liveness: Some(Liveness {
+                        live_in: vec!["items".into(), "config".into()],
+                        live_out: vec!["count".into(), "total".into()],
+                        max_live_out: 2,
+                    }),
+                    class: "unclassified",
+                },
+            ],
             stitchable: [0, 1, 1, 2, 2],
         };
         let text = render(&report);
-        assert!(text.contains("duplicate-code stats: 1 groups"));
+        assert!(text.contains("duplicate-code stats: 2 groups"));
         assert!(text.contains("crates/x/src/a.rs:10"));
         assert!(text.contains(" -"), "None divergence renders as dashes");
+        assert!(text.contains("lvout"), "the live-out column header renders");
         assert!(text.contains("params histogram:"));
         assert!(text.contains("suppressed at max-parameters"));
         assert!(text.contains("drift candidates: 0"));
         assert!(text.contains("stitchable group pairs at gap <=1:0 <=2:1"));
-        assert!(text.contains("kind distribution: fn:1 block:0 run:0"));
+        assert!(text.contains("live-out histogram (runs): 2:1"));
+        assert!(text.contains("kind distribution: fn:1 block:0 run:1"));
         assert!(text.contains("ui-component"), "the class column renders");
         assert!(text.contains("class distribution (syntactic): ui-component:1"));
     }

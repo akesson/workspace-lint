@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use wl_engine::fast::FastModel;
 use wl_engine::fast::clones::divergence::{Divergence, DivergenceAnalyzer};
+use wl_engine::fast::clones::liveness::{Liveness, LivenessAnalyzer};
 use wl_engine::fast::clones::{CandidateKind, CloneGroup, find_clones};
 
 use super::classify::Classifier;
@@ -40,6 +41,10 @@ pub struct GroupMeasure {
     /// Literal divergence; `None` under `--exact-literals` (instances are
     /// literal-identical by construction) or on a capture misalignment.
     pub divergence: Option<Divergence>,
+    /// The extraction signature for a statement-run group; `None` for fn/block
+    /// groups and runs with no enclosing fn. Purely syntactic, so it is
+    /// available on this build-free path.
+    pub liveness: Option<Liveness>,
     /// The group's SYNTACTIC refactoring class (kebab-case). Measure-only and
     /// build-free, so the call-graph verdicts (`merge-identical-fns` /
     /// `delete-dead-copy` / `merge-withheld`) never appear here — only
@@ -54,6 +59,7 @@ pub fn measure(fast: &FastModel, config: &DuplicateCodeConfig) -> MeasureReport 
     let files = enumerate(fast, config);
     let groups = find_clones(&files, &options(config));
     let mut analyzer = DivergenceAnalyzer::new(&files);
+    let mut liveness = LivenessAnalyzer::new(&files);
     // The readout classifies syntactically (no semantic model), so the
     // call-graph verdicts never appear — measure-only, and build-free.
     let mut classifier = Classifier::new(&files, None, &config.component_macros);
@@ -77,6 +83,7 @@ pub fn measure(fast: &FastModel, config: &DuplicateCodeConfig) -> MeasureReport 
                 lines: anchor.line_end - anchor.line_start + 1,
                 class: classifier.classify(g, identical).label(),
                 divergence,
+                liveness: liveness.analyze(g),
             }
         })
         .collect();

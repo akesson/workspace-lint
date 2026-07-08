@@ -187,6 +187,7 @@ cross-crate-only = false # true = only groups spanning ≥ 2 crates
 min-distinct-anchors = 4      # noise filter: distinct verbatim names required
 min-non-repeating-ratio = 0.5 # noise filter: fraction of non-repeated windows
 max-parameters = 3       # extraction-cost gate: literal parameters allowed
+max-live-out = 1         # run-clone downgrade: return values before it warns
 classify = true          # name the refactoring each group calls for
 component-macros = ["rsx"]  # UI macros whose copies suggest a component
 include = []             # workspace-relative globs to scan (empty = all)
@@ -230,13 +231,31 @@ abstracted away and prices the extraction:
   odd value must echo the mapping's other side, and `0`/`1`/`""` never
   qualify), so expect it to be quiet — when it speaks, look closely.
 
+When the duplicated region is a **statement run** (a copied span mid-body,
+not a whole fn or block), the lint also prices the extraction as a signature:
+the variables it reads that were bound before it become the extracted fn's
+parameters, and the variables it binds that are read afterwards become its
+return values — `an extracted fn would take 2 parameters (items, config) and
+return total`. A run that would return more than `max-live-out` values
+(default 1; 0 disables) extracts into a fn returning a tuple the caller must
+destructure — awkward enough that the finding is **downgraded to a warning**
+so it stops failing CI without disappearing. The downgrade is a lint-chosen
+level, so — like `architecture`'s per-rule severities — a `[lints]` override
+neither re-escalates nor drops it (a per-crate `allow` won't silence a
+downgraded run; only a global `allow` does). The liveness analysis is
+syntactic — a flat lexical approximation, not a real scope stack — so it errs
+toward the *softening* direction, and its parameters are variables where the
+extraction-cost note's are literals (a full extraction would take the sum).
+
 To try it on any workspace without touching config, use the ad-hoc form (one
 flag per field; `--exact-literals` / `--include-test-code` invert the
 `ignore-*` defaults, `--no-classify` turns the classifier off,
-`--component-macros` overrides the UI-macro list). `--stats` prints a
-measure-only readout (per-group divergence, parameter histogram, drift
-candidates, threshold sweeps, and each group's *syntactic* refactoring
-class) instead of diagnostics — the view to tune thresholds against. It
+`--component-macros` overrides the UI-macro list; `--max-live-out` sets the
+run-clone downgrade threshold). `--stats` prints a measure-only readout
+(per-group divergence, parameter histogram, drift candidates, a per-run
+live-out column and histogram, threshold sweeps, and each group's *syntactic*
+refactoring class) instead of diagnostics — the view to tune thresholds
+against. It
 stays **build-free** even though the lint itself is now semantic, so the
 call-graph verdicts (merge / delete-dead-copy / withheld) never appear in
 the `--stats` class column — only the classes decidable from syntax:
