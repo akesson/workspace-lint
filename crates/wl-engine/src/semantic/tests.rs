@@ -3337,7 +3337,7 @@ fn enclosing_fn_sees_secondary_config_only_defs() {
         "test",
         vec![
             shared(),
-            fn_item_at(&["app", "only_test"], "K_OT", "src/x.rs", 30, 50),
+            fn_item_at(&["app", "only_test"], "K_ONLYTEST", "src/x.rs", 30, 50),
         ],
         vec![],
     );

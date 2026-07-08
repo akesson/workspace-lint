@@ -5,16 +5,16 @@
 //! fns, inherent methods, or trait-impl methods; each fn's name and its first
 //! parameter's base type; which macros a region invokes; and every type the
 //! workspace defines. None of that feeds the fingerprint — recovering it here,
-//! *after* grouping, keeps the hot [`super::Collect`] walker untouched (the
-//! same discipline [`super::capture`] follows for concrete literals).
+//! *after* grouping, keeps the hot `super::Collect` walker untouched (the
+//! same discipline `super::capture` follows for concrete literals).
 //!
 //! One walk per file that actually holds a reported instance, cached. A fn is
 //! keyed by its signature-start `(line, column)` — exactly the anchor
-//! [`super::Collect::candidate_fn`] records as a `Fn` region's
+//! `super::Collect::candidate_fn` records as a `Fn` region's
 //! `(line_start, col_start)` — so [`MetaResolver::fn_meta`] is a direct lookup.
 //! [`FnMeta::byte_offset`] is the on-disk byte the semantic tier's
 //! `enclosing_fn` resolves against (proc-macro2's `byte_range` and the IR's
-//! spans are both on-disk offsets — see [`wl_ir::Span`]).
+//! spans are both on-disk offsets — see `wl_ir::Span`).
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -61,7 +61,7 @@ pub struct FnMeta {
 }
 
 /// Lazily-resolved per-file syntax, built once per file on first use (mirrors
-/// [`super::capture::LiteralTables`]).
+/// `super::capture::LiteralTables`).
 pub struct MetaResolver<'a> {
     asts: HashMap<&'a Path, &'a syn::File>,
     fns: HashMap<PathBuf, HashMap<(u32, u32), FnMeta>>,
@@ -123,7 +123,7 @@ impl<'a> MetaResolver<'a> {
     /// Every trait name the scanned workspace defines — the workspace-local
     /// test for `DefaultTraitMethod` (you can only add a default method to a
     /// trait you own; a foreign `std` trait like `TryFrom` is off-limits).
-    /// Built once, in the same walk as [`defined_type_names`].
+    /// Built once, in the same walk as [`Self::defined_type_names`].
     pub fn defined_trait_names(&mut self) -> &BTreeSet<String> {
         self.ensure_defined();
         self.trait_names

@@ -29,8 +29,8 @@ use super::assembly::{Assembly, FastMap};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnclosingFn {
     /// The fn's cross-config stable identity (its `::`-joined definition path)
-    /// — the handle [`callees_of`](CallGraph::callees_of) /
-    /// [`references_to`](CallGraph::references_to) key on.
+    /// — the handle [`callees_of`](super::SemanticModel::callees_of) /
+    /// [`references_to`](super::SemanticModel::references_to) key on.
     pub identity: String,
     pub krate: String,
     /// The whole-item span (attrs/doc through the closing brace).
