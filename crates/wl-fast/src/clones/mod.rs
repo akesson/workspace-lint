@@ -79,6 +79,7 @@ use syn::visit::{self, Visit};
 mod capture;
 pub mod divergence;
 mod encode;
+pub mod liveness;
 pub mod meta;
 #[cfg(test)]
 mod tests;

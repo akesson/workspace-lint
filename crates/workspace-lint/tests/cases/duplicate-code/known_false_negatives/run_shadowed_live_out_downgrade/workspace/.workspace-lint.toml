@@ -1,0 +1,19 @@
+# A known false NEGATIVE for the live-out downgrade, pinning the flat-scope
+# approximation. The run binds `count` (genuinely read after) and a loop-local
+# `acc` that never escapes the `for` body. Because reaching-bind resolution is
+# flat (no block nesting), the after-run read of the OUTER `acc` resolves to
+# the inner binding, so live-out is over-counted as {count, acc} = 2 > 1 and
+# the finding is WRONGLY downgraded to a warning — the workspace exits 0 when a
+# correct analysis would keep it at deny. If the approximation is ever made
+# scope-aware the group returns one value, stays deny, and this case starts
+# exiting non-zero — the forcing function that prompts promotion.
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20
+
+[engine]
+configs = ["cargo build"]

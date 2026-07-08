@@ -100,6 +100,47 @@ pub(crate) fn flatten(
     }
 }
 
+/// Report every ident in a local-reference-shaped position — the same
+/// `renameable` verdict [`flatten`] computes (skip the ident after a single
+/// field-access `.`, after `::`, and after `'`) — with its span-start
+/// position. The liveness pass ([`super::liveness`]) uses this to find which
+/// names a statement run reads, applying exactly the fingerprint's
+/// suppression rules so a struct field or path segment is never mistaken for
+/// a variable use. Recursion into groups deliberately walks macro bodies:
+/// `println!("{x}")`-style uses are over-counted rather than missed (the
+/// conservative direction for a liveness hint — see [`super::liveness`]).
+pub(super) fn scan_idents(
+    tokens: TokenStream,
+    state: &mut NormState,
+    f: &mut impl FnMut(&proc_macro2::Ident, proc_macro2::LineColumn),
+) {
+    for tt in tokens {
+        match tt {
+            TokenTree::Group(g) => {
+                state.reset();
+                scan_idents(g.stream(), state, f);
+                state.reset();
+            }
+            TokenTree::Ident(i) => {
+                if !state.suppress_rename() {
+                    f(&i, i.span().start());
+                }
+                state.reset();
+            }
+            TokenTree::Punct(p) => {
+                let c = p.as_char();
+                let colons = if c == ':' { state.colons_run + 1 } else { 0 };
+                let dots = if c == '.' { state.dots_run + 1 } else { 0 };
+                state.reset();
+                state.colons_run = colons;
+                state.dots_run = dots;
+                state.after_quote = c == '\'';
+            }
+            TokenTree::Literal(_) => state.reset(),
+        }
+    }
+}
+
 /// Keywords and the bool literals never count as anchors: they are structure,
 /// not semantic identity. (`true`/`false` and `_` are idents at token level.)
 const NON_ANCHOR_IDENTS: &[&str] = &[

@@ -1,0 +1,18 @@
+# Two findings share this workspace, and the pairing is deliberate:
+#
+#  * `stats_a`/`stats_b` share a run that binds three values all read after it
+#    (`count`/`total`/`errors`) — extracting it would return a 3-tuple, past
+#    `max-live-out = 1`, so the run is DOWNGRADED to a warning (a lint-chosen
+#    level a deny config can't re-escalate). A warning alone would exit 0.
+#  * `twin_alpha`/`twin_beta` are identical whole fns — a plain deny finding
+#    that keeps the run exit non-zero, so this stays a true-positive case.
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20
+
+[engine]
+configs = ["cargo build"]
