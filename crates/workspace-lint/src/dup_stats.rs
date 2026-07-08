@@ -15,12 +15,12 @@ pub(crate) fn render(report: &MeasureReport) -> String {
     let _ = writeln!(out, "duplicate-code stats: {} groups", report.groups.len());
     let _ = writeln!(
         out,
-        "{:<56} {:>4} {:>5} {:>6} {:>5} {:>5} {:>5} {:>6} {:>5}",
-        "anchor", "inst", "kind", "tokens", "lines", "lits", "divg", "params", "drift"
+        "{:<56} {:>4} {:>5} {:>6} {:>5} {:>8} {:>5} {:>6} {:>5}",
+        "anchor", "inst", "kind", "tokens", "lines", "literals", "divg", "params", "drift"
     );
     for g in &report.groups {
         let anchor = format!("{}:{}", display_path(&g.file), g.line);
-        let (lits, divg, params, drift) = match &g.divergence {
+        let (literals, divg, params, drift) = match &g.divergence {
             Some(d) => (
                 d.positions.to_string(),
                 d.divergent.to_string(),
@@ -31,7 +31,7 @@ pub(crate) fn render(report: &MeasureReport) -> String {
         };
         let _ = writeln!(
             out,
-            "{anchor:<56} {:>4} {:>5} {:>6} {:>5} {lits:>5} {divg:>5} {params:>6} {drift:>5}",
+            "{anchor:<56} {:>4} {:>5} {:>6} {:>5} {literals:>8} {divg:>5} {params:>6} {drift:>5}",
             g.instances,
             kind_name(g.kind),
             g.tokens,

@@ -107,3 +107,60 @@ fn stitchable(groups: &[CloneGroup]) -> [usize; 5] {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use wl_engine::fast::clones::Region;
+
+    use super::*;
+
+    fn group(sites: &[(&str, u32, u32)]) -> CloneGroup {
+        CloneGroup {
+            instances: sites
+                .iter()
+                .map(|(file, start, end)| Region {
+                    file: PathBuf::from(file),
+                    krate: "demo".into(),
+                    line_start: *start,
+                    line_end: *end,
+                    col_start: 0,
+                    col_end: 1,
+                    kind: CandidateKind::Run,
+                })
+                .collect(),
+            tokens: 50,
+        }
+    }
+
+    /// The adjacency counts are cumulative over G, gap is the worst site,
+    /// and pairs disqualify on instance-count or file mismatch; overlap
+    /// (gap 0) never counts.
+    #[test]
+    fn stitchable_counts_cumulative_worst_site_gaps() {
+        let groups = [
+            // Pair (0,1): gaps 2 (11-9) and 3 (23-20) → stitchable at G>=3.
+            group(&[("a.rs", 1, 9), ("b.rs", 12, 20)]),
+            group(&[("a.rs", 11, 18), ("b.rs", 23, 30)]),
+            // Overlaps group 0 at both sites → gap 0, never counted.
+            group(&[("a.rs", 5, 12), ("b.rs", 16, 24)]),
+            // Same shape but three instances → count mismatch with all.
+            group(&[("a.rs", 40, 44), ("b.rs", 50, 54), ("c.rs", 60, 64)]),
+            // Matches group 0's count but different files → disqualified.
+            group(&[("x.rs", 1, 9), ("y.rs", 12, 20)]),
+        ];
+        assert_eq!(stitchable(&groups), [0, 0, 1, 1, 1]);
+    }
+
+    /// Order-independence: the earlier region may belong to either group.
+    #[test]
+    fn stitchable_sees_gaps_in_both_directions() {
+        let groups = [
+            group(&[("a.rs", 10, 14), ("b.rs", 10, 14)]),
+            // Site 1 sits BEFORE group 0's, site 2 after: gaps 1 and 1.
+            group(&[("a.rs", 4, 9), ("b.rs", 15, 19)]),
+        ];
+        assert_eq!(stitchable(&groups), [1, 1, 1, 1, 1]);
+    }
+}
