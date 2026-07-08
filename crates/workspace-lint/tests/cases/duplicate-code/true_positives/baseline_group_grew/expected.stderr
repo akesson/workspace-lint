@@ -1,0 +1,16 @@
+error: duplicated code: 3 structurally identical instances (~8 lines)
+ --> crates/demo/src/lib.rs:1:1
+  |
+  = help: extract the shared logic into one function the copies can call
+  = note: also found at: crates/demo/src/lib.rs:10, crates/demo/src/lib.rs:19
+  = note: matching ignores local variable names and literal values
+  = note: grew beyond its baseline: 2 instances accepted, now 3
+  = note: instances are identical (differing at most in local names)
+help: if intentional, silence with:
+  |
+1 + workspace_lint::expect!(duplicate_code);
+  |
+  = note: `#[deny(workspace_lint::duplicate_code)]` on by default
+
+workspace-lint: generated 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (duplicate-code)

@@ -1,3 +1,4 @@
+mod baseline_write;
 mod cli;
 mod config;
 mod directives;
@@ -48,7 +49,7 @@ fn main() {
             }
         }
         Some(Commands::Check { rule }) => run_check(rule, &cli, format, fix),
-        Some(Commands::Explain { lint }) => explain(&lint),
+        Some(Commands::Explain { lint }) => docs::explain(&lint),
         Some(Commands::Expand {
             command,
             glob,
@@ -68,25 +69,6 @@ fn main() {
     }
 }
 
-/// `workspace-lint explain <lint>`: print the lint's documentation to stdout
-/// (data, like the machine output formats) and exit `0`. An unknown name is an
-/// operational error (exit `2`) with a "did you mean …?" hint. The name
-/// resolution is [`docs::resolve`], unit-tested there.
-fn explain(name: &str) -> ! {
-    match docs::resolve(name) {
-        Ok(id) => {
-            print!("{}", docs::lint_doc(id));
-            std::process::exit(0);
-        }
-        Err(hint) => {
-            let suffix = hint
-                .map(|s| format!(" (did you mean `{s}`?)"))
-                .unwrap_or_default();
-            util::fail(format!("error: unknown lint `{name}`{suffix}"));
-        }
-    }
-}
-
 /// The default (no-subcommand) run: the full diagnostic pipeline described in
 /// CLAUDE.md. Extracted from `main` so the CLI dispatch stays a thin match.
 fn run_default(cli: &Cli, format: Format, fix: bool) {
@@ -96,6 +78,13 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
         git::ensure_clean_for_fix(std::path::Path::new("."), cli.allow_dirty);
     }
     let (config, config_diags) = wl_engine::timing::phase("config::load", config::load);
+    // `--baseline-write` regenerates the `[duplicate-code]` baseline and exits.
+    // Placed before the fix/expand work so it is a pure read-then-write of the
+    // one file; default-run only (rejected under `check`) so the recorded set
+    // matches the config CI lints with.
+    if cli.baseline_write {
+        baseline_write::run(&config);
+    }
     // Hidden debug surface: exercise the (still dark) semantic-tier
     // plumbing end-to-end — extract on the pinned toolchain, assemble,
     // print stats — then exit 0 without running any lints.
@@ -202,6 +191,12 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
 /// `workspace-lint check <rule>`: one lint, CLI-configured, sharing the default
 /// run's suppression/leveling/fix tail.
 fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
+    if cli.baseline_write {
+        util::fail(
+            "--baseline-write only works on the default run — the baseline must be \
+             generated under the repo config CI lints with",
+        );
+    }
     // `--stats` measures instead of linting: every group `find_clones`
     // returns plus its literal divergence, no suppression or leveling — the
     // raw view the duplicate-code thresholds are calibrated against.

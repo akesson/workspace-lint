@@ -12,10 +12,11 @@
 //! render in a terminal, so the `DOC.md` authoring rules (enforced by the
 //! tests below) are: first line `# <short-name>`; only headings from the
 //! closed schema set (`## What it checks` / `## Configuration` / `## Silencing`
-//! required, `## Fix behavior` / `## Examples` / `## Known limits` optional);
-//! ATX headings and fenced code only — no pipe tables, no HTML; and prose
-//! hard-wrapped so no line outside a code fence exceeds 80 columns (clap ships
-//! without `wrap_help`, so unwrapped lines would overflow narrow terminals).
+//! required, `## Fix behavior` / `## Examples` / `## Baseline ratchet` /
+//! `## Known limits` optional); ATX headings and fenced code only — no pipe
+//! tables, no HTML; and prose hard-wrapped so no line outside a code fence
+//! exceeds 80 columns (clap ships without `wrap_help`, so unwrapped lines
+//! would overflow narrow terminals).
 
 use wl_lint_api::{LintId, LintImpl};
 use wl_lints::{
@@ -63,13 +64,37 @@ pub(crate) fn resolve(name: &str) -> Result<LintId, Option<&'static str>> {
     })
 }
 
+/// `workspace-lint explain <lint>`: print the lint's documentation to stdout
+/// (data, like the machine output formats) and exit `0`. An unknown name is an
+/// operational error (exit `2`) with a "did you mean …?" hint. The name
+/// resolution is [`resolve`], unit-tested below.
+pub(crate) fn explain(name: &str) -> ! {
+    match resolve(name) {
+        Ok(id) => {
+            print!("{}", lint_doc(id));
+            std::process::exit(0);
+        }
+        Err(hint) => {
+            let suffix = hint
+                .map(|s| format!(" (did you mean `{s}`?)"))
+                .unwrap_or_default();
+            wl_lint_api::util::fail(format!("error: unknown lint `{name}`{suffix}"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::CommandFactory;
 
     const REQUIRED_HEADINGS: &[&str] = &["## What it checks", "## Configuration", "## Silencing"];
-    const OPTIONAL_HEADINGS: &[&str] = &["## Fix behavior", "## Examples", "## Known limits"];
+    const OPTIONAL_HEADINGS: &[&str] = &[
+        "## Fix behavior",
+        "## Examples",
+        "## Baseline ratchet",
+        "## Known limits",
+    ];
     /// The pipeline meta lints, whose docs live beside this module rather than
     /// in a lint dir (see [`lint_doc`]).
     const META: &[LintId] = &[LintId::Config, LintId::StaleExpect, LintId::UnknownLint];

@@ -26,6 +26,9 @@ pub struct MeasureReport {
 
 /// One clone group's measurements.
 pub struct GroupMeasure {
+    /// The group's portable content fingerprint — the baseline match key,
+    /// shown so a `--stats` reader can cross-reference or hand-prune entries.
+    pub fingerprint: u64,
     /// Anchor file (the group's first instance).
     pub file: PathBuf,
     /// Anchor line (1-based).
@@ -75,6 +78,7 @@ pub fn measure(fast: &FastModel, config: &DuplicateCodeConfig) -> MeasureReport 
                 .as_ref()
                 .is_none_or(|d| d.params == 0 && d.violations.is_empty());
             GroupMeasure {
+                fingerprint: g.fingerprint,
                 file: anchor.file.clone(),
                 line: anchor.line_start,
                 instances: g.instances.len(),
@@ -153,6 +157,7 @@ mod tests {
                 })
                 .collect(),
             tokens: 50,
+            fingerprint: 0,
         }
     }
 

@@ -1,0 +1,15 @@
+[lints]
+default = "allow"
+duplicate-code = "deny"
+
+[duplicate-code]
+min-lines = 4
+min-tokens = 20
+min-distinct-anchors = 0
+min-non-repeating-ratio = 0.0
+classify = false
+baseline = "dup.toml"
+
+[engine]
+# duplicate-code is a semantic lint, so the fixture workspace is extracted.
+configs = ["cargo build"]

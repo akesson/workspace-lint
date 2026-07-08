@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Deserialize;
 
 use wl_lint_api::config::{GlobPattern, Globs};
@@ -89,6 +91,14 @@ pub struct DuplicateCodeConfig {
     /// Workspace-relative globs to skip (wins over `include`).
     #[serde(default)]
     pub exclude: Globs,
+    /// Workspace-relative path to the checked-in baseline of accepted clone
+    /// groups (see the README "baseline ratchet"). When set, groups recorded
+    /// in the file are skipped; a group that grows beyond its recorded count
+    /// still fires (with a note), and any entry that no longer matches — or
+    /// over-records — is reported at the lint's level so the ratchet can only
+    /// tighten. Regenerate with `workspace-lint --baseline-write`.
+    #[serde(default)]
+    pub baseline: Option<PathBuf>,
 }
 
 impl Default for DuplicateCodeConfig {
@@ -121,6 +131,7 @@ impl DuplicateCodeConfig {
         component_macros: &[String],
         include: &[String],
         exclude: &[String],
+        baseline: Option<PathBuf>,
     ) -> Self {
         Self {
             min_lines,
@@ -141,6 +152,7 @@ impl DuplicateCodeConfig {
             },
             include: Globs(include.iter().map(|p| GlobPattern::from_cli(p)).collect()),
             exclude: Globs(exclude.iter().map(|p| GlobPattern::from_cli(p)).collect()),
+            baseline,
         }
     }
 }
@@ -205,6 +217,7 @@ mod tests {
             &[],
             &[],
             &[],
+            None,
         );
         assert_eq!(cli.ignore_literals, table.ignore_literals);
         assert_eq!(cli.ignore_test_code, table.ignore_test_code);

@@ -8,23 +8,88 @@
 //! the normalization rules and their known approximations.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{DefaultHasher, Hasher};
 
 use proc_macro2::{TokenStream, TokenTree};
 
-/// String → dense symbol id, shared across every file in one `find_clones`
-/// call so interned ids are comparable cross-file.
+/// FNV-1a 64-bit offset basis. The multiplier is [`ROLL_BASE`] — the two
+/// hashes share the FNV prime (see its doc comment).
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Hand-rolled FNV-1a 64. The fingerprint it produces is persisted verbatim in
+/// checked-in baseline files, so it must be stable across Rust versions and
+/// target platforms — `std::hash::DefaultHasher` (a randomizable, unspecified
+/// SipHash) guarantees neither.
+#[derive(Clone, Copy)]
+pub(crate) struct Fnv1a(u64);
+
+impl Default for Fnv1a {
+    fn default() -> Self {
+        Self(FNV_OFFSET)
+    }
+}
+
+impl Fnv1a {
+    fn write_u8(&mut self, b: u8) {
+        self.0 ^= u64::from(b);
+        self.0 = self.0.wrapping_mul(ROLL_BASE);
+    }
+
+    fn write_u32(&mut self, v: u32) {
+        for b in v.to_le_bytes() {
+            self.write_u8(b);
+        }
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        for b in v.to_le_bytes() {
+            self.write_u8(b);
+        }
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+/// FNV-1a digest of a string's UTF-8 bytes — the portable content hash the
+/// fingerprint keys on for every free identifier and literal (computed once
+/// per distinct string, at intern time).
+fn fnv1a_str(s: &str) -> u64 {
+    let mut h = Fnv1a::default();
+    for &b in s.as_bytes() {
+        h.write_u8(b);
+    }
+    h.finish()
+}
+
+/// An interned symbol: a dense `id` plus the portable `content` digest of its
+/// spelling. See [`Interner`].
+#[derive(Clone, Copy)]
+pub(crate) struct Sym {
+    pub id: u32,
+    pub content: u64,
+}
+
+/// String → interned [`Sym`], shared across every file in one `find_clones`
+/// call. The dense `id` drives the within-run bind-set membership check and
+/// the repetition-window metric — where exactness and cheapness matter and
+/// portability does not. The `content` digest is what the *fingerprint* keys
+/// on, so an unchanged clone hashes identically regardless of what other code
+/// was interned before it.
 #[derive(Default)]
-pub(crate) struct Interner(HashMap<String, u32>);
+pub(crate) struct Interner(HashMap<String, Sym>);
 
 impl Interner {
-    pub(crate) fn intern(&mut self, s: &str) -> u32 {
-        if let Some(&id) = self.0.get(s) {
-            return id;
+    pub(crate) fn intern(&mut self, s: &str) -> Sym {
+        if let Some(&sym) = self.0.get(s) {
+            return sym;
         }
-        let id = self.0.len() as u32;
-        self.0.insert(s.to_string(), id);
-        id
+        let sym = Sym {
+            id: self.0.len() as u32,
+            content: fnv1a_str(s),
+        };
+        self.0.insert(s.to_string(), sym);
+        sym
     }
 }
 
@@ -41,12 +106,20 @@ pub(crate) enum FlatTok {
     Open(u8),
     Close(u8),
     Ident {
+        /// Interner id — bind-set membership and the repetition window.
         sym: u32,
+        /// Portable spelling digest — what the fingerprint hashes.
+        content: u64,
         renameable: bool,
         anchor: bool,
     },
     Punct(char),
-    Lit(u32),
+    Lit {
+        /// Interner id — the repetition window only.
+        sym: u32,
+        /// Portable placeholder/value digest — what the fingerprint hashes.
+        content: u64,
+    },
 }
 
 /// Flatten `tokens` into [`FlatTok`]s — the single normalization pass behind
@@ -70,8 +143,10 @@ pub(crate) fn flatten(
             }
             TokenTree::Ident(i) => {
                 let s = i.to_string();
+                let sym = interner.intern(&s);
                 out.push(FlatTok::Ident {
-                    sym: interner.intern(&s),
+                    sym: sym.id,
+                    content: sym.content,
                     renameable: !state.suppress_rename(),
                     anchor: !NON_ANCHOR_IDENTS.contains(&s.as_str()),
                 });
@@ -88,12 +163,15 @@ pub(crate) fn flatten(
                 out.push(FlatTok::Punct(c));
             }
             TokenTree::Literal(l) => {
-                let text = if ignore_literals {
+                let sym = if ignore_literals {
                     interner.intern(literal_placeholder(&l))
                 } else {
                     interner.intern(&l.to_string())
                 };
-                out.push(FlatTok::Lit(text));
+                out.push(FlatTok::Lit {
+                    sym: sym.id,
+                    content: sym.content,
+                });
                 state.reset();
             }
         }
@@ -185,7 +263,7 @@ pub(crate) struct Measured {
 /// `[start..=end]`.
 #[derive(Default)]
 pub(crate) struct Encoder {
-    hasher: DefaultHasher,
+    hasher: Fnv1a,
     tokens: usize,
     /// Distinct anchor syms, capped at `anchor_floor` (monotone as the stream
     /// extends, so tracking can stop at the floor).
@@ -229,6 +307,7 @@ impl Encoder {
             }
             FlatTok::Ident {
                 sym,
+                content,
                 renameable,
                 anchor,
             } => {
@@ -245,7 +324,7 @@ impl Encoder {
                         self.note_anchor(sym);
                     }
                     self.hasher.write_u8(4);
-                    self.hasher.write_u32(sym);
+                    self.hasher.write_u64(content);
                     (4 << 32) | u64::from(sym)
                 }
             }
@@ -254,9 +333,9 @@ impl Encoder {
                 self.hasher.write_u32(c as u32);
                 (5 << 32) | u64::from(c as u32)
             }
-            FlatTok::Lit(sym) => {
+            FlatTok::Lit { sym, content } => {
                 self.hasher.write_u8(6);
-                self.hasher.write_u32(sym);
+                self.hasher.write_u64(content);
                 (6 << 32) | u64::from(sym)
             }
         };
@@ -296,7 +375,7 @@ impl Encoder {
             1.0 - self.repeated as f64 / self.windows as f64
         };
         Measured {
-            fingerprint: self.hasher.clone().finish(),
+            fingerprint: self.hasher.finish(),
             tokens: self.tokens,
             distinct_anchors: self.anchors.len(),
             non_repeating,
@@ -346,5 +425,28 @@ pub(super) fn literal_placeholder(l: &proc_macro2::Literal) -> &'static str {
         syn::Lit::Int(_) => "#int",
         syn::Lit::Float(_) => "#float",
         _ => "#lit",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Fnv1a, fnv1a_str};
+
+    #[test]
+    fn fnv1a_matches_the_reference_vectors() {
+        // Canonical FNV-1a 64 test vectors — pin the hash so a checked-in
+        // baseline never silently reinterprets its fingerprints.
+        assert_eq!(fnv1a_str(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a_str("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a_str("foobar"), 0x8594_4171_f739_67e8);
+    }
+
+    #[test]
+    fn write_u8_stream_equals_fnv1a_str() {
+        let mut h = Fnv1a::default();
+        for &b in b"foobar" {
+            h.write_u8(b);
+        }
+        assert_eq!(h.finish(), fnv1a_str("foobar"));
     }
 }
