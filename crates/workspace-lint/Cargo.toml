@@ -6,6 +6,8 @@ rust-version.workspace = true
 repository = "https://github.com/akesson/workspace-lint"
 
 [dependencies]
+anstream = { workspace = true }
+anstyle = { workspace = true }
 clap = { workspace = true }
 fs-err = { workspace = true }
 globset = { workspace = true }
