@@ -21,6 +21,7 @@ pub mod coverage;
 mod closure;
 mod command;
 mod guard;
+mod hash;
 mod relink;
 mod source;
 mod toolchain;

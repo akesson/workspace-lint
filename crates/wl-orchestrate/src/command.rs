@@ -195,14 +195,11 @@ impl ConfigSpec {
     }
 }
 
-/// FNV-1a 64, hex-truncated to 8 chars. Inlined so config ids are stable
-/// across Rust releases (std's `DefaultHasher` algorithm is unspecified).
+/// FNV-1a/64, hex-truncated to 8 chars — the disambiguating suffix on a
+/// config id. See [`hash`](super::hash) for why FNV rather than
+/// `DefaultHasher`.
 fn fnv1a_hex8(s: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
+    let h = super::hash::fnv1a(super::hash::FNV_OFFSET, s.as_bytes());
     format!("{h:016x}")[..8].to_string()
 }
 

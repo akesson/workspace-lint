@@ -31,8 +31,8 @@
 use std::path::{Path, PathBuf};
 
 /// How many generation directories to retain besides the current one. A
-/// concurrent workspace-lint process (the dylib cache is shared per binary
-/// version) may still be mid-run on the previous generation; pruning it would
+/// concurrent workspace-lint process (the dylib cache is shared per source
+/// hash) may still be mid-run on the previous generation; pruning it would
 /// fail that process's next dlopen. Surviving two bumps within one run is not
 /// a realistic overlap.
 const KEEP_PREVIOUS: usize = 1;
