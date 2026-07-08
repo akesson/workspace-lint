@@ -45,6 +45,12 @@ pub(crate) struct Cli {
     /// (and its pinned-toolchain requirement) entirely.
     #[arg(long, global = true, default_value_t = false)]
     pub fast_only: bool,
+    /// Write the `[duplicate-code]` baseline file (the path set as
+    /// `baseline = "…"`), accepting every clone group the lint currently
+    /// reports, then exit. Default-run only, so the baseline is generated
+    /// under the same config CI lints with.
+    #[arg(long, global = true, default_value_t = false)]
+    pub baseline_write: bool,
     /// Debug: run the extraction+assembly tier and print its stats, then exit
     /// without running any lints. Requires the pinned toolchain.
     #[arg(long, global = true, hide = true, default_value_t = false)]
@@ -191,6 +197,11 @@ pub(crate) enum CheckRule {
         /// Workspace-relative globs to skip (wins over --include)
         #[arg(long)]
         exclude: Vec<String>,
+        /// Path to the accepted-clone baseline (see the [duplicate-code]
+        /// `baseline` key): groups it records are skipped, and stale entries
+        /// are reported. Regenerate the file with `--baseline-write`
+        #[arg(long)]
+        baseline: Option<std::path::PathBuf>,
     },
     /// Check that files are fresher than their dependencies
     #[command(after_long_help = crate::docs::lint_doc(wl_lint_api::LintId::Freshness))]
@@ -340,6 +351,7 @@ impl CheckRule {
                 stats: _,
                 include,
                 exclude,
+                baseline,
             } => Some(DuplicateCodeConfig::from_cli(
                 *min_lines,
                 *min_tokens,
@@ -355,6 +367,7 @@ impl CheckRule {
                 component_macros,
                 include,
                 exclude,
+                baseline.clone(),
             )),
             _ => None,
         }
@@ -437,6 +450,7 @@ mod tests {
             stats: false,
             include: vec![],
             exclude: vec!["**/generated/**".into()],
+            baseline: None,
         };
         assert!(
             rule.duplicate_code_stats().is_none(),
@@ -465,6 +479,7 @@ mod tests {
             stats: true,
             include: vec![],
             exclude: vec![],
+            baseline: None,
         };
         let config = rule.duplicate_code_stats().expect("--stats resolves");
         assert_eq!(

@@ -1,0 +1,14 @@
+# duplicate-code baseline: clone groups accepted as-is. workspace-lint skips
+# these; a group that grows, and any entry no longer matching, is reported.
+# Regenerate with: workspace-lint --baseline-write
+# Match key: fingerprint + tokens. The file/line/kind/lines fields are review
+# context only and may go stale harmlessly.
+
+[[group]]
+fingerprint = "316a66d520bab9ef"
+tokens = 56
+instances = 2
+file = "crates/demo/src/lib.rs"
+line = 1
+kind = "fn"
+lines = 8

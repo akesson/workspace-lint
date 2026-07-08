@@ -138,6 +138,17 @@ pub enum CandidateKind {
     Run,
 }
 
+impl CandidateKind {
+    /// The kebab/short label shown in `--stats` and written to baseline files.
+    pub fn label(self) -> &'static str {
+        match self {
+            CandidateKind::Fn => "fn",
+            CandidateKind::Block => "block",
+            CandidateKind::Run => "run",
+        }
+    }
+}
+
 /// One occurrence of a clone: an exact token range in a file. Lines are what
 /// thresholds and diagnostics use; the columns pin the range to its first and
 /// last token so the divergence pass can slice the file's literals without
@@ -187,6 +198,11 @@ pub struct CloneGroup {
     pub instances: Vec<Region>,
     /// The shared normalized-token weight.
     pub tokens: usize,
+    /// The portable content fingerprint (FNV-1a over the normalized stream)
+    /// every instance shares. With `tokens`, this is the group's identity in
+    /// checked-in baseline files — stable across unrelated code edits, local
+    /// renames, reformatting, and moves.
+    pub fingerprint: u64,
 }
 
 /// Find all clone groups across `files`. Deterministic: groups are ordered by
@@ -218,7 +234,7 @@ pub fn find_clones(files: &[ScanFile], opts: &Options) -> Vec<CloneGroup> {
 
     let mut groups: Vec<CloneGroup> = buckets
         .into_iter()
-        .filter_map(|((_, tokens), mut instances)| {
+        .filter_map(|((fingerprint, tokens), mut instances)| {
             if instances.len() < opts.min_instances {
                 return None;
             }
@@ -229,7 +245,11 @@ pub fn find_clones(files: &[ScanFile], opts: &Options) -> Vec<CloneGroup> {
                 }
             }
             instances.sort_by(|a, b| (&a.file, a.line_start).cmp(&(&b.file, b.line_start)));
-            Some(CloneGroup { instances, tokens })
+            Some(CloneGroup {
+                instances,
+                tokens,
+                fingerprint,
+            })
         })
         .collect();
 
@@ -364,7 +384,7 @@ impl<'a> Collect<'a> {
             .map(|s| {
                 let mut names = HashSet::new();
                 collect_binds_stmt(s, &mut names);
-                names.iter().map(|n| self.interner.intern(n)).collect()
+                names.iter().map(|n| self.interner.intern(n).id).collect()
             })
             .collect();
         let spans: Vec<(LineColumn, LineColumn)> = stmts
@@ -413,7 +433,7 @@ impl<'a> Collect<'a> {
         if lines_of(start, end) < self.opts.min_lines {
             return;
         }
-        let binds: Vec<u32> = binds.iter().map(|n| self.interner.intern(n)).collect();
+        let binds: Vec<u32> = binds.iter().map(|n| self.interner.intern(n).id).collect();
         let mut flat = Vec::new();
         let mut state = NormState::default();
         flatten(

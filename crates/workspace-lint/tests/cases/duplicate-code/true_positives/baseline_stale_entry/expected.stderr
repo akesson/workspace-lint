@@ -1,0 +1,13 @@
+error: stale duplicate-code baseline entry: no clone group matches fingerprint 316a66d520bab9ef (was crates/demo/src/lib.rs, 2 instances)
+ --> dup.toml:8:1
+  |
+  = help: regenerate with `workspace-lint --baseline-write` (or delete this entry)
+  = note: the duplication was resolved, or the code changed enough to re-fingerprint
+help: if intentional, silence with:
+  |
+8 + # workspace-lint: expect(duplicate-code)
+  |
+  = note: `#[deny(workspace_lint::duplicate_code)]` on by default
+
+workspace-lint: generated 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (duplicate-code)

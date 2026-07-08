@@ -706,3 +706,63 @@ fn arm_pattern_literals_stay_outside_block_candidates() {
     assert_eq!(d.positions, 3, "7, \"k\", 2 — and NOT the arm patterns");
     assert_eq!(d.divergent, 0);
 }
+
+/// A structurally identical pair (names and literals differ) that groups into
+/// exactly one clone — the substrate of the fingerprint-portability tests.
+fn clone_pair() -> (String, String) {
+    let a = "fn compute(user: u32) -> u32 {\n    let total = user + 1;\n    total * 2\n}";
+    let b = "fn summed(p: u32) -> u32 {\n    let sum = p + 5;\n    sum * 2\n}";
+    (a.to_string(), b.to_string())
+}
+
+/// The a↔b clone's fingerprint (the group that spans `a.rs`).
+fn pair_fingerprint(groups: &[super::CloneGroup]) -> u64 {
+    groups
+        .iter()
+        .find(|g| {
+            g.instances
+                .iter()
+                .any(|r| r.file == std::path::Path::new("a.rs"))
+        })
+        .expect("the a↔b clone must be found")
+        .fingerprint
+}
+
+#[test]
+fn fingerprint_is_portable_across_unrelated_interned_code() {
+    // The load-bearing baseline property: an unrelated file interned *first*
+    // shifts every later symbol id, but the clone's content digest — and thus
+    // its fingerprint — must be unchanged. (The pre-baseline fingerprint hashed
+    // interner ids and failed exactly here.)
+    let (a, b) = clone_pair();
+    let bare = find_clones(&[file("a.rs", "k", &a), file("b.rs", "k", &b)], &opts());
+    let unrelated =
+        "fn zzz(alpha: u64) -> u64 {\n    let beta = alpha + 7;\n    gamma(beta) + delta(alpha)\n}";
+    let shifted = find_clones(
+        &[
+            file("u.rs", "k", unrelated),
+            file("a.rs", "k", &a),
+            file("b.rs", "k", &b),
+        ],
+        &opts(),
+    );
+    assert_eq!(pair_fingerprint(&bare), pair_fingerprint(&shifted));
+}
+
+#[test]
+fn fingerprint_is_stable_regardless_of_file_order() {
+    let (a, b) = clone_pair();
+    let forward = find_clones(&[file("a.rs", "k", &a), file("b.rs", "k", &b)], &opts());
+    let reversed = find_clones(&[file("b.rs", "k", &b), file("a.rs", "k", &a)], &opts());
+    assert_eq!(pair_fingerprint(&forward), pair_fingerprint(&reversed));
+}
+
+#[test]
+fn fingerprint_stability_canary() {
+    // Pins the exact fingerprint of a fixed clone. Any change to normalization
+    // or the hash changes this value and INVALIDATES every checked-in baseline
+    // — bump it deliberately and document regeneration (README ratchet note).
+    let (a, b) = clone_pair();
+    let groups = find_clones(&[file("a.rs", "k", &a), file("b.rs", "k", &b)], &opts());
+    assert_eq!(pair_fingerprint(&groups), 0x9930_bf38_35a5_6614);
+}

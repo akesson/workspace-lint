@@ -156,6 +156,12 @@ workspace-lint check duplicate-code --cross-crate-only  # cross-crate copies onl
 workspace-lint check duplicate-code --stats             # threshold-tuning readout
 ```
 
+Adopting on a legacy tree with hundreds of clones? Point `baseline` at a
+checked-in file and run `workspace-lint --baseline-write`: only *new* or grown
+duplication then fails CI (the SonarQube new-code-gate model), keyed on a
+portable content fingerprint so entries survive renames and file moves. See the
+baseline-ratchet section of the docs.
+
 Full docs: [`duplicate_code/DOC.md`](crates/wl-lints/src/duplicate_code/DOC.md) · `workspace-lint explain duplicate-code`
 
 ### freshness

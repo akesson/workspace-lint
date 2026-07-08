@@ -78,6 +78,10 @@ fn section_schema(section: &str) -> Option<Schema> {
                 "min-distinct-anchors",
                 "min-non-repeating-ratio",
                 "max-parameters",
+                "max-live-out",
+                "classify",
+                "component-macros",
+                "baseline",
                 "include",
                 "exclude",
             ],
@@ -478,6 +482,10 @@ cross-crate-only = false
 min-distinct-anchors = 4
 min-non-repeating-ratio = 0.5
 max-parameters = 3
+max-live-out = 1
+classify = true
+component-macros = ["rsx"]
+baseline = "duplicate-code.baseline.toml"
 include = ["crates/**"]
 exclude = ["**/generated/**"]
 

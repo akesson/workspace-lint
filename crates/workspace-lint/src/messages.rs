@@ -314,6 +314,67 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .level_explicit(wl_diagnostic::Level::Warn)
             .build(),
         ),
+        // duplicate-code baseline: a baselined group that outgrew its accepted
+        // instance count still fires, with a note flagging the new copy.
+        (
+            "duplicate_code_baseline_grew",
+            at_line(
+                "workspace-lint::duplicate-code",
+                "duplicated code: 3 structurally identical instances (~8 lines)",
+                PathBuf::from("crates/alpha/src/report.rs"),
+                42,
+            )
+            .note("also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17")
+            .note("matching ignores local variable names and literal values")
+            .note("grew beyond its baseline: 2 instances accepted, now 3")
+            .note("instances are identical (differing at most in local names)")
+            .help("extract the shared logic into one function the copies can call")
+            .build(),
+        ),
+        // duplicate-code baseline: an entry no current group matches — the
+        // clone was fixed — reported so the ratchet can only tighten. Anchored
+        // at the entry's line in the baseline file.
+        (
+            "duplicate_code_baseline_stale",
+            at_line(
+                "workspace-lint::duplicate-code",
+                "stale duplicate-code baseline entry: no clone group matches fingerprint \
+                 9930bf3835a56614 (was crates/alpha/src/report.rs, 2 instances)",
+                PathBuf::from("duplicate-code.baseline.toml"),
+                8,
+            )
+            .note("the duplication was resolved, or the code changed enough to re-fingerprint")
+            .help("regenerate with `workspace-lint --baseline-write` (or delete this entry)")
+            .build(),
+        ),
+        // duplicate-code baseline: an entry recording more instances than
+        // remain — a partial fix — reported so the count can be ratcheted down.
+        (
+            "duplicate_code_baseline_overcount",
+            at_line(
+                "workspace-lint::duplicate-code",
+                "duplicate-code baseline entry 9930bf3835a56614 records 3 instances but only 2 remain",
+                PathBuf::from("duplicate-code.baseline.toml"),
+                8,
+            )
+            .help("ratchet down: regenerate with `workspace-lint --baseline-write`")
+            .build(),
+        ),
+        // duplicate-code baseline: the configured file is absent — reported as
+        // the only finding (the run isn't judged against a missing record).
+        (
+            "duplicate_code_baseline_missing",
+            at_file(
+                "workspace-lint::duplicate-code",
+                "duplicate-code baseline file `duplicate-code.baseline.toml` not found",
+                PathBuf::from("duplicate-code.baseline.toml"),
+            )
+            .help(
+                "generate it with `workspace-lint --baseline-write`, or remove `baseline` \
+                 from [duplicate-code]",
+            )
+            .build(),
+        ),
         // freshness: tracked file stale relative to deps.
         (
             "freshness_stale",
@@ -1037,6 +1098,71 @@ mod tests {
         }
 
         #[test]
+        fn duplicate_code_baseline_grew() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_grew")), @r"
+            warning: duplicated code: 3 structurally identical instances (~8 lines)
+             --> crates/alpha/src/report.rs:42:1
+              |
+              = help: extract the shared logic into one function the copies can call
+              = note: also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17
+              = note: matching ignores local variable names and literal values
+              = note: grew beyond its baseline: 2 instances accepted, now 3
+              = note: instances are identical (differing at most in local names)
+            help: if intentional, silence with:
+              |
+            42 + workspace_lint::expect!(duplicate_code);
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            ");
+        }
+
+        #[test]
+        fn duplicate_code_baseline_stale() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_stale")), @r"
+            warning: stale duplicate-code baseline entry: no clone group matches fingerprint 9930bf3835a56614 (was crates/alpha/src/report.rs, 2 instances)
+             --> duplicate-code.baseline.toml:8:1
+              |
+              = help: regenerate with `workspace-lint --baseline-write` (or delete this entry)
+              = note: the duplication was resolved, or the code changed enough to re-fingerprint
+            help: if intentional, silence with:
+              |
+            8 + # workspace-lint: expect(duplicate-code)
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            ");
+        }
+
+        #[test]
+        fn duplicate_code_baseline_overcount() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_overcount")), @r"
+            warning: duplicate-code baseline entry 9930bf3835a56614 records 3 instances but only 2 remain
+             --> duplicate-code.baseline.toml:8:1
+              |
+              = help: ratchet down: regenerate with `workspace-lint --baseline-write`
+            help: if intentional, silence with:
+              |
+            8 + # workspace-lint: expect(duplicate-code)
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            ");
+        }
+
+        #[test]
+        fn duplicate_code_baseline_missing() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_missing")), @r"
+            warning: duplicate-code baseline file `duplicate-code.baseline.toml` not found
+             --> duplicate-code.baseline.toml:1:1
+              |
+              = help: generate it with `workspace-lint --baseline-write`, or remove `baseline` from [duplicate-code]
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(duplicate-code)
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            ");
+        }
+
+        #[test]
         fn freshness_stale() {
             insta::assert_snapshot!(render(&scenario("freshness_stale")), @r"
             warning: `crates/api/CLAUDE.md` is older than source files it depends on
@@ -1610,6 +1736,26 @@ mod tests {
         }
 
         #[test]
+        fn duplicate_code_baseline_grew() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_grew")), @r#"{"level":"warning","message":"duplicated code: 3 structurally identical instances (~8 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"grew beyond its baseline: 2 instances accepted, now 3","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
+        fn duplicate_code_baseline_stale() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_stale")), @r##"{"level":"warning","message":"stale duplicate-code baseline entry: no clone group matches fingerprint 9930bf3835a56614 (was crates/alpha/src/report.rs, 2 instances)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"duplicate-code.baseline.toml","byte_start":0,"byte_end":0,"line_start":8,"line_end":8,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"duplicate-code.baseline.toml","byte_start":0,"byte_end":0,"line_start":8,"line_end":8,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"regenerate with `workspace-lint --baseline-write` (or delete this entry)","spans":[]},{"level":"note","message":"the duplication was resolved, or the code changed enough to re-fingerprint","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn duplicate_code_baseline_overcount() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_overcount")), @r##"{"level":"warning","message":"duplicate-code baseline entry 9930bf3835a56614 records 3 instances but only 2 remain","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"duplicate-code.baseline.toml","byte_start":0,"byte_end":0,"line_start":8,"line_end":8,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"duplicate-code.baseline.toml","byte_start":0,"byte_end":0,"line_start":8,"line_end":8,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"ratchet down: regenerate with `workspace-lint --baseline-write`","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
+        fn duplicate_code_baseline_missing() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_missing")), @r##"{"level":"warning","message":"duplicate-code baseline file `duplicate-code.baseline.toml` not found","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"duplicate-code.baseline.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"duplicate-code.baseline.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"generate it with `workspace-lint --baseline-write`, or remove `baseline` from [duplicate-code]","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
         fn freshness_stale() {
             insta::assert_snapshot!(render(&scenario("freshness_stale")), @r##"{"level":"warning","message":"`crates/api/CLAUDE.md` is older than source files it depends on","code":{"code":"workspace-lint::freshness","explanation":null},"spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(freshness)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"files matching `**/*.rs` in the subtree are newer","spans":[]},{"level":"help","message":"run `workspace-lint done` once the tracked file is up to date","spans":[]}],"rendered":null}"##);
         }
@@ -1736,6 +1882,26 @@ mod tests {
         #[test]
         fn duplicate_code_run_live_out_downgrade() {
             insta::assert_snapshot!(render(&scenario("duplicate_code_run_live_out_downgrade")), @"::warning file=crates/alpha/src/report.rs,line=42,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicated code: 2 structurally identical instances (~7 lines)");
+        }
+
+        #[test]
+        fn duplicate_code_baseline_grew() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_grew")), @"::warning file=crates/alpha/src/report.rs,line=42,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicated code: 3 structurally identical instances (~8 lines)");
+        }
+
+        #[test]
+        fn duplicate_code_baseline_stale() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_stale")), @"::warning file=duplicate-code.baseline.toml,line=8,col=1,title=workspace-lint%3A%3Aduplicate-code::stale duplicate-code baseline entry: no clone group matches fingerprint 9930bf3835a56614 (was crates/alpha/src/report.rs, 2 instances)");
+        }
+
+        #[test]
+        fn duplicate_code_baseline_overcount() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_overcount")), @"::warning file=duplicate-code.baseline.toml,line=8,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicate-code baseline entry 9930bf3835a56614 records 3 instances but only 2 remain");
+        }
+
+        #[test]
+        fn duplicate_code_baseline_missing() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_missing")), @"::warning file=duplicate-code.baseline.toml,line=1,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicate-code baseline file `duplicate-code.baseline.toml` not found");
         }
 
         #[test]

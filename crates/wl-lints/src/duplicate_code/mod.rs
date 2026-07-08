@@ -26,10 +26,12 @@ use wl_diagnostic::builder::at_line;
 use wl_engine::fast::{FastModel, TargetKind};
 use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
+mod baseline;
 mod classify;
 pub mod config;
 mod measure;
 
+pub use baseline::BaselineFile;
 use classify::{Classifier, RefactoringClass};
 pub use config::DuplicateCodeConfig;
 pub use measure::{GroupMeasure, MeasureReport, measure};
@@ -66,15 +68,19 @@ impl LintImpl for DuplicateCode {
         let Some((fast, semantic)) = cx.semantic_models(Self::ID) else {
             return Vec::new();
         };
-        let files = enumerate(fast, &self.config);
-        let groups = find_clones(&files, &options(&self.config));
-        // Divergence only reads meaningfully when literals were abstracted;
-        // under `ignore-literals = false` instances are literal-identical by
-        // construction and every group ships unshaped.
-        let mut analyzer = self
-            .config
-            .ignore_literals
-            .then(|| DivergenceAnalyzer::new(&files));
+        let (files, survivors) = survivors(fast, &self.config);
+
+        // Load the baseline once, if configured. An unusable baseline (missing,
+        // unparsable, malformed) is itself the only finding — the run must not
+        // be judged against a broken record.
+        let mut baseline = match self.config.baseline.as_deref() {
+            None => None,
+            Some(rel) => match baseline::Baseline::load(fast.root(), rel) {
+                Ok(b) => Some(b),
+                Err(d) => return vec![*d],
+            },
+        };
+
         // The classifier names each group's fix; disabled, groups keep the
         // generic help. It consults the call graph for the merge family only.
         let mut classifier = self
@@ -85,21 +91,83 @@ impl LintImpl for DuplicateCode {
         // group that is not a statement run resolves no liveness and pays
         // nothing.
         let mut liveness = LivenessAnalyzer::new(&files);
-        groups
+        let mut out: Vec<Diagnostic> = survivors
             .iter()
-            .filter_map(|group| {
-                let divergence = analyzer.as_mut().and_then(|a| a.analyze(group));
-                emit(
+            .filter_map(|(group, divergence)| {
+                // A baselined group is skipped (Covered), fires with a note if
+                // it outgrew its record (Grew), or fires normally (New / no
+                // baseline).
+                let grew = match baseline.as_mut().map(|b| b.judge(group)) {
+                    Some(baseline::Verdict::Covered) => return None,
+                    Some(baseline::Verdict::Grew { recorded }) => Some(recorded),
+                    _ => None,
+                };
+                Some(emit(
                     group,
                     divergence.as_ref(),
-                    self.config.max_parameters,
                     classifier.as_mut(),
                     &mut liveness,
                     self.config.max_live_out,
-                )
+                    grew,
+                ))
+            })
+            .collect();
+        // Every baseline entry no firing group matched (or that over-records)
+        // is reported so the ratchet can only tighten.
+        if let Some(b) = baseline {
+            out.extend(b.stale_findings());
+        }
+        out
+    }
+}
+
+/// The data-table gate: a driftless group needing more literal parameters than
+/// `max_parameters` is a data table (match arms mapping the same variants to
+/// different values), not copy-paste, and is suppressed. A drift violation
+/// always survives. Shared by [`survivors`] so `run` (report) and
+/// `collect_baseline` (record) judge exactly the same set.
+fn survives_gate(divergence: Option<&Divergence>, max_parameters: usize) -> bool {
+    !matches!(
+        divergence,
+        Some(d) if d.violations.is_empty() && max_parameters > 0 && d.params > max_parameters
+    )
+}
+
+/// enumerate → `find_clones` → divergence → data-table gate: the groups the
+/// lint would report, each paired with its literal divergence. Build-free, so
+/// both `run` and `collect_baseline` (the `--baseline-write` path) share it.
+fn survivors(
+    fast: &FastModel,
+    config: &DuplicateCodeConfig,
+) -> (Vec<ScanFile>, Vec<(CloneGroup, Option<Divergence>)>) {
+    let files = enumerate(fast, config);
+    let groups = find_clones(&files, &options(config));
+    let survivors = {
+        // Divergence only reads meaningfully when literals were abstracted;
+        // under `ignore-literals = false` instances are literal-identical by
+        // construction. Scoped so its borrow of `files` ends before the return.
+        let mut analyzer = config
+            .ignore_literals
+            .then(|| DivergenceAnalyzer::new(&files));
+        groups
+            .into_iter()
+            .filter_map(|group| {
+                let divergence = analyzer.as_mut().and_then(|a| a.analyze(&group));
+                survives_gate(divergence.as_ref(), config.max_parameters)
+                    .then_some((group, divergence))
             })
             .collect()
-    }
+    };
+    (files, survivors)
+}
+
+/// The `--baseline-write` payload: every group the lint currently reports, as
+/// baseline entries. Build-free — the classifier and liveness only reshape a
+/// finding, never decide whether it fires — so the recorded set is exactly the
+/// gate survivors.
+pub fn collect_baseline(fast: &FastModel, config: &DuplicateCodeConfig) -> BaselineFile {
+    let (_files, survivors) = survivors(fast, config);
+    BaselineFile::from_groups(survivors.iter().map(|(g, _)| g))
 }
 
 fn options(config: &DuplicateCodeConfig) -> Options {
@@ -190,23 +258,16 @@ fn enumerate(fast: &FastModel, config: &DuplicateCodeConfig) -> Vec<ScanFile> {
 fn emit(
     group: &CloneGroup,
     divergence: Option<&Divergence>,
-    max_parameters: usize,
     classifier: Option<&mut Classifier>,
     liveness: &mut LivenessAnalyzer<'_>,
     max_live_out: usize,
-) -> Option<Diagnostic> {
+    grew_from: Option<usize>,
+) -> Diagnostic {
     let anchor = &group.instances[0];
     let lines = anchor.line_end - anchor.line_start + 1;
-    // Gate BEFORE classifying so a suppressed data table never pays the
-    // classifier: a drift violation keeps the group unconditionally, otherwise
-    // `params > max-parameters` drops it.
-    if let Some(d) = divergence
-        && d.violations.is_empty()
-        && max_parameters > 0
-        && d.params > max_parameters
-    {
-        return None;
-    }
+    // The data-table gate already ran in `survivors`; every group here is one
+    // the lint reports.
+    //
     // Classify the survivor. `identical` — differing at most in local names —
     // gates the merge family (no divergence ⇒ exact-literals mode ⇒ identical).
     let class = classifier.map(|c| {
@@ -229,6 +290,14 @@ fn emit(
     .note(format!("also found at: {}", other_sites(group)))
     .note("matching ignores local variable names and literal values")
     .help(help);
+    // A group that outgrew its baseline is new duplication — say so before the
+    // divergence/liveness shaping.
+    if let Some(recorded) = grew_from {
+        builder = builder.note(format!(
+            "grew beyond its baseline: {recorded} instances accepted, now {}",
+            group.instances.len(),
+        ));
+    }
     if let Some(d) = divergence {
         for v in d.violations.iter().take(MAX_LISTED) {
             builder = builder.note(format!(
@@ -260,7 +329,7 @@ fn emit(
     if let Some(note) = class.as_ref().and_then(RefactoringClass::note) {
         builder = builder.note(note);
     }
-    Some(builder.build())
+    builder.build()
 }
 
 /// The extraction-signature note for a statement-run group: the parameters an

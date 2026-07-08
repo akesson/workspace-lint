@@ -106,14 +106,16 @@ max-parameters = 3       # extraction-cost gate: literal parameters allowed
 max-live-out = 1         # run-clone downgrade: return values before it warns
 classify = true          # name the refactoring each group calls for
 component-macros = ["rsx"]  # UI macros whose copies suggest a component
+baseline = "…"           # path to the accepted-clone baseline (see below); unset = off
 include = []             # workspace-relative globs to scan (empty = all)
 exclude = []             # globs to skip (wins over include)
 ```
 
 Ad-hoc (no config) form — one flag per field; `--exact-literals` /
 `--include-test-code` invert the `ignore-*` defaults, `--no-classify` turns
-the classifier off, `--component-macros` overrides the UI-macro list, and
-`--max-live-out` sets the run-clone downgrade threshold:
+the classifier off, `--component-macros` overrides the UI-macro list,
+`--max-live-out` sets the run-clone downgrade threshold, and `--baseline
+<path>` reads an accepted-clone baseline for one ad-hoc run:
 
 ```sh
 workspace-lint check duplicate-code                     # defaults, zero config
@@ -123,8 +125,9 @@ workspace-lint check duplicate-code --stats             # threshold-tuning reado
 ```
 
 `--stats` prints a measure-only readout (per-group divergence, parameter
-histogram, drift candidates, a per-run live-out column and histogram,
-threshold sweeps, and each group's *syntactic* refactoring class) instead of
+histogram, drift candidates, a per-run live-out column and histogram, each
+group's `fp` fingerprint — the baseline match key — threshold sweeps, and each
+group's *syntactic* refactoring class) instead of
 diagnostics — the view to tune thresholds
 against. It stays build-free even though the lint itself is semantic, so the
 call-graph verdicts (merge / delete-dead-copy / withheld) never appear in
@@ -141,6 +144,41 @@ workspace_lint::expect!(duplicate_code);
 
 Because the diagnostic anchors at a line, an impl-block directive needs a
 File-anchored form. Prefer `expect` over the permanent `allow`.
+
+## Baseline ratchet
+
+For brownfield adoption. A legacy tree can have hundreds of clone groups on day
+one, so making
+`duplicate-code` deny-level would fail CI immediately. Point `baseline` at a
+checked-in file and only *new* duplication fails — the SonarQube new-code-gate
+model, but keyed on a portable content **fingerprint** rather than a line
+number, so an entry survives reformatting, local renames, and moving the code
+to another file:
+
+```sh
+# 1. add `baseline = "duplicate-code.baseline.toml"` to [duplicate-code]
+workspace-lint --baseline-write     # 2. record every current group, then commit it
+# 3. CI stays green; a NEW or GROWN clone group now fails
+```
+
+The ratchet only tightens. A group listed in the baseline is skipped; a group
+that grows past its recorded instance count still fires (with a *grew beyond
+its baseline* note); and any entry that no longer matches — the clone was
+fixed, or shrank below its recorded count — is reported at the lint's level
+(PHPStan's `reportUnmatchedIgnoredErrors` model), so a resolved duplication
+forces you to regenerate rather than letting the baseline rot. Each finding
+names the regen command.
+
+Because the fingerprint is a name-invariant *content* hash, renaming locals or
+reflowing whitespace never invalidates an entry — but editing the duplicated
+code itself, flipping `ignore-literals`, changing the detection thresholds, or
+upgrading workspace-lint's normalizer does. Regenerate after any such change;
+the stale-entry findings make a forgotten regen loud, never silent. A partial
+fix can also surface smaller clones the resolved parent previously subsumed —
+correct ratchet behavior, reported as new. `--baseline-write` is default-run
+only (the baseline must be generated under the same config CI lints with), and
+it interacts with `expect!`/`allow!` by redundancy: a directive on a baselined
+group goes stale (`stale-expect`) — pick one silencing mechanism per group.
 
 ## Known limits
 

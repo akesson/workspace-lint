@@ -15,7 +15,7 @@ pub(crate) fn render(report: &MeasureReport) -> String {
     let _ = writeln!(out, "duplicate-code stats: {} groups", report.groups.len());
     let _ = writeln!(
         out,
-        "{:<56} {:>4} {:>5} {:>6} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:<23}",
+        "{:<56} {:>4} {:>5} {:>6} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:>16} {:<23}",
         "anchor",
         "inst",
         "kind",
@@ -26,6 +26,7 @@ pub(crate) fn render(report: &MeasureReport) -> String {
         "params",
         "drift",
         "lvout",
+        "fp",
         "class",
     );
     for g in &report.groups {
@@ -43,11 +44,12 @@ pub(crate) fn render(report: &MeasureReport) -> String {
             Some(l) => l.max_live_out.to_string(),
             None => "-".into(),
         };
+        let fp = format!("{:016x}", g.fingerprint);
         let _ = writeln!(
             out,
-            "{anchor:<56} {:>4} {:>5} {:>6} {:>5} {literals:>8} {divg:>5} {params:>6} {drift:>5} {lvout:>5} {:<23}",
+            "{anchor:<56} {:>4} {:>5} {:>6} {:>5} {literals:>8} {divg:>5} {params:>6} {drift:>5} {lvout:>5} {fp:>16} {:<23}",
             g.instances,
-            kind_name(g.kind),
+            g.kind.label(),
             g.tokens,
             g.lines,
             g.class,
@@ -165,14 +167,6 @@ pub(crate) fn render(report: &MeasureReport) -> String {
     out
 }
 
-fn kind_name(kind: CandidateKind) -> &'static str {
-    match kind {
-        CandidateKind::Fn => "fn",
-        CandidateKind::Block => "block",
-        CandidateKind::Run => "run",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +182,7 @@ mod tests {
         let report = MeasureReport {
             groups: vec![
                 GroupMeasure {
+                    fingerprint: 0x00ab_cdef_0000_0001,
                     file: PathBuf::from("crates/x/src/a.rs"),
                     line: 10,
                     instances: 2,
@@ -199,6 +194,7 @@ mod tests {
                     class: "ui-component",
                 },
                 GroupMeasure {
+                    fingerprint: 0x00ab_cdef_0000_0002,
                     file: PathBuf::from("crates/x/src/b.rs"),
                     line: 20,
                     instances: 2,
@@ -221,6 +217,10 @@ mod tests {
         assert!(text.contains("crates/x/src/a.rs:10"));
         assert!(text.contains(" -"), "None divergence renders as dashes");
         assert!(text.contains("lvout"), "the live-out column header renders");
+        assert!(
+            text.contains("00abcdef00000001"),
+            "the fingerprint column renders the baseline match key"
+        );
         assert!(text.contains("params histogram:"));
         assert!(text.contains("suppressed at max-parameters"));
         assert!(text.contains("drift candidates: 0"));
