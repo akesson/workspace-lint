@@ -53,6 +53,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use wl_ir::ArchivedRefEdge;
+
 use super::SemanticModel;
 use super::assembly::Assembly;
 use super::import_usage::ImportTargetUsage;
@@ -193,8 +195,8 @@ impl SemanticModel {
                     let from_crate = e.from.first().map(|s| s.as_str()).unwrap_or_default();
                     let scope = wl_ir::join_paths(&e.from, "::");
                     let dangling = removed.contains_id(id)
-                        || (usage.referenced_by_removed(from_crate, &scope, id)
-                            && !usage.referenced_by_survivor(from_crate, &scope, id));
+                        || (usage.reaches(&usage.by_removed, from_crate, &scope, id)
+                            && !usage.reaches(&usage.by_survivor, from_crate, &scope, id));
                     if !dangling {
                         continue;
                     }
@@ -281,19 +283,12 @@ impl SemanticModel {
                     {
                         continue; // R0
                     }
-                    let target = match asm.target_identity(e) {
-                        Some(id) => id.to_string(),
-                        None => wl_ir::join_paths(&e.to, "::"),
-                    };
+                    let target = Self::edge_identity(asm, e);
+                    let krate = e.from.first().map(|s| s.as_str()).unwrap_or_default();
                     let agg = globs
                         .entry((decl.file.as_str().to_owned(), decl.lo.to_native()))
                         .or_insert_with(|| GlobAgg {
-                            krate: e
-                                .from
-                                .first()
-                                .map(|s| s.as_str())
-                                .unwrap_or_default()
-                                .into(),
+                            krate: krate.into(),
                             scope: wl_ir::join_paths(&e.from, "::"),
                             target,
                             used: BTreeSet::new(),
@@ -316,25 +311,17 @@ impl SemanticModel {
                     );
                 }
             };
-            let trait_removed = usage.trait_scope_reaches(
-                &usage.trait_scope_removed,
-                &g.krate,
-                &g.scope,
-                &g.target,
-            );
-            let trait_survives = usage.trait_scope_reaches(
-                &usage.trait_scope_survivor,
-                &g.krate,
-                &g.scope,
-                &g.target,
-            );
+            let trait_reach = |set| usage.trait_scope_reaches(set, &g.krate, &g.scope, &g.target);
+            let trait_removed = trait_reach(&usage.trait_scope_removed);
+            let trait_survives = trait_reach(&usage.trait_scope_survivor);
             // R1 (alive half): a glob the resolver never used is not ours.
             if g.used.is_empty() && !trait_removed && !trait_survives {
                 dbg("R1-alive keep");
                 continue;
             }
             // R2 / R4: surviving identity or trait-scope evidence.
-            if usage.referenced_by_survivor(&g.krate, &g.scope, &g.target) || trait_survives {
+            let survives = usage.reaches(&usage.by_survivor, &g.krate, &g.scope, &g.target);
+            if survives || trait_survives {
                 dbg(if trait_survives { "R4 keep" } else { "R2 keep" });
                 continue;
             }
@@ -378,189 +365,216 @@ impl SemanticModel {
     }
 
     /// The per-crate, per-scope identity-usage split behind the second-order
-    /// dangling check — see [`ImportTargetUsage`]. Trait-impl targets also
-    /// credit the implemented trait *member*'s identity (whose path is
-    /// prefixed by the trait's), so a trait import kept alive by method calls
-    /// through a blanket impl in a third crate still counts; inherent-impl
-    /// targets credit their nominal self type the same way (a remote impl
-    /// renders at the impl's module, off the type's prefix). Targets outside
-    /// the workspace are tracked under their display path — the
-    /// pseudo-identity that lets imports of third-party items dangle too.
+    /// dangling check — see [`ImportTargetUsage`]. Dispatches each reference
+    /// edge to the recorder for its evidence class: trait-scope facts, import
+    /// declarations, or body/name resolutions.
     fn import_target_usage(&self, removed: &RemovalSet) -> ImportTargetUsage {
         let mut usage = ImportTargetUsage::default();
         for (_, asm) in &self.configs {
             for frag in asm.archived_fragments() {
                 for e in frag.references.iter() {
-                    let from_crate = e
-                        .from
-                        .first()
-                        .map(|s| s.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    // Typeck's used_trait_imports facts: the survivor-
-                    // sensitive trait channel. Segregated — never written
-                    // resolutions, so they must not enter `by_*` (rule (d):
-                    // they'd credit ordinary leaf imports the method call
-                    // never resolved through).
+                    let from_crate = e.from.first().map(|s| s.as_str()).unwrap_or_default();
                     if e.trait_scope {
-                        let id = match asm.target_identity(e) {
-                            Some(id) => id.to_string(),
-                            None => wl_ir::join_paths(&e.to, "::"),
-                        };
-                        let set = if removed.covers(&e.from) {
-                            &mut usage.trait_scope_removed
-                        } else {
-                            &mut usage.trait_scope_survivor
-                        };
-                        for scope in scopes_of(asm, &e.from, &e.from_module) {
-                            set.insert((from_crate.clone(), scope, id.clone()));
-                        }
-                        continue;
-                    }
-                    if e.import {
-                        let scope = wl_ir::join_paths(&e.from, "::");
-                        let id = match asm.target_identity(e) {
-                            Some(id) => id.to_string(),
-                            None => wl_ir::join_paths(&e.to, "::"),
-                        };
-                        if e.glob {
-                            // `use m::*` at `scope`: references in `scope` can
-                            // resolve through imports in module `id`.
-                            usage
-                                .glob_importers
-                                .entry((from_crate, id))
-                                .or_default()
-                                .insert(scope);
-                        } else {
-                            usage.own_imports.insert((from_crate, scope, id));
-                        }
-                        continue;
-                    }
-                    // Lowered-signature edges are normalized-type projections,
-                    // not source name-resolutions — a name written in source
-                    // always has its own spanned `visit_path` edge. Keeping
-                    // them would phantom-shield imports of names the source
-                    // never writes (`GlobalSignal<T>` reaching `Signal`).
-                    if e.in_signature {
-                        continue;
-                    }
-                    let is_removed = removed.covers(&e.from);
-                    let mut ids: Vec<String> = Vec::new();
-                    // NB `def` fields below (`def.path`, `def.trait_item`, …) are
-                    // owned `DefInfo` from the assembled index, so they stay
-                    // plain `String`; only the raw edge (`e.*`) is archived.
-                    if let Some(key) = asm.resolve_key(e)
-                        && let Some(def) = asm.defs.get(key)
-                    {
-                        // A receiver-based resolution (`.time()`, `x.field`)
-                        // involves no written path, so it never resolves
-                        // through the type's import — crediting it would
-                        // shield a `use …::TimeView;` rustc reports unused.
-                        // Trait members are the exception: the trait must be
-                        // in scope for the call to resolve at all, so they
-                        // credit the trait's import regardless.
-                        let trait_member =
-                            def.trait_item.is_some() || asm.trait_parent.contains_key(key);
-                        if !e.receiver_resolved || trait_member {
-                            ids.push(def.path.clone());
-                        }
-                        if let Some(ti) = &def.trait_item
-                            && let Some(tm) = asm.defs.get(ti)
-                        {
-                            ids.push(tm.path.clone());
-                        }
-                        // A written `Type::assoc` path on a remote impl
-                        // credits its nominal self type: `def_path_str`
-                        // renders a remote impl at the *impl's* module
-                        // (`m::<impl crate::Type>::method`), so the prefix
-                        // probe can never reach an import of `Type` through
-                        // the member's own path.
-                        if !e.receiver_resolved
-                            && let Some(st) = &def.self_type
-                            && let Some(td) = asm.defs.get(st)
-                        {
-                            ids.push(td.path.clone());
-                        }
-                    } else if let Some(id) = asm.target_identity(e) {
-                        ids.push(id.to_string());
-                    } else {
-                        // Out-of-workspace target (std/third-party): no def,
-                        // no identity — track it by display path so an import
-                        // of e.g. `anyhow::Context` still reads as dangling
-                        // when its last user is deleted (the pseudo-identity
-                        // the dangling check falls back to). Kept for
-                        // receiver-based edges too: an external trait method
-                        // (`.context()`) is indistinguishable from an
-                        // inherent one out here, and under-crediting would
-                        // delete a live trait import.
-                        let id = wl_ir::join_paths(&e.to, "::");
-                        // The glob accounting's belt-and-braces (rule R6):
-                        // a SURVIVING external resolution the model can't
-                        // pin to any import might have come through a glob.
-                        // Every class with a precise channel of its own is
-                        // exempt: extern-rooted writes bypassed imports;
-                        // std/core/alloc are always in the real prelude;
-                        // receiver-based calls' trait needs are R4's typeck
-                        // facts; macro resolutions are R3's glob_map names
-                        // (probe P2); generic params are bound, never
-                        // imported. Without the last three, one
-                        // `tracing::debug!` R6-blocked every glob in its
-                        // module (the 2026-07-08 finding).
-                        let root = e.to.first().map(|s| s.as_str()).unwrap_or_default();
-                        if !is_removed
-                            && !e.extern_root
-                            && !e.receiver_resolved
-                            && e.to_kind != "macro"
-                            && e.to_kind != "param"
-                            && !matches!(root, "std" | "core" | "alloc")
-                        {
-                            for scope in scopes_of(asm, &e.from, &e.from_module) {
-                                usage.unattributable.insert((
-                                    from_crate.clone(),
-                                    scope,
-                                    id.clone(),
-                                ));
-                            }
-                        }
-                        ids.push(id);
-                    }
-                    // Name evidence (R3/R5 causality) asks "could this
-                    // resolution have gone through a glob?". A macro-expanded
-                    // `$crate::…` path (`tracing::debug!` → `tracing::Event`)
-                    // is extern-rooted — it bypasses every local import by
-                    // construction — so its segments must not shield a glob
-                    // that happens to supply a same-named item (dioxus's
-                    // `Event` vs tracing's). Written extern-rooted paths stay:
-                    // a glob can supply a crate *rename* re-export whose
-                    // resolution still reads extern-rooted.
-                    let name_blind =
-                        e.extern_root && e.span.as_ref().is_some_and(|s| s.from_expansion);
-                    let names: Vec<&str> = if name_blind {
-                        Vec::new()
-                    } else {
-                        ids.iter()
-                            .flat_map(|id| id.split("::"))
-                            .filter(|s| !s.is_empty())
-                            .collect()
-                    };
-                    let (set, name_set) = if is_removed {
-                        (&mut usage.by_removed, &mut usage.removed_names)
-                    } else {
-                        (&mut usage.by_survivor, &mut usage.survivor_names)
-                    };
-                    for scope in scopes_of(asm, &e.from, &e.from_module) {
-                        for id in &ids {
-                            set.insert((from_crate.clone(), scope.clone(), id.clone()));
-                        }
-                        for name in &names {
-                            name_set.insert((from_crate.clone(), scope.clone(), name.to_string()));
-                        }
+                        Self::record_trait_scope(&mut usage, asm, e, from_crate, removed);
+                    } else if e.import {
+                        Self::record_import_decl(&mut usage, asm, e, from_crate);
+                    } else if !e.in_signature {
+                        // Lowered-signature edges are excluded: normalized-type
+                        // projections, not source name-resolutions — a name
+                        // written in source always has its own spanned
+                        // `visit_path` edge. Keeping them would phantom-shield
+                        // imports of names the source never writes
+                        // (`GlobalSignal<T>` reaching `Signal`).
+                        Self::record_resolution(&mut usage, asm, e, from_crate, removed);
                     }
                 }
             }
         }
         usage.close_glob_chains();
         usage
+    }
+
+    /// Typeck's used_trait_imports facts: the survivor-sensitive trait
+    /// channel. Segregated — never written resolutions, so they must not
+    /// enter `by_*` (rule (d): they'd credit ordinary leaf imports the
+    /// method call never resolved through).
+    fn record_trait_scope(
+        usage: &mut ImportTargetUsage,
+        asm: &Assembly,
+        e: &ArchivedRefEdge,
+        from_crate: &str,
+        removed: &RemovalSet,
+    ) {
+        let id = Self::edge_identity(asm, e);
+        let set = if removed.covers(&e.from) {
+            &mut usage.trait_scope_removed
+        } else {
+            &mut usage.trait_scope_survivor
+        };
+        for scope in scopes_of(asm, &e.from, &e.from_module) {
+            set.insert((from_crate.to_string(), scope, id.clone()));
+        }
+    }
+
+    /// An import declaration: a glob (`use m::*` at `scope`) bridges scopes —
+    /// references in `scope` can resolve through imports in module `id` —
+    /// while a leaf registers as the scope's own explicit import
+    /// (explicit-beats-glob).
+    fn record_import_decl(
+        usage: &mut ImportTargetUsage,
+        asm: &Assembly,
+        e: &ArchivedRefEdge,
+        from_crate: &str,
+    ) {
+        let scope = wl_ir::join_paths(&e.from, "::");
+        let id = Self::edge_identity(asm, e);
+        if e.glob {
+            usage
+                .glob_importers
+                .entry((from_crate.to_string(), id))
+                .or_default()
+                .insert(scope);
+        } else {
+            usage
+                .own_imports
+                .insert((from_crate.to_string(), scope, id));
+        }
+    }
+
+    /// A body/name resolution: file its credited identities and name evidence
+    /// under every scope it resolves imports in, split removed/surviving.
+    fn record_resolution(
+        usage: &mut ImportTargetUsage,
+        asm: &Assembly,
+        e: &ArchivedRefEdge,
+        from_crate: &str,
+        removed: &RemovalSet,
+    ) {
+        let is_removed = removed.covers(&e.from);
+        let ids = match Self::resolved_identities(asm, e) {
+            Some(ids) => ids,
+            None => {
+                // Out-of-workspace target (std/third-party): no def, no
+                // identity — track it by display path so an import of e.g.
+                // `anyhow::Context` still reads as dangling when its last
+                // user is deleted (the pseudo-identity the dangling check
+                // falls back to). Kept for receiver-based edges too: an
+                // external trait method (`.context()`) is indistinguishable
+                // from an inherent one out here, and under-crediting would
+                // delete a live trait import.
+                let id = wl_ir::join_paths(&e.to, "::");
+                if !is_removed && Self::r6_unattributable(e) {
+                    for scope in scopes_of(asm, &e.from, &e.from_module) {
+                        usage
+                            .unattributable
+                            .insert((from_crate.to_string(), scope, id.clone()));
+                    }
+                }
+                vec![id]
+            }
+        };
+        // Name evidence (R3/R5 causality) asks "could this resolution have
+        // gone through a glob?". A macro-expanded `$crate::…` path
+        // (`tracing::debug!` → `tracing::Event`) is extern-rooted — it
+        // bypasses every local import by construction — so its segments must
+        // not shield a glob that happens to supply a same-named item
+        // (dioxus's `Event` vs tracing's). Written extern-rooted paths stay:
+        // a glob can supply a crate *rename* re-export whose resolution
+        // still reads extern-rooted.
+        let name_blind = e.extern_root && e.span.as_ref().is_some_and(|s| s.from_expansion);
+        let names: Vec<&str> = if name_blind {
+            Vec::new()
+        } else {
+            ids.iter()
+                .flat_map(|id| id.split("::"))
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        let (set, name_set) = if is_removed {
+            (&mut usage.by_removed, &mut usage.removed_names)
+        } else {
+            (&mut usage.by_survivor, &mut usage.survivor_names)
+        };
+        for scope in scopes_of(asm, &e.from, &e.from_module) {
+            for id in &ids {
+                set.insert((from_crate.to_string(), scope.clone(), id.clone()));
+            }
+            for name in &names {
+                name_set.insert((from_crate.to_string(), scope.clone(), name.to_string()));
+            }
+        }
+    }
+
+    /// The identities a workspace-resolved edge credits; `None` when the
+    /// target is outside the workspace entirely. Trait-impl targets also
+    /// credit the implemented trait *member*'s identity (whose path is
+    /// prefixed by the trait's), so a trait import kept alive by method calls
+    /// through a blanket impl in a third crate still counts.
+    fn resolved_identities(asm: &Assembly, e: &ArchivedRefEdge) -> Option<Vec<String>> {
+        // NB `def` fields below (`def.path`, `def.trait_item`, …) are owned
+        // `DefInfo` from the assembled index, so they stay plain `String`;
+        // only the raw edge (`e.*`) is archived.
+        if let Some(key) = asm.resolve_key(e)
+            && let Some(def) = asm.defs.get(key)
+        {
+            let mut ids = Vec::new();
+            // A receiver-based resolution (`.time()`, `x.field`) involves no
+            // written path, so it never resolves through the type's import —
+            // crediting it would shield a `use …::TimeView;` rustc reports
+            // unused. Trait members are the exception: the trait must be in
+            // scope for the call to resolve at all, so they credit the
+            // trait's import regardless.
+            let trait_member = def.trait_item.is_some() || asm.trait_parent.contains_key(key);
+            if !e.receiver_resolved || trait_member {
+                ids.push(def.path.clone());
+            }
+            if let Some(ti) = &def.trait_item
+                && let Some(tm) = asm.defs.get(ti)
+            {
+                ids.push(tm.path.clone());
+            }
+            // A written `Type::assoc` path on a remote impl credits its
+            // nominal self type: `def_path_str` renders a remote impl at the
+            // *impl's* module (`m::<impl crate::Type>::method`), so the
+            // prefix probe can never reach an import of `Type` through the
+            // member's own path.
+            if !e.receiver_resolved
+                && let Some(st) = &def.self_type
+                && let Some(td) = asm.defs.get(st)
+            {
+                ids.push(td.path.clone());
+            }
+            Some(ids)
+        } else {
+            asm.target_identity(e).map(|id| vec![id.to_string()])
+        }
+    }
+
+    /// An edge's target identity, or — outside the workspace — the
+    /// display-path pseudo-identity it is tracked under.
+    fn edge_identity(asm: &Assembly, e: &ArchivedRefEdge) -> String {
+        match asm.target_identity(e) {
+            Some(id) => id.to_string(),
+            None => wl_ir::join_paths(&e.to, "::"),
+        }
+    }
+
+    /// The glob accounting's belt-and-braces (rule R6): a SURVIVING external
+    /// resolution the model can't pin to any import might have come through
+    /// a glob. Every class with a precise channel of its own is exempt:
+    /// extern-rooted writes bypassed imports; std/core/alloc are always in
+    /// the real prelude; receiver-based calls' trait needs are R4's typeck
+    /// facts; macro resolutions are R3's glob_map names (probe P2); generic
+    /// params are bound, never imported. Without the last three, one
+    /// `tracing::debug!` R6-blocked every glob in its module (the 2026-07-08
+    /// finding).
+    fn r6_unattributable(e: &ArchivedRefEdge) -> bool {
+        let root = e.to.first().map(|s| s.as_str()).unwrap_or_default();
+        !e.extern_root
+            && !e.receiver_resolved
+            && e.to_kind != "macro"
+            && e.to_kind != "param"
+            && !matches!(root, "std" | "core" | "alloc")
     }
 
     /// Identities that must NOT be auto-deleted because a `use` naming them

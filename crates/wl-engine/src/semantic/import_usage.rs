@@ -56,15 +56,8 @@ pub(super) struct ImportTargetUsage {
 }
 
 impl ImportTargetUsage {
-    pub(super) fn referenced_by_survivor(&self, krate: &str, scope: &str, id: &str) -> bool {
-        self.reaches(&self.by_survivor, krate, scope, id)
-    }
-
-    pub(super) fn referenced_by_removed(&self, krate: &str, scope: &str, id: &str) -> bool {
-        self.reaches(&self.by_removed, krate, scope, id)
-    }
-
-    /// Does some reference in `set` resolve `id` through an import at `scope`?
+    /// Does some reference in `set` (`by_survivor` / `by_removed`) resolve
+    /// `id` through an import at `scope`?
     /// Scope-exact, or from a module whose glob chain reaches `scope` and that
     /// has no explicit import of `id` itself.
     pub(super) fn reaches(
@@ -197,29 +190,20 @@ impl ImportTargetUsage {
     /// reference in `P` can reach `M`'s imports. Glob graphs are tiny (`use
     /// super::*` in test modules, the odd prelude), so a plain fixpoint does.
     pub(super) fn close_glob_chains(&mut self) {
-        loop {
+        let mut grew = true;
+        while grew {
+            grew = false;
             let snapshot = self.glob_importers.clone();
-            let mut grew = false;
             // For every (crate, M) → {N}, add each N's own glob-importers.
-            for ((krate, m), importers) in &snapshot {
-                let mut add: BTreeSet<String> = BTreeSet::new();
-                for n in importers {
-                    if let Some(pp) = snapshot.get(&(krate.clone(), n.clone())) {
-                        add.extend(pp.iter().cloned());
-                    }
-                }
-                if !add.is_empty() {
-                    let entry = self
-                        .glob_importers
-                        .get_mut(&(krate.clone(), m.clone()))
-                        .expect("key came from a snapshot of this map");
-                    let before = entry.len();
-                    entry.extend(add);
-                    grew |= entry.len() > before;
-                }
-            }
-            if !grew {
-                return;
+            for ((krate, _), importers) in &mut self.glob_importers {
+                let add: Vec<String> = importers
+                    .iter()
+                    .filter_map(|n| snapshot.get(&(krate.clone(), n.clone())))
+                    .flat_map(|pp| pp.iter().cloned())
+                    .collect();
+                let before = importers.len();
+                importers.extend(add);
+                grew |= importers.len() > before;
             }
         }
     }
