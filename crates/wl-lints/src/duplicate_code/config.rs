@@ -60,6 +60,16 @@ pub struct DuplicateCodeConfig {
     /// Only meaningful under `ignore-literals`; 0 disables.
     #[serde(default = "default_max_parameters", rename = "max-parameters")]
     pub max_parameters: usize,
+    /// Name the refactoring each group calls for — reshape the help line and
+    /// append a class note (merge / delete-dead-copy / default-trait-method /
+    /// method-on-type / ui-component). Never changes which groups fire; a
+    /// group with no named fix keeps the generic help. On by default.
+    #[serde(default = "default_true", rename = "classify")]
+    pub classify: bool,
+    /// Macro names whose duplication reads as UI markup to extract into one
+    /// component (Dioxus `rsx!` by default). Only consulted when `classify`.
+    #[serde(default = "default_component_macros", rename = "component-macros")]
+    pub component_macros: Vec<String>,
     /// Workspace-relative globs to scan. Empty (the default) means every
     /// member source file.
     #[serde(default)]
@@ -94,6 +104,8 @@ impl DuplicateCodeConfig {
         min_distinct_anchors: usize,
         min_non_repeating_ratio: f64,
         max_parameters: usize,
+        no_classify: bool,
+        component_macros: &[String],
         include: &[String],
         exclude: &[String],
     ) -> Self {
@@ -107,6 +119,12 @@ impl DuplicateCodeConfig {
             min_distinct_anchors,
             min_non_repeating_ratio,
             max_parameters,
+            classify: !no_classify,
+            component_macros: if component_macros.is_empty() {
+                default_component_macros()
+            } else {
+                component_macros.to_vec()
+            },
             include: Globs(include.iter().map(|p| GlobPattern::from_cli(p)).collect()),
             exclude: Globs(exclude.iter().map(|p| GlobPattern::from_cli(p)).collect()),
         }
@@ -137,6 +155,10 @@ fn default_max_parameters() -> usize {
     3
 }
 
+fn default_component_macros() -> Vec<String> {
+    vec!["rsx".to_string()]
+}
+
 fn default_true() -> bool {
     true
 }
@@ -160,6 +182,8 @@ mod tests {
             table.min_distinct_anchors,
             table.min_non_repeating_ratio,
             table.max_parameters,
+            false,
+            &[],
             &[],
             &[],
         );
@@ -169,6 +193,8 @@ mod tests {
         assert_eq!(cli.min_distinct_anchors, table.min_distinct_anchors);
         assert_eq!(cli.min_non_repeating_ratio, table.min_non_repeating_ratio);
         assert_eq!(cli.max_parameters, table.max_parameters);
+        assert_eq!(cli.classify, table.classify);
+        assert_eq!(cli.component_macros, table.component_macros);
         assert!(cli.include.0.is_empty() && cli.exclude.0.is_empty());
     }
 }

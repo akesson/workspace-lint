@@ -530,6 +530,14 @@ impl Assembly {
         self.fragments.iter().map(|f| f.archived())
     }
 
+    /// The `i`-th archived fragment by [`archived_fragments`](Self::archived_fragments)
+    /// order — the random-access half the call-graph index needs to deref an
+    /// `EdgeLoc` back to its edge at query time (O(1) cast). `i` is always an
+    /// index the same-run index produced, so an out-of-range panic is a bug.
+    pub(super) fn archived_fragment(&self, i: usize) -> &ArchivedIrFragment {
+        self.fragments[i].archived()
+    }
+
     /// Borrow the prebuilt removal-sensitive indexes — the no-removal degree
     /// source for [`super::pub_usage::compute`].
     pub(super) fn degree_view(&self) -> DegreeView<'_> {

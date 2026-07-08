@@ -154,8 +154,27 @@ duplication with `workspace_lint::expect!(duplicate_code)` at that anchor
 site. Advisory only: `--fix` never rewrites duplicates — resolving one means
 extracting a shared function, which is an author decision.
 
-Build-free (runs under `--fast-only`). The table's presence enables the lint;
-all fields are optional:
+**Naming the fix.** Beyond flagging a group, the lint classifies *what
+refactoring it calls for* and reshapes the help accordingly: two copies of
+one function the call graph confirms are interchangeable → *keep one and
+redirect the callers* (with the outside call-site count); a copy nothing
+references → *delete the dead one*; the same method across impls of one
+trait → *a default method on the trait*; free functions all taking one
+workspace type first → *a method on that type*; copies built from the same
+UI macro (`rsx!` by default) → *extract a component*. When two
+token-identical functions resolve *different* callees (a local shadowing a
+same-named function), the merge is withheld with a caution note instead of
+advising a rewrite that would change behavior; a group with no clear named
+fix keeps the generic "extract the shared logic" help. Classification only
+reshapes the help and notes — it never changes which groups fire or at what
+level. Turn it off with `classify = false`.
+
+Because the classifier consults the rustc call graph, **`duplicate-code` is
+a semantic lint**: it needs a compiling workspace and pays extraction (the
+same cost class as `unused-pub`), and `--fast-only` skips it entirely — a
+`check duplicate-code --fast-only` is a hard error, never a silently
+degraded run. (`--stats` below is the exception: it stays build-free.) The
+table's presence enables the lint; all fields are optional:
 
 ```toml
 [duplicate-code]
@@ -168,6 +187,8 @@ cross-crate-only = false # true = only groups spanning ≥ 2 crates
 min-distinct-anchors = 4      # noise filter: distinct verbatim names required
 min-non-repeating-ratio = 0.5 # noise filter: fraction of non-repeated windows
 max-parameters = 3       # extraction-cost gate: literal parameters allowed
+classify = true          # name the refactoring each group calls for
+component-macros = ["rsx"]  # UI macros whose copies suggest a component
 include = []             # workspace-relative globs to scan (empty = all)
 exclude = []             # globs to skip (wins over include)
 ```
@@ -211,9 +232,14 @@ abstracted away and prices the extraction:
 
 To try it on any workspace without touching config, use the ad-hoc form (one
 flag per field; `--exact-literals` / `--include-test-code` invert the
-`ignore-*` defaults). `--stats` prints a measure-only readout (per-group
-divergence, parameter histogram, drift candidates, threshold sweeps) instead
-of diagnostics — the view to tune thresholds against:
+`ignore-*` defaults, `--no-classify` turns the classifier off,
+`--component-macros` overrides the UI-macro list). `--stats` prints a
+measure-only readout (per-group divergence, parameter histogram, drift
+candidates, threshold sweeps, and each group's *syntactic* refactoring
+class) instead of diagnostics — the view to tune thresholds against. It
+stays **build-free** even though the lint itself is now semantic, so the
+call-graph verdicts (merge / delete-dead-copy / withheld) never appear in
+the `--stats` class column — only the classes decidable from syntax:
 
 ```sh
 workspace-lint check duplicate-code                     # defaults, zero config

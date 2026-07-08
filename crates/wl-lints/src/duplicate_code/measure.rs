@@ -9,6 +9,7 @@ use wl_engine::fast::FastModel;
 use wl_engine::fast::clones::divergence::{Divergence, DivergenceAnalyzer};
 use wl_engine::fast::clones::{CandidateKind, CloneGroup, find_clones};
 
+use super::classify::Classifier;
 use super::{DuplicateCodeConfig, enumerate, options};
 
 /// One run's raw measurements: every group `find_clones` returns, plus the
@@ -39,6 +40,12 @@ pub struct GroupMeasure {
     /// Literal divergence; `None` under `--exact-literals` (instances are
     /// literal-identical by construction) or on a capture misalignment.
     pub divergence: Option<Divergence>,
+    /// The group's SYNTACTIC refactoring class (kebab-case). Measure-only and
+    /// build-free, so the call-graph verdicts (`merge-identical-fns` /
+    /// `delete-dead-copy` / `merge-withheld`) never appear here — only
+    /// `default-trait-method` / `method-on-receiver-type` / `ui-component` /
+    /// `unclassified`.
+    pub class: &'static str,
 }
 
 /// Scan and measure without judging: every group, its divergence, and the
@@ -47,10 +54,20 @@ pub fn measure(fast: &FastModel, config: &DuplicateCodeConfig) -> MeasureReport 
     let files = enumerate(fast, config);
     let groups = find_clones(&files, &options(config));
     let mut analyzer = DivergenceAnalyzer::new(&files);
+    // The readout classifies syntactically (no semantic model), so the
+    // call-graph verdicts never appear — measure-only, and build-free.
+    let mut classifier = Classifier::new(&files, None, &config.component_macros);
     let measures = groups
         .iter()
         .map(|g| {
             let anchor = &g.instances[0];
+            let divergence = config
+                .ignore_literals
+                .then(|| analyzer.analyze(g))
+                .flatten();
+            let identical = divergence
+                .as_ref()
+                .is_none_or(|d| d.params == 0 && d.violations.is_empty());
             GroupMeasure {
                 file: anchor.file.clone(),
                 line: anchor.line_start,
@@ -58,10 +75,8 @@ pub fn measure(fast: &FastModel, config: &DuplicateCodeConfig) -> MeasureReport 
                 kind: anchor.kind,
                 tokens: g.tokens,
                 lines: anchor.line_end - anchor.line_start + 1,
-                divergence: config
-                    .ignore_literals
-                    .then(|| analyzer.analyze(g))
-                    .flatten(),
+                class: classifier.classify(g, identical).label(),
+                divergence,
             }
         })
         .collect();

@@ -3252,3 +3252,435 @@ fn test_target_crates_contribute_usage_but_never_candidates() {
         "test-target crates are never candidate sources"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Call-graph accessors (`enclosing_fn` / `callees_of` / `references_to`) — the
+// classifier behind `duplicate-code` resolves a clone instance's byte span to
+// its fn identity, then compares callee sets (IR-confirm) and partitions
+// inbound references (merge vs delete-dead-copy).
+// ---------------------------------------------------------------------------
+
+/// A `fn` ItemFact whose whole-item span is `file[lo..hi]` (the containment
+/// surface `enclosing_fn` scans) — `item` fixes every span at `src/lib.rs`
+/// 0..10, too coarse for the byte-offset tests.
+fn fn_item_at(path: &[&str], key: &str, file: &str, lo: u32, hi: u32) -> ItemFact {
+    let mut it = item(path, key, "fn", Some("mod"));
+    let s = Span {
+        file: file.into(),
+        lo,
+        hi,
+        line: 1,
+        from_expansion: false,
+    };
+    it.span = Some(s.clone());
+    it.full_span = Some(s);
+    it
+}
+
+#[test]
+fn enclosing_fn_picks_innermost_by_byte_containment() {
+    let app = frag(
+        "app",
+        vec![
+            fn_item_at(&["app", "outer"], "K_OUT", "src/a.rs", 0, 100),
+            fn_item_at(&["app", "outer", "inner"], "K_IN", "src/a.rs", 40, 60),
+        ],
+        vec![],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let a = std::path::Path::new("src/a.rs");
+    // Inside both → innermost (smallest interval) wins.
+    assert_eq!(m.enclosing_fn(a, 50).unwrap().identity, "app::outer::inner");
+    // Inside outer only.
+    assert_eq!(m.enclosing_fn(a, 20).unwrap().identity, "app::outer");
+    // `hi` is exclusive: 60 is past inner, still within outer.
+    assert_eq!(m.enclosing_fn(a, 60).unwrap().identity, "app::outer");
+    // 100 is past outer's close → nothing.
+    assert!(m.enclosing_fn(a, 100).is_none());
+    // Off the end, and a file with no fns.
+    assert!(m.enclosing_fn(a, 500).is_none());
+    assert!(
+        m.enclosing_fn(std::path::Path::new("src/b.rs"), 50)
+            .is_none()
+    );
+    // The whole-item span rides along.
+    let fs = m.enclosing_fn(a, 50).unwrap().full_span;
+    assert_eq!((fs.lo, fs.hi, fs.file.as_str()), (40, 60, "src/a.rs"));
+}
+
+#[test]
+fn enclosing_fn_skips_expansion_and_synthetic_defs() {
+    let mut macro_fn = fn_item_at(&["app", "generated"], "K_M", "src/m.rs", 0, 50);
+    macro_fn.full_span.as_mut().unwrap().from_expansion = true;
+    let mut synthetic = fn_item_at(&["app", "synth"], "K_S", "src/m.rs", 60, 90);
+    synthetic.full_span = None;
+    let real = fn_item_at(&["app", "real"], "K_R", "src/m.rs", 100, 120);
+    let app = frag("app", vec![macro_fn, synthetic, real], vec![]);
+    let m = model(vec![("default", vec![app])]);
+    let f = std::path::Path::new("src/m.rs");
+    // Inside the macro-generated span → skipped (no editable owner).
+    assert!(m.enclosing_fn(f, 25).is_none());
+    // Inside the synthetic (spanless full_span) fn → skipped.
+    assert!(m.enclosing_fn(f, 75).is_none());
+    // The real fn resolves.
+    assert_eq!(m.enclosing_fn(f, 110).unwrap().identity, "app::real");
+}
+
+#[test]
+fn enclosing_fn_sees_secondary_config_only_defs() {
+    // A fn in both configs (identical span — primary wins) plus one only the
+    // `test` config extracted (a `#[cfg(test)]` fn).
+    let shared = || fn_item_at(&["app", "shared"], "K_SH", "src/x.rs", 0, 20);
+    let default = frag("app", vec![shared()], vec![]);
+    let test = frag_target(
+        "app",
+        "test",
+        vec![
+            shared(),
+            fn_item_at(&["app", "only_test"], "K_ONLYTEST", "src/x.rs", 30, 50),
+        ],
+        vec![],
+    );
+    let m = model(vec![("default", vec![default]), ("test", vec![test])]);
+    let x = std::path::Path::new("src/x.rs");
+    assert_eq!(m.enclosing_fn(x, 10).unwrap().identity, "app::shared");
+    assert_eq!(m.enclosing_fn(x, 40).unwrap().identity, "app::only_test");
+}
+
+#[test]
+fn callees_union_across_configs_by_identity() {
+    // caller calls `a` under default and `b` under test — the union is both.
+    let defs = || {
+        vec![
+            item(&["app", "caller"], "K_C", "fn", Some("mod")),
+            item(&["app", "a"], "K_A", "fn", Some("mod")),
+            item(&["app", "b"], "K_B", "fn", Some("mod")),
+        ]
+    };
+    let default = frag(
+        "app",
+        defs(),
+        vec![edge(&["app", "caller"], &["app", "a"], "K_A", false)],
+    );
+    let test = frag_target(
+        "app",
+        "test",
+        defs(),
+        vec![edge(&["app", "caller"], &["app", "b"], "K_B", false)],
+    );
+    let m = model(vec![("default", vec![default]), ("test", vec![test])]);
+    let set = m.callees_of("app::caller");
+    let targets: Vec<&str> = set.iter().map(|c| c.target.as_str()).collect();
+    assert_eq!(
+        targets,
+        ["app::a", "app::b"],
+        "callees union across configs"
+    );
+}
+
+#[test]
+fn callees_translate_unextracted_generation_through_global_index() {
+    // `dep::thing` is extracted only by default (plain generation). The test
+    // config's edge carries that plain to_key but has no local dep def — the
+    // global index still resolves it to the identity.
+    let dep = frag(
+        "dep",
+        vec![item(&["dep", "thing"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    let app_default = frag(
+        "app",
+        vec![item(&["app", "caller"], "K_C", "fn", Some("mod"))],
+        vec![],
+    );
+    let app_test = frag_target(
+        "app",
+        "test",
+        vec![item(&["app", "caller"], "K_C", "fn", Some("mod"))],
+        vec![edge(
+            &["app", "caller"],
+            &["dep", "thing"],
+            "K_PLAIN",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![dep, app_default]),
+        ("test", vec![app_test]),
+    ]);
+    let callees = m.callees_of("app::caller");
+    let thing = callees.iter().find(|c| c.target == "dep::thing");
+    assert!(
+        thing.is_some(),
+        "global index resolves the plain-generation edge"
+    );
+    assert!(thing.unwrap().resolved, "a workspace identity is resolved");
+}
+
+#[test]
+fn callees_aggregate_nested_defs_segment_wise() {
+    // `foo` and its nested `foo::helper` both contribute; the sibling
+    // `foo_bar` (a string prefix, NOT a `::` segment) must not.
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "foo"], "K_FOO", "fn", Some("mod")),
+            item(&["app", "foo", "helper"], "K_H", "fn", Some("fn")),
+            item(&["app", "foo_bar"], "K_FB", "fn", Some("mod")),
+            item(&["app", "a"], "K_A", "fn", Some("mod")),
+            item(&["app", "b"], "K_B", "fn", Some("mod")),
+            item(&["app", "c"], "K_C", "fn", Some("mod")),
+        ],
+        vec![
+            edge(&["app", "foo"], &["app", "a"], "K_A", false),
+            edge(&["app", "foo", "helper"], &["app", "b"], "K_B", false),
+            edge(&["app", "foo_bar"], &["app", "c"], "K_C", false),
+        ],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let set = m.callees_of("app::foo");
+    let targets: Vec<&str> = set.iter().map(|c| c.target.as_str()).collect();
+    assert_eq!(
+        targets,
+        ["app::a", "app::b"],
+        "foo + nested foo::helper, but not sibling foo_bar"
+    );
+}
+
+#[test]
+fn callees_keep_foreign_targets_by_display_path() {
+    // Two fns identical but for which out-of-workspace fn they call: their
+    // callee sets must differ (the IR-confirm contract).
+    let c1 = edge(&["app", "foo1"], &["std", "fmt", "one"], "K_STD1", false);
+    let c2 = edge(&["app", "foo2"], &["std", "fmt", "two"], "K_STD2", false);
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "foo1"], "K_F1", "fn", Some("mod")),
+            item(&["app", "foo2"], "K_F2", "fn", Some("mod")),
+        ],
+        vec![c1, c2],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let s1 = m.callees_of("app::foo1");
+    let s2 = m.callees_of("app::foo2");
+    let only1: Vec<_> = s1.iter().collect();
+    assert_eq!(only1.len(), 1);
+    assert_eq!(only1[0].target, "std::fmt::one");
+    assert!(!only1[0].resolved, "out-of-workspace target is unresolved");
+    assert_ne!(s1, s2, "differing foreign callees ⇒ unequal sets");
+}
+
+#[test]
+fn callees_exclude_import_edges() {
+    // A real call is a callee; imports, globs, and trait-scope facts are not.
+    let import = edge(&["app", "foo"], &["app", "b"], "K_B", true);
+    let mut glob = edge(&["app", "foo"], &["app", "m"], "K_M", true);
+    glob.glob = true;
+    let mut trait_scope = edge(&["app", "foo"], &["app", "Tr"], "K_TR", false);
+    trait_scope.trait_scope = true;
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "foo"], "K_FOO", "fn", Some("mod")),
+            item(&["app", "a"], "K_A", "fn", Some("mod")),
+            item(&["app", "b"], "K_B", "fn", Some("mod")),
+            item(&["app", "m"], "K_M", "mod", Some("mod")),
+            item(&["app", "Tr"], "K_TR", "trait", Some("mod")),
+        ],
+        vec![
+            edge(&["app", "foo"], &["app", "a"], "K_A", false),
+            import,
+            glob,
+            trait_scope,
+        ],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let set = m.callees_of("app::foo");
+    let targets: Vec<&str> = set.iter().map(|c| c.target.as_str()).collect();
+    assert_eq!(targets, ["app::a"], "only the real call is a callee");
+}
+
+#[test]
+fn callees_exclude_param_edges() {
+    // Argument-position `impl Trait` emits a `param`-kind edge to a fn-scoped
+    // synthetic parameter (`<fn>::impl Trait`) — not a call, and fn-local, so
+    // two otherwise-identical fns would get UNEQUAL callee sets and the merge
+    // family would spuriously withhold them. Excluding `param` edges keeps the
+    // IR-confirm equality faithful: the two fns below share one real call and
+    // differ only in their own param edge, so their callee sets must match.
+    let mut left_param = edge(
+        &["app", "left"],
+        &["app", "left", "impl Into<String>"],
+        "K_LP",
+        false,
+    );
+    left_param.to_kind = "param".into();
+    let mut right_param = edge(
+        &["app", "right"],
+        &["app", "right", "impl Into<String>"],
+        "K_RP",
+        false,
+    );
+    right_param.to_kind = "param".into();
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "left"], "K_L", "fn", Some("mod")),
+            item(&["app", "right"], "K_R", "fn", Some("mod")),
+            item(&["app", "shared"], "K_S", "fn", Some("mod")),
+        ],
+        vec![
+            edge(&["app", "left"], &["app", "shared"], "K_S", false),
+            left_param,
+            edge(&["app", "right"], &["app", "shared"], "K_S", false),
+            right_param,
+        ],
+    );
+    let m = model(vec![("default", vec![app])]);
+    assert_eq!(
+        m.callees_of("app::left"),
+        m.callees_of("app::right"),
+        "param edges excluded → the two fns' callee sets match (mergeable)"
+    );
+    let left_set = m.callees_of("app::left");
+    let left: Vec<&str> = left_set.iter().map(|c| c.target.as_str()).collect();
+    assert_eq!(left, ["app::shared"], "the param target is not a callee");
+}
+
+#[test]
+fn references_to_carry_spans_and_flags() {
+    // target referenced three ways: a spanned call site, an import, a
+    // signature projection.
+    let mut call = edge(&["app", "caller"], &["app", "target"], "K_T", false);
+    call.span = Some(Span {
+        file: "src/c.rs".into(),
+        lo: 5,
+        hi: 8,
+        line: 2,
+        from_expansion: false,
+    });
+    let import = edge(&["app", "user"], &["app", "target"], "K_T", true);
+    let mut sig = edge(&["app", "api"], &["app", "target"], "K_T", false);
+    sig.in_signature = true;
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "target"], "K_T", "fn", Some("mod")),
+            item(&["app", "caller"], "K_CA", "fn", Some("mod")),
+            item(&["app", "user"], "K_U", "fn", Some("mod")),
+            item(&["app", "api"], "K_AP", "fn", Some("mod")),
+        ],
+        vec![call, import, sig],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let refs = m.references_to("app::target");
+    let c = refs.iter().find(|r| r.from == "app::caller").unwrap();
+    assert_eq!(c.span.as_ref().map(|s| (s.lo, s.hi)), Some((5, 8)));
+    assert!(!c.import && !c.in_signature);
+    assert!(refs.iter().find(|r| r.from == "app::user").unwrap().import);
+    assert!(
+        refs.iter()
+            .find(|r| r.from == "app::api")
+            .unwrap()
+            .in_signature
+    );
+}
+
+#[test]
+fn references_to_dedup_cfg_variants() {
+    // The same call site under the plain and +test generations (different
+    // to_key, same identity + span) is one inbound ref.
+    let make = |to_key: &str| {
+        let mut e = edge(&["app", "caller"], &["app", "target"], to_key, false);
+        e.span = Some(Span {
+            file: "src/d.rs".into(),
+            lo: 1,
+            hi: 4,
+            line: 1,
+            from_expansion: false,
+        });
+        e
+    };
+    let default = frag(
+        "app",
+        vec![
+            item(&["app", "target"], "K_PLAIN", "fn", Some("mod")),
+            item(&["app", "caller"], "K_CA", "fn", Some("mod")),
+        ],
+        vec![make("K_PLAIN")],
+    );
+    let test = frag_target(
+        "app",
+        "test",
+        vec![
+            item(&["app", "target"], "K_TEST", "fn", Some("mod")),
+            item(&["app", "caller"], "K_CA", "fn", Some("mod")),
+        ],
+        vec![make("K_TEST")],
+    );
+    let m = model(vec![("default", vec![default]), ("test", vec![test])]);
+    let refs = m.references_to("app::target");
+    assert_eq!(refs.len(), 1, "cfg variants of one call site dedup");
+    assert_eq!(refs[0].from, "app::caller");
+}
+
+#[test]
+fn references_to_include_foreign_config_leg() {
+    // `dep::thing` is extracted only by default; its ONLY reference comes from
+    // the test config, which has no dep def — the inbound edge still lands via
+    // the global index (the ForeignReach shape).
+    let dep = frag(
+        "dep",
+        vec![item(&["dep", "thing"], "K_PLAIN", "fn", Some("mod"))],
+        vec![],
+    );
+    let app_test = frag_target(
+        "app",
+        "test",
+        vec![item(&["app", "caller"], "K_CA", "fn", Some("mod"))],
+        vec![edge(
+            &["app", "caller"],
+            &["dep", "thing"],
+            "K_PLAIN",
+            false,
+        )],
+    );
+    let m = model(vec![("default", vec![dep]), ("test", vec![app_test])]);
+    let refs = m.references_to("dep::thing");
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].from, "app::caller");
+}
+
+#[test]
+fn references_to_join_build_fragments_by_path_fallback() {
+    // A build-script edge carries a Build-mode key that joins nothing by hash;
+    // the display-path fallback still lands it on the target.
+    let app = frag(
+        "app",
+        vec![item(&["app", "thing"], "K_CHECK", "fn", Some("mod"))],
+        vec![],
+    );
+    let build = build_frag(vec![edge(
+        &["build_script_build", "main"],
+        &["app", "thing"],
+        "K_BUILD_MODE",
+        false,
+    )]);
+    let m = model(vec![("default", vec![app, build])]);
+    let refs = m.references_to("app::thing");
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].from, "build_script_build::main");
+}
+
+#[test]
+fn unreferenced_fn_has_no_inbound_refs() {
+    let app = frag(
+        "app",
+        vec![item(&["app", "lonely"], "K_L", "fn", Some("mod"))],
+        vec![],
+    );
+    let m = model(vec![("default", vec![app])]);
+    assert!(m.references_to("app::lonely").is_empty());
+    assert!(m.callees_of("app::lonely").is_empty());
+}

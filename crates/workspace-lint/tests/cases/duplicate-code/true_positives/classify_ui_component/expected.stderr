@@ -1,0 +1,14 @@
+error: duplicated code: 2 structurally identical instances (~4 lines)
+ --> crates/demo/src/lib.rs:10:1
+  |
+  = help: extract the shared `rsx!` markup into one component the copies can render
+  = note: also found at: crates/demo/src/lib.rs:15
+  = note: matching ignores local variable names and literal values
+  = note: extracting would take ~1 parameter for the differing literals
+help: if intentional, silence with:
+  |
+10 + workspace_lint::expect!(duplicate_code);
+  |
+  = note: `#[deny(workspace_lint::duplicate_code)]` on by default
+
+workspace-lint: generated 1 error

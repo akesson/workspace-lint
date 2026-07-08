@@ -227,7 +227,12 @@ fn git_cmd(dir: &Path, args: &[&str]) -> Result<(), String> {
 /// `cases.rs::semantic_lint_routing_matches_case_dirs`, which pins each entry
 /// to its `tests/cases/<lint>/` directory; those directory names are in turn
 /// pinned to `LintId::short()` by lints_id.rs's `every_lint_has_case_fixtures`.
-pub const SEMANTIC_LINTS: &[&str] = &["architecture", "unused-deps", "unused-pub"];
+pub const SEMANTIC_LINTS: &[&str] = &[
+    "architecture",
+    "duplicate-code",
+    "unused-deps",
+    "unused-pub",
+];
 
 /// Case-routing metadata: `true` if `lint_dir` (a `tests/cases/<lint_dir>/`
 /// name) belongs to a lint whose backend compiles the fixture workspace.

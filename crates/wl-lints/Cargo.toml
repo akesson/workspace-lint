@@ -31,4 +31,6 @@ wl-lint-api = { path = "../wl-lint-api" }
 
 [dev-dependencies]
 insta = { workspace = true }
+# The classifier tests parse fixture source into `syn::File`s (`ScanFile`).
+syn = { workspace = true }
 tempfile = { workspace = true }
