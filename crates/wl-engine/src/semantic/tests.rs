@@ -1846,11 +1846,13 @@ fn dangling_glob_respects_trait_scope_facts() {
     assert!(dangling[0].glob);
 }
 
-/// T5: an unexplained glob_map name (recorded by the resolver, matched by no
-/// edge — the token-passthrough attribute-macro shape) keeps the glob: the
-/// accounting refuses to delete what it cannot fully explain.
+/// T5: glob_map names with no edge evidence at all are typeck probe noise —
+/// method selection records every trait candidate a glob supplies (~250 on
+/// dioxus's prelude for one real consumer, the 2026-07-08 re-validation
+/// finding) — so they carry no keep-weight. Removed-edge causality on the
+/// real names still decides.
 #[test]
-fn dangling_glob_kept_on_unexplained_name() {
+fn dangling_glob_ignores_probe_noise_names() {
     let app = frag(
         "app",
         vec![item(&["app", "change"], "K_CHG", "fn", Some("mod"))],
@@ -1859,7 +1861,9 @@ fn dangling_glob_kept_on_unexplained_name() {
                 &["app"],
                 &["dioxus", "prelude"],
                 100,
-                &["Event", "component"],
+                // `Event` is really used (and removed); the rest is the
+                // resolver's trait-candidate probing — never in HIR.
+                &["Event", "HasMouseData", "ReadableExt", "WritableExt"],
             ),
             edge(
                 &["app", "change"],
@@ -1867,14 +1871,66 @@ fn dangling_glob_kept_on_unexplained_name() {
                 "K_NOJOIN",
                 false,
             ),
-            // nothing ever mentions `component` — invisible in HIR.
         ],
     );
     let m = model(vec![("default", vec![app])]);
+    let dangling = m.dangling_imports(&RemovalSet::new(["app::change"]), &Default::default());
+    assert_eq!(
+        dangling.len(),
+        1,
+        "probe-noise names must not shield the orphaned glob (R5): {dangling:?}"
+    );
+    assert!(dangling[0].glob);
+}
+
+/// T5b: the `tracing::Event` shape — a *surviving* `$crate::…`-expanded edge
+/// (extern-rooted, from expansion) shares a final segment with a glob_map
+/// name. Such a path bypasses local imports by construction, so it carries no
+/// name evidence: the glob still dangles. The same edge written in source
+/// (not from expansion) keeps it — a glob can supply a crate-rename re-export
+/// whose resolution reads extern-rooted.
+#[test]
+fn dangling_glob_ignores_extern_rooted_expansion_names() {
+    let mk = |from_expansion: bool| {
+        let mut trace = edge(&["app", "keep"], &["tracing", "Event"], "K_NOJOIN", false);
+        trace.extern_root = true;
+        trace.span = Some(Span {
+            file: "src/lib.rs".into(),
+            lo: 900,
+            hi: 910,
+            line: 40,
+            from_expansion,
+        });
+        frag(
+            "app",
+            vec![
+                item(&["app", "change"], "K_CHG", "fn", Some("mod")),
+                item(&["app", "keep"], "K_KEEP", "fn", Some("mod")),
+            ],
+            vec![
+                glob_decl(&["app"], &["dioxus", "prelude"], 100, &["Event"]),
+                edge(
+                    &["app", "change"],
+                    &["dioxus", "prelude", "Event"],
+                    "K_NOJOIN",
+                    false,
+                ),
+                trace,
+            ],
+        )
+    };
+    let m = model(vec![("default", vec![mk(true)])]);
+    assert_eq!(
+        m.dangling_imports(&RemovalSet::new(["app::change"]), &Default::default())
+            .len(),
+        1,
+        "a macro-expanded extern-rooted survivor must not shield the glob"
+    );
+    let m = model(vec![("default", vec![mk(false)])]);
     assert!(
         m.dangling_imports(&RemovalSet::new(["app::change"]), &Default::default())
             .is_empty(),
-        "an unexplained glob_map name bails to keeping (R5)"
+        "the same path written in source keeps the glob (rename re-export shape)"
     );
 }
 
@@ -1937,6 +1993,57 @@ fn dangling_glob_blocked_by_unattributable_survivor() {
             .iter()
             .any(|d| d.glob),
         "an explicit own import covers the survivor — explicit-beats-glob (R6)"
+    );
+}
+
+/// T7c: survivor classes with a *precise* channel of their own must not enter
+/// R6 — a receiver-based call (R4's typeck facts), a macro resolution (R3's
+/// glob_map names), a generic parameter (never imported). One
+/// `tracing::debug!` in a module otherwise R6-blocked every glob in it (its
+/// expansion survives as exactly these edge shapes — 2026-07-08 finding).
+#[test]
+fn dangling_glob_r6_exempts_receiver_macro_and_param_survivors() {
+    let mut recv = edge(
+        &["app", "keep"],
+        &["tracing_core", "Callsite", "metadata"],
+        "K_NOJOIN",
+        false,
+    );
+    recv.receiver_resolved = true;
+    let mut mac = edge(&["app", "keep"], &["tracing", "debug"], "K_NOJOIN", false);
+    mac.to_kind = "macro".into();
+    let mut param = edge(
+        &["app", "Client", "H"],
+        &["app", "Client", "H"],
+        "K_NOJOIN",
+        false,
+    );
+    param.to_kind = "param".into();
+    let app = frag(
+        "app",
+        vec![
+            item(&["app", "change"], "K_CHG", "fn", Some("mod")),
+            item(&["app", "keep"], "K_KEEP", "fn", Some("mod")),
+        ],
+        vec![
+            glob_decl(&["app"], &["dioxus", "prelude"], 100, &["Event"]),
+            edge(
+                &["app", "change"],
+                &["dioxus", "prelude", "Event"],
+                "K_NOJOIN",
+                false,
+            ),
+            recv,
+            mac,
+            param,
+        ],
+    );
+    let m = model(vec![("default", vec![app])]);
+    assert_eq!(
+        m.dangling_imports(&RemovalSet::new(["app::change"]), &Default::default())
+            .len(),
+        1,
+        "receiver/macro/param survivors must not R6-block the orphaned glob"
     );
 }
 

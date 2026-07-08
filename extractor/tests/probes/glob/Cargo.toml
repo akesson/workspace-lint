@@ -12,5 +12,6 @@ publish = false
 
 [dependencies]
 procmacro = { package = "probe-procmacro", path = "../procmacro" }
+macrodep = { package = "probe-macrodep", path = "../macrodep" }
 
 [workspace]

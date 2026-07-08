@@ -13,6 +13,8 @@
 //!   `trait_scope` edge to the glob's module (typeck `used_trait_imports`).
 //! - **P5** — the nested brace-list glob's lowered `decl_span` shape, which
 //!   the surgery guard's "whole statement or bail" test depends on.
+//! - **P6** — a `$crate::…`-rooted expansion path carries `extern_root`
+//!   (pinned on the ident: per-segment `res` is unpopulated on body paths).
 //!
 //! Same scaffolding as `probe.rs` (which documents the chdir/mtime/WL_IR_OUT
 //! constraints); one `#[test]` per file, each integration-test binary its own
@@ -167,6 +169,54 @@ fn glob_probe_accounting_facts() -> anyhow::Result<()> {
          glob_map — R3/R5's name evidence no longer covers trait usage, got {:?}",
         trait_glob.glob_used_names
     );
+
+    // --- P6: a `$crate::…`-rooted expansion path is extern-rooted ---
+    // `widget!` expands to `$crate::prelude::Widget`; that path resolves at
+    // the macro's definition site — never through the invoking module's
+    // imports — so its edge must carry `extern_root` (the glob accounting
+    // blinds such edges' name evidence; `tracing::Event` vs dioxus `Event`,
+    // the 2026-07-08 LeaveDates finding). Per-segment `res` is unpopulated on
+    // body paths, so the extractor pins this on the `$crate` ident itself.
+    anyhow::ensure!(
+        frag.references.iter().any(|e| {
+            !e.import
+                && e.extern_root
+                && e.from.last().is_some_and(|f| f == "build")
+                && e.to.last().is_some_and(|t| t == "Widget")
+                && e.span.as_ref().is_some_and(|s| s.from_expansion)
+        }),
+        "P6: the `$crate::prelude::Widget` expansion edge must be extern_root; \
+         edges from `build`: {:#?}",
+        frag.references
+            .iter()
+            .filter(|e| e.from.last().is_some_and(|f| f == "build"))
+            .collect::<Vec<_>>()
+    );
+
+    // --- P6b: cross-crate `$crate` — the `tracing::debug!` shape ---
+    // `macrodep::ext_event!()` expands to `$crate::ExtEvent::dispatch()` in
+    // ANOTHER crate. Both resulting edges must be extern-rooted: the type
+    // path (`$crate::ExtEvent`, a plain visit_path) and the TypeRelative
+    // value path (`…::dispatch`), which must inherit the root from its type
+    // part — it was this edge's `Event` segment that shielded the LeaveDates
+    // glob until 2026-07-08.
+    for target in ["ExtEvent", "dispatch"] {
+        anyhow::ensure!(
+            frag.references.iter().any(|e| {
+                !e.import
+                    && e.extern_root
+                    && e.from.last().is_some_and(|f| f == "logs")
+                    && e.to.last().is_some_and(|t| t == target)
+                    && e.span.as_ref().is_some_and(|s| s.from_expansion)
+            }),
+            "P6b: the cross-crate `$crate` expansion edge to `{target}` must be \
+             extern_root; edges from `logs`: {:#?}",
+            frag.references
+                .iter()
+                .filter(|e| e.from.last().is_some_and(|f| f == "logs"))
+                .collect::<Vec<_>>()
+        );
+    }
 
     // --- P5: the nested brace-list glob's decl_span shape ---
     let nested = globs

@@ -32,9 +32,14 @@
 //! - **Globs are judged by the resolver's own books**: rustc's glob_map
 //!   ([`wl_ir::RefEdge::glob_used_names`]) says which names resolved through
 //!   each glob (macros, derives, and trait-method resolutions included — the
-//!   probe suite pins that), and the accounting deletes a glob only when
-//!   every recorded name is explained by removed code and no survivor could
-//!   still lean on it.
+//!   probe suite pins that). The record is *promiscuous*: method selection
+//!   probes every trait candidate a glob supplies, so a real prelude shows
+//!   hundreds of recorded names HIR never uses (validated on dioxus's — ~250
+//!   names for one `Event` consumer). The accounting therefore weighs only
+//!   names with edge evidence: a glob is deleted when removed code demonstrably
+//!   leaned on it and no surviving name/identity/trait fact still can. Known
+//!   limitation, accepted as fail-open elsewhere: a use visible to the
+//!   resolver but not HIR (an intra-doc link) carries no keep-weight.
 //! - **Trait-scope facts are a separate evidence class**: typeck's
 //!   `used_trait_imports` ([`wl_ir::RefEdge::trait_scope`]) marks the `use`
 //!   items method resolution needed in scope. They are never written paths,
@@ -50,6 +55,7 @@ use std::path::{Path, PathBuf};
 
 use super::SemanticModel;
 use super::assembly::Assembly;
+use super::import_usage::ImportTargetUsage;
 use super::removal::RemovalSet;
 
 /// One `use`-declaration leaf left dangling by a cascade deletion: its target
@@ -80,229 +86,6 @@ pub struct DanglingImport {
     /// accounting in [`SemanticModel::dangling_imports`]. Surgery deletes the
     /// whole statement (never a leaf excision).
     pub glob: bool,
-}
-
-/// `(crate, scope, identity)` sets of what each scope's real edges reference,
-/// split removed/surviving, plus the two resolution substrates the scope
-/// query needs: which modules reach which through glob re-imports, and which
-/// modules explicitly import which identities (explicit-beats-glob).
-///
-/// A *scope* is a def-path prefix, `::`-joined. References are indexed under
-/// their whole enclosing-item chain down to the nearest enclosing module (so
-/// an import written inside a fn is served by that fn's own references, and a
-/// module-scope import by everything directly in the module) — but never
-/// across a module boundary, which is exactly the reach of a `use` statement.
-///
-/// Queries are prefix-aware — a reference to `a::StrExt::shout` counts as a
-/// use of an imported `a::StrExt` (method calls never name the trait itself).
-#[derive(Default)]
-struct ImportTargetUsage {
-    by_survivor: BTreeSet<(String, String, String)>,
-    by_removed: BTreeSet<(String, String, String)>,
-    /// `(crate, module M)` → modules whose glob imports reach M
-    /// (`use super::*` chains, transitively closed).
-    glob_importers: BTreeMap<(String, String), BTreeSet<String>>,
-    /// `(crate, module, identity)`: the module has its own explicit (non-glob)
-    /// import of the identity, so its references resolve *there* and never
-    /// through a glob into another module's import.
-    own_imports: BTreeSet<(String, String, String)>,
-    /// `(crate, scope, segment)` — every path segment of every identity in
-    /// `by_survivor` / `by_removed`. The rendering-independent name evidence
-    /// of the glob accounting: a survivor rendered `dioxus_core::Element` and
-    /// a glob targeting `dioxus::prelude` disagree on every path prefix, but
-    /// never on the segment `Element` the glob_map recorded.
-    survivor_names: BTreeSet<(String, String, String)>,
-    removed_names: BTreeSet<(String, String, String)>,
-    /// `(crate, scope, target-identity)` from [`wl_ir::RefEdge::trait_scope`]
-    /// facts — "a body at `scope` needed this `use` item's target in scope
-    /// for method resolution". Kept OUT of `by_*`: not written resolutions
-    /// (they must never credit an ordinary leaf import), but the
-    /// survivor-sensitive trait channel of the glob accounting.
-    trait_scope_survivor: BTreeSet<(String, String, String)>,
-    trait_scope_removed: BTreeSet<(String, String, String)>,
-    /// `(crate, scope, identity)` of surviving edges no import could be shown
-    /// to explain — external-unresolved targets (no workspace def) that are
-    /// neither extern-rooted (written path bypassed imports), std/core/alloc-
-    /// rooted, nor receiver-resolved-and-non-trait. The glob accounting's
-    /// belt-and-braces: such a survivor *might* resolve through any glob in
-    /// scope, so no glob it can reach is deleted (own-import coverage is
-    /// checked at query time — explicit-beats-glob).
-    unattributable: BTreeSet<(String, String, String)>,
-}
-
-impl ImportTargetUsage {
-    fn referenced_by_survivor(&self, krate: &str, scope: &str, id: &str) -> bool {
-        self.reaches(&self.by_survivor, krate, scope, id)
-    }
-
-    fn referenced_by_removed(&self, krate: &str, scope: &str, id: &str) -> bool {
-        self.reaches(&self.by_removed, krate, scope, id)
-    }
-
-    /// Does some reference in `set` resolve `id` through an import at `scope`?
-    /// Scope-exact, or from a module whose glob chain reaches `scope` and that
-    /// has no explicit import of `id` itself.
-    fn reaches(
-        &self,
-        set: &BTreeSet<(String, String, String)>,
-        krate: &str,
-        scope: &str,
-        id: &str,
-    ) -> bool {
-        if Self::probe(set, krate, scope, id) {
-            return true;
-        }
-        let Some(globbers) = self
-            .glob_importers
-            .get(&(krate.to_string(), scope.to_string()))
-        else {
-            return false;
-        };
-        globbers.iter().any(|n| {
-            Self::probe(set, krate, n, id) && !Self::probe(&self.own_imports, krate, n, id)
-        })
-    }
-
-    fn probe(set: &BTreeSet<(String, String, String)>, krate: &str, scope: &str, id: &str) -> bool {
-        let key = (krate.to_string(), scope.to_string(), id.to_string());
-        if set.contains(&key) {
-            return true;
-        }
-        // Any identity under `id::` (assoc items, module children) keeps the
-        // import of `id` alive — one ordered range probe.
-        let prefix = format!("{id}::");
-        set.range((krate.to_string(), scope.to_string(), prefix.clone())..)
-            .next()
-            .is_some_and(|(k, s, i)| k == krate && s == scope && i.starts_with(&prefix))
-    }
-
-    /// Does some surviving edge use `name` (a bare final segment) at `scope`
-    /// or a scope whose glob chain reaches it? Exact-segment membership — the
-    /// name twin of [`reaches`](Self::reaches). No own-import subtraction:
-    /// skipping it only ever *keeps* a glob (the safe direction — a survivor
-    /// using the name through its own leaf import shields the glob it didn't
-    /// need).
-    fn name_survives(&self, krate: &str, scope: &str, name: &str) -> bool {
-        self.name_in(&self.survivor_names, krate, scope, name)
-    }
-
-    /// Was `name`'s use at reach of `scope` removed by this cascade? The
-    /// causality/completeness side (rule R5) of the name evidence.
-    fn name_removed(&self, krate: &str, scope: &str, name: &str) -> bool {
-        self.name_in(&self.removed_names, krate, scope, name)
-    }
-
-    fn name_in(
-        &self,
-        set: &BTreeSet<(String, String, String)>,
-        krate: &str,
-        scope: &str,
-        name: &str,
-    ) -> bool {
-        let key = |s: &str| (krate.to_string(), s.to_string(), name.to_string());
-        if set.contains(&key(scope)) {
-            return true;
-        }
-        self.glob_importers
-            .get(&(krate.to_string(), scope.to_string()))
-            .is_some_and(|gs| gs.iter().any(|s| set.contains(&key(s))))
-    }
-
-    /// Does a `trait_scope` fact in `set` reach the glob at `(krate, scope)`
-    /// targeting `id`? Scope-exact or over the glob chain, like
-    /// [`reaches`](Self::reaches).
-    fn trait_scope_reaches(
-        &self,
-        set: &BTreeSet<(String, String, String)>,
-        krate: &str,
-        scope: &str,
-        id: &str,
-    ) -> bool {
-        if Self::probe(set, krate, scope, id) {
-            return true;
-        }
-        self.glob_importers
-            .get(&(krate.to_string(), scope.to_string()))
-            .is_some_and(|gs| gs.iter().any(|s| Self::probe(set, krate, s, id)))
-    }
-
-    /// Is there a surviving edge at reach of `scope` whose resolution no
-    /// import can be shown to explain (and that an explicit own import does
-    /// not cover)? While one exists, no glob reachable from that code may be
-    /// deleted — the accounting can't prove the glob wasn't its supplier.
-    fn unattributable_at(&self, krate: &str, scope: &str) -> bool {
-        let scopes = std::iter::once(scope.to_string()).chain(
-            self.glob_importers
-                .get(&(krate.to_string(), scope.to_string()))
-                .into_iter()
-                .flatten()
-                .cloned(),
-        );
-        for s in scopes {
-            let lo = (krate.to_string(), s.clone(), String::new());
-            for (k, sc, id) in self.unattributable.range(lo..) {
-                if k != krate || *sc != s {
-                    break;
-                }
-                if !self.own_covers(krate, &s, id) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Explicit-beats-glob for the unattributable probe: is some segment-wise
-    /// prefix of `id` explicitly imported at `scope`? (`use js_sys::RegExp;`
-    /// covers a survivor edge to `js_sys::RegExp::test`.)
-    fn own_covers(&self, krate: &str, scope: &str, id: &str) -> bool {
-        let mut end = id.len();
-        loop {
-            let prefix = &id[..end];
-            if self.own_imports.contains(&(
-                krate.to_string(),
-                scope.to_string(),
-                prefix.to_string(),
-            )) {
-                return true;
-            }
-            match prefix.rfind("::") {
-                Some(p) => end = p,
-                None => return false,
-            }
-        }
-    }
-
-    /// Transitively close the glob graph: `P` globs `N`, `N` globs `M` ⇒ a
-    /// reference in `P` can reach `M`'s imports. Glob graphs are tiny (`use
-    /// super::*` in test modules, the odd prelude), so a plain fixpoint does.
-    fn close_glob_chains(&mut self) {
-        loop {
-            let snapshot = self.glob_importers.clone();
-            let mut grew = false;
-            // For every (crate, M) → {N}, add each N's own glob-importers.
-            for ((krate, m), importers) in &snapshot {
-                let mut add: BTreeSet<String> = BTreeSet::new();
-                for n in importers {
-                    if let Some(pp) = snapshot.get(&(krate.clone(), n.clone())) {
-                        add.extend(pp.iter().cloned());
-                    }
-                }
-                if !add.is_empty() {
-                    let entry = self
-                        .glob_importers
-                        .get_mut(&(krate.clone(), m.clone()))
-                        .expect("key came from a snapshot of this map");
-                    let before = entry.len();
-                    entry.extend(add);
-                    grew |= entry.len() > before;
-                }
-            }
-            if !grew {
-                return;
-            }
-        }
-    }
 }
 
 /// The scopes a reference resolves imports in: every prefix of its enclosing
@@ -454,14 +237,19 @@ impl SemanticModel {
     ///   at reach of the glob's scope. Rendering-independent: this is what a
     ///   surviving `rsx!` or a divergently-rendered `Element` trips. (The
     ///   probe suite pins that the glob_map records macro, derive, AND
-    ///   trait-method resolutions.)
+    ///   trait-method resolutions.) Extern-rooted *expansion* paths carry no
+    ///   name evidence — a `$crate::…` path bypasses local imports by
+    ///   construction, so `tracing::Event` must not shield a glob-supplied
+    ///   `Event` (see `import_target_usage`).
     /// - **R4 (trait scope)** — no surviving `trait_scope` fact (typeck's
     ///   `used_trait_imports`) reaches the glob: method syntax whose trait
     ///   the glob supplies.
-    /// - **R5 (completeness)** — every glob_map name is explained by some
-    ///   *removed* edge. An unexplained name means a resolver-recorded use
-    ///   invisible in post-expansion HIR (a token-passthrough attribute
-    ///   macro, a rendering that lost the bound name) — bail, keep the glob.
+    /// - **R5 (causality, name half)** — some glob_map name is explained by a
+    ///   *removed* edge (the second half of R1). Names with no edge evidence
+    ///   at all are typeck probe noise — method selection records every trait
+    ///   candidate a glob supplies (~250 on dioxus's prelude for one real
+    ///   consumer) — and carry no weight in either direction; real trait
+    ///   dependence is R4's precise channel.
     /// - **R6 (belt-and-braces)** — no surviving unattributable external
     ///   resolution in scope (see [`ImportTargetUsage::unattributable`]).
     fn dangling_globs(
@@ -516,7 +304,18 @@ impl SemanticModel {
                 }
             }
         }
+        // WL_GLOB_DEBUG=1: print each glob's per-rule verdict — the field
+        // instrument that cracked the 2026-07-08 prelude findings.
+        let debug = std::env::var_os("WL_GLOB_DEBUG").is_some();
         for g in globs.values() {
+            let dbg = |rule: &str| {
+                if debug {
+                    eprintln!(
+                        "WL_GLOB_DEBUG {}:{} target={} scope={} used={:?} => {rule}",
+                        g.decl.file, g.decl.line, g.target, g.scope, g.used
+                    );
+                }
+            };
             let trait_removed = usage.trait_scope_reaches(
                 &usage.trait_scope_removed,
                 &g.krate,
@@ -531,39 +330,44 @@ impl SemanticModel {
             );
             // R1 (alive half): a glob the resolver never used is not ours.
             if g.used.is_empty() && !trait_removed && !trait_survives {
+                dbg("R1-alive keep");
                 continue;
             }
             // R2 / R4: surviving identity or trait-scope evidence.
             if usage.referenced_by_survivor(&g.krate, &g.scope, &g.target) || trait_survives {
+                dbg(if trait_survives { "R4 keep" } else { "R2 keep" });
                 continue;
             }
             // R3: any surviving use of a glob-supplied name.
-            if g.used
-                .iter()
-                .any(|n| usage.name_survives(&g.krate, &g.scope, n))
-            {
-                continue;
-            }
-            // R5 + R1 (causality half): every name explained by removed code,
-            // and something removed actually leaned on the glob.
-            if !g
+            if let Some(n) = g
                 .used
                 .iter()
-                .all(|n| usage.name_removed(&g.krate, &g.scope, n))
+                .find(|n| usage.name_in(&usage.survivor_names, &g.krate, &g.scope, n))
             {
+                dbg(&format!("R3 keep name={n}"));
                 continue;
             }
+            // R5 (causality): something removed actually leaned on the glob.
+            // Names with NO edge evidence at all (neither survivor nor
+            // removed) are typeck resolver probes — the glob_map records
+            // every trait candidate touched during method selection, so a
+            // real prelude shows hundreds of names HIR never uses. Real
+            // trait dependence is covered precisely by the typeck facts
+            // (R4); unobservable names carry no keep-weight.
             let caused = trait_removed
                 || g.used
                     .iter()
-                    .any(|n| usage.name_removed(&g.krate, &g.scope, n));
+                    .any(|n| usage.name_in(&usage.removed_names, &g.krate, &g.scope, n));
             if !caused {
+                dbg("R5-causality keep");
                 continue;
             }
             // R6: an unattributable survivor might be resolving through it.
             if usage.unattributable_at(&g.krate, &g.scope) {
+                dbg("R6 keep");
                 continue;
             }
+            dbg("flagged delete");
             out.push(DanglingImport {
                 decl: g.decl.clone(),
                 elem: g.decl.clone(),
@@ -690,17 +494,24 @@ impl SemanticModel {
                         // inherent one out here, and under-crediting would
                         // delete a live trait import.
                         let id = wl_ir::join_paths(&e.to, "::");
-                        // The glob accounting's belt-and-braces (rule R6): a
-                        // SURVIVING external resolution the model can't pin
-                        // to any import might have come through a glob —
-                        // unless the written root bypassed local imports
-                        // entirely, or it's std/core/alloc (the always-in-
-                        // prelude carve-out; a glob re-exporting std items
-                        // under the same names is still caught by the name
-                        // evidence).
+                        // The glob accounting's belt-and-braces (rule R6):
+                        // a SURVIVING external resolution the model can't
+                        // pin to any import might have come through a glob.
+                        // Every class with a precise channel of its own is
+                        // exempt: extern-rooted writes bypassed imports;
+                        // std/core/alloc are always in the real prelude;
+                        // receiver-based calls' trait needs are R4's typeck
+                        // facts; macro resolutions are R3's glob_map names
+                        // (probe P2); generic params are bound, never
+                        // imported. Without the last three, one
+                        // `tracing::debug!` R6-blocked every glob in its
+                        // module (the 2026-07-08 finding).
                         let root = e.to.first().map(|s| s.as_str()).unwrap_or_default();
                         if !is_removed
                             && !e.extern_root
+                            && !e.receiver_resolved
+                            && e.to_kind != "macro"
+                            && e.to_kind != "param"
                             && !matches!(root, "std" | "core" | "alloc")
                         {
                             for scope in scopes_of(asm, &e.from, &e.from_module) {
@@ -713,11 +524,25 @@ impl SemanticModel {
                         }
                         ids.push(id);
                     }
-                    let names: Vec<&str> = ids
-                        .iter()
-                        .flat_map(|id| id.split("::"))
-                        .filter(|s| !s.is_empty())
-                        .collect();
+                    // Name evidence (R3/R5 causality) asks "could this
+                    // resolution have gone through a glob?". A macro-expanded
+                    // `$crate::…` path (`tracing::debug!` → `tracing::Event`)
+                    // is extern-rooted — it bypasses every local import by
+                    // construction — so its segments must not shield a glob
+                    // that happens to supply a same-named item (dioxus's
+                    // `Event` vs tracing's). Written extern-rooted paths stay:
+                    // a glob can supply a crate *rename* re-export whose
+                    // resolution still reads extern-rooted.
+                    let name_blind =
+                        e.extern_root && e.span.as_ref().is_some_and(|s| s.from_expansion);
+                    let names: Vec<&str> = if name_blind {
+                        Vec::new()
+                    } else {
+                        ids.iter()
+                            .flat_map(|id| id.split("::"))
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    };
                     let (set, name_set) = if is_removed {
                         (&mut usage.by_removed, &mut usage.removed_names)
                     } else {

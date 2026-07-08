@@ -572,11 +572,20 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
     /// resolution bypassed every local `use` — see [`RefEdge::extern_root`].
     /// Unlike [`via_crate`](Self::via_crate), set even when the written root
     /// IS the defining crate.
+    ///
+    /// A `$crate`-rooted path is the same fact by construction — it is *the*
+    /// mechanism a macro names its own crate, resolved at the macro's
+    /// definition site — and must be caught by ident, because per-segment
+    /// `res` is rarely populated on body paths (`tracing::debug!` expands to
+    /// `$crate::…::Event::dispatch`, whose root segment carries no res; the
+    /// 2026-07-08 LeaveDates finding).
     fn extern_root(&self, segments: &[rustc_hir::PathSegment<'tcx>]) -> bool {
-        segments
-            .first()
-            .and_then(|s| s.res.opt_def_id())
-            .is_some_and(|d| d.is_crate_root() && d.krate != LOCAL_CRATE)
+        segments.first().is_some_and(|s| {
+            s.ident.name == rustc_span::symbol::kw::DollarCrate
+                || s.res
+                    .opt_def_id()
+                    .is_some_and(|d| d.is_crate_root() && d.krate != LOCAL_CRATE)
+        })
     }
 
     /// Typeck's `used_trait_imports` harvest: for every typeck root, the
@@ -881,7 +890,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                     self.record_receiver(ex.hir_id, to, ex.span);
                 }
             }
-            ExprKind::Path(ref qpath @ QPath::TypeRelative(..)) => {
+            ExprKind::Path(ref qpath @ QPath::TypeRelative(ty, _)) => {
                 let owner = self.tcx.hir_enclosing_body_owner(ex.hir_id);
                 if let Some(to) = self
                     .tcx
@@ -889,7 +898,28 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                     .qpath_res(qpath, ex.hir_id)
                     .opt_def_id()
                 {
-                    self.record(ex.hir_id, to, ex.span);
+                    // The value path's written ROOT is the type's (`$crate::
+                    // Event::dispatch` — the whole path bypasses local
+                    // imports iff the type part does), so extern_root must be
+                    // inherited from it: the type's own edge carries it, but
+                    // this edge's identity segments (`…::Event::dispatch`)
+                    // are what feed the glob accounting's name evidence.
+                    let extern_root = match ty.kind {
+                        rustc_hir::TyKind::Path(QPath::Resolved(_, type_path)) => {
+                            self.extern_root(type_path.segments)
+                        }
+                        _ => false,
+                    };
+                    let from_id = self.tcx.hir_get_parent_item(ex.hir_id).to_def_id();
+                    self.record_edge(
+                        from_id,
+                        to,
+                        Some(ex.span),
+                        EdgeFlags {
+                            extern_root,
+                            ..EdgeFlags::default()
+                        },
+                    );
                 }
             }
             // A plain assignment's LHS field is a WRITE — mark it so the
