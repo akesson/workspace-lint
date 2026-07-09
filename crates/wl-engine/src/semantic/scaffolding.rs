@@ -120,133 +120,196 @@ pub(super) fn compute(
     if targets.is_empty() {
         return result;
     }
-    let target_set = RemovalSet::new(targets.iter());
+    let graph = Graph::fold(configs, targets);
+    let universe = graph.referrer_closure(removed);
+    let (in_s, mut demoted, blocked) = graph.shrink(&universe, targets, removed);
+    for t in targets {
+        let verdict = match blocked.get(t) {
+            Some(r) => ScaffoldVerdict::Blocked(graph.take_blocker(&mut demoted, r)),
+            None => ScaffoldVerdict::Cleared {
+                scaffolding: graph.cleared_closure(t, &universe, &in_s),
+            },
+        };
+        result.per_target.insert(t.clone(), verdict);
+    }
+    result
+}
 
-    // Production identities: everything defined by a non-test unit anywhere
-    // in the matrix. "Test item" = defined, but never by a production unit.
-    let mut prod_ids: BTreeSet<String> = BTreeSet::new();
-    for (_, asm) in configs {
-        for frag in asm.archived_fragments() {
-            if Assembly::is_test_unit(frag) {
-                continue;
+/// The test-item graph one scaffolding query works over: every test-only
+/// identity's display def and workspace edges, folded across the config
+/// matrix, plus each target's direct referrers. Identities are strings
+/// throughout — the same cross-config join the removal set speaks — so
+/// foreign-generation targets (a `test = false` crate the referring config
+/// never extracted) resolve exactly like local ones.
+struct Graph<'a> {
+    target_set: RemovalSet,
+    items: BTreeMap<String, TestItem<'a>>,
+    /// Target identity → the test items whose edges reach it.
+    referrers: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl<'a> Graph<'a> {
+    fn fold(configs: &'a [(String, Assembly)], targets: &[String]) -> Self {
+        let prod_ids = prod_identities(configs);
+        let mut g = Graph {
+            target_set: RemovalSet::new(targets.iter()),
+            items: BTreeMap::new(),
+            referrers: BTreeMap::new(),
+        };
+        for (_, asm) in configs {
+            for def in asm.defs.values() {
+                if !prod_ids.contains(&def.path) {
+                    g.record_def(def);
+                }
             }
-            for it in frag.items.iter() {
-                prod_ids.insert(wl_ir::join_paths(&it.path, "::"));
+            for frag in asm.archived_fragments() {
+                let test_unit = Assembly::is_test_unit(frag);
+                for e in frag.references.iter() {
+                    g.record_edge(asm, e, test_unit, &prod_ids, targets);
+                }
             }
+        }
+        g
+    }
+
+    /// Fold one test-item def, preferring the one with an editable delete
+    /// surface (see [`TestItem::def`]).
+    fn record_def(&mut self, def: &'a super::assembly::DefInfo) {
+        let editable = |d: &super::assembly::DefInfo| {
+            d.full_span.is_some() && d.span.as_ref().is_some_and(|s| !s.from_expansion)
+        };
+        let entry = self.items.entry(def.path.clone()).or_default();
+        match entry.def {
+            Some(prev) if editable(prev) || !editable(def) => {}
+            _ => entry.def = Some(def),
         }
     }
 
-    // Fold every test item's facts and edges across the matrix. Identities
-    // are strings throughout — the same cross-config join the removal set
-    // speaks — so foreign-generation targets (a `test = false` crate the
-    // referring config never extracted) resolve exactly like local ones.
-    let mut items: BTreeMap<String, TestItem<'_>> = BTreeMap::new();
-    // Direct referrers of each target: the test items whose edges reach it.
-    let mut referrers: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for (_, asm) in configs {
-        for def in asm.defs.values() {
-            if prod_ids.contains(&def.path) {
+    /// Fold one reference edge into the outgoing/inbound/referrer tables.
+    fn record_edge(
+        &mut self,
+        asm: &Assembly,
+        e: &wl_ir::ArchivedRefEdge,
+        test_unit: bool,
+        prod_ids: &BTreeSet<String>,
+        targets: &[String],
+    ) {
+        if e.import || e.trait_scope {
+            return;
+        }
+        // Edges out of a compiler-synthesized def are harness plumbing, not
+        // authored code: the `--test` harness's generated `fn main`
+        // references every `#[test]` fn (via its `TestDescAndFn` const) and
+        // would otherwise read as a surviving referrer anchoring ALL
+        // scaffolding — worse, it shares the bin's real `main` identity.
+        // Nothing synthetic survives a deletion in any sense an author cares
+        // about.
+        let from_def = asm.defs.get(e.from_key.as_str());
+        if from_def.is_some_and(|d| d.synthetic) {
+            return;
+        }
+        let Some(to_id) = asm.target_identity(e) else {
+            return; // out-of-workspace (std, third-party): never binds
+        };
+        let from_id = from_def
+            .map(|d| d.path.clone())
+            .unwrap_or_else(|| wl_ir::join_paths(&e.from, "::"));
+        if test_unit && !prod_ids.contains(&from_id) {
+            if self.target_set.covers(&segs(to_id)) {
+                for t in targets.iter().filter(|t| covers_one(t, to_id)) {
+                    self.referrers
+                        .entry(t.clone())
+                        .or_default()
+                        .insert(from_id.clone());
+                }
+            }
+            self.items
+                .entry(from_id.clone())
+                .or_default()
+                .outgoing
+                .insert(to_id.to_string());
+        }
+        if !prod_ids.contains(to_id) {
+            self.items
+                .entry(to_id.to_string())
+                .or_default()
+                .inbound
+                .insert(from_id);
+        }
+    }
+
+    /// The optimistic universe: the targets' direct referrers plus every
+    /// test-only identity they transitively reach (helpers at any depth).
+    fn referrer_closure(&self, removed: &RemovalSet) -> BTreeSet<String> {
+        let mut universe: BTreeSet<String> = BTreeSet::new();
+        let mut queue: Vec<String> = self.referrers.values().flatten().cloned().collect();
+        while let Some(id) = queue.pop() {
+            if !universe.insert(id.clone()) {
                 continue;
             }
-            let entry = items.entry(def.path.clone()).or_default();
-            // Prefer the def with an editable delete surface (see TestItem).
-            let editable = |d: &super::assembly::DefInfo| {
-                d.full_span.is_some() && d.span.as_ref().is_some_and(|s| !s.from_expansion)
+            let Some(item) = self.items.get(&id) else {
+                continue;
             };
-            match entry.def {
-                Some(prev) if editable(prev) || !editable(def) => {}
-                _ => entry.def = Some(def),
-            }
-        }
-        for frag in asm.archived_fragments() {
-            let test_unit = Assembly::is_test_unit(frag);
-            for e in frag.references.iter() {
-                if e.import || e.trait_scope {
-                    continue;
-                }
-                // Edges out of a compiler-synthesized def are harness
-                // plumbing, not authored code: the `--test` harness's
-                // generated `fn main` references every `#[test]` fn (via its
-                // `TestDescAndFn` const) and would otherwise read as a
-                // surviving referrer anchoring ALL scaffolding — worse, it
-                // shares the bin's real `main` identity. Nothing synthetic
-                // survives a deletion in any sense an author cares about.
-                let from_def = asm.defs.get(e.from_key.as_str());
-                if from_def.is_some_and(|d| d.synthetic) {
-                    continue;
-                }
-                let Some(to_id) = asm.target_identity(e) else {
-                    continue; // out-of-workspace (std, third-party): never binds
-                };
-                let from_id = from_def
-                    .map(|d| d.path.clone())
-                    .unwrap_or_else(|| wl_ir::join_paths(&e.from, "::"));
-                let from_is_test = !prod_ids.contains(&from_id);
-                if test_unit && from_is_test {
-                    if target_set.covers(&segs(to_id)) {
-                        for t in targets {
-                            if covers_one(t, to_id) {
-                                referrers.entry(t).or_default().insert(from_id.clone());
-                            }
-                        }
-                    }
-                    items
-                        .entry(from_id.clone())
-                        .or_default()
-                        .outgoing
-                        .insert(to_id.to_string());
-                }
-                if !prod_ids.contains(to_id) {
-                    items
-                        .entry(to_id.to_string())
-                        .or_default()
-                        .inbound
-                        .insert(from_id);
-                }
-            }
-        }
-    }
-
-    // The optimistic universe: the targets' direct referrers plus every
-    // test-only identity they transitively reach (helpers at any depth).
-    let mut universe: BTreeSet<String> = BTreeSet::new();
-    let mut queue: Vec<String> = referrers.values().flatten().cloned().collect();
-    while let Some(id) = queue.pop() {
-        if !universe.insert(id.clone()) {
-            continue;
-        }
-        if let Some(item) = items.get(&id) {
             for out in &item.outgoing {
-                if items.contains_key(out)
+                if self.items.contains_key(out)
                     && !universe.contains(out)
-                    && !target_set.covers(&segs(out))
+                    && !self.target_set.covers(&segs(out))
                     && !removed.covers(&segs(out))
                 {
                     queue.push(out.clone());
                 }
             }
         }
+        universe
     }
 
-    // The shrinking fixpoint. `in_s` holds targets ∪ scaffolding candidates;
-    // a demotion shrinks it, which can strand a peer's edge (or a target's
-    // referrer) and demote further — growth of `removed` between rounds only
-    // ever *helps* exclusivity, so re-running per cascade round is monotone.
-    let mut in_s: BTreeSet<String> = targets.iter().cloned().collect();
-    in_s.extend(universe.iter().cloned());
-    let mut demoted: BTreeMap<String, TestBlocker> = BTreeMap::new();
-    let mut blocked: BTreeMap<String, String> = BTreeMap::new(); // target → blocking test id
-    loop {
-        let mut changed = false;
+    /// The shrinking fixpoint. `in_s` holds targets ∪ scaffolding candidates;
+    /// a demotion shrinks it, which can strand a peer's edge (or a target's
+    /// referrer) and demote further — growth of `removed` between rounds only
+    /// ever *helps* exclusivity, so re-running per cascade round is monotone.
+    /// Returns the surviving set, the demoted members (with their reasons),
+    /// and the blocked targets (→ blocking test id).
+    fn shrink(
+        &self,
+        universe: &BTreeSet<String>,
+        targets: &[String],
+        removed: &RemovalSet,
+    ) -> (
+        BTreeSet<String>,
+        BTreeMap<String, TestBlocker>,
+        BTreeMap<String, String>,
+    ) {
+        let mut in_s: BTreeSet<String> = targets.iter().cloned().collect();
+        in_s.extend(universe.iter().cloned());
+        let mut demoted: BTreeMap<String, TestBlocker> = BTreeMap::new();
+        let mut blocked: BTreeMap<String, String> = BTreeMap::new();
+        loop {
+            let mut changed = self.demote_members(universe, removed, &mut in_s, &mut demoted);
+            changed |= self.demote_targets(targets, &mut in_s, &mut blocked);
+            if !changed {
+                break;
+            }
+        }
+        (in_s, demoted, blocked)
+    }
+
+    /// One demotion pass over the scaffolding candidates still in `in_s`.
+    fn demote_members(
+        &self,
+        universe: &BTreeSet<String>,
+        removed: &RemovalSet,
+        in_s: &mut BTreeSet<String>,
+        demoted: &mut BTreeMap<String, TestBlocker>,
+    ) -> bool {
         let s_cover = RemovalSet::new(in_s.iter());
         let survives = |id: &str| s_cover.covers(&segs(id)) || removed.covers(&segs(id));
-        for id in &universe {
+        let mut changed = false;
+        for id in universe {
             if !in_s.contains(id) {
                 continue;
             }
-            let item = &items[id];
-            let reason = check_member(item, &survives);
-            if let Some(reason) = reason {
+            let item = &self.items[id];
+            if let Some(reason) = check_member(item, &survives) {
                 demoted.insert(
                     id.clone(),
                     TestBlocker {
@@ -259,12 +322,25 @@ pub(super) fn compute(
                 changed = true;
             }
         }
+        changed
+    }
+
+    /// One demotion pass over the targets: a target with a demoted direct
+    /// referrer is blocked (the referrer stays alive, so the target must).
+    fn demote_targets(
+        &self,
+        targets: &[String],
+        in_s: &mut BTreeSet<String>,
+        blocked: &mut BTreeMap<String, String>,
+    ) -> bool {
+        let mut changed = false;
         for t in targets {
             if !in_s.contains(t) {
                 continue;
             }
-            let anchor = referrers
-                .get(t.as_str())
+            let anchor = self
+                .referrers
+                .get(t)
                 .into_iter()
                 .flatten()
                 .find(|r| !in_s.contains(*r));
@@ -274,51 +350,54 @@ pub(super) fn compute(
                 changed = true;
             }
         }
-        if !changed {
-            break;
-        }
+        changed
     }
 
-    // Report. A cleared target ships the surviving closure reachable from its
-    // own referrers (per-target, so the caller can veto the target if any of
-    // its scaffolds fails a lint-layer gate).
-    for t in targets {
-        if let Some(r) = blocked.get(t) {
-            let b = demoted.remove(r).unwrap_or_else(|| TestBlocker {
-                test: r.clone(),
-                span: items
-                    .get(r)
-                    .and_then(|i| i.def)
-                    .and_then(|d| d.span.clone()),
-                reason: BlockReason::NotDeletable,
-            });
-            result
-                .per_target
-                .insert(t.clone(), ScaffoldVerdict::Blocked(b));
-            continue;
-        }
-        let mut scaffolding_ids: BTreeSet<String> = BTreeSet::new();
-        let mut queue: Vec<String> = referrers
-            .get(t.as_str())
+    /// The blocker report for a blocked target: the demoted referrer's own
+    /// record, or a synthesized one when the referrer was never admitted.
+    fn take_blocker(&self, demoted: &mut BTreeMap<String, TestBlocker>, r: &str) -> TestBlocker {
+        demoted.remove(r).unwrap_or_else(|| TestBlocker {
+            test: r.to_string(),
+            span: self
+                .items
+                .get(r)
+                .and_then(|i| i.def)
+                .and_then(|d| d.span.clone()),
+            reason: BlockReason::NotDeletable,
+        })
+    }
+
+    /// A cleared target's scaffolding: the surviving closure reachable from
+    /// its own referrers (per-target, so the caller can veto the target if
+    /// any of its scaffolds fails a lint-layer gate).
+    fn cleared_closure(
+        &self,
+        target: &str,
+        universe: &BTreeSet<String>,
+        in_s: &BTreeSet<String>,
+    ) -> Vec<TestScaffold> {
+        let mut ids: BTreeSet<String> = BTreeSet::new();
+        let mut queue: Vec<String> = self
+            .referrers
+            .get(target)
             .into_iter()
             .flatten()
             .filter(|r| in_s.contains(*r))
             .cloned()
             .collect();
         while let Some(id) = queue.pop() {
-            if !scaffolding_ids.insert(id.clone()) {
+            if !ids.insert(id.clone()) {
                 continue;
             }
-            for out in &items[&id].outgoing {
-                if universe.contains(out) && in_s.contains(out) && !scaffolding_ids.contains(out) {
+            for out in &self.items[&id].outgoing {
+                if universe.contains(out) && in_s.contains(out) && !ids.contains(out) {
                     queue.push(out.clone());
                 }
             }
         }
-        let scaffolding = scaffolding_ids
-            .into_iter()
+        ids.into_iter()
             .map(|id| {
-                let def = items[&id]
+                let def = self.items[&id]
                     .def
                     .expect("cleared scaffold passed the deletable check");
                 TestScaffold {
@@ -330,12 +409,25 @@ pub(super) fn compute(
                     id,
                 }
             })
-            .collect();
-        result
-            .per_target
-            .insert(t.clone(), ScaffoldVerdict::Cleared { scaffolding });
+            .collect()
     }
-    result
+}
+
+/// Every identity defined by a non-test unit anywhere in the matrix. "Test
+/// item" = defined, but never by a production unit.
+fn prod_identities(configs: &[(String, Assembly)]) -> BTreeSet<String> {
+    let mut prod_ids: BTreeSet<String> = BTreeSet::new();
+    for (_, asm) in configs {
+        for frag in asm.archived_fragments() {
+            if Assembly::is_test_unit(frag) {
+                continue;
+            }
+            for it in frag.items.iter() {
+                prod_ids.insert(wl_ir::join_paths(&it.path, "::"));
+            }
+        }
+    }
+    prod_ids
 }
 
 /// One member's demotion check: `None` = exclusive scaffolding (so far).

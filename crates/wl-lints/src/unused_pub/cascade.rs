@@ -159,55 +159,24 @@ pub fn run(
             }
         }
         // TestOnly targets: deletable only together with their exclusive test
-        // scaffolding. The engine partitions each target's referencing test
-        // items into a deletable closure or a blocker; the lint layer then
-        // applies its own gates to every scaffold — and the veto is INVERTED
-        // relative to private collateral: a private orphan left behind is a
-        // warning, a test referencing a deleted item is a broken build, so if
-        // ANY scaffold of a target can't be deleted the TARGET stays.
+        // scaffolding (see `gate_test_only`). Blockers land in `test_blocked`
+        // (recomputed each round); cleared groups join this round's trial.
         test_blocked.clear();
-        let mut groups: Vec<(String, Vec<PubFinding>)> = Vec::new();
-        if !pending_test_only.is_empty() {
-            let sc = model.test_scaffolding(&removal, &pending_test_only);
-            for (target, verdict) in sc.per_target {
-                match verdict {
-                    ScaffoldVerdict::Blocked(b) => {
-                        test_blocked.insert(target, test_block_note(&b));
-                    }
-                    ScaffoldVerdict::Cleared { scaffolding } => {
-                        let mut veto: Option<String> = None;
-                        let mut sfindings = Vec::new();
-                        for s in &scaffolding {
-                            if removed.contains(&s.id) {
-                                continue; // already scheduled by a sibling target
-                            }
-                            if blocked.contains_key(&s.id)
-                                || vetoed.contains_key(&s.id)
-                                || shadow_note(&s.id).is_some()
-                            {
-                                veto = Some(scaffold_veto_note(s));
-                                break;
-                            }
-                            match scaffold_finding(s, config, fast) {
-                                Some(f) if f.removable && !suppressed(&f.diagnostic) => {
-                                    sfindings.push(f);
-                                }
-                                _ => {
-                                    veto = Some(scaffold_veto_note(s));
-                                    break;
-                                }
-                            }
-                        }
-                        match veto {
-                            Some(note) => {
-                                test_blocked.insert(target, note);
-                            }
-                            None => groups.push((target, sfindings)),
-                        }
-                    }
-                }
-            }
-        }
+        let mut groups = gate_test_only(
+            &GateCtx {
+                model,
+                config,
+                fast,
+                removed: &removed,
+                blocked: &blocked,
+                vetoed: &vetoed,
+                shadow_note: &shadow_note,
+                suppressed,
+            },
+            &removal,
+            &pending_test_only,
+            &mut test_blocked,
+        );
         // Deletion-unmask veto: would this round's removals, on top of what's
         // already scheduled, activate a warning on something that SURVIVES?
         // Offenders are pulled out (and stay out); the rest of the round
@@ -226,38 +195,8 @@ pub fn run(
             let trial = RemovalSet::new(removed.iter().chain(trial_new.iter()));
             vetoed.extend(model.deletion_unmasks(&trial, &trial_new));
             newly.retain(|id| !vetoed.contains_key(id));
-            groups.retain(|(target, fs)| {
-                let hit = vetoed.contains_key(target)
-                    || fs
-                        .iter()
-                        .any(|f| f.id.as_deref().is_some_and(|id| vetoed.contains_key(id)));
-                if hit {
-                    test_blocked.insert(
-                        target.clone(),
-                        "deleting it together with its tests would unmask a `-D warnings` \
-                         failure on surviving code — resolve that first or delete by hand"
-                            .into(),
-                    );
-                }
-                !hit
-            });
-            for (target, fs) in groups {
-                cleared_note.insert(
-                    target.clone(),
-                    format!(
-                        "its only referrer(s) were test code — {} exclusively-scaffolding \
-                         test item(s) are deleted alongside it by this `--fix`",
-                        fs.len()
-                    ),
-                );
-                newly.push(target);
-                for f in fs {
-                    if let Some(id) = &f.id {
-                        newly.push(id.clone());
-                    }
-                    scaffold_diags.push(f);
-                }
-            }
+            drop_unmasked_groups(&mut groups, &vetoed, &mut test_blocked);
+            commit_groups(groups, &mut newly, &mut cleared_note, &mut scaffold_diags);
         }
         if newly.is_empty() {
             break batch; // converged; this batch is the final picture
@@ -355,6 +294,132 @@ pub fn run(
     CascadeResult {
         diagnostics,
         surgery,
+    }
+}
+
+/// Everything the per-round TestOnly gate consults — bundled so the gate and
+/// its per-scaffold checks share one signature.
+struct GateCtx<'a> {
+    model: &'a SemanticModel,
+    config: &'a PerCrate<UnusedPubConfig>,
+    fast: &'a FastModel,
+    removed: &'a HashSet<String>,
+    blocked: &'a HashMap<String, ExcisionBlock>,
+    vetoed: &'a HashMap<String, DeletionUnmask>,
+    shadow_note: &'a dyn Fn(&str) -> Option<String>,
+    suppressed: &'a dyn Fn(&Diagnostic) -> bool,
+}
+
+/// The per-round TestOnly gate: the engine partitions each pending target's
+/// referencing test items into a deletable closure or a blocker; the lint
+/// layer then applies its own gates to every scaffold — and the veto is
+/// INVERTED relative to private collateral: a private orphan left behind is
+/// a warning, a test referencing a deleted item is a broken build, so if ANY
+/// scaffold of a target can't be deleted the TARGET stays (its veto note
+/// lands in `test_blocked`). Cleared targets return with their scaffold
+/// findings, ready for the unmask trial.
+fn gate_test_only(
+    cx: &GateCtx<'_>,
+    removal: &RemovalSet,
+    pending: &[String],
+    test_blocked: &mut HashMap<String, String>,
+) -> Vec<(String, Vec<PubFinding>)> {
+    let mut groups = Vec::new();
+    if pending.is_empty() {
+        return groups;
+    }
+    for (target, verdict) in cx.model.test_scaffolding(removal, pending).per_target {
+        match verdict {
+            ScaffoldVerdict::Blocked(b) => {
+                test_blocked.insert(target, test_block_note(&b));
+            }
+            ScaffoldVerdict::Cleared { scaffolding } => match gate_scaffolding(cx, &scaffolding) {
+                Ok(sfindings) => groups.push((target, sfindings)),
+                Err(note) => {
+                    test_blocked.insert(target, note);
+                }
+            },
+        }
+    }
+    groups
+}
+
+/// Apply the lint-layer gates to one cleared closure: every scaffold must be
+/// genuinely deletable (git-clean, unsilenced, in scope, not macro-import-
+/// blocked, not cfg-shadowed) or the whole group fails with a veto note.
+fn gate_scaffolding(
+    cx: &GateCtx<'_>,
+    scaffolding: &[TestScaffold],
+) -> Result<Vec<PubFinding>, String> {
+    let mut sfindings = Vec::new();
+    for s in scaffolding {
+        if cx.removed.contains(&s.id) {
+            continue; // already scheduled by a sibling target
+        }
+        if cx.blocked.contains_key(&s.id)
+            || cx.vetoed.contains_key(&s.id)
+            || (cx.shadow_note)(&s.id).is_some()
+        {
+            return Err(scaffold_veto_note(s));
+        }
+        match scaffold_finding(s, cx.config, cx.fast) {
+            Some(f) if f.removable && !(cx.suppressed)(&f.diagnostic) => sfindings.push(f),
+            _ => return Err(scaffold_veto_note(s)),
+        }
+    }
+    Ok(sfindings)
+}
+
+/// Pull every group the unmask trial hit — ATOMICALLY (deleting the target
+/// without a test, or a test without its target, breaks the build) — and
+/// record the veto note on the target.
+fn drop_unmasked_groups(
+    groups: &mut Vec<(String, Vec<PubFinding>)>,
+    vetoed: &HashMap<String, DeletionUnmask>,
+    test_blocked: &mut HashMap<String, String>,
+) {
+    groups.retain(|(target, fs)| {
+        let hit = vetoed.contains_key(target)
+            || fs
+                .iter()
+                .any(|f| f.id.as_deref().is_some_and(|id| vetoed.contains_key(id)));
+        if hit {
+            test_blocked.insert(
+                target.clone(),
+                "deleting it together with its tests would unmask a `-D warnings` \
+                 failure on surviving code — resolve that first or delete by hand"
+                    .into(),
+            );
+        }
+        !hit
+    });
+}
+
+/// Schedule the surviving groups: target + scaffolds seed the removal set,
+/// the scaffold findings are stashed for final rendering, and the target
+/// gets its "deleted together with its tests" note.
+fn commit_groups(
+    groups: Vec<(String, Vec<PubFinding>)>,
+    newly: &mut Vec<String>,
+    cleared_note: &mut HashMap<String, String>,
+    scaffold_diags: &mut Vec<PubFinding>,
+) {
+    for (target, fs) in groups {
+        cleared_note.insert(
+            target.clone(),
+            format!(
+                "its only referrer(s) were test code — {} exclusively-scaffolding \
+                 test item(s) are deleted alongside it by this `--fix`",
+                fs.len()
+            ),
+        );
+        newly.push(target);
+        for f in fs {
+            if let Some(id) = &f.id {
+                newly.push(id.clone());
+            }
+            scaffold_diags.push(f);
+        }
     }
 }
 
