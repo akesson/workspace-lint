@@ -8,7 +8,7 @@
 //! therefore be fixture-local `stubs/` path crates or crates from that tree.
 //!
 //! Gated behind `WL_FIXTURE_COMPILE=1` (mirroring wl-engine's `WL_ENGINE_E2E`
-//! gate): the sweep cargo-checks ~65 workspaces, too slow for the default
+//! gate): the sweep cargo-checks ~100 workspaces, too slow for the default
 //! `cargo test` loop. CI runs it on Linux in `.github/workflows/ci.yml`
 //! after nextest (so the cargo cache is warm); locally:
 //!
@@ -33,9 +33,19 @@ fn semantic_fixture_workspaces_compile_offline() {
 
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let scratch = tempfile::tempdir().expect("scratch tempdir");
-    // One shared target dir across all workspaces: the few external deps
-    // (serde, log) and the fixture-local stubs build once and amortize.
-    let target_dir = scratch.path().join("shared-target");
+    // One target dir PER workspace. Sharing one across them all is unsound:
+    // cargo leaves a local path package's absolute path out of its metadata
+    // hash (so a target dir stays relocatable), and the fixtures reuse package
+    // names freely — 14 distinct `provider` crates, 29 distinct `alpha`. Two of
+    // them therefore hash to the same `-C metadata` and write the same
+    // `libprovider-<hash>.rmeta`; last writer wins, and a later fixture's
+    // `consumer` links an earlier fixture's `provider` (`E0432`, pointing at a
+    // file that plainly defines the missing item). Whether it bites depends on
+    // build order and fingerprint freshness, so it presents as flakiness — and
+    // it reproduced only on macOS, where `fs::copy` preserves mtime.
+    // Isolation costs ~9s over the whole sweep; only a handful of fixtures pull
+    // a registry dep, so there was little to amortize.
+    let target_root = scratch.path().join("targets");
 
     let started = Instant::now();
     let mut checked = 0usize;
@@ -56,7 +66,10 @@ fn semantic_fixture_workspaces_compile_offline() {
         let result = Command::new(&cargo)
             .args(["check", "--offline", "--quiet"])
             .current_dir(&copy)
-            .env("CARGO_TARGET_DIR", &target_dir)
+            .env(
+                "CARGO_TARGET_DIR",
+                target_root.join(format!("ws-{checked}")),
+            )
             .env("CARGO_NET_OFFLINE", "true")
             .output();
         // Collect every failure (no fail-fast): one report showing the whole
@@ -72,7 +85,7 @@ fn semantic_fixture_workspaces_compile_offline() {
         }
     });
 
-    // Mirror cases.rs: the semantic corpus is populated (~65 committed
+    // Mirror cases.rs: the semantic corpus is populated (~100 committed
     // workspaces), so zero discovered means the walk broke — fail loudly
     // rather than green-pass an empty sweep.
     assert!(
