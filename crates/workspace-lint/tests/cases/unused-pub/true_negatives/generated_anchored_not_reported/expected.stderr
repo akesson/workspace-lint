@@ -3,6 +3,7 @@ warning: pub fn `real_unused` in crate `demo` appears unused — consider removi
   |
   = help: remove the item or its `pub` visibility
   = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
 help: tighten to `pub(crate)`
   |
 7 - pub

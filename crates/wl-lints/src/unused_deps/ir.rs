@@ -121,9 +121,9 @@ pub(super) fn check(
         }
         diagnostics.push(
             builder
-                .note("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
-                .note("verify by removing the dep and running `cargo build --all-targets`")
-                .note("if the build breaks, add the dep to [unused-deps] ignore in your config")
+                .note_once("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
+                .note_once("verify by removing the dep and running `cargo build --all-targets`")
+                .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
                 .build(),
         );
     }
@@ -169,7 +169,7 @@ fn build_not_compiled_note(
         .help(format!(
             "compile it under an [engine] config (e.g. \"cargo build --target <triple> -p {name}\"), or add these deps to [unused-deps] ignore"
         ))
-        .note("this crate produced no compiler output under the current [engine] config matrix")
+        .note_once("this crate produced no compiler output under the current [engine] config matrix")
         .build()
 }
 

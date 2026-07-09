@@ -15,6 +15,7 @@ error: pub fn `beta` in crate `blib` is only used by test code
  --> <TMP>/crates/blib/src/lib.rs:6:1
   |
   = help: gate it `#[cfg(test)]`, move it into test code, or remove it
+  = note: no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it
 
 workspace-lint: generated 2 errors
 workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unused-pub)

@@ -83,7 +83,7 @@ fn to_out(d: &Diagnostic) -> OutDiagnostic {
     for note in &d.notes {
         children.push(OutChild {
             level: "note",
-            message: note.clone(),
+            message: note.text.clone(),
             spans: Vec::new(),
         });
     }

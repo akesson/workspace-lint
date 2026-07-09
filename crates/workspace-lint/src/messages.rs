@@ -144,7 +144,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .note("extracting would take ~2 parameters for the differing literals")
             .help("extract the shared logic into one function the copies can call")
             .build(),
@@ -161,7 +161,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .note(
                 "possible copy-paste drift: crates/beta/src/render.rs:96 has \"alpha\" \
                  where the mapping elsewhere expects \"beta\"",
@@ -181,7 +181,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .help(
                 "these are copies of the same function — keep one and redirect the other call sites",
             )
@@ -200,7 +200,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .help("the copy at crates/beta/src/render.rs:88 is never referenced — delete it")
             .note("instances are identical (differing at most in local names)")
             .build(),
@@ -216,7 +216,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .help("every copy implements `Formatter::render` — make it a default method on the trait")
             .note("instances are identical (differing at most in local names)")
             .build(),
@@ -232,7 +232,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .help(
                 "extract the shared logic into a method on `Config` — every copy takes it as the first parameter",
             )
@@ -250,7 +250,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .help("extract the shared `rsx!` markup into one component the copies can render")
             .note("extracting would take ~1 parameter for the differing literals")
             .build(),
@@ -267,7 +267,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .help("extract the shared logic into one function the copies can call")
             .note("instances are identical (differing at most in local names)")
             .note("instances resolve different callees — the copies may not be interchangeable")
@@ -285,7 +285,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .help("extract the shared logic into one function the copies can call")
             .note("instances are identical (differing at most in local names)")
             .note("an extracted fn would take 2 parameters (items, config) and return total")
@@ -304,7 +304,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .help("extract the shared logic into one function the copies can call")
             .note("instances are identical (differing at most in local names)")
             .note(
@@ -325,7 +325,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .note("also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17")
-            .note("matching ignores local variable names and literal values")
+            .note_once("matching ignores local variable names and literal values")
             .note("grew beyond its baseline: 2 instances accepted, now 3")
             .note("instances are identical (differing at most in local names)")
             .help("extract the shared logic into one function the copies can call")
@@ -343,7 +343,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 PathBuf::from("duplicate-code.baseline.toml"),
                 8,
             )
-            .note("the duplication was resolved, or the code changed enough to re-fingerprint")
+            .note_once("the duplication was resolved, or the code changed enough to re-fingerprint")
             .help("regenerate with `workspace-lint --baseline-write` (or delete this entry)")
             .build(),
         ),
@@ -407,9 +407,9 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 PathBuf::from("crates/alpha"),
             )
             .help("[dependencies] rand")
-            .note("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
-            .note("verify by removing the dep and running `cargo build --all-targets`")
-            .note("if the build breaks, add the dep to [unused-deps] ignore in your config")
+            .note_once("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
+            .note_once("verify by removing the dep and running `cargo build --all-targets`")
+            .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
             .build(),
         ),
         // unused-deps: multiple unused deps.
@@ -422,9 +422,9 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .help("[dependencies] foo")
             .help("[dev-dependencies] bar")
-            .note("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
-            .note("verify by removing the dep and running `cargo build --all-targets`")
-            .note("if the build breaks, add the dep to [unused-deps] ignore in your config")
+            .note_once("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
+            .note_once("verify by removing the dep and running `cargo build --all-targets`")
+            .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
             .build(),
         ),
         // unused-deps: a member no [engine] config compiled. Its deps produced
@@ -441,7 +441,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .help("[dependencies] foo")
             .help("[dependencies] bar")
             .help("compile it under an [engine] config (e.g. \"cargo build --target <triple> -p gamma\"), or add these deps to [unused-deps] ignore")
-            .note("this crate produced no compiler output under the current [engine] config matrix")
+            .note_once("this crate produced no compiler output under the current [engine] config matrix")
             .level_explicit(wl_diagnostic::Level::Warn)
             .build(),
         ),
@@ -455,8 +455,11 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 42,
             )
             .help("remove the item or its `pub` visibility")
-            .note(
+            .note_once(
                 "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
+            )
+            .note(
+                "not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand",
             )
             .build(),
         ),
@@ -475,6 +478,9 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .help("remove the item or its `pub` visibility")
             .note(
                 "possibly used: mentioned under `cfg(target_arch = \"wasm32\")` (crates/app/src/main.rs), which no declared `[engine]` config compiles — add a matching cargo command to `[engine] configs` to judge that code",
+            )
+            .note(
+                "not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand",
             )
             .build(),
         ),
@@ -548,7 +554,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 7,
             )
             .help("consider `pub(crate)` to tighten visibility")
-            .note(
+            .note_once(
                 "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
             )
             .build(),
@@ -566,7 +572,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 14,
             )
             .help("remove the item or its `pub` visibility")
-            .note(
+            .note_once(
                 "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
             )
             .note(
@@ -648,7 +654,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 11,
             )
             .help("consider `pub(crate)` to tighten visibility")
-            .note(
+            .note_once(
                 "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
             )
             .note(
@@ -685,7 +691,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .help(
                 "if `mycrate` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt)",
             )
-            .note(
+            .note_once(
                 "workspace-lint treats a crate as workspace-internal unless it declares `publish = true` (or a registry); see the unused-pub docs",
             )
             .build(),
@@ -701,7 +707,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 1,
             )
             .help("remove this expect — the lint it tracks is no longer firing")
-            .note("a stale expect usually means the underlying issue has been fixed")
+            .note_once("a stale expect usually means the underlying issue has been fixed")
             .suggestion(Suggestion {
                 span: Span {
                     file: PathBuf::from("crates/api/src/lib.rs"),
@@ -732,7 +738,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 7,
             )
             .help("import from `data-models::api` instead")
-            .note("internal types are not part of the published API surface")
+            .note_once("internal types are not part of the published API surface")
             .build(),
         ),
         // architecture: the same rule violated by a *fully-qualified* reference
@@ -747,7 +753,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 12,
             )
             .help("import from `data-models::api` instead")
-            .note("internal types are not part of the published API surface")
+            .note_once("internal types are not part of the published API surface")
             .build(),
         ),
         // orphan-file: no config compiled it and nothing names it — safe to delete.
@@ -1309,6 +1315,7 @@ mod tests {
               |
               = help: remove the item or its `pub` visibility
               = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+              = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
             help: if intentional, silence with:
               |
             42 + workspace_lint::expect!(unused_pub);
@@ -1325,6 +1332,7 @@ mod tests {
               |
               = help: remove the item or its `pub` visibility
               = note: possibly used: mentioned under `cfg(target_arch = "wasm32")` (crates/app/src/main.rs), which no declared `[engine]` config compiles — add a matching cargo command to `[engine] configs` to judge that code
+              = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
             help: if intentional, silence with:
               |
             9 + workspace_lint::expect!(unused_pub);

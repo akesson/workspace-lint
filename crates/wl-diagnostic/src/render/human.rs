@@ -27,13 +27,17 @@ use super::display_path;
 use crate::{Diagnostic, Level, SilenceAnchor};
 
 /// Run-scoped dedup so a lint's explanatory boilerplate prints once instead of
-/// once per finding. The `= help:` lines and per-finding suggestions are real,
-/// per-finding signal and are never deduped; only the repeated `= note:`
-/// caveats and the "if intentional, silence with:" trailer collapse.
+/// once per finding. Only notes the emitting lint marked [`once_per_lint`]
+/// collapse (plus the "if intentional, silence with:" trailer); everything
+/// else — helps, suggestions, per-finding notes such as the fix-withhold
+/// reasons — is real per-finding signal and always prints.
+///
+/// [`once_per_lint`]: crate::Note::once_per_lint
 #[derive(Default)]
 struct RenderState {
-    /// `(lint id, note text)` already emitted — a given caveat shows once per
-    /// lint, but a genuinely different note still prints.
+    /// `(lint id, note text)` already emitted — a given `once_per_lint`
+    /// caveat shows once per lint, but a genuinely different note still
+    /// prints.
     seen_notes: HashSet<(String, String)>,
     /// Lint ids whose silence hint + `on by default` trailer were already shown.
     seen_silence: HashSet<String>,
@@ -73,8 +77,12 @@ fn write_one_stateful(
     }
     let lint_id = d.lint.to_string();
     for note in &d.notes {
-        if state.seen_notes.insert((lint_id.clone(), note.clone())) {
-            writeln!(out, "  = note: {note}")?;
+        if !note.once_per_lint
+            || state
+                .seen_notes
+                .insert((lint_id.clone(), note.text.clone()))
+        {
+            writeln!(out, "  = note: {}", note.text)?;
         }
     }
 

@@ -3,6 +3,7 @@ error: pub fn `tz_offset_minutes` in crate `utils` appears unused — consider r
   |
   = help: remove the item or its `pub` visibility
   = note: possibly used: mentioned under `cfg(target_arch = "wasm32")` (crates/app/src/main.rs), which no declared `[engine]` config compiles — add a matching cargo command to `[engine] configs` to judge that code
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
 help: tighten to `pub(crate)`
   |
 2 - pub

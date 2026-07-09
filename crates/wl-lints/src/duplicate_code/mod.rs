@@ -288,7 +288,7 @@ fn emit(
         anchor.line_start,
     )
     .note(format!("also found at: {}", other_sites(group)))
-    .note("matching ignores local variable names and literal values")
+    .note_once("matching ignores local variable names and literal values")
     .help(help);
     // A group that outgrew its baseline is new duplication — say so before the
     // divergence/liveness shaping.

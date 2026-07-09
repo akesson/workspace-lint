@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-use super::{Diagnostic, Level, SilenceAnchor, Span};
+use super::{Diagnostic, Level, Note, SilenceAnchor, Span};
 
 pub struct DiagnosticBuilder {
     lint: Cow<'static, str>,
@@ -14,7 +14,7 @@ pub struct DiagnosticBuilder {
     message: String,
     primary: Option<Span>,
     helps: Vec<String>,
-    notes: Vec<String>,
+    notes: Vec<Note>,
     suggestions: Vec<super::Suggestion>,
     silence_anchor: SilenceAnchor,
     level_is_explicit: bool,
@@ -69,8 +69,22 @@ impl DiagnosticBuilder {
         self
     }
 
+    /// Per-finding note — renders on every finding that carries it. This is
+    /// the right call for anything that explains *this* finding: why a fix is
+    /// withheld, what the specific blind spot is, where the duplicate lives.
     pub fn note(mut self, msg: impl Into<String>) -> Self {
-        self.notes.push(msg.into());
+        self.notes.push(Note::from(msg.into()));
+        self
+    }
+
+    /// Lint-level boilerplate note — the identical caveat this lint stamps on
+    /// every finding. The human renderer prints it on the lint's first finding
+    /// only; structured output still carries it on each.
+    pub fn note_once(mut self, msg: impl Into<String>) -> Self {
+        self.notes.push(Note {
+            text: msg.into(),
+            once_per_lint: true,
+        });
         self
     }
 
@@ -217,7 +231,8 @@ mod tests {
             .build();
         assert_eq!(d.level, Level::Deny);
         assert_eq!(d.helps, vec!["hello".to_string()]);
-        assert_eq!(d.notes, vec!["there".to_string()]);
+        assert_eq!(d.notes, vec![Note::from("there")]);
+        assert!(!d.notes[0].once_per_lint, "note() is per-finding");
         assert_eq!(d.suggestions, vec![s]);
     }
 }

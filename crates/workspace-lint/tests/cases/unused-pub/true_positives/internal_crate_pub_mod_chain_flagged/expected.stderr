@@ -18,6 +18,7 @@ error: pub fn `entry` in crate `alpha` appears unused — consider removing
  --> <TMP>/crates/alpha/src/lib.rs:3:1
   |
   = help: remove the item or its `pub` visibility
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
 help: tighten to `pub(crate)`
   |
 3 - pub

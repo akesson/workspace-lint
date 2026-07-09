@@ -251,7 +251,7 @@ pub fn run(
                 downgrade_deletion(&mut d, note);
             } else if let Some(note) = f.id.as_deref().and_then(|id| cleared_note.get(id)) {
                 // A deleted TestOnly target — say why the test items went too.
-                d.notes.push(note.clone());
+                d.notes.push(note.clone().into());
             } else if transitive {
                 // Not obviously dead in the source (something *does* reference
                 // it) — it only becomes unused because that referrer is deleted

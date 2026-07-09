@@ -217,7 +217,7 @@ impl Baseline {
             self.rel_path.clone(),
             e.src_line,
         )
-        .note("the duplication was resolved, or the code changed enough to re-fingerprint")
+        .note_once("the duplication was resolved, or the code changed enough to re-fingerprint")
         .help(format!("regenerate with `{REGEN}` (or delete this entry)"))
         .build()
     }
