@@ -439,6 +439,24 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note("if the build breaks, add the dep to [unused-deps] ignore in your config")
             .build(),
         ),
+        // unused-deps: a member no [engine] config compiled. Its deps produced
+        // zero fragments, so they are unjudgeable — surfaced as a coverage note
+        // pinned to `warn` (level_explicit, so `unused-deps = "deny"` can't turn
+        // a coverage gap into a build failure), never flagged as unused.
+        (
+            "unused_deps_not_compiled",
+            at_crate(
+                "workspace-lint::unused-deps",
+                "2 dependencies of `gamma` could not be checked in crates/gamma/Cargo.toml",
+                PathBuf::from("crates/gamma"),
+            )
+            .help("[dependencies] foo")
+            .help("[dependencies] bar")
+            .help("compile it under an [engine] config (e.g. \"cargo build --target <triple> -p gamma\"), or add these deps to [unused-deps] ignore")
+            .note("this crate produced no compiler output under the current [engine] config matrix")
+            .level_explicit(wl_diagnostic::Level::Warn)
+            .build(),
+        ),
         // unused-pub: removal candidate (appears unused entirely).
         (
             "unused_pub_removal_candidate",
@@ -1241,6 +1259,24 @@ mod tests {
               |
               = note: `#[warn(workspace_lint::unused_deps)]` on by default
             ");
+        }
+
+        #[test]
+        fn unused_deps_not_compiled() {
+            insta::assert_snapshot!(render(&scenario("unused_deps_not_compiled")), @r#"
+            warning: 2 dependencies of `gamma` could not be checked in crates/gamma/Cargo.toml
+             --> crates/gamma/Cargo.toml:1:1
+              |
+              = help: [dependencies] foo
+              = help: [dependencies] bar
+              = help: compile it under an [engine] config (e.g. "cargo build --target <triple> -p gamma"), or add these deps to [unused-deps] ignore
+              = note: this crate produced no compiler output under the current [engine] config matrix
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(unused-deps)
+              |
+              = note: `#[warn(workspace_lint::unused_deps)]` on by default
+            "#);
         }
 
         #[test]

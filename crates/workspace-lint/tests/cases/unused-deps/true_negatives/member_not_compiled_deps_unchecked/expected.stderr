@@ -1,0 +1,14 @@
+warning: 1 dependency of `orphan` could not be checked in crates/orphan/Cargo.toml
+ --> crates/orphan/Cargo.toml:1:1
+  |
+  = help: [dependencies] provider
+  = help: compile it under an [engine] config (e.g. "cargo build --target <triple> -p orphan"), or add these deps to [unused-deps] ignore
+  = note: this crate produced no compiler output under the current [engine] config matrix
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-deps)
+  |
+  = note: `#[warn(workspace_lint::unused_deps)]` on by default
+
+workspace-lint: generated 1 warning
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unused-deps)
