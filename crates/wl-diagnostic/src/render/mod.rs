@@ -75,6 +75,13 @@ pub fn render(
 /// run-level summary. The [`render`] batch entry is what production uses; this
 /// is the per-diagnostic entry the binary's message-surface snapshot tests
 /// exercise one diagnostic at a time.
+// A deliberate test-support API: its only callers are the binary's
+// message-surface snapshot tests (messages.rs / messages_quality.rs), which is
+// the point — one diagnostic at a time is a shape production never needs. It
+// can't be `#[cfg(test)]` (the consumers are another crate's tests), so the
+// test-only finding is expected. `stale-expect` retires this the day a
+// production caller appears or the fn goes.
+// workspace-lint: expect(unused-pub)
 pub fn render_one(format: Format, d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
     match format {
         Format::Human => human::write_one(d, out),

@@ -1,0 +1,14 @@
+error: pub fn `helper` in crate `alpha` is only used by test code
+ --> <TMP>/crates/alpha/src/lib.rs:1:1
+  |
+  = help: gate it `#[cfg(test)]`, move it into test code, or remove it
+  = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+  = note: no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it
+help: if intentional, silence with:
+  |
+1 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[deny(workspace_lint::unused_pub)]` on by default
+
+workspace-lint: generated 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unused-pub)

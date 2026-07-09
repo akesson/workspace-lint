@@ -1,0 +1,10 @@
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# The bench target is its own crate: the engine must compile the `cargo bench`
+# config for its glob-imported calls to exist. A bench is a test unit, so
+# bench-only reach classifies "only used by test code" — reached (the glob
+# import bound the names, the join credited the edges) but production-dead.
+[engine]
+configs = ["cargo build", "cargo bench"]

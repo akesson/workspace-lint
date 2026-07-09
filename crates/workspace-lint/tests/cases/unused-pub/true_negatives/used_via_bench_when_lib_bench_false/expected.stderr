@@ -1,2 +1,0 @@
-wl-engine: completeness guard skipped — bench harness kinds aren't modeled (config `benches`)
-workspace-lint: all passed

@@ -58,12 +58,11 @@ impl RemovalSet {
     }
 }
 
-/// The removal-sensitive indexes, bundled: the four maps that change when
-/// defs are treated as deleted, and nothing else. `Assembly` holds the
-/// prebuilt copy; [`super::Assembly::refold_excluding`] recomputes one for
-/// the unused-pub `--fix` cascade. One owned type (instead of four parallel
-/// fields in each holder) so the [`Self::view`] projection exists exactly
-/// once.
+/// The removal-sensitive indexes, bundled: the maps that change when defs
+/// are treated as deleted, and nothing else. `Assembly` holds the prebuilt
+/// copy; [`super::Assembly::refold_excluding`] recomputes one for the
+/// unused-pub `--fix` cascade. One owned type (instead of parallel fields in
+/// each holder) so the [`Self::view`] projection exists exactly once.
 #[derive(Default)]
 pub(super) struct DegreeMaps {
     /// Stable key → **workspace-wide** in-degree of real (non-import)
@@ -71,6 +70,12 @@ pub(super) struct DegreeMaps {
     pub(super) in_degree: BTreeMap<String, usize>,
     /// Stable key → intra-crate-only in-degree (kept for reporting deltas).
     pub(super) intra_degree: BTreeMap<String, usize>,
+    /// The subset of `in_degree` contributed by test units (`+test` cfg
+    /// variants, integration tests, benches). `in_degree - test_in_degree`
+    /// is production reach — the test-only classification's substrate.
+    pub(super) test_in_degree: BTreeMap<String, usize>,
+    /// The subset of `intra_degree` contributed by test units.
+    pub(super) test_intra_degree: BTreeMap<String, usize>,
     /// Keys named in some PUB item's signature (`in_signature` edges whose
     /// `from` def is public) — the `exposed_in_public_signature` substrate.
     pub(super) signature_exposed: BTreeSet<String>,
@@ -84,6 +89,8 @@ impl DegreeMaps {
         DegreeView {
             in_degree: &self.in_degree,
             intra_degree: &self.intra_degree,
+            test_in_degree: &self.test_in_degree,
+            test_intra_degree: &self.test_intra_degree,
             signature_exposed: &self.signature_exposed,
             foreign_reach: &self.foreign_reach,
         }
@@ -97,6 +104,8 @@ impl DegreeMaps {
 pub(super) struct DegreeView<'a> {
     pub(super) in_degree: &'a BTreeMap<String, usize>,
     pub(super) intra_degree: &'a BTreeMap<String, usize>,
+    pub(super) test_in_degree: &'a BTreeMap<String, usize>,
+    pub(super) test_intra_degree: &'a BTreeMap<String, usize>,
     pub(super) signature_exposed: &'a BTreeSet<String>,
     pub(super) foreign_reach: &'a BTreeMap<String, ForeignReach>,
 }

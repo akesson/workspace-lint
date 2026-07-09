@@ -1,0 +1,18 @@
+[unused-pub]
+# `alpha::helper` is called ONLY from `beta`'s `#[cfg(test)]` code, through a
+# dev-dependency: production-dead code the test embalms — the "only used by
+# test code" finding. The fixture ALSO guards the cross-config global hash
+# join: the referring harness links alpha's PLAIN rlib, whose fragment cargo
+# freshness leaves only in the `default` config's IR dir, so a per-config-only
+# join would drop the edge and mis-report "appears unused". The finding must
+# say "only used by test code" — that wording is the proof the join resolved
+# the edge and provenance (not absence) classified it.
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# The referring use lives under `cfg(test)`: the engine must compile the
+# `cargo test` config to see beta's test harness reference alpha at all.
+[engine]
+configs = ["cargo build", "cargo test"]

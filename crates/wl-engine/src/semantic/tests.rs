@@ -1277,7 +1277,7 @@ fn excision_block_macro_reason_beats_generated_file() {
 /// outside the primary config) is flagged `test_only`: narrowing it compiles
 /// but leaves it `dead_code` on the plain build, so `--fix` must not apply.
 #[test]
-fn intra_use_only_under_tests_config_is_test_only() {
+fn intra_use_only_in_test_cfg_variant_is_test_only() {
     let alpha_default = frag(
         "alpha",
         vec![
@@ -1291,7 +1291,10 @@ fn intra_use_only_under_tests_config_is_test_only() {
             false,
         )],
     );
-    let alpha_tests = frag(
+    // The `--tests` config compiles the crate's `+test` cfg variant: cfg(test)
+    // code AND the plain caller both land in a fragment carrying is_test_cfg —
+    // it is the plain config's fragment that proves production reach.
+    let alpha_tests = frag_test_cfg(
         "alpha",
         vec![
             item(&["alpha", "test_used"], "K_T2", "fn", Some("mod")),
@@ -1311,15 +1314,124 @@ fn intra_use_only_under_tests_config_is_test_only() {
         ("default", vec![alpha_default]),
         ("--tests", vec![alpha_tests]),
     ]);
-    let flag = |id: &str| {
+    let usage = |id: &str| {
         m.pub_candidates()
             .into_iter()
             .find(|c| c.id == id)
-            .map(|c| (c.usage, c.test_only))
+            .map(|c| c.usage)
             .unwrap()
     };
-    assert_eq!(flag("alpha::test_used"), (PubUsage::IntraCrate, true));
-    assert_eq!(flag("alpha::prod_used"), (PubUsage::IntraCrate, false));
+    assert_eq!(usage("alpha::test_used"), PubUsage::TestOnly);
+    assert_eq!(usage("alpha::prod_used"), PubUsage::IntraCrate);
+}
+
+/// Intra reach only under a non-home config's PLAIN units — a caller gated
+/// behind a cfg the home build never compiles (`--target`-only, feature-gated).
+/// Production-used, so `IntraCrate`, but `pub(crate)` would trip `dead_code`
+/// on the home build: the off-home gate must hold so the narrow is shown, not
+/// machine-applied. (The test/bench flavor of this used to share the flag; it
+/// is now the provenance-judged `TestOnly` verdict above.)
+#[test]
+fn intra_use_only_off_home_config_gates_narrow() {
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "wasm_only"], "K_W", "fn", Some("mod"))],
+        vec![],
+    );
+    let alpha_wasm = frag(
+        "alpha",
+        vec![item(&["alpha", "wasm_only"], "K_W2", "fn", Some("mod"))],
+        vec![edge(
+            &["alpha", "wasm_caller"],
+            &["alpha", "wasm_only"],
+            "K_W2",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default]),
+        ("--target wasm32", vec![alpha_wasm]),
+    ]);
+    let cand = m
+        .pub_candidates()
+        .into_iter()
+        .find(|c| c.id == "alpha::wasm_only")
+        .unwrap();
+    assert_eq!(cand.usage, PubUsage::IntraCrate);
+    assert!(cand.intra_off_home, "off-home reach must gate the narrow");
+}
+
+/// The mixed shape: production use-sites inside the owning crate PLUS
+/// cross-crate reach from another member's test code. Not dead — and not
+/// `IntraCrate` either: tightening to `pub(crate)` would break the
+/// referencing test (it compiles as another crate). Leave alone.
+#[test]
+fn prod_intra_plus_cross_test_reach_leaves_alone() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "mixed"], "K_M", "fn", Some("mod"))],
+        vec![edge(
+            &["alpha", "caller"],
+            &["alpha", "mixed"],
+            "K_M",
+            false,
+        )],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![],
+        vec![edge_ext(
+            &["beta", "tests", "t"],
+            &["alpha", "mixed"],
+            "K_M",
+            false,
+            true,
+        )],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let usage = m
+        .pub_candidates()
+        .into_iter()
+        .find(|c| c.id == "alpha::mixed")
+        .map(|c| c.usage)
+        .unwrap();
+    assert_eq!(
+        usage,
+        PubUsage::CrossCrate,
+        "prod-intra + cross-test reach must neither tighten nor report dead"
+    );
+}
+
+/// Cross-crate test reach alone — another member's `#[cfg(test)]` module is
+/// the ONLY referrer (the `render_one` shape, single-config edition): the
+/// dead-family TestOnly verdict, where the old classifier read CrossCrate and
+/// stayed silent.
+#[test]
+fn cross_crate_test_only_reach_is_test_only() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![],
+        vec![edge_ext(
+            &["beta", "tests", "t"],
+            &["alpha", "embalmed"],
+            "K_E",
+            false,
+            true,
+        )],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let usage = m
+        .pub_candidates()
+        .into_iter()
+        .find(|c| c.id == "alpha::embalmed")
+        .map(|c| c.usage)
+        .unwrap();
+    assert_eq!(usage, PubUsage::TestOnly);
 }
 
 /// A feature-unified plain rlib under `--tests` carries a `DefPathHash`
@@ -1354,9 +1466,11 @@ fn unextracted_hash_generation_resolves_by_display_path() {
         .find(|c| c.id == "alpha::helper")
         .map(|c| c.usage)
         .unwrap();
+    // TestOnly, not Unused: the fallback credited the edge (and, the referrer
+    // being an integration-test crate, provenance classifies it test reach).
     assert_eq!(
         usage,
-        PubUsage::CrossCrate,
+        PubUsage::TestOnly,
         "the display-path fallback must credit the use"
     );
 }
@@ -2923,8 +3037,8 @@ fn cross_config_global_join_resolves_test_only_use() {
     // --tests: alpha recompiled as its own test harness (a DIFFERENT key for
     // the same identity), and beta's test code calls `alpha::render_one` — but
     // the edge targets alpha's PLAIN key (test units link plain rlibs), which
-    // the tests dir never extracted.
-    let alpha_tests = frag(
+    // the tests dir never extracted. Both are `+test` cfg variants.
+    let alpha_tests = frag_test_cfg(
         "alpha",
         vec![item(
             &["alpha", "render_one"],
@@ -2934,7 +3048,7 @@ fn cross_config_global_join_resolves_test_only_use() {
         )],
         vec![],
     );
-    let beta_tests = frag(
+    let beta_tests = frag_test_cfg(
         "beta",
         vec![],
         vec![edge(
@@ -2955,9 +3069,12 @@ fn cross_config_global_join_resolves_test_only_use() {
             .map(|c| c.usage)
             .unwrap()
     };
+    // TestOnly, not Unused: had the global join missed the plain-generation
+    // edge, nothing would credit the def at all. And TestOnly, not CrossCrate:
+    // the sole referrer is a `+test` unit — production-dead.
     assert_eq!(
         usage_of("alpha::render_one"),
-        PubUsage::CrossCrate,
+        PubUsage::TestOnly,
         "the plain-generation test edge must resolve via the global join"
     );
     // The union retires the primary-config lead and credits `tests`.
@@ -2978,13 +3095,14 @@ fn cross_config_global_join_credits_integration_test_crate() {
         vec![item(&["alpha", "helper"], "K_PLAIN", "fn", Some("mod"))],
         vec![],
     );
-    let alpha_tests = frag(
+    let alpha_tests = frag_test_cfg(
         "alpha",
         vec![item(&["alpha", "helper"], "K_TESTGEN", "fn", Some("mod"))],
         vec![],
     );
-    let it_crate = frag(
+    let it_crate = frag_target(
         "alpha_it",
+        "test",
         vec![],
         vec![edge(&["alpha_it"], &["alpha", "helper"], "K_PLAIN", false)],
     );
@@ -2998,7 +3116,9 @@ fn cross_config_global_join_credits_integration_test_crate() {
         .find(|c| c.id == "alpha::helper")
         .map(|c| c.usage)
         .unwrap();
-    assert_eq!(usage, PubUsage::CrossCrate);
+    // Credited (else Unused) — and classified test reach, the referrer being
+    // an integration-test crate.
+    assert_eq!(usage, PubUsage::TestOnly);
     assert!(
         cands.iter().all(|c| c.krate == "alpha"),
         "the integration-test crate is a non-member: no candidate of its own"
@@ -3061,8 +3181,9 @@ fn cascade_respects_cross_config_global_join() {
 /// extracted at all — `[lib] bench = false` means `--benches` compiles only
 /// the bench target (the plain lib is cargo-fresh), so the benches dir holds
 /// NO fragment of the defining crate and the global join has no landing key.
-/// The reach is credited at identity level instead, classifying CrossCrate
-/// and retiring the union lead with correct attribution.
+/// The reach is credited at identity level instead — with the referrer's
+/// provenance (a bench is a test unit), so it classifies TestOnly, and the
+/// union retires the lead with correct attribution.
 #[test]
 fn foreign_reach_credits_unextracted_target_crate() {
     let alpha_default = frag(
@@ -3071,8 +3192,10 @@ fn foreign_reach_credits_unextracted_target_crate() {
         vec![],
     );
     // The benches config: ONLY the bench crate's fragment — no alpha at all.
-    let bench = frag(
+    // A bench compiles with `CARGO_TARGET_TMPDIR` set → target_kind "test".
+    let bench = frag_target(
         "lookup",
+        "test",
         vec![],
         vec![edge(
             &["lookup", "main"],
@@ -3093,7 +3216,7 @@ fn foreign_reach_credits_unextracted_target_crate() {
         .unwrap();
     assert_eq!(
         usage,
-        PubUsage::CrossCrate,
+        PubUsage::TestOnly,
         "the bench edge must credit the identity despite no local def"
     );
     let v = m.union_verdict();

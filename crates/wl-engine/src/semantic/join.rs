@@ -71,6 +71,15 @@ pub(super) struct ForeignReach {
     /// A real use-site in the defining crate itself (name-matched, like the
     /// fold's own cross/intra split).
     pub(super) intra: bool,
+    /// [`cross`](Self::cross) restricted to **production** referring units —
+    /// not a `+test` cfg variant, integration test, or bench (the fold's
+    /// unit-provenance split). `cross && !prod_cross` means every cross-crate
+    /// use-site is test code. This is the common shape of a foreign credit:
+    /// the `[lib] test = false` target that produces one is referenced *from*
+    /// a `+test` or integration-test unit, so its reach is usually test reach.
+    pub(super) prod_cross: bool,
+    /// [`intra`](Self::intra) restricted to production referring units.
+    pub(super) prod_intra: bool,
     /// Named in a PUB item's signature — the must-stay-`pub` guard.
     pub(super) signature_exposed: bool,
 }

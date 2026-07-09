@@ -35,11 +35,25 @@ suggesting `publish = true` — in case the flood means the crate really is
 published. Set `assume-all-public = true` to opt out entirely and treat
 every crate as having an external API (the pre-publish-aware behavior).
 
-Two findings:
+Three findings:
 
-- **used only inside the crate** → suggests narrowing to `pub(crate)`.
+- **used only inside the crate** (by production code) → suggests narrowing
+  to `pub(crate)`.
+- **used only by test code** → the item ships in the production build with
+  nothing production reaching it — dead code the tests embalm. Every test
+  unit counts: same-crate `#[cfg(test)]` modules, other crates' test code,
+  integration tests, benches. No fix is machine-applied (narrowing trips
+  `dead_code` on the non-test build; a bare deletion breaks the referencing
+  tests) — gate it `#[cfg(test)]`, move it into test code, mark a deliberate
+  test-support API with `expect`, or remove it together with its tests.
 - **unused anywhere** → suggests `pub(crate)` (or deletion, under
   `--fix-auto-delete`).
+
+Test reach never hides a finding the other direction either: an item used by
+another crate's tests *and* by production code is simply in use, and an item
+whose production users are all in its own crate keeps its narrowing advice
+only when no other crate's tests reach it (they'd break — `pub(crate)`
+cannot cross a crate boundary).
 
 ## Configuration
 
@@ -156,3 +170,8 @@ pub fn still_load_bearing() {}
 Prefer `expect` (warns via `stale-expect` once the item is used or removed)
 over the permanent `allow`. For a whole crate the lint shouldn't judge, use
 `exclude-crates` or mark it `publish = true`.
+
+A **deliberate test-support API** — a helper exposed *for* other crates'
+tests — is the expected exception to the "only used by test code" finding:
+`expect` it with a one-line reason. `stale-expect` retires the directive the
+day a production caller appears.
