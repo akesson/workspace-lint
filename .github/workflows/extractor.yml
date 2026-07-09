@@ -57,7 +57,7 @@ jobs:
       # pinned version (lockstep with the `dylint` version in Cargo.lock).
       - name: Cache dylint-link
         id: cache-dylint-link
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/dylint-link*
           key: ${{ runner.os }}-dylint-link-6.0.1
@@ -68,7 +68,7 @@ jobs:
       # dylint builds its driver once per toolchain into ~/.dylint_drivers —
       # the slowest step of a cold probe test; cache it on the pin.
       - name: Cache dylint driver
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.dylint_drivers
           key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
@@ -78,7 +78,7 @@ jobs:
       # extractor lockfile; cargo freshness handles source-only changes on a
       # restore-key hit.
       - name: Cache extractor target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: extractor/target
           key: ${{ runner.os }}-extractor-target-nightly-2026-04-16-${{ hashFiles('extractor/Cargo.lock') }}
