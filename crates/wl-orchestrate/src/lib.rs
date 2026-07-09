@@ -328,11 +328,16 @@ impl Engine {
             };
             plans.push(ConfigPlan { packages, targets });
         }
-        let all_members: std::collections::BTreeSet<String> = metadata
-            .workspace_packages()
-            .iter()
-            .map(|p| p.name.replace('-', "_"))
-            .collect();
+        // The keep-vocabulary for the scoped pruner: every crate/target name
+        // the extractor could write a fragment for, across all members — NOT
+        // just package names. An integration test or extra bin compiles under
+        // a crate name that is not its package's (`tests/foo.rs` → `foo`);
+        // keying the prune on package names alone deleted those valid
+        // fragments every run, which the completeness guard then re-demanded
+        // — a permanent scoped re-lint loop. Derived from the unfiltered host
+        // metadata: target lists come from manifests and are platform-
+        // independent, so one vocabulary covers every `--target` config dir.
+        let valid_crates = guard::crate_name_universe(&metadata);
 
         let _cwd = CwdGuard::enter(&cfg.workspace_root)?;
         let mut runs = Vec::new();
@@ -343,7 +348,7 @@ impl Engine {
                 source,
             })?;
             wl_fast::timing::phase(format_args!("run_config[{}]", spec.id), || {
-                self.run_config(spec, &ir_dir, &dylib, plan, &all_members)
+                self.run_config(spec, &ir_dir, &dylib, plan, &valid_crates)
             })?;
             runs.push(ConfigRun {
                 id: spec.id.clone(),
@@ -364,7 +369,7 @@ impl Engine {
             groups.entry(universe_key(spec)).or_default().push(i);
         }
         for idxs in groups.values() {
-            self.ensure_build_fragments(cfg, &plans, &runs, idxs, &dylib, &all_members)?;
+            self.ensure_build_fragments(cfg, &plans, &runs, idxs, &dylib, &valid_crates)?;
         }
         Ok(ExtractionRuns {
             runs,
@@ -386,7 +391,7 @@ impl Engine {
         runs: &[ConfigRun],
         group: &[usize],
         dylib: &relink::RelinkedDylib,
-        all_members: &std::collections::BTreeSet<String>,
+        valid_crates: &std::collections::BTreeSet<String>,
     ) -> Result<(), EngineError> {
         let names: std::collections::BTreeSet<String> = group
             .iter()
@@ -421,7 +426,7 @@ impl Engine {
                         &runs[i].ir_dir,
                         dylib,
                         &plans[i],
-                        all_members,
+                        valid_crates,
                     )?;
                 }
             }
@@ -449,7 +454,7 @@ impl Engine {
         ir_dir: &std::path::Path,
         dylib: &relink::RelinkedDylib,
         plan: &ConfigPlan,
-        all_members: &std::collections::BTreeSet<String>,
+        valid_crates: &std::collections::BTreeSet<String>,
     ) -> Result<(), EngineError> {
         let packages = &plan.packages;
         let targets = plan.targets.as_ref();
@@ -499,10 +504,14 @@ impl Engine {
             prune_stale_fragments(ir_dir, &keep);
         } else {
             // A package-scoped dir's exact population is bet on the closure's
-            // precision, so prune only what is provably stale: fragments of
-            // crates that are no longer workspace members at all (renames —
-            // the one class that otherwise over-credits forever).
-            prune_nonmember_fragments(ir_dir, all_members);
+            // precision, so prune only what is provably stale: fragments whose
+            // crate part is produced by no current member target at all
+            // (renames/removals — the one class that otherwise over-credits
+            // forever). `valid_crates` is the crate/target-name vocabulary, not
+            // package names: an integration test or extra bin has a fragment
+            // stem that is not its package's name, and keying the prune on
+            // package names deleted those every run (a scoped re-lint loop).
+            prune_nonmember_fragments(ir_dir, valid_crates);
         }
         let missing = guard::missing_fragments(ir_dir, &expected);
         if missing.is_empty() {
@@ -550,13 +559,23 @@ fn prune_stale_fragments(ir_dir: &std::path::Path, expected: &std::collections::
     }
 }
 
-/// Delete `*.wlir` files whose crate is no longer any workspace member (the
-/// stem up to the first `@`/`+` marker is the crate/package code name). The
-/// conservative prune for package-scoped dirs: renamed crates can't assemble
-/// forever, and closure imprecision can never delete a valid fragment.
+/// Delete `*.wlir` files whose crate part matches no current workspace target
+/// (the stem up to the first `@`/`+` marker is the compiled crate name, or the
+/// package name for a `<pkg>@build` build fragment). The conservative prune for
+/// package-scoped dirs: a renamed/removed crate's fragment can't over-credit
+/// forever, while `valid_crates` — every member's target *and* package names
+/// (see [`guard::crate_name_universe`]) — is a superset of what any closure
+/// compiles, so closure imprecision can never delete a valid fragment.
+///
+/// Keying this on package names alone (the original bug) deleted integration-
+/// test and extra-bin fragments — `tests/foo.rs` compiles under crate `foo`,
+/// not its package name — on every warm run; the completeness guard, which
+/// derives the same name from the target list, then re-demanded them and
+/// forced a re-lint, so a package-scoped config never reached the cheap
+/// cargo-fresh state.
 fn prune_nonmember_fragments(
     ir_dir: &std::path::Path,
-    members: &std::collections::BTreeSet<String>,
+    valid_crates: &std::collections::BTreeSet<String>,
 ) {
     let Ok(entries) = std::fs::read_dir(ir_dir) else {
         return;
@@ -569,8 +588,8 @@ fn prune_nonmember_fragments(
         let name = entry.file_name().to_string_lossy().into_owned();
         let stem = name.trim_end_matches(".wlir");
         let krate = stem.split_once(['@', '+']).map(|(k, _)| k).unwrap_or(stem);
-        if !members.contains(krate) {
-            eprintln!("wl-engine: pruning stale IR fragment {name} (no such member)");
+        if !valid_crates.contains(krate) {
+            eprintln!("wl-engine: pruning stale IR fragment {name} (no such workspace target)");
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -671,5 +690,91 @@ impl CwdGuard {
 impl Drop for CwdGuard {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.prev);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn touch(dir: &std::path::Path, name: &str) {
+        std::fs::write(dir.join(name), b"{}").unwrap();
+    }
+
+    fn names_in(dir: &std::path::Path) -> BTreeSet<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The scoped pruner keeps every fragment whose crate part is a current
+    /// workspace target — including integration-test (`+test`) and extra-bin
+    /// (`@bin`, `@bin+test`) fragments whose crate name is NOT their package
+    /// name, and package-keyed `<pkg>@build` fragments. It prunes only a
+    /// genuinely-unknown crate (a rename/removal leftover) and never touches
+    /// non-`.wlir` files.
+    ///
+    /// This is the direct regression guard for the scoped re-lint loop: with
+    /// the old package-name-only keep-set, `engine_tests+test.wlir` and
+    /// `uniffi_bindgen@bin.wlir` were deleted here every run.
+    #[test]
+    fn prune_nonmember_keeps_test_and_bin_fragments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // syncfs shape: package `syncfs` owns test crate `engine_tests`;
+        // package `syncfs-ffi` owns bin crate `uniffi_bindgen` + a build unit.
+        for f in [
+            "syncfs.wlir",
+            "engine_tests+test.wlir",
+            "uniffi_bindgen@bin.wlir",
+            "uniffi_bindgen@bin+test.wlir",
+            "syncfs_ffi@build.wlir",
+            "renamed_old.wlir", // a since-renamed/removed crate: must be pruned
+            "notes.txt",        // non-fragment: never touched
+        ] {
+            touch(dir, f);
+        }
+        // The crate/target-name vocabulary `crate_name_universe` would produce:
+        // target names + package names, NOT just package names.
+        let valid = set(&["syncfs", "syncfs_ffi", "engine_tests", "uniffi_bindgen"]);
+
+        prune_nonmember_fragments(dir, &valid);
+
+        assert_eq!(
+            names_in(dir),
+            set(&[
+                "syncfs.wlir",
+                "engine_tests+test.wlir",
+                "uniffi_bindgen@bin.wlir",
+                "uniffi_bindgen@bin+test.wlir",
+                "syncfs_ffi@build.wlir",
+                "notes.txt",
+            ]),
+            "only the renamed crate's fragment should be pruned"
+        );
+    }
+
+    /// The whole-workspace pruner keeps exactly the expected keep-set and
+    /// prunes every other `*.wlir` (leftovers from renamed crates / older
+    /// naming schemes), leaving non-`.wlir` files alone.
+    #[test]
+    fn prune_stale_keeps_only_expected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        for f in ["a.wlir", "b.wlir", "old.wlir", "keep.txt"] {
+            touch(dir, f);
+        }
+        let expected = set(&["a.wlir", "b.wlir"]);
+
+        prune_stale_fragments(dir, &expected);
+
+        assert_eq!(names_in(dir), set(&["a.wlir", "b.wlir", "keep.txt"]));
     }
 }

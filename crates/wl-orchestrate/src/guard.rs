@@ -198,6 +198,43 @@ pub(super) fn missing_build_fragments(
         .collect()
 }
 
+/// The crate-part vocabulary of every fragment stem the extractor could write
+/// for the current workspace: every member target's crate name (`t.name`,
+/// dashes→underscores — libs, bins, tests, benches, examples) plus every
+/// member package name (build fragments are package-keyed as `<pkg>@build`).
+///
+/// Deliberately kind-agnostic, unlike [`TargetSet::discover`] (which models
+/// only the guard-covered kinds): the scoped pruner keys its keep-check on the
+/// crate part of a fragment stem, and its contract is that neither closure
+/// imprecision nor a kind-modeling gap may ever delete a *valid* fragment. So
+/// its vocabulary must recognize every stem the extractor can emit — not just
+/// the ones the completeness guard expects. A stem whose crate part is in this
+/// set belongs to some current member target; one that isn't is a rename/
+/// removal leftover and is safe to prune.
+pub(super) fn crate_name_universe(md: &cargo_metadata::Metadata) -> BTreeSet<String> {
+    let member_ids: BTreeSet<String> = md
+        .workspace_members
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    let mut names = BTreeSet::new();
+    for p in &md.packages {
+        if !member_ids.contains(&p.id.to_string()) {
+            continue;
+        }
+        // Package name: the crate part of a `<pkg>@build` build fragment.
+        names.insert(p.name.replace('-', "_"));
+        // Every target's crate name: an integration test (`tests/foo.rs` →
+        // `foo`) or extra bin (`src/bin/foo.rs` → `foo`) compiles under a
+        // crate name that is NOT its package's — the class the old
+        // package-name-only prune deleted every warm run.
+        for t in &p.targets {
+            names.insert(t.name.replace('-', "_"));
+        }
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +367,25 @@ mod tests {
         let expected: BTreeSet<String> = ["a.wlir".to_string(), "b.wlir".to_string()].into();
         std::fs::write(tmp.path().join("a.wlir"), b"{}").unwrap();
         assert_eq!(missing_fragments(tmp.path(), &expected), vec!["b.wlir"]);
+    }
+
+    /// The scoped pruner's keep-vocabulary spans every member's *targets* AND
+    /// package names — not just package names. Crucially it contains this
+    /// repo's integration-test crate names (`tests/*.rs` → crate name = file
+    /// stem ≠ package `workspace-lint`), the exact class the old
+    /// package-name-only prune deleted on every warm run.
+    #[test]
+    fn crate_name_universe_covers_targets_not_just_packages() {
+        let universe = crate_name_universe(&repo_metadata());
+        // A member package and its lib/bin crate share this name.
+        assert!(universe.contains("workspace_lint"), "{universe:?}");
+        // Integration-test crates under crates/workspace-lint/tests/ whose
+        // crate name is the file stem, NOT the package name.
+        assert!(universe.contains("dogfood"), "{universe:?}");
+        assert!(universe.contains("cases"), "{universe:?}");
+        // A normal member (package name == lib crate name, underscored).
+        assert!(universe.contains("wl_orchestrate"), "{universe:?}");
+        // Never a name no member target produces.
+        assert!(!universe.contains("definitely_not_a_crate"), "{universe:?}");
     }
 }
