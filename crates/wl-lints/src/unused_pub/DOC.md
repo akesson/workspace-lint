@@ -42,10 +42,12 @@ Three findings:
 - **used only by test code** → the item ships in the production build with
   nothing production reaching it — dead code the tests embalm. Every test
   unit counts: same-crate `#[cfg(test)]` modules, other crates' test code,
-  integration tests, benches. No fix is machine-applied (narrowing trips
-  `dead_code` on the non-test build; a bare deletion breaks the referencing
-  tests) — gate it `#[cfg(test)]`, move it into test code, mark a deliberate
-  test-support API with `expect`, or remove it together with its tests.
+  integration tests, benches. No fix is machine-applied by plain `--fix`
+  (narrowing trips `dead_code` on the non-test build; a bare deletion breaks
+  the referencing tests) — gate it `#[cfg(test)]`, move it into test code,
+  mark a deliberate test-support API with `expect`, or remove it together
+  with its tests (`--fix-auto-delete` does exactly that when the tests are
+  exclusive scaffolding — see **Fix behavior**).
 - **unused anywhere** → suggests `pub(crate)` (or deletion, under
   `--fix-auto-delete`).
 
@@ -124,6 +126,18 @@ used-trait-imports facts, and the whole statement is deleted only when every
 recorded use is explained by removed code and nothing surviving could still
 lean on it; every rule fails toward keeping (an extra `unused_imports`
 warning, never a broken build).
+
+An item **only used by test code** may be deleted too — but never alone
+(that would break `cargo test`). It goes only when every referencing test
+item is *exclusive scaffolding*: every workspace item that test reaches is
+also deleted in this pass (out-of-workspace calls like `assert_eq!` don't
+count), and nothing surviving still uses the test item. Then target, tests,
+their now-orphaned test helpers, and their imports are all removed together;
+emptied `#[cfg(test)] mod tests {}` shells and emptied `tests/*.rs` files
+are left in place (they compile warning-free). A test that also asserts on
+surviving code — or a shared fixture another test still uses — **vetoes**
+the deletion: the item stays and the note names the blocking test. Every
+rule fails toward keeping.
 
 Private code the deleted items alone reached (helpers, consts) is deleted as
 collateral in the same cascade, causality-gated: a private item that was

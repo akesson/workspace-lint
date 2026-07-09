@@ -3930,3 +3930,179 @@ fn fragment_crates_reports_only_crates_that_emitted() {
         "a build-script carrier is not a member crate"
     );
 }
+
+// --- test_scaffolding: the exclusive-scaffolding gate for TestOnly deletion ---
+
+/// Builds the render_one-shaped workspace: `alpha::embalmed` reached only by
+/// `beta::tests::t`, which also calls the test-local helper only it uses.
+/// Both are exclusive scaffolding — the whole closure clears, helper included
+/// (the mutual-recursion arm of the fixpoint).
+#[test]
+fn test_scaffolding_clears_exclusive_closure() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![
+            item(&["beta", "tests", "t"], "K_T", "fn", Some("mod")),
+            item(&["beta", "tests", "helper"], "K_H", "fn", Some("mod")),
+        ],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            edge(
+                &["beta", "tests", "t"],
+                &["beta", "tests", "helper"],
+                "K_H",
+                false,
+            ),
+            edge_ext(
+                &["beta", "tests", "helper"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Cleared { scaffolding } => {
+            let ids: Vec<&str> = scaffolding.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(ids, ["beta::tests::helper", "beta::tests::t"]);
+        }
+        other => panic!("expected Cleared, got {other:?}"),
+    }
+}
+
+/// The test fn also asserts on surviving code: NOT exclusive scaffolding —
+/// deleting it would drop real coverage, so the target is blocked and the
+/// blocker names the surviving reach.
+#[test]
+fn test_scaffolding_blocks_on_surviving_reach() {
+    let alpha = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "embalmed"], "K_E", "fn", Some("mod")),
+            item(&["alpha", "kept"], "K_K", "fn", Some("mod")),
+        ],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![item(&["beta", "tests", "t"], "K_T", "fn", Some("mod"))],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "kept"],
+                "K_K",
+                false,
+                true,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Blocked(b) => {
+            assert_eq!(b.test, "beta::tests::t");
+            assert!(
+                matches!(&b.reason, BlockReason::ReachesSurviving { to } if to == "alpha::kept"),
+                "wrong reason: {:?}",
+                b.reason
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+/// A shared fixture: the scaffold-candidate helper is also used by a test
+/// that has nothing to do with the target. The helper is anchored by that
+/// survivor, which demotes it — and the demotion propagates to the test fn
+/// leaning on it, blocking the target (the shrinking-fixpoint arm).
+#[test]
+fn test_scaffolding_blocks_on_shared_fixture() {
+    let alpha = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "embalmed"], "K_E", "fn", Some("mod")),
+            item(&["alpha", "kept"], "K_K", "fn", Some("mod")),
+        ],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![
+            item(&["beta", "tests", "t1"], "K_T1", "fn", Some("mod")),
+            item(&["beta", "tests", "t2"], "K_T2", "fn", Some("mod")),
+            item(&["beta", "tests", "fixture"], "K_F", "fn", Some("mod")),
+        ],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t1"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            edge(
+                &["beta", "tests", "t1"],
+                &["beta", "tests", "fixture"],
+                "K_F",
+                false,
+            ),
+            // The unrelated survivor: t2 exercises kept through the fixture.
+            edge(
+                &["beta", "tests", "t2"],
+                &["beta", "tests", "fixture"],
+                "K_F",
+                false,
+            ),
+            edge_ext(
+                &["beta", "tests", "t2"],
+                &["alpha", "kept"],
+                "K_K",
+                false,
+                true,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Blocked(b) => {
+            assert_eq!(b.test, "beta::tests::t1");
+            assert!(
+                matches!(&b.reason, BlockReason::ReachesSurviving { to } if to == "beta::tests::fixture"),
+                "wrong reason: {:?}",
+                b.reason
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}

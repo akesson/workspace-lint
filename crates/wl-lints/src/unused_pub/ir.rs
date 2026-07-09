@@ -56,6 +56,10 @@ pub(crate) struct PubFinding {
     /// `Unused` + deletion mode + git-clean ⇒ this item's deletion is
     /// MachineApplicable, so removing it (and cascading) is sound.
     pub removable: bool,
+    /// `TestOnly` verdict: even when `removable`, the cascade must NOT seed
+    /// this directly — deletion is sound only together with its exclusively-
+    /// scaffolding tests (the `test_scaffolding` gate), never alone.
+    pub test_only: bool,
     pub diagnostic: Diagnostic,
 }
 
@@ -174,6 +178,7 @@ fn findings_with_shadow(
             out.push(PubFinding {
                 id: None,
                 removable: false,
+                test_only: false,
                 diagnostic: publish_hint(krate, &crate_code, crate_findings.len()),
             });
         }
@@ -251,6 +256,7 @@ fn check_candidate(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> Option<PubFinding
     Some(PubFinding {
         id: Some(cand.id.clone()),
         removable,
+        test_only: verdict == PubVerdict::TestOnly,
         diagnostic,
     })
 }
@@ -404,13 +410,14 @@ fn apply_structural_fix(
     span: &wl_ir::Span,
     verdict: PubVerdict,
 ) -> (wl_diagnostic::builder::DiagnosticBuilder, bool) {
-    // Test-only reach gets NO structural suggestion: tightening trips
-    // `dead_code` on the plain build, and a bare deletion would orphan the
-    // referencing tests (E0433/E0425 in `cargo test`) — resolving it is a
-    // three-way human call the help text carries. (The `--fix-auto-delete`
-    // cascade is the one path that may delete these, together with their
-    // exclusively-scaffolding tests.)
-    if verdict == PubVerdict::TestOnly {
+    // Test-only reach gets NO structural suggestion on the plain path:
+    // tightening trips `dead_code` on the plain build, and a bare deletion
+    // would orphan the referencing tests (E0433/E0425 in `cargo test`) —
+    // resolving it is a three-way human call the help text carries. In
+    // auto-delete mode it falls through to the deletion surface below, which
+    // ONLY the cascade acts on (gated behind the exclusive-test-scaffolding
+    // proof; a blocked target's suggestion is downgraded with the blocker).
+    if verdict == PubVerdict::TestOnly && !auto_delete {
         let builder = builder.note(
             "no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test \
              build, and deleting the item would break the tests that reference it",

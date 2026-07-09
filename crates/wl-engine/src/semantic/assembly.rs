@@ -525,7 +525,7 @@ impl Assembly {
     /// in-archive cfg flag ([`wl_ir::IrFragment::is_test_cfg`]). Everything
     /// else — plain lib/bin/proc-macro units and build scripts — is
     /// production reach.
-    fn is_test_unit(frag: &ArchivedIrFragment) -> bool {
+    pub(super) fn is_test_unit(frag: &ArchivedIrFragment) -> bool {
         frag.target_kind == "test" || frag.is_test_cfg
     }
 

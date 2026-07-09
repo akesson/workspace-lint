@@ -1,0 +1,12 @@
+# The scaffolding VETO: `alpha::embalmed` is reached only from `beta`'s test
+# fn — but that test also asserts on `alpha::kept`, which production uses.
+# The test is NOT exclusive scaffolding (deleting it would drop real coverage
+# of surviving code), so the target must stay: `--fix-auto-delete` changes
+# NOTHING here (expected/ == input/), and the finding is downgraded with a
+# note naming the blocking test.
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build", "cargo test"]

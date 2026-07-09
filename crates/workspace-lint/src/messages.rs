@@ -500,6 +500,44 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
+        // unused-pub: a TestOnly target whose deletion `--fix-auto-delete`
+        // vetoed — the referencing test also exercises surviving code, so it
+        // is not exclusive scaffolding and the target stays (the deletion is
+        // downgraded; this note is the veto's rendering).
+        (
+            "unused_pub_test_only_blocked",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub fn `embalmed` in crate `alpha` is only used by test code",
+                PathBuf::from("crates/alpha/src/lib.rs"),
+                6,
+            )
+            .help("gate it `#[cfg(test)]`, move it into test code, or remove it")
+            .note(
+                "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
+            )
+            .note(
+                "only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand",
+            )
+            .build(),
+        ),
+        // unused-pub: an exclusively-scaffolding test item deleted alongside
+        // its TestOnly target by `--fix-auto-delete` (the counterpart of the
+        // private-collateral finding, on the test side of the boundary).
+        (
+            "unused_pub_test_scaffold",
+            at_line(
+                "workspace-lint::unused-pub",
+                "test fn `exercises_embalmed` in crate `beta` only exercises items deleted by this `--fix`",
+                PathBuf::from("crates/beta/src/main.rs"),
+                12,
+            )
+            .help("deleting it too — it would reference deleted items and break the test build")
+            .note(
+                "exclusive test scaffolding: every workspace item it references is also deleted by this `--fix`",
+            )
+            .build(),
+        ),
         // unused-pub: same-crate-only — suggest pub(crate).
         (
             "unused_pub_tighten_visibility",
@@ -1313,6 +1351,39 @@ mod tests {
         }
 
         #[test]
+        fn unused_pub_test_only_blocked() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @r"
+            warning: pub fn `embalmed` in crate `alpha` is only used by test code
+             --> crates/alpha/src/lib.rs:6:1
+              |
+              = help: gate it `#[cfg(test)]`, move it into test code, or remove it
+              = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+              = note: only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand
+            help: if intentional, silence with:
+              |
+            6 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
+        fn unused_pub_test_scaffold() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_scaffold")), @r"
+            warning: test fn `exercises_embalmed` in crate `beta` only exercises items deleted by this `--fix`
+             --> crates/beta/src/main.rs:12:1
+              |
+              = help: deleting it too — it would reference deleted items and break the test build
+              = note: exclusive test scaffolding: every workspace item it references is also deleted by this `--fix`
+            help: if intentional, silence with:
+              |
+            12 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
         fn unused_pub_cascade_transitive() {
             insta::assert_snapshot!(render(&scenario("unused_pub_cascade_transitive")), @r"
             warning: pub fn `helper` in crate `mycrate` appears unused — consider removing
@@ -1800,6 +1871,16 @@ mod tests {
         }
 
         #[test]
+        fn unused_pub_test_only_blocked() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @r#"{"level":"warning","message":"pub fn `embalmed` in crate `alpha` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"gate it `#[cfg(test)]`, move it into test code, or remove it","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
+        fn unused_pub_test_scaffold() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_scaffold")), @r#"{"level":"warning","message":"test fn `exercises_embalmed` in crate `beta` only exercises items deleted by this `--fix`","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/beta/src/main.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/beta/src/main.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"deleting it too — it would reference deleted items and break the test build","spans":[]},{"level":"note","message":"exclusive test scaffolding: every workspace item it references is also deleted by this `--fix`","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
         fn unused_pub_tighten_visibility() {
             insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r#"{"level":"warning","message":"pub struct `Builder` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]}],"rendered":null}"#);
         }
@@ -1956,6 +2037,16 @@ mod tests {
         #[test]
         fn unused_pub_test_only() {
             insta::assert_snapshot!(render(&scenario("unused_pub_test_only")), @"::warning file=crates/mycrate/src/lib.rs,line=42,col=1,title=workspace-lint%3A%3Aunused-pub::pub fn `helper` in crate `mycrate` is only used by test code");
+        }
+
+        #[test]
+        fn unused_pub_test_only_blocked() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @"::warning file=crates/alpha/src/lib.rs,line=6,col=1,title=workspace-lint%3A%3Aunused-pub::pub fn `embalmed` in crate `alpha` is only used by test code");
+        }
+
+        #[test]
+        fn unused_pub_test_scaffold() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_scaffold")), @"::warning file=crates/beta/src/main.rs,line=12,col=1,title=workspace-lint%3A%3Aunused-pub::test fn `exercises_embalmed` in crate `beta` only exercises items deleted by this `--fix`");
         }
 
         #[test]
