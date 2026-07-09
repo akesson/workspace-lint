@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use wl_engine::fast::{DeclaredDep, DepSection, FastModel, Manifest};
+use wl_engine::fast::{CrateInfo, DeclaredDep, DepSection, FastModel, Manifest};
 use wl_engine::semantic::{DepUsage, SemanticModel};
 
 use super::UnusedDepsConfig;
@@ -86,6 +86,16 @@ pub(super) fn check(
             continue;
         }
 
+        // Zero fragments: no `[engine] config` compiled this member, so every
+        // dep reads "unused" only for lack of compiler output. They are
+        // unjudgeable, not unused — report the coverage gap instead of
+        // false-positive findings. (unused-pub is immune structurally: an
+        // uncompiled crate contributes no defs, hence no candidates.)
+        if !usage.crate_compiled(&owner) {
+            diagnostics.push(build_not_compiled_note(fast, krate, manifest, &unused));
+            continue;
+        }
+
         let n = unused.len();
         let mut builder = wl_lint_api::util::at_crate_manifest(
             lint_id,
@@ -119,6 +129,48 @@ pub(super) fn check(
     }
 
     diagnostics
+}
+
+/// The coverage note for a member no `[engine] config` compiled: its declared
+/// deps produced zero fragments, so none can be judged. Surfaced at a pinned
+/// `warn` (via `level_explicit`) — a `unused-deps = "deny"` config must not turn
+/// a *coverage* shortfall into a build failure (cf. duplicate-code's live-out
+/// downgrade). No `Suggestion`: nothing here is machine-fixable.
+fn build_not_compiled_note(
+    fast: &FastModel,
+    krate: &CrateInfo,
+    manifest: &Manifest,
+    unused: &[DeclaredDep],
+) -> Diagnostic {
+    let lint_id = LintId::UnusedDeps.id();
+    let name = krate.name.clone();
+    let n = unused.len();
+    let mut builder = wl_lint_api::util::at_crate_manifest(
+        lint_id,
+        fast,
+        &krate.manifest_dir,
+        manifest.path(),
+        |cargo_path| {
+            format!(
+                "{n} dependenc{} of `{name}` could not be checked in {cargo_path}",
+                if n == 1 { "y" } else { "ies" },
+            )
+        },
+    )
+    .level_explicit(wl_diagnostic::Level::Warn);
+    for entry in unused {
+        builder = builder.help(format!(
+            "[{}] {}",
+            entry.section.as_str(),
+            entry.original_name
+        ));
+    }
+    builder
+        .help(format!(
+            "compile it under an [engine] config (e.g. \"cargo build --target <triple> -p {name}\"), or add these deps to [unused-deps] ignore"
+        ))
+        .note("this crate produced no compiler output under the current [engine] config matrix")
+        .build()
 }
 
 #[allow(clippy::too_many_arguments)]

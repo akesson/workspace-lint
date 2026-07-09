@@ -1,0 +1,16 @@
+# Scope the engine to `consumer` only: its dependency closure pulls in
+# `provider` but NOT `orphan`, so `orphan` is never compiled and produces zero
+# IR fragments. Its declared `provider` dep is therefore unjudgeable — the lint
+# must report a non-failing coverage note, NOT a false "unused" finding.
+#
+# unused-deps is set to `deny` (the strict setting): the coverage note is pinned
+# to `warn` regardless, so the run still exits 0. Pre-fix, `orphan`'s dep was
+# flagged as unused and the run failed — this case guards that regression.
+[unused-deps]
+
+[lints]
+default = "allow"
+unused-deps = "deny"
+
+[engine]
+configs = ["cargo build -p consumer"]

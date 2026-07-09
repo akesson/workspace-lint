@@ -23,6 +23,13 @@ Dev-dependencies are judged only when a test-compiling entry (`cargo test`)
 is in the `[engine]` config matrix — without one they are skipped, never
 guessed. The default matrix includes one.
 
+A member that no `[engine]` config compiles (e.g. a platform-gated crate
+absent from a `-p`-scoped matrix) produces no compiler output, so its deps
+cannot be judged. Rather than flag them all, the lint emits one non-failing
+`warn` coverage note naming the crate — add a config that builds it (a
+`--target <triple>` universe checks platform code without linking) to judge
+its deps, or `ignore` them.
+
 A dep whose hyphen-stripped name matches a referenced lib target is credited
 (`md-5` declares the crate whose lib is `md5`), so a rename-by-convention
 never reads as unused. This only ever *suppresses* a finding.

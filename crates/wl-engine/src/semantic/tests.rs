@@ -390,6 +390,45 @@ fn deps_verdict_scopes_and_facades() {
     );
 }
 
+/// Unused-deps: a member no config compiled (zero fragments) has unjudgeable
+/// deps — the verdict routes its would-be-judged normal deps to
+/// [`NotJudged::NotCompiled`], never to `unused`, and `DepUsage::crate_compiled`
+/// reports the gap. (`deps_verdict_scopes_and_facades` is the compiled-member
+/// counterpart: there the same `never_used` dep IS flagged.) Dev/build/optional
+/// deps keep their own, more-specific exempt reasons.
+#[test]
+fn deps_verdict_uncompiled_member_routes_to_not_compiled() {
+    // Only `beta` compiled; `alpha` (which declares deps) produced no fragment.
+    let m = model(vec![("default", vec![frag("beta", vec![], vec![])])]);
+
+    let usage = m.dep_usage();
+    assert!(usage.crate_compiled("beta"), "beta has a fragment");
+    assert!(
+        !usage.crate_compiled("alpha"),
+        "alpha produced no fragment — its deps are unjudgeable"
+    );
+
+    let v = m.deps_verdict();
+    let alpha = v.crates.iter().find(|c| c.krate == "alpha").unwrap();
+    assert!(
+        alpha.unused.is_empty(),
+        "an uncompiled member's deps are never flagged as unused"
+    );
+    let not_judged: Vec<(&str, NotJudged)> = alpha
+        .not_judged
+        .iter()
+        .map(|(n, r)| (n.as_str(), *r))
+        .collect();
+    // Normal deps that would be judged if compiled land under NotCompiled.
+    assert!(not_judged.contains(&("facade", NotJudged::NotCompiled)));
+    assert!(not_judged.contains(&("never_used", NotJudged::NotCompiled)));
+    assert!(not_judged.contains(&("md_5", NotJudged::NotCompiled)));
+    // Dev/build/optional deps keep their pre-existing, more-specific reasons.
+    assert!(not_judged.contains(&("dev_helper", NotJudged::DevWithoutTestConfig)));
+    assert!(not_judged.contains(&("hook_installer", NotJudged::BuildDep)));
+    assert!(not_judged.contains(&("feature_gated", NotJudged::Optional)));
+}
+
 /// Unused-deps: a re-export shim dep is credited through [`RefEdge::via`] —
 /// the resolved target defines the item in `std` (a sysroot crate outside
 /// every cargo closure), and only the written path root names the dep. An

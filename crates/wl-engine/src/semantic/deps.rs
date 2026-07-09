@@ -8,7 +8,9 @@
 //!   * **dev** deps — judged only when a test/example/bench target was
 //!     compiled (a `--tests` config present); else never flagged;
 //!   * **build** deps — never judged (`build.rs` isn't lint-passed);
-//!   * **optional** deps — never judged (feature-gated).
+//!   * **optional** deps — never judged (feature-gated);
+//!   * deps of a member **no config compiled** — never judged (zero fragments
+//!     means no compiler output to observe; [`NotJudged::NotCompiled`]).
 //!
 //! Facade crates are handled: references resolve to the *defining* crate
 //! (`use clap::Parser` edges point at `clap_builder`), so a declared dep
@@ -53,6 +55,10 @@ pub enum NotJudged {
     BuildDep,
     /// `optional = true`: feature-gated, not compiled unless enabled.
     Optional,
+    /// The owning member produced zero fragments — no `[engine] config`
+    /// compiled it, so none of its deps can be observed. Add a config that
+    /// builds it (e.g. a `--target` universe) to judge these.
+    NotCompiled,
 }
 
 /// The workspace-wide unused-deps verdict.
@@ -73,6 +79,11 @@ pub struct DepUsage {
     /// the crate-names that target references. A dep is declared once per
     /// package but may be used by any of its targets.
     exercised: BTreeMap<String, BTreeSet<String>>,
+    /// The members (owner code-names) at least one `[engine] config` compiled —
+    /// every package with an owner-mapped fragment, whether or not it references
+    /// anything. A member absent here produced zero fragments: its declared deps
+    /// are unjudgeable (no compiler output to observe), not unused.
+    compiled: BTreeSet<String>,
     /// Whether any test/example/bench target was compiled — dev deps are
     /// judgeable only then.
     dev_deps_judged: bool,
@@ -81,6 +92,7 @@ pub struct DepUsage {
 impl DepUsage {
     pub(super) fn compute(configs: &[(String, Assembly)], meta: &WorkspaceMeta) -> DepUsage {
         let mut exercised: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut compiled: BTreeSet<String> = BTreeSet::new();
         let mut dev_deps_judged = false;
         for (_, asm) in configs {
             for frag in asm.archived_fragments() {
@@ -90,6 +102,9 @@ impl DepUsage {
                 let Some(owner) = meta.target_owner.get(frag.crate_name.as_str()) else {
                     continue; // no matching manifest target — don't guess
                 };
+                // Any owner-mapped fragment proves the member compiled under
+                // some config, independent of whether it references anything.
+                compiled.insert(owner.clone());
                 let set = exercised.entry(owner.clone()).or_default();
                 for e in frag.references.iter() {
                     // Trait-scope facts duplicate evidence the method-call
@@ -117,6 +132,7 @@ impl DepUsage {
         }
         DepUsage {
             exercised,
+            compiled,
             dev_deps_judged,
         }
     }
@@ -134,6 +150,14 @@ impl DepUsage {
 
     pub fn dev_deps_judged(&self) -> bool {
         self.dev_deps_judged
+    }
+
+    /// Did any `[engine] config` compile a target of this member (owner
+    /// code-name)? `false` ⇒ zero owner-mapped fragments: the member's declared
+    /// deps are unjudgeable (no compiler output to observe), not unused — the
+    /// lint reports a coverage note rather than flagging them.
+    pub fn crate_compiled(&self, owner: &str) -> bool {
+        self.compiled.contains(owner)
     }
 }
 
@@ -164,6 +188,13 @@ impl DepsVerdict {
                 };
                 if let Some(reason) = exempt {
                     not_judged.push((d.name.clone(), reason));
+                    continue;
+                }
+                // A member no config compiled produces zero fragments: every
+                // surviving dep reads as unexercised only for lack of compiler
+                // output. Report the coverage gap, never a false "unused".
+                if !usage.crate_compiled(member) {
+                    not_judged.push((d.name.clone(), NotJudged::NotCompiled));
                     continue;
                 }
                 // Exercised iff the referenced-crate set meets the dep's
