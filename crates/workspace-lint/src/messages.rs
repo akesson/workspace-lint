@@ -659,16 +659,6 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             })
             .build(),
         ),
-        // stale-git-index: file deleted from disk but still tracked.
-        (
-            "stale_git_index",
-            at_workspace(
-                "workspace-lint::stale-git-index",
-                "deleted file `crates/old/src/legacy.rs` is still tracked by git",
-            )
-            .help("run `git rm crates/old/src/legacy.rs` to stage the removal")
-            .build(),
-        ),
         // architecture: a denied `use` violates a configured rule. Anchored
         // at the offending `use` line via `UseBinding::source` (added in
         // syn-workspace 0.4.0); the previous "imported in module …" note
@@ -1437,19 +1427,6 @@ mod tests {
         }
 
         #[test]
-        fn stale_git_index() {
-            insta::assert_snapshot!(render(&scenario("stale_git_index")), @r"
-            warning: deleted file `crates/old/src/legacy.rs` is still tracked by git
-              = help: run `git rm crates/old/src/legacy.rs` to stage the removal
-            help: if intentional, silence with:
-              |
-            1 + # workspace-lint: expect(stale-git-index)
-              |
-              = note: `#[warn(workspace_lint::stale_git_index)]` on by default
-            ");
-        }
-
-        #[test]
         fn architecture_denied_import() {
             insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r"
             warning: import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`
@@ -1769,11 +1746,6 @@ mod tests {
         }
 
         #[test]
-        fn stale_git_index() {
-            insta::assert_snapshot!(render(&scenario("stale_git_index")), @r##"{"level":"warning","message":"deleted file `crates/old/src/legacy.rs` is still tracked by git","code":{"code":"workspace-lint::stale-git-index","explanation":null},"spans":[],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(stale-git-index)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"run `git rm crates/old/src/legacy.rs` to stage the removal","spans":[]}],"rendered":null}"##);
-        }
-
-        #[test]
         fn unused_deps_one() {
             insta::assert_snapshot!(render(&scenario("unused_deps_one")), @r##"{"level":"warning","message":"1 possibly unused dependency in crates/alpha/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] rand","spans":[]},{"level":"note","message":"build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
         }
@@ -1960,11 +1932,6 @@ mod tests {
         #[test]
         fn stale_expect() {
             insta::assert_snapshot!(render(&scenario("stale_expect")), @"::warning file=crates/api/src/lib.rs,line=1,col=1,title=workspace-lint%3A%3Astale-expect::expect directive for `file-size` did not match any diagnostic");
-        }
-
-        #[test]
-        fn stale_git_index() {
-            insta::assert_snapshot!(render(&scenario("stale_git_index")), @"::warning file=Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Astale-git-index::deleted file `crates/old/src/legacy.rs` is still tracked by git");
         }
 
         #[test]

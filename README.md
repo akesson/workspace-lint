@@ -309,9 +309,6 @@ These lints take no configuration and run on every invocation (silence with
 `[lints] <name> = "allow"`). Each has full docs via
 `workspace-lint explain <lint>`:
 
-- **stale-git-index** — flags paths still tracked by git (`git ls-files`) that
-  no longer exist on disk.
-  [docs](crates/wl-lints/src/stale_git_index/DOC.md)
 - **stale-expect** — fires when an `expect!` / `expect(...)` directive silences
   nothing because the underlying lint stopped firing (see
   [Silencing diagnostics](#silencing-diagnostics)). Only lints that actually

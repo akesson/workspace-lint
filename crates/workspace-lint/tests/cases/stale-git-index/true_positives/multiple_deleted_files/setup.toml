@@ -1,5 +1,0 @@
-# Commit the whole tree, then delete two tracked files so git's index disagrees
-# with the working tree for both — each must produce its own diagnostic.
-[git]
-init = true
-delete_after = ["crates/demo/src/a.rs", "crates/demo/src/b.rs"]

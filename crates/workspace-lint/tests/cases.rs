@@ -69,7 +69,8 @@ fn run_case(kind: Kind, case_dir: &Path, bless: bool) -> Result<(), Failure> {
     })?;
 
     // Optional per-case setup: state that can't live inert in a committed
-    // fixture — e.g. the git repo `stale-git-index` needs. See `apply_setup`.
+    // fixture — e.g. the clean git repo `--fix-auto-delete` needs. See
+    // `apply_setup`.
     let args = apply_setup(case_dir, tmp.path()).map_err(|e| Failure {
         case_path: case_dir.to_path_buf(),
         kind,
