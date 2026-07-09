@@ -1,0 +1,14 @@
+[unused-pub]
+# `alpha::helper` is called by alpha's OWN production code, and cross-crate
+# only by `beta`'s `#[cfg(test)]` module (dev-dependency). Not dead — and not
+# an IntraCrate tighten candidate either: `pub(crate)` cannot reach beta's
+# test crate, so narrowing would break `cargo test`. The verdict must be
+# leave-alone — no "only used inside the crate" advice, no "only used by
+# test code".
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+[engine]
+configs = ["cargo build", "cargo test"]

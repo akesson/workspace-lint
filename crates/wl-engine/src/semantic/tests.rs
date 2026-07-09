@@ -86,9 +86,19 @@ fn frag_target(
         schema_version: SCHEMA_VERSION,
         crate_name: name.into(),
         target_kind: target_kind.into(),
+        is_test_cfg: false,
         items,
         references,
         loaded_files: Vec::new(),
+    }
+}
+
+/// The `+test` cfg variant of a lib: same `target_kind`, `is_test_cfg` set —
+/// exactly what the extractor emits for a unit compiled with `--test`.
+fn frag_test_cfg(name: &str, items: Vec<ItemFact>, references: Vec<RefEdge>) -> IrFragment {
+    IrFragment {
+        is_test_cfg: true,
+        ..frag(name, items, references)
     }
 }
 
@@ -495,6 +505,7 @@ fn build_frag(references: Vec<RefEdge>) -> IrFragment {
         schema_version: SCHEMA_VERSION,
         crate_name: "build_script_build".into(),
         target_kind: "build".into(),
+        is_test_cfg: false,
         items: Vec::new(),
         references,
         loaded_files: Vec::new(),
@@ -1266,7 +1277,7 @@ fn excision_block_macro_reason_beats_generated_file() {
 /// outside the primary config) is flagged `test_only`: narrowing it compiles
 /// but leaves it `dead_code` on the plain build, so `--fix` must not apply.
 #[test]
-fn intra_use_only_under_tests_config_is_test_only() {
+fn intra_use_only_in_test_cfg_variant_is_test_only() {
     let alpha_default = frag(
         "alpha",
         vec![
@@ -1280,7 +1291,10 @@ fn intra_use_only_under_tests_config_is_test_only() {
             false,
         )],
     );
-    let alpha_tests = frag(
+    // The `--tests` config compiles the crate's `+test` cfg variant: cfg(test)
+    // code AND the plain caller both land in a fragment carrying is_test_cfg —
+    // it is the plain config's fragment that proves production reach.
+    let alpha_tests = frag_test_cfg(
         "alpha",
         vec![
             item(&["alpha", "test_used"], "K_T2", "fn", Some("mod")),
@@ -1300,15 +1314,124 @@ fn intra_use_only_under_tests_config_is_test_only() {
         ("default", vec![alpha_default]),
         ("--tests", vec![alpha_tests]),
     ]);
-    let flag = |id: &str| {
+    let usage = |id: &str| {
         m.pub_candidates()
             .into_iter()
             .find(|c| c.id == id)
-            .map(|c| (c.usage, c.test_only))
+            .map(|c| c.usage)
             .unwrap()
     };
-    assert_eq!(flag("alpha::test_used"), (PubUsage::IntraCrate, true));
-    assert_eq!(flag("alpha::prod_used"), (PubUsage::IntraCrate, false));
+    assert_eq!(usage("alpha::test_used"), PubUsage::TestOnly);
+    assert_eq!(usage("alpha::prod_used"), PubUsage::IntraCrate);
+}
+
+/// Intra reach only under a non-home config's PLAIN units — a caller gated
+/// behind a cfg the home build never compiles (`--target`-only, feature-gated).
+/// Production-used, so `IntraCrate`, but `pub(crate)` would trip `dead_code`
+/// on the home build: the off-home gate must hold so the narrow is shown, not
+/// machine-applied. (The test/bench flavor of this used to share the flag; it
+/// is now the provenance-judged `TestOnly` verdict above.)
+#[test]
+fn intra_use_only_off_home_config_gates_narrow() {
+    let alpha_default = frag(
+        "alpha",
+        vec![item(&["alpha", "wasm_only"], "K_W", "fn", Some("mod"))],
+        vec![],
+    );
+    let alpha_wasm = frag(
+        "alpha",
+        vec![item(&["alpha", "wasm_only"], "K_W2", "fn", Some("mod"))],
+        vec![edge(
+            &["alpha", "wasm_caller"],
+            &["alpha", "wasm_only"],
+            "K_W2",
+            false,
+        )],
+    );
+    let m = model(vec![
+        ("default", vec![alpha_default]),
+        ("--target wasm32", vec![alpha_wasm]),
+    ]);
+    let cand = m
+        .pub_candidates()
+        .into_iter()
+        .find(|c| c.id == "alpha::wasm_only")
+        .unwrap();
+    assert_eq!(cand.usage, PubUsage::IntraCrate);
+    assert!(cand.intra_off_home, "off-home reach must gate the narrow");
+}
+
+/// The mixed shape: production use-sites inside the owning crate PLUS
+/// cross-crate reach from another member's test code. Not dead — and not
+/// `IntraCrate` either: tightening to `pub(crate)` would break the
+/// referencing test (it compiles as another crate). Leave alone.
+#[test]
+fn prod_intra_plus_cross_test_reach_leaves_alone() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "mixed"], "K_M", "fn", Some("mod"))],
+        vec![edge(
+            &["alpha", "caller"],
+            &["alpha", "mixed"],
+            "K_M",
+            false,
+        )],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![],
+        vec![edge_ext(
+            &["beta", "tests", "t"],
+            &["alpha", "mixed"],
+            "K_M",
+            false,
+            true,
+        )],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let usage = m
+        .pub_candidates()
+        .into_iter()
+        .find(|c| c.id == "alpha::mixed")
+        .map(|c| c.usage)
+        .unwrap();
+    assert_eq!(
+        usage,
+        PubUsage::CrossCrate,
+        "prod-intra + cross-test reach must neither tighten nor report dead"
+    );
+}
+
+/// Cross-crate test reach alone — another member's `#[cfg(test)]` module is
+/// the ONLY referrer (the `render_one` shape, single-config edition): the
+/// dead-family TestOnly verdict, where the old classifier read CrossCrate and
+/// stayed silent.
+#[test]
+fn cross_crate_test_only_reach_is_test_only() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![],
+        vec![edge_ext(
+            &["beta", "tests", "t"],
+            &["alpha", "embalmed"],
+            "K_E",
+            false,
+            true,
+        )],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let usage = m
+        .pub_candidates()
+        .into_iter()
+        .find(|c| c.id == "alpha::embalmed")
+        .map(|c| c.usage)
+        .unwrap();
+    assert_eq!(usage, PubUsage::TestOnly);
 }
 
 /// A feature-unified plain rlib under `--tests` carries a `DefPathHash`
@@ -1343,9 +1466,11 @@ fn unextracted_hash_generation_resolves_by_display_path() {
         .find(|c| c.id == "alpha::helper")
         .map(|c| c.usage)
         .unwrap();
+    // TestOnly, not Unused: the fallback credited the edge (and, the referrer
+    // being an integration-test crate, provenance classifies it test reach).
     assert_eq!(
         usage,
-        PubUsage::CrossCrate,
+        PubUsage::TestOnly,
         "the display-path fallback must credit the use"
     );
 }
@@ -2912,8 +3037,8 @@ fn cross_config_global_join_resolves_test_only_use() {
     // --tests: alpha recompiled as its own test harness (a DIFFERENT key for
     // the same identity), and beta's test code calls `alpha::render_one` — but
     // the edge targets alpha's PLAIN key (test units link plain rlibs), which
-    // the tests dir never extracted.
-    let alpha_tests = frag(
+    // the tests dir never extracted. Both are `+test` cfg variants.
+    let alpha_tests = frag_test_cfg(
         "alpha",
         vec![item(
             &["alpha", "render_one"],
@@ -2923,7 +3048,7 @@ fn cross_config_global_join_resolves_test_only_use() {
         )],
         vec![],
     );
-    let beta_tests = frag(
+    let beta_tests = frag_test_cfg(
         "beta",
         vec![],
         vec![edge(
@@ -2944,9 +3069,12 @@ fn cross_config_global_join_resolves_test_only_use() {
             .map(|c| c.usage)
             .unwrap()
     };
+    // TestOnly, not Unused: had the global join missed the plain-generation
+    // edge, nothing would credit the def at all. And TestOnly, not CrossCrate:
+    // the sole referrer is a `+test` unit — production-dead.
     assert_eq!(
         usage_of("alpha::render_one"),
-        PubUsage::CrossCrate,
+        PubUsage::TestOnly,
         "the plain-generation test edge must resolve via the global join"
     );
     // The union retires the primary-config lead and credits `tests`.
@@ -2967,13 +3095,14 @@ fn cross_config_global_join_credits_integration_test_crate() {
         vec![item(&["alpha", "helper"], "K_PLAIN", "fn", Some("mod"))],
         vec![],
     );
-    let alpha_tests = frag(
+    let alpha_tests = frag_test_cfg(
         "alpha",
         vec![item(&["alpha", "helper"], "K_TESTGEN", "fn", Some("mod"))],
         vec![],
     );
-    let it_crate = frag(
+    let it_crate = frag_target(
         "alpha_it",
+        "test",
         vec![],
         vec![edge(&["alpha_it"], &["alpha", "helper"], "K_PLAIN", false)],
     );
@@ -2987,7 +3116,9 @@ fn cross_config_global_join_credits_integration_test_crate() {
         .find(|c| c.id == "alpha::helper")
         .map(|c| c.usage)
         .unwrap();
-    assert_eq!(usage, PubUsage::CrossCrate);
+    // Credited (else Unused) — and classified test reach, the referrer being
+    // an integration-test crate.
+    assert_eq!(usage, PubUsage::TestOnly);
     assert!(
         cands.iter().all(|c| c.krate == "alpha"),
         "the integration-test crate is a non-member: no candidate of its own"
@@ -3050,8 +3181,9 @@ fn cascade_respects_cross_config_global_join() {
 /// extracted at all — `[lib] bench = false` means `--benches` compiles only
 /// the bench target (the plain lib is cargo-fresh), so the benches dir holds
 /// NO fragment of the defining crate and the global join has no landing key.
-/// The reach is credited at identity level instead, classifying CrossCrate
-/// and retiring the union lead with correct attribution.
+/// The reach is credited at identity level instead — with the referrer's
+/// provenance (a bench is a test unit), so it classifies TestOnly, and the
+/// union retires the lead with correct attribution.
 #[test]
 fn foreign_reach_credits_unextracted_target_crate() {
     let alpha_default = frag(
@@ -3060,8 +3192,10 @@ fn foreign_reach_credits_unextracted_target_crate() {
         vec![],
     );
     // The benches config: ONLY the bench crate's fragment — no alpha at all.
-    let bench = frag(
+    // A bench compiles with `CARGO_TARGET_TMPDIR` set → target_kind "test".
+    let bench = frag_target(
         "lookup",
+        "test",
         vec![],
         vec![edge(
             &["lookup", "main"],
@@ -3082,7 +3216,7 @@ fn foreign_reach_credits_unextracted_target_crate() {
         .unwrap();
     assert_eq!(
         usage,
-        PubUsage::CrossCrate,
+        PubUsage::TestOnly,
         "the bench edge must credit the identity despite no local def"
     );
     let v = m.union_verdict();
@@ -3795,4 +3929,378 @@ fn fragment_crates_reports_only_crates_that_emitted() {
         !crates.contains(&"build_script_build"),
         "a build-script carrier is not a member crate"
     );
+}
+
+// --- test_scaffolding: the exclusive-scaffolding gate for TestOnly deletion ---
+
+/// Builds the render_one-shaped workspace: `alpha::embalmed` reached only by
+/// `beta::tests::t`, which also calls the test-local helper only it uses.
+/// Both are exclusive scaffolding — the whole closure clears, helper included
+/// (the mutual-recursion arm of the fixpoint).
+#[test]
+fn test_scaffolding_clears_exclusive_closure() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![
+            item(&["beta", "tests", "t"], "K_T", "fn", Some("mod")),
+            item(&["beta", "tests", "helper"], "K_H", "fn", Some("mod")),
+        ],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            edge(
+                &["beta", "tests", "t"],
+                &["beta", "tests", "helper"],
+                "K_H",
+                false,
+            ),
+            edge_ext(
+                &["beta", "tests", "helper"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Cleared { scaffolding } => {
+            let ids: Vec<&str> = scaffolding.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(ids, ["beta::tests::helper", "beta::tests::t"]);
+        }
+        other => panic!("expected Cleared, got {other:?}"),
+    }
+}
+
+/// The test fn also asserts on surviving code: NOT exclusive scaffolding —
+/// deleting it would drop real coverage, so the target is blocked and the
+/// blocker names the surviving reach.
+#[test]
+fn test_scaffolding_blocks_on_surviving_reach() {
+    let alpha = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "embalmed"], "K_E", "fn", Some("mod")),
+            item(&["alpha", "kept"], "K_K", "fn", Some("mod")),
+        ],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![item(&["beta", "tests", "t"], "K_T", "fn", Some("mod"))],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "kept"],
+                "K_K",
+                false,
+                true,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Blocked(b) => {
+            assert_eq!(b.test, "beta::tests::t");
+            assert!(
+                matches!(&b.reason, BlockReason::ReachesSurviving { to } if to == "alpha::kept"),
+                "wrong reason: {:?}",
+                b.reason
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+/// A shared fixture: the scaffold-candidate helper is also used by a test
+/// that has nothing to do with the target. The helper is anchored by that
+/// survivor, which demotes it — and the demotion propagates to the test fn
+/// leaning on it, blocking the target (the shrinking-fixpoint arm).
+#[test]
+fn test_scaffolding_blocks_on_shared_fixture() {
+    let alpha = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "embalmed"], "K_E", "fn", Some("mod")),
+            item(&["alpha", "kept"], "K_K", "fn", Some("mod")),
+        ],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![
+            item(&["beta", "tests", "t1"], "K_T1", "fn", Some("mod")),
+            item(&["beta", "tests", "t2"], "K_T2", "fn", Some("mod")),
+            item(&["beta", "tests", "fixture"], "K_F", "fn", Some("mod")),
+        ],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t1"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            edge(
+                &["beta", "tests", "t1"],
+                &["beta", "tests", "fixture"],
+                "K_F",
+                false,
+            ),
+            // The unrelated survivor: t2 exercises kept through the fixture.
+            edge(
+                &["beta", "tests", "t2"],
+                &["beta", "tests", "fixture"],
+                "K_F",
+                false,
+            ),
+            edge_ext(
+                &["beta", "tests", "t2"],
+                &["alpha", "kept"],
+                "K_K",
+                false,
+                true,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Blocked(b) => {
+            assert_eq!(b.test, "beta::tests::t1");
+            assert!(
+                matches!(&b.reason, BlockReason::ReachesSurviving { to } if to == "beta::tests::fixture"),
+                "wrong reason: {:?}",
+                b.reason
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+/// The target's direct referrer is a shared helper: a test fn outside the
+/// closure still calls it. The universe never chases *inbound* referrers, so
+/// the helper is anchored (`KeptBySurvivor`) and that — not a reach — is the
+/// reported blocker.
+#[test]
+fn test_scaffolding_reports_kept_by_survivor_blocker() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![
+            item(&["beta", "tests", "check"], "K_C", "fn", Some("mod")),
+            item(&["beta", "tests", "t2"], "K_T2", "fn", Some("mod")),
+        ],
+        vec![
+            edge_ext(
+                &["beta", "tests", "check"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            edge(
+                &["beta", "tests", "t2"],
+                &["beta", "tests", "check"],
+                "K_C",
+                false,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Blocked(b) => {
+            assert_eq!(b.test, "beta::tests::check");
+            assert!(
+                matches!(&b.reason, BlockReason::KeptBySurvivor { from } if from == "beta::tests::t2"),
+                "wrong reason: {:?}",
+                b.reason
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+/// A macro-generated referencing test (the `#[rstest]`/`test_case` shape: the
+/// fn's span is from-expansion) has no safe auto-delete surface — the target
+/// is blocked `NotDeletable`, never half-deleted.
+#[test]
+fn test_scaffolding_blocks_on_macro_generated_test() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    let mut t = item(&["beta", "tests", "t"], "K_T", "fn", Some("mod"));
+    t.span.as_mut().unwrap().from_expansion = true;
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![t],
+        vec![edge_ext(
+            &["beta", "tests", "t"],
+            &["alpha", "embalmed"],
+            "K_E",
+            false,
+            true,
+        )],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Blocked(b) => {
+            assert_eq!(b.test, "beta::tests::t");
+            assert!(
+                matches!(&b.reason, BlockReason::NotDeletable),
+                "wrong reason: {:?}",
+                b.reason
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+/// The harness-main trap, pinned at the rule: the `--test` harness's
+/// generated `fn main` is a *synthetic* def sharing the real `main`'s
+/// identity and referencing every `#[test]` fn. Its edge is compiler
+/// plumbing, not an anchor — the closure must still clear.
+#[test]
+fn test_scaffolding_ignores_synthetic_harness_referrer() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    // The real bin `main` — makes `beta::main` a production identity, exactly
+    // the collision the synthetic harness main hides behind.
+    let beta = frag_target(
+        "beta",
+        "bin",
+        vec![item(&["beta", "main"], "K_M_REAL", "fn", Some("mod"))],
+        vec![],
+    );
+    let mut harness_main = item(&["beta", "main"], "K_M", "fn", Some("mod"));
+    harness_main.span = None; // spanless ⇒ synthetic
+    harness_main.full_span = None;
+    let mut harness_edge = edge(&["beta", "main"], &["beta", "tests", "t"], "K_T", false);
+    harness_edge.from_key = "K_M".into();
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![
+            harness_main,
+            item(&["beta", "tests", "t"], "K_T", "fn", Some("mod")),
+        ],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            harness_edge,
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Cleared { scaffolding } => {
+            let ids: Vec<&str> = scaffolding.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(ids, ["beta::tests::t"]);
+        }
+        other => panic!("expected Cleared, got {other:?}"),
+    }
+}
+
+/// One test fn exercises two targets dying in the same round: both clear,
+/// each listing the same scaffold — the shape the cascade must commit once.
+#[test]
+fn test_scaffolding_shared_scaffold_clears_sibling_targets() {
+    let alpha = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "embalmed_a"], "K_A", "fn", Some("mod")),
+            item(&["alpha", "embalmed_b"], "K_B", "fn", Some("mod")),
+        ],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![item(&["beta", "tests", "t"], "K_T", "fn", Some("mod"))],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed_a"],
+                "K_A",
+                false,
+                true,
+            ),
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed_b"],
+                "K_B",
+                false,
+                true,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &[
+            "alpha::embalmed_a".to_string(),
+            "alpha::embalmed_b".to_string(),
+        ],
+    );
+    for target in ["alpha::embalmed_a", "alpha::embalmed_b"] {
+        match &sc.per_target[target] {
+            ScaffoldVerdict::Cleared { scaffolding } => {
+                let ids: Vec<&str> = scaffolding.iter().map(|s| s.id.as_str()).collect();
+                assert_eq!(ids, ["beta::tests::t"], "{target}");
+            }
+            other => panic!("expected Cleared for {target}, got {other:?}"),
+        }
+    }
 }

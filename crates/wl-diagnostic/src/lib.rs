@@ -120,6 +120,11 @@ pub enum PubVerdict {
     Unused,
     /// Only same-crate referrers found → the fix tightens to `pub`.
     IntraCrate,
+    /// Referrers exist but every one is test code (any crate) — production-dead.
+    /// No fix is machine-applied: narrowing trips `dead_code` on the plain
+    /// build, and deletion would orphan the referencing tests (the cascade's
+    /// scaffolding rule is the one path that may delete these).
+    TestOnly,
 }
 
 /// What "silencing this lint" means for a given diagnostic — the unit the

@@ -1,0 +1,14 @@
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# Same shape as `test_only_use_via_glob_import_in_bench`, but the lib sets
+# `bench = false` (see its Cargo.toml): the `cargo bench` config then compiles
+# ONLY the bench target — no fragment of `blib` lands in the benches IR dir,
+# so there is no local def for the global hash join to translate onto. The
+# bench's plain-generation references are credited through the foreign-reach
+# channel instead, with the bench's test provenance: bench-only reach is
+# production-dead, so both items read "only used by test code" (pre-channel
+# this fixture emitted two "appears unused" false wordings).
+[engine]
+configs = ["cargo build", "cargo bench"]

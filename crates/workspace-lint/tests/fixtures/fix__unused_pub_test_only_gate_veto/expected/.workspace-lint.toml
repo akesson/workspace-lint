@@ -1,0 +1,16 @@
+# The LINT-LAYER veto: the engine proves `beta`'s test fn is exclusive
+# scaffolding of `alpha::embalmed` (it reaches nothing else) — but the test
+# fn is allowlisted, so its own deletion finding is out of fix scope. The
+# veto is INVERTED relative to private collateral: deleting the target
+# without the test would break `cargo test`, so the TARGET stays and
+# `--fix-auto-delete` changes NOTHING (expected/ == input/); the finding is
+# downgraded with a note naming the out-of-scope test item.
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[unused-pub]
+allowlist = ["*exercises_embalmed"]
+
+[engine]
+configs = ["cargo build", "cargo test"]

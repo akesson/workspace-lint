@@ -22,6 +22,7 @@ mod meta;
 mod pub_usage;
 mod reach;
 mod removal;
+mod scaffolding;
 mod store;
 mod union;
 
@@ -34,6 +35,7 @@ pub use imports::{DanglingImport, ExcisionBlock};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage};
 pub use removal::RemovalSet;
+pub use scaffolding::{BlockReason, ScaffoldVerdict, TestBlocker, TestScaffold, TestScaffolding};
 pub use union::{Lead, Retired, UnionVerdict};
 
 use std::collections::BTreeSet;
@@ -226,6 +228,17 @@ impl SemanticModel {
             return Vec::new();
         }
         collateral::compute(&self.configs, removed)
+    }
+
+    /// For each `TestOnly` deletion target, partition its referencing test
+    /// items into exclusive scaffolding (deleted alongside the target) or a
+    /// blocker (the target stays, the blocker names why) — the unused-pub
+    /// `--fix-auto-delete` gate for test-embalmed items. `removed` is
+    /// everything the cascade has already scheduled; growing it between
+    /// rounds only ever improves exclusivity, so per-round recomputation is
+    /// monotone. See the `scaffolding` module docs for the fixpoint.
+    pub fn test_scaffolding(&self, removed: &RemovalSet, targets: &[String]) -> TestScaffolding {
+        scaffolding::compute(&self.configs, removed, targets)
     }
 
     /// Every reference out of `krate`'s primary-unit code under the

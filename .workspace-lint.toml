@@ -91,9 +91,11 @@ max-code-lines = 4000
 # (one `cargo check`-fidelity compile per entry; the verdict unions across
 # them). `cargo test` is load-bearing for `unused-deps`: dev-dependencies are
 # judged only when a test target actually compiles — without it they'd be
-# silently skipped, weaker than the syn backend this replaced. It also retires
-# test-only `unused-pub` leads. (This matches the default matrix; declared
-# explicitly as living documentation.)
+# silently skipped, weaker than the syn backend this replaced. For
+# `unused-pub` it is what makes test reach *visible* — and provenance-tagged,
+# so test-only reach classifies "only used by test code" instead of either
+# false extreme ("appears unused" / silently kept). (This matches the default
+# matrix; declared explicitly as living documentation.)
 [engine]
 configs = ["cargo build", "cargo test"]
 
@@ -116,10 +118,12 @@ ignore = [
 # libraries here (workspace-lint-marker, wl-ir) set `publish = true`, so their
 # APIs aren't flagged; the `workspace-lint` binary publishes no API, so its
 # `pub` items are checked as workspace-internal (as before).
-# Cross-config note: an item used cross-crate only from another crate's test
-# code (e.g. `wl_diagnostic::render::render_one`, called only by the binary's
-# message-surface snapshot tests) is now seen correctly — the assembler's hash
-# join is global across `[engine] configs`, so a `+test`-unit edge to a
-# dependency's plain rlib resolves to the def the primary config extracted (see
-# `wl-engine/src/semantic/join.rs`). No allowlist entry is needed for it.
+# Test-only reach note: an item used ONLY from test code — even another
+# crate's (the assembler's hash join is global across `[engine] configs`, see
+# `wl-engine/src/semantic/join.rs`) — is production-dead and reports "only
+# used by test code". The one deliberate test-support API in this repo,
+# `wl_diagnostic::render::render_one` (called only by the binary's
+# message-surface snapshot tests), carries an inline
+# `// workspace-lint: expect(unused-pub)` with its rationale; `stale-expect`
+# retires that directive the day a production caller appears.
 [unused-pub]

@@ -1,0 +1,13 @@
+[unused-pub]
+# `alpha::helper` is called from `beta`'s PRODUCTION code *and* from its
+# `#[cfg(test)]` module. Production reach retires every verdict — the
+# test-only classification must never demote an item that something shipping
+# also uses. (Guards the provenance split: counting the test edge as the
+# only reach would wrongly report "only used by test code".)
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+[engine]
+configs = ["cargo build", "cargo test"]

@@ -94,7 +94,15 @@ use serde::{Deserialize, Serialize};
 /// so *every* file would read as never-compiled and the lint would advise
 /// deleting the whole workspace — the most destructive possible instance of
 /// the misleading-absence bump trigger.
-pub const SCHEMA_VERSION: u32 = 9;
+/// 10 — fragments gained [`IrFragment::is_test_cfg`]: whether this unit was
+/// compiled with `--test` (rustc's `sess.opts.test` — `cfg(test)` on, `#[test]`
+/// fns kept). Until now the `+test` distinction lived only in the fragment's
+/// *filename*, erased at load; unused-pub's test-only classification had to
+/// infer it from which config saw an edge. A pre-10 fragment defaults the flag
+/// to `false`, so a `+test` unit's edges would read as production reach and a
+/// test-embalmed `pub` item would silently escape the `TestOnly` verdict — the
+/// misleading-absence bump trigger.
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
@@ -125,6 +133,17 @@ pub struct IrFragment {
     /// extractor ships vendored in lockstep).
     #[serde(default)]
     pub target_kind: String,
+    /// This unit was compiled with `--test` (rustc's `sess.opts.test`):
+    /// `cfg(test)` is on and `#[test]` fns are kept for the harness. Together
+    /// with [`target_kind`](Self::target_kind) this totally classifies a
+    /// unit's provenance — a `+test` lib/bin variant keeps its plain
+    /// `target_kind`, so without this flag it is indistinguishable from the
+    /// production unit once the `+test` filename suffix is gone. A unit is
+    /// *test code* iff `target_kind == "test"` (integration test / bench) or
+    /// this flag is set; that split is what backs unused-pub's "only used by
+    /// test code" verdict.
+    #[serde(default)]
+    pub is_test_cfg: bool,
     pub items: Vec<ItemFact>,
     /// Resolved reference edges harvested from this crate's HIR: a `from` local
     /// item *uses* a `to` def (local or cross-crate). This is the reference graph
@@ -666,6 +685,7 @@ mod transport_tests {
             schema_version: SCHEMA_VERSION,
             crate_name: "demo".into(),
             target_kind: "lib".into(),
+            is_test_cfg: false,
             loaded_files: vec!["src/lib.rs".into()],
             items: vec![ItemFact {
                 path: vec!["demo".into(), "thing".into()],
@@ -742,7 +762,7 @@ mod transport_tests {
         use std::mem::size_of;
         assert_eq!(
             size_of::<ArchivedIrFragment>(),
-            44,
+            48,
             "ArchivedIrFragment layout changed"
         );
         assert_eq!(

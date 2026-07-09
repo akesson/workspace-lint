@@ -1,9 +1,0 @@
-[lints]
-default = "allow"
-unused-pub = "warn"
-
-# The bench target is its own crate: the engine must compile the `cargo bench`
-# config for its glob-imported calls to exist (they then classify cross-crate,
-# like any sibling target).
-[engine]
-configs = ["cargo build", "cargo bench"]

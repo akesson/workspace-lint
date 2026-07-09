@@ -229,6 +229,39 @@ fn fix_unused_pub_collateral() {
 }
 
 #[test]
+fn fix_unused_pub_delete_test_scaffold() {
+    // The test-scaffolding deletion: a `TestOnly` item (reached only from
+    // test code) is deleted TOGETHER with its exclusively-scaffolding tests —
+    // `alpha::embalmed` + the `#[cfg(test)]`-module test that calls it (and
+    // its `use`), and `alpha::it_only` + the integration-test fn (one fixture
+    // per referrer provenance: `+test` cfg variant, `target_kind = "test"`
+    // crate). `alpha::kept` (production-used, also covered by a surviving
+    // test) is untouched, and the blessed `expected/` tree compiles with its
+    // remaining tests green.
+    run_fix_fixture("fix__unused_pub_delete_test_scaffold");
+}
+
+#[test]
+fn fix_unused_pub_test_only_veto() {
+    // The scaffolding VETO: the only test reaching `alpha::embalmed` also
+    // asserts on surviving `alpha::kept`, so it is not exclusive scaffolding
+    // — deleting it would drop real coverage. Nothing is deleted (expected/
+    // == input/); the finding is downgraded with a note naming the blocking
+    // test.
+    run_fix_fixture("fix__unused_pub_test_only_veto");
+}
+
+#[test]
+fn fix_unused_pub_test_only_gate_veto() {
+    // The LINT-layer veto: the engine clears `beta`'s test fn as exclusive
+    // scaffolding of `alpha::embalmed`, but the test fn is allowlisted —
+    // out of fix scope. Deleting the target without its test would break
+    // `cargo test`, so the target stays too: nothing is deleted (expected/
+    // == input/) and the note names the out-of-scope test item.
+    run_fix_fixture("fix__unused_pub_test_only_gate_veto");
+}
+
+#[test]
 fn fix_stale_expect() {
     // The stale `expect` directive is injected via setup.toml's `[[append]]`
     // (kept out of the committed input/ so dogfood stays green); `--fix`

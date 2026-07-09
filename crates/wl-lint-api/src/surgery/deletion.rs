@@ -27,7 +27,12 @@ pub fn pick_deletion_fix(
     span: &wl_ir::Span,
     verdict: PubVerdict,
 ) -> Option<(wl_diagnostic::Suggestion, Option<String>)> {
-    if !auto_delete || verdict != PubVerdict::Unused {
+    // TestOnly gets a deletion surface in auto-delete mode too, but only the
+    // cascade ever calls with `auto_delete = true`, and it gates the delete
+    // behind the exclusive-test-scaffolding proof (deleting the referencing
+    // tests in the same pass, or downgrading this suggestion with a blocker
+    // note). The plain-check path always passes `auto_delete = false`.
+    if !auto_delete || !matches!(verdict, PubVerdict::Unused | PubVerdict::TestOnly) {
         return None;
     }
     match delete_suggestion(file, span) {

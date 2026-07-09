@@ -114,6 +114,13 @@ pub struct Assembly {
 struct EdgeFold {
     in_degree: BTreeMap<String, usize>,
     intra_degree: BTreeMap<String, usize>,
+    /// The subset of `in_degree` contributed by **test** units (a `+test` cfg
+    /// variant, an integration test, or a bench — see
+    /// [`Assembly::is_test_unit`]). `in_degree - test_in_degree` is the
+    /// production reach unused-pub's test-only classification judges.
+    test_in_degree: BTreeMap<String, usize>,
+    /// The subset of `intra_degree` contributed by test units.
+    test_intra_degree: BTreeMap<String, usize>,
     referenced: BTreeSet<String>,
     import_edges: usize,
     signature_exposed: BTreeSet<String>,
@@ -123,6 +130,22 @@ struct EdgeFold {
 }
 
 impl EdgeFold {
+    /// Count one real use-site of `key` — the single write point of the four
+    /// degree maps, so the visibility (cross/intra) and provenance
+    /// (test/production) splits can never drift apart.
+    fn count_use(&mut self, key: String, cross: bool, test_unit: bool) {
+        if test_unit {
+            *self.test_in_degree.entry(key.clone()).or_insert(0) += 1;
+            if !cross {
+                *self.test_intra_degree.entry(key.clone()).or_insert(0) += 1;
+            }
+        }
+        *self.in_degree.entry(key.clone()).or_insert(0) += 1;
+        if !cross {
+            *self.intra_degree.entry(key).or_insert(0) += 1;
+        }
+    }
+
     /// Move the removal-sensitive subset out of the fold — the one
     /// [`DegreeMaps`] construction site, shared by the build pass and
     /// [`Assembly::refold_excluding`].
@@ -130,6 +153,8 @@ impl EdgeFold {
         DegreeMaps {
             in_degree: std::mem::take(&mut self.in_degree),
             intra_degree: std::mem::take(&mut self.intra_degree),
+            test_in_degree: std::mem::take(&mut self.test_in_degree),
+            test_intra_degree: std::mem::take(&mut self.test_intra_degree),
             signature_exposed: std::mem::take(&mut self.signature_exposed),
             foreign_reach: std::mem::take(&mut self.foreign_reach),
         }
@@ -414,6 +439,7 @@ impl Assembly {
         let mut f = EdgeFold::default();
         for fb in &self.fragments {
             let frag = fb.archived();
+            let test_unit = Self::is_test_unit(frag);
             for e in frag.references.iter() {
                 // A trait-scope fact is import-resolution evidence, not a
                 // use-site: the method call it certifies has its own edge,
@@ -431,7 +457,7 @@ impl Assembly {
                     // (harness flag off) and the reach is recorded at identity
                     // level. A genuine out-of-workspace target isn't in the
                     // index and stays ignored.
-                    self.fold_foreign(e, &mut f);
+                    self.fold_foreign(e, test_unit, &mut f);
                     continue;
                 };
                 let def = &self.defs[key];
@@ -476,10 +502,7 @@ impl Assembly {
                 // name but compiles as its OWN crate — `pub(crate)` cannot
                 // reach it, so its edges must count as cross-crate.
                 let cross = e.external;
-                *f.in_degree.entry(key.to_string()).or_insert(0) += 1;
-                if !cross {
-                    *f.intra_degree.entry(key.to_string()).or_insert(0) += 1;
-                }
+                f.count_use(key.to_string(), cross, test_unit);
                 // A method-call edge lands on a trait *member* — the decl
                 // (`parent_kind == "trait"`) or an impl's method (whose
                 // `trait_item` names the decl) — never on the trait itself.
@@ -488,14 +511,22 @@ impl Assembly {
                 // declaration too.
                 let member = def.trait_item.as_deref().unwrap_or(key);
                 if let Some(trait_key) = self.trait_parent.get(member) {
-                    *f.in_degree.entry(trait_key.clone()).or_insert(0) += 1;
-                    if !cross {
-                        *f.intra_degree.entry(trait_key.clone()).or_insert(0) += 1;
-                    }
+                    f.count_use(trait_key.clone(), cross, test_unit);
                 }
             }
         }
         f
+    }
+
+    /// Is this fragment a **test** compilation unit? Either dimension
+    /// qualifies: an integration test / bench compiles as its own crate with
+    /// `target_kind == "test"`, while a lib/bin's `--test` harness variant
+    /// keeps its plain `target_kind` and is distinguishable only by the
+    /// in-archive cfg flag ([`wl_ir::IrFragment::is_test_cfg`]). Everything
+    /// else — plain lib/bin/proc-macro units and build scripts — is
+    /// production reach.
+    pub(super) fn is_test_unit(frag: &ArchivedIrFragment) -> bool {
+        frag.target_kind == "test" || frag.is_test_cfg
     }
 
     /// Credit an edge whose target the global index knows but this config has
@@ -503,10 +534,11 @@ impl Assembly {
     /// signature exposure gated on a pub `from`, imports discounted from the
     /// use-site reach, cross/intra split by the extractor's `CrateNum`
     /// comparison ([`RefEdge::external`] — a same-package sibling target is a
-    /// different crate despite the shared name). Trait-member reach is not
-    /// folded onto the parent trait here: an identity-only target has no
-    /// `parent_kind`, and the config that extracted the trait credits it.
-    fn fold_foreign(&self, e: &ArchivedRefEdge, f: &mut EdgeFold) {
+    /// different crate despite the shared name), test/production split by the
+    /// referring unit's provenance. Trait-member reach is not folded onto the
+    /// parent trait here: an identity-only target has no `parent_kind`, and
+    /// the config that extracted the trait credits it.
+    fn fold_foreign(&self, e: &ArchivedRefEdge, test_unit: bool, f: &mut EdgeFold) {
         let Some(id) = self.ids.identity_of(e.to_key.as_str()) else {
             return;
         };
@@ -519,8 +551,10 @@ impl Assembly {
         }
         if e.external {
             fr.cross = true;
+            fr.prod_cross |= !test_unit;
         } else {
             fr.intra = true;
+            fr.prod_intra |= !test_unit;
         }
     }
 

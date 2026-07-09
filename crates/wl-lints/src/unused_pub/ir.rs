@@ -56,6 +56,10 @@ pub(crate) struct PubFinding {
     /// `Unused` + deletion mode + git-clean ⇒ this item's deletion is
     /// MachineApplicable, so removing it (and cascading) is sound.
     pub removable: bool,
+    /// `TestOnly` verdict: even when `removable`, the cascade must NOT seed
+    /// this directly — deletion is sound only together with its exclusively-
+    /// scaffolding tests (the `test_scaffolding` gate), never alone.
+    pub test_only: bool,
     pub diagnostic: Diagnostic,
 }
 
@@ -174,6 +178,7 @@ fn findings_with_shadow(
             out.push(PubFinding {
                 id: None,
                 removable: false,
+                test_only: false,
                 diagnostic: publish_hint(krate, &crate_code, crate_findings.len()),
             });
         }
@@ -234,12 +239,16 @@ fn check_candidate(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> Option<PubFinding
         return None;
     }
     let verdict = match cand.usage {
-        // Cross-crate or dispatch/export-reached: provably in use — leave
-        // alone. (Dispatch covers the `ffi_no_mangle_export` class syn
+        // Production cross-crate or dispatch/export-reached: provably in use —
+        // leave alone. (Dispatch covers the `ffi_no_mangle_export` class syn
         // false-positived on.)
         PubUsage::CrossCrate | PubUsage::DispatchReached => return None,
         PubUsage::IntraCrate if ctx.suppress_intra_crate => return None,
         PubUsage::IntraCrate => PubVerdict::IntraCrate,
+        // Reached only from test code: production-dead. `suppress-intra-crate`
+        // does NOT silence it — that knob drops tighten advice, and this is a
+        // dead-code finding.
+        PubUsage::TestOnly => PubVerdict::TestOnly,
         PubUsage::Unused => PubVerdict::Unused,
     };
     let span = cand.span.as_ref()?;
@@ -247,6 +256,7 @@ fn check_candidate(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> Option<PubFinding
     Some(PubFinding {
         id: Some(cand.id.clone()),
         removable,
+        test_only: verdict == PubVerdict::TestOnly,
         diagnostic,
     })
 }
@@ -338,6 +348,13 @@ fn build_diagnostic(
             ),
             "consider `pub(crate)` to tighten visibility",
         ),
+        PubVerdict::TestOnly => (
+            format!(
+                "pub {kind_str} `{}` in crate `{crate_code}` is only used by test code",
+                cand.name
+            ),
+            "gate it `#[cfg(test)]`, move it into test code, or remove it",
+        ),
         PubVerdict::Unused => (
             format!(
                 "pub {kind_str} `{}` in crate `{crate_code}` appears unused — consider removing",
@@ -352,8 +369,10 @@ fn build_diagnostic(
         at_line(LintId::UnusedPub.id(), message, file.clone(), span.line).help(suggestion);
     // The specific blind spot beats the generic disclaimer: a shadowed
     // mention names the exact uncovered cfg (and the config entry that would
-    // cover it); otherwise the standing caveat applies.
-    let builder = match (verdict == PubVerdict::Unused)
+    // cover it); otherwise the standing caveat applies. TestOnly shares the
+    // gate — an uncovered cfg region could hold the production caller that
+    // would retire the verdict.
+    let builder = match matches!(verdict, PubVerdict::Unused | PubVerdict::TestOnly)
         .then(|| ctx.shadow_mention(&cand.id))
         .flatten()
     {
@@ -391,6 +410,20 @@ fn apply_structural_fix(
     span: &wl_ir::Span,
     verdict: PubVerdict,
 ) -> (wl_diagnostic::builder::DiagnosticBuilder, bool) {
+    // Test-only reach gets NO structural suggestion on the plain path:
+    // tightening trips `dead_code` on the plain build, and a bare deletion
+    // would orphan the referencing tests (E0433/E0425 in `cargo test`) —
+    // resolving it is a three-way human call the help text carries. In
+    // auto-delete mode it falls through to the deletion surface below, which
+    // ONLY the cascade acts on (gated behind the exclusive-test-scaffolding
+    // proof; a blocked target's suggestion is downgraded with the blocker).
+    if verdict == PubVerdict::TestOnly && !auto_delete {
+        let builder = builder.note(
+            "no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test \
+             build, and deleting the item would break the tests that reference it",
+        );
+        return (builder, false);
+    }
     // The deletion surface is the WHOLE item (attrs/doc through body) — `span`
     // is rustc's `def_span`, only the signature, so deleting it would orphan a
     // function's body. `full_span` falls back to `span` only for the
@@ -410,11 +443,11 @@ fn apply_structural_fix(
     // `pub(crate)` compiles but trips `dead_code` (or a clippy lint the
     // exported status suppressed) on the plain build — say why `--fix`
     // won't apply it.
-    let builder = if verdict == PubVerdict::IntraCrate && cand.test_only {
+    let builder = if verdict == PubVerdict::IntraCrate && cand.intra_off_home {
         builder.note(
-            "every use-site is test/bench cfg-gated: `pub(crate)` would trip `dead_code` \
-             on the non-test build — gate the item `#[cfg(test)]`, move it into test code, \
-             or delete it",
+            "every use-site is gated behind a cfg the plain build never compiles \
+             (`--target`-only or feature-gated code): `pub(crate)` would trip `dead_code` \
+             on that build — narrow by hand if the gate doesn't apply to you",
         )
     } else if verdict == PubVerdict::IntraCrate && cand.dead_members {
         builder.note(
@@ -456,14 +489,14 @@ fn build_tighten_suggestion(
         return None; // the token lives in a macro definition — not editable
     }
     let applicability = match verdict {
-        // Reached only from test/bench cfg-gated code, a trait with
+        // Reached only off the home config's cfg universe, a trait with
         // never-called members, or a narrow that would unmask a clippy lint
         // (`avoid-breaking-exported-api`): the narrow compiles but fails a
         // `-D warnings` gate — shown, never machine-applied (the data-common
         // `is_days`/`fraction`, ChronoExt, and `wrong_self_convention`
         // clusters from the 2026-07-05 LeaveDates validation).
         PubVerdict::IntraCrate
-            if cand.test_only
+            if cand.intra_off_home
                 || cand.dead_members
                 || cand.dead_fields
                 || cand.narrow_unmask.is_some() =>
@@ -472,6 +505,9 @@ fn build_tighten_suggestion(
         }
         PubVerdict::IntraCrate => Applicability::MachineApplicable,
         PubVerdict::Unused => Applicability::MaybeIncorrect,
+        // Never offered a tighten: `apply_structural_fix` returns before
+        // building one (narrowing trips `dead_code` on the plain build).
+        PubVerdict::TestOnly => return None,
     };
     // The existing visibility text for the rendered `-` diff line; falls back
     // to a placeholder if the file can't be read.

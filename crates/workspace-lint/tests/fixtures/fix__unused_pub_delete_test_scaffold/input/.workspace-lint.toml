@@ -1,0 +1,20 @@
+# `--fix-auto-delete` coverage for the TEST-SCAFFOLDING deletion: a `TestOnly`
+# item (reached only from test code) is deleted TOGETHER with its exclusively-
+# scaffolding tests — never alone (that would break `cargo test`).
+#
+# Two provenance shapes, one per referrer kind:
+#  - `alpha::embalmed` — called only from `beta`'s `#[cfg(test)]` module (a
+#    `+test` cfg-variant unit): the fn, the referencing `#[test]` fn, and the
+#    `use alpha::embalmed;` all go; the emptied `mod tests` shell stays.
+#  - `alpha::it_only` — called only from `beta`'s integration test
+#    (`tests/it.rs`, its own `target_kind = "test"` crate): fn + test fn +
+#    import go; the emptied file stays.
+# `alpha::kept` has a production caller and must survive untouched.
+# The resulting `expected/` tree must compile AND its tests must still pass.
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+# `cargo test` is what compiles the referring test units at all.
+[engine]
+configs = ["cargo build", "cargo test"]

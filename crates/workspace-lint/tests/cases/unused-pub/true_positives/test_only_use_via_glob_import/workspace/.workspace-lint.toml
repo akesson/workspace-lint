@@ -1,0 +1,20 @@
+[unused-pub]
+# `beta` is called only from the unit-test module, through `use super::*` +
+# a bare name. The GlobImportPass must bind that candidate for the item to
+# read reached at all — without the pass the bare name is invisible and the
+# fn reads Unused → "appears unused" (the false wording this fixture guards
+# against; the correct finding is "only used by test code").
+#
+# `suppress-intra-crate` stays set to pin that it does NOT silence the
+# test-only finding: that knob drops tighten *advice*; this is a dead-code
+# verdict.
+suppress-intra-crate = true
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# The unit-test module only exists under `cfg(test)`: the engine must compile
+# the `cargo test` config to see the `use super::*` + bare-name call at all.
+[engine]
+configs = ["cargo build", "cargo test"]

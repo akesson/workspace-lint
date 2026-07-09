@@ -25,19 +25,29 @@ use super::removal::{DegreeView, RemovalSet};
 /// engine can see and syn couldn't.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PubUsage {
-    /// A real (non-import) use-site in another crate under some config —
-    /// integration tests, benches, and sibling bins compile as their own
-    /// crates, so "keep it `pub`" cases land here exactly like the syn
-    /// sibling-target rule. Leave alone.
+    /// A real (non-import) **production** use-site in another crate under some
+    /// config — sibling bins compile as their own crates, so "keep it `pub`"
+    /// cases land here exactly like the syn sibling-target rule. Also the
+    /// mixed shape: production use-sites in the owning crate *plus* cross-crate
+    /// test reach — not dead, and tightening would break the referencing test
+    /// (`pub(crate)` cannot reach an integration-test crate). Leave alone.
     CrossCrate,
     /// Reached only through dispatch or linker export (external/internal trait
     /// dispatch, `#[no_mangle]`-style export roots). No direct edge to judge,
     /// but provably not dead — leave alone. (This class retires the
-    /// `ffi_no_mangle_export` false positive syn couldn't avoid.)
+    /// `ffi_no_mangle_export` false positive syn couldn't avoid. Dispatch
+    /// edges carry no unit provenance, so a dispatched-only-from-tests item
+    /// conservatively stays here.)
     DispatchReached,
-    /// Real use-sites exist but every one is in the owning crate — the
-    /// "tighten to `pub(crate)`" advice is valid in every config that saw it.
+    /// Production use-sites exist but every one is in the owning crate — the
+    /// "tighten to `pub(crate)`" advice is valid in every config that saw it
+    /// (intra-crate *test* reach survives a narrow, so it doesn't block).
     IntraCrate,
+    /// Real use-sites exist, but **every one is test code** — a `+test` cfg
+    /// variant, an integration test, or a bench, in any crate. The item ships
+    /// in the production build with nothing production reaching it: dead code
+    /// the tests embalm. The dead-family verdict.
+    TestOnly,
     /// No reaching edge under any config — the "appears unused" verdict.
     Unused,
 }
@@ -74,11 +84,14 @@ pub struct PubCandidate {
     /// Target of a `use`/`pub use` under some config: tightening or deleting
     /// can break the re-export (E0364/E0365) — must stay `pub`.
     pub reexport_target: bool,
-    /// `IntraCrate` reached ONLY outside the primary config (`--tests` /
-    /// `--benches` cfg-gated code): `pub(crate)` still compiles, but the item
-    /// is dead code on the plain build — `-D warnings` gates reject the
-    /// narrowed tree, so the fix must not be machine-applied.
-    pub test_only: bool,
+    /// `IntraCrate` reached ONLY outside the crate's home config (code gated
+    /// behind a cfg the home build never compiles — `--target`-only or
+    /// feature-gated callers): `pub(crate)` still compiles, but the item is
+    /// dead code on the plain build — `-D warnings` gates reject the narrowed
+    /// tree, so the fix must not be machine-applied. (The test/bench-gated
+    /// flavor of this used to land here too; it is now the [`PubUsage::TestOnly`]
+    /// verdict, judged by unit provenance rather than home-config inference.)
+    pub intra_off_home: bool,
     /// A trait with a member no primary-config edge reaches: narrowing
     /// un-exempts the trait from rustc `dead_code`, which then flags the
     /// never-called members — same `-D warnings` consequence, same gating.
@@ -100,8 +113,15 @@ pub struct PubCandidate {
 struct Fold {
     cross: bool,
     intra: bool,
+    /// `cross` restricted to production referring units (not `+test` /
+    /// integration-test / bench). `cross && !prod_cross` means every
+    /// cross-crate use-site is test code.
+    prod_cross: bool,
+    /// `intra` restricted to production referring units.
+    prod_intra: bool,
     /// Intra reach seen in the crate's HOME config — its absence while
-    /// `intra` holds means every use-site is test/bench cfg-gated.
+    /// `intra` holds means every use-site is gated behind a cfg the home
+    /// build never compiles (the `-D warnings` narrow gate).
     intra_home: bool,
     dispatch: bool,
     signature_exposed: bool,
@@ -189,8 +209,13 @@ fn compute_impl(
             let fold = folds.entry(def.path.clone()).or_default();
             let workspace_wide = view.in_degree.get(key).copied().unwrap_or(0);
             let intra_only = view.intra_degree.get(key).copied().unwrap_or(0);
+            let test_wide = view.test_in_degree.get(key).copied().unwrap_or(0);
+            let test_intra = view.test_intra_degree.get(key).copied().unwrap_or(0);
             fold.cross |= workspace_wide > intra_only;
             fold.intra |= intra_only > 0;
+            // Production reach = total minus the test-unit subset, per axis.
+            fold.prod_cross |= workspace_wide - intra_only > test_wide - test_intra;
+            fold.prod_intra |= intra_only > test_intra;
             if ci == home {
                 fold.intra_home |= intra_only > 0;
                 if def.kind == "trait" {
@@ -222,6 +247,8 @@ fn compute_impl(
             if let Some(fold) = folds.get_mut(id.as_str()) {
                 fold.cross |= fr.cross;
                 fold.intra |= fr.intra;
+                fold.prod_cross |= fr.prod_cross;
+                fold.prod_intra |= fr.prod_intra;
                 fold.signature_exposed |= fr.signature_exposed;
             }
         }
@@ -232,12 +259,18 @@ fn compute_impl(
         .map(|(id, fold)| {
             let (assembly, key) = &display[&id];
             let def = &assembly.defs[key];
-            let usage = if fold.cross {
+            let usage = if fold.prod_cross || (fold.cross && fold.prod_intra) {
+                // Production cross-crate reach; or production intra reach plus
+                // cross-crate TEST reach (tightening would break the
+                // referencing test — `pub(crate)` cannot reach it).
                 PubUsage::CrossCrate
             } else if fold.dispatch {
                 PubUsage::DispatchReached
-            } else if fold.intra {
+            } else if fold.prod_intra {
                 PubUsage::IntraCrate
+            } else if fold.cross || fold.intra {
+                // Reached, but every use-site is a test unit's.
+                PubUsage::TestOnly
             } else {
                 PubUsage::Unused
             };
@@ -254,7 +287,7 @@ fn compute_impl(
                 signature_exposed: fold.signature_exposed,
                 externally_reachable: fold.externally_reachable,
                 reexport_target: fold.reexport_target,
-                test_only: fold.intra && !fold.intra_home && !fold.cross,
+                intra_off_home: fold.intra && !fold.intra_home && !fold.cross,
                 dead_members: fold.dead_members,
                 dead_fields: fold.dead_fields,
                 id,

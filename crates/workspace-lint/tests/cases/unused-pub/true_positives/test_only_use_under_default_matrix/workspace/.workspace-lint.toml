@@ -1,0 +1,12 @@
+[unused-pub]
+# Same shape as `test_only_use_from_sibling_test_mod` — `alpha::helper` is
+# called only from `beta`'s `#[cfg(test)]` code through a dev-dependency —
+# but with NO `[engine]` table: this case is the forcing function for the
+# DEFAULT matrix being `["cargo build", "cargo test"]`. If the default ever
+# regresses to a single host config, the test universe goes unseen and the
+# finding degrades to "appears unused" — the expected.stderr wording pins
+# "only used by test code".
+
+[lints]
+default = "allow"
+unused-pub = "deny"

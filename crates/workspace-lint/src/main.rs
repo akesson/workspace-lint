@@ -767,6 +767,7 @@ mod dump_ir_tests {
             schema_version: SCHEMA_VERSION,
             crate_name: "demo".into(),
             target_kind: "lib".into(),
+            is_test_cfg: false,
             items: vec![],
             references: vec![],
             loaded_files: vec![],
