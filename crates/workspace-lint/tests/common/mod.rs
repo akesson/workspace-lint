@@ -91,9 +91,8 @@ pub fn bless_enabled() -> bool {
 /// ```toml
 /// args = ["--fast-only"]      # extra CLI args for the binary
 ///
-/// [git]                       # for stale-git-index
+/// [git]                       # a clean tree, for `--fix-auto-delete`
 /// init = true                 # git init + add -A + commit
-/// delete_after = ["a/b.rs"]   # rm from disk AFTER commit (stays in the index)
 ///
 /// [[append]]                  # inject a directive that must stay uncommitted
 /// path = "crates/demo/Cargo.toml"
@@ -107,33 +106,24 @@ pub fn apply_setup(fixture_dir: &Path, tmp: &Path) -> Result<Vec<String>, String
     let text = std::fs::read_to_string(&setup_path).map_err(|e| format!("read setup.toml: {e}"))?;
     let doc: toml::Value = toml::from_str(&text).map_err(|e| format!("parse setup.toml: {e}"))?;
 
-    if let Some(git) = doc.get("git") {
-        if git.get("init").and_then(toml::Value::as_bool) == Some(true) {
-            git_cmd(tmp, &["init", "-q"])?;
-            git_cmd(tmp, &["add", "-A"])?;
-            git_cmd(
-                tmp,
-                &[
-                    "-c",
-                    "user.name=test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "commit",
-                    "-q",
-                    "-m",
-                    "setup",
-                ],
-            )?;
-        }
-        if let Some(deletes) = git.get("delete_after").and_then(toml::Value::as_array) {
-            for entry in deletes {
-                let rel = entry
-                    .as_str()
-                    .ok_or("delete_after entries must be strings")?;
-                std::fs::remove_file(tmp.join(rel))
-                    .map_err(|e| format!("delete_after {rel}: {e}"))?;
-            }
-        }
+    if let Some(git) = doc.get("git")
+        && git.get("init").and_then(toml::Value::as_bool) == Some(true)
+    {
+        git_cmd(tmp, &["init", "-q"])?;
+        git_cmd(tmp, &["add", "-A"])?;
+        git_cmd(
+            tmp,
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "setup",
+            ],
+        )?;
     }
 
     // Append text to a file *after* copy — used to inject a `# workspace-lint:`

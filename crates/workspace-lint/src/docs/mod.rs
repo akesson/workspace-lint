@@ -1,6 +1,6 @@
 //! Per-lint documentation, keyed on [`LintId`].
 //!
-//! The 12 real lints carry their docs as a `DOC.md` beside each `impl
+//! The 10 real lints carry their docs as a `DOC.md` beside each `impl
 //! LintImpl` (reached through [`LintImpl::DOC`]); the three pipeline meta
 //! lints — `config`, `stale-expect`, `unknown-lint` — have no lint dir, so
 //! their docs live here as sibling `.md` files. [`lint_doc`] is the one place
@@ -34,12 +34,12 @@ use wl_lints::{
     architecture::Architecture, centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion, crate_size::CrateSize, duplicate_code::DuplicateCode,
     feature_drift::FeatureDrift, file_size::FileSize, orphan_file::OrphanFile,
-    stale_git_index::StaleGitIndex, unused_deps::UnusedDeps, unused_pub::UnusedPub,
+    unused_deps::UnusedDeps, unused_pub::UnusedPub,
 };
 
 /// The full documentation for `id`. Exhaustive by design: adding a [`LintId`]
 /// variant without wiring its doc is a compile error, mirroring `LintId::id`.
-/// The 11 real lints resolve to their `DOC.md` const; the 3 meta lints to a
+/// The 10 real lints resolve to their `DOC.md` const; the 3 meta lints to a
 /// sibling `.md` bundled here.
 pub(crate) fn lint_doc(id: LintId) -> &'static str {
     match id {
@@ -53,7 +53,6 @@ pub(crate) fn lint_doc(id: LintId) -> &'static str {
         LintId::FileSize => FileSize::DOC,
         LintId::OrphanFile => OrphanFile::DOC,
         LintId::StaleExpect => include_str!("stale-expect.md"),
-        LintId::StaleGitIndex => StaleGitIndex::DOC,
         LintId::UnknownLint => include_str!("unknown-lint.md"),
         LintId::UnusedDeps => UnusedDeps::DOC,
         LintId::UnusedPub => UnusedPub::DOC,
@@ -404,7 +403,6 @@ mod tests {
         assert_eq!(lint_doc(LintId::FeatureDrift), FeatureDrift::DOC);
         assert_eq!(lint_doc(LintId::FileSize), FileSize::DOC);
         assert_eq!(lint_doc(LintId::OrphanFile), OrphanFile::DOC);
-        assert_eq!(lint_doc(LintId::StaleGitIndex), StaleGitIndex::DOC);
         assert_eq!(lint_doc(LintId::UnusedDeps), UnusedDeps::DOC);
         assert_eq!(lint_doc(LintId::UnusedPub), UnusedPub::DOC);
     }

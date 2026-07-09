@@ -7,7 +7,7 @@
 
 # Lint levels. `[lints]` is the single place a lint is enabled and leveled.
 # Structural lints (centralized-deps, orphan-file, feature-drift, unused-deps,
-# unused-pub, stale-*) are on by default at `warn`; the entries below escalate
+# unused-pub, stale-expect) are on by default at `warn`; the entries below escalate
 # the ones this repo enforces to `deny`. Only a surviving `Deny`-level finding
 # flips the exit code, and the dogfood test asserts exit 0.
 #
@@ -28,7 +28,6 @@ orphan-file = "deny"
 unused-deps = "deny"
 unused-pub = "deny"
 stale-expect = "deny"
-stale-git-index = "deny"
 # Validate this very config: a typo'd section or lint name fails the run
 # instead of silently doing nothing.
 config = "deny"

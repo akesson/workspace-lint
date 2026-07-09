@@ -516,27 +516,46 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 }
 
 #[test]
-fn leaked_git_dir_does_not_reach_lints() {
+fn leaked_git_dir_does_not_reach_git_writes() {
     let victim = victim_repo();
     let head_before = git_stdout(victim.path(), &["rev-parse", "HEAD"]);
 
-    // NOT `expand_workspace` — that config `allow`s every lint, which would
-    // silence the very finding this test watches for. Default levels keep
-    // stale-git-index enabled (warn).
+    // The expand target is a repo of its own, so the *scrubbed* `git add` has
+    // somewhere to stage; in a non-repo it would fail and `expand` exits 2.
     let tmp = tempfile::tempdir().expect("create tempdir");
-    TestWorkspace::new()
-        .config("# default lint levels\n")
-        .write(tmp.path());
-    // Unscrubbed, stale-git-index would resolve the victim repo (with the
-    // tempdir as its work tree) and warn that `tracked.txt` is deleted.
+    std::fs::write(tmp.path().join("DOC.md"), DOC_BEFORE).unwrap();
+    git(tmp.path(), &["init", "-q"]);
+
+    // `--allow-dirty` is load-bearing. Both expand entry points run the
+    // clean-tree gate first, and unscrubbed that gate reads the *victim* as
+    // dirty and exits 2 — the `git add` below would never run, and this test
+    // would silently degrade into a copy of `leaked_git_dir_does_not_block_fix`.
+    // Skipping the gate is what isolates the write path.
     workspace_lint()
         .current_dir(tmp.path())
         .env("GIT_DIR", victim.path().join(".git"))
+        .args([
+            "--allow-dirty",
+            "expand",
+            "--command",
+            "cargo --version",
+            "--glob",
+            "DOC.md",
+            "--marker",
+            "V",
+            "--auto-stage",
+        ])
         .assert()
-        .success()
-        .stderr(predicate::str::contains("stale-git-index").not());
+        .success();
 
-    // The victim must be untouched — both damage modes of the incident.
+    // Unscrubbed, `git add` inherits GIT_DIR and takes the cwd as its work
+    // tree, staging the tempdir's DOC.md into the victim's index.
+    assert_eq!(
+        git_stdout(victim.path(), &["diff", "--cached", "--name-only"]),
+        "",
+        "leaked GIT_DIR must not let `expand --auto-stage` write the victim's index"
+    );
+    // The other two damage modes of the incident.
     assert_eq!(
         git_stdout(victim.path(), &["rev-parse", "HEAD"]),
         head_before,

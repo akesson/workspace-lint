@@ -8,7 +8,7 @@ use wl_lints::{
     architecture::Architecture, centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion, crate_size::CrateSize, duplicate_code::DuplicateCode,
     feature_drift::FeatureDrift, file_size::FileSize, orphan_file::OrphanFile,
-    stale_git_index::StaleGitIndex, unused_deps::UnusedDeps, unused_pub::UnusedPub,
+    unused_deps::UnusedDeps, unused_pub::UnusedPub,
 };
 
 /// `true` when `id` is enabled *anywhere* — its global effective level isn't
@@ -73,9 +73,6 @@ pub(crate) fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
     }
     if level_on(config, LintId::OrphanFile) {
         out.push(Box::new(OrphanFile::new()));
-    }
-    if level_on(config, LintId::StaleGitIndex) {
-        out.push(Box::new(StaleGitIndex::new()));
     }
     if level_on(config, LintId::UnusedDeps) {
         out.push(Box::new(UnusedDeps::new(
@@ -192,8 +189,6 @@ deny = [\"crates/b/**\"]
     /// - `file-size`, `crate-size`: no structural fix — heuristic refactoring
     ///   isn't tractable. `--fix` is a no-op; users must split files manually.
     /// - `cli-crate-version`: needs a fake CLI binary the fixture can invoke.
-    /// - `stale-git-index`: needs `git ls-files` to disagree with on-disk
-    ///   state, which requires an in-tempdir git init/add/rm dance.
     /// - `config`, `unknown-lint`: config-validation diagnostics with no
     ///   structural fix — the remedy is a hand edit of the config / directive.
     /// - `duplicate-code`: advisory by design, never fixturable — resolving a

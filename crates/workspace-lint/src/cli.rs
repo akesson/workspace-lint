@@ -10,7 +10,6 @@ use wl_lints::{
     feature_drift::FeatureDrift,
     file_size::FileSize,
     orphan_file::OrphanFile,
-    stale_git_index::StaleGitIndex,
     unused_deps::UnusedDeps,
     unused_pub::{KindFilter, UnusedPub},
 };
@@ -246,9 +245,6 @@ pub(crate) enum CheckRule {
     /// Check for feature drift (declared-but-unused / undeclared features)
     #[command(after_long_help = crate::docs::rendered_doc(wl_lint_api::LintId::FeatureDrift))]
     FeatureDrift,
-    /// Check for paths tracked by git that no longer exist on disk
-    #[command(after_long_help = crate::docs::rendered_doc(wl_lint_api::LintId::StaleGitIndex))]
-    StaleGitIndex,
 }
 
 impl CheckRule {
@@ -286,7 +282,6 @@ impl CheckRule {
             }
             CheckRule::OrphanFile => Box::new(OrphanFile::new()),
             CheckRule::FeatureDrift => Box::new(FeatureDrift::new()),
-            CheckRule::StaleGitIndex => Box::new(StaleGitIndex::new()),
         }
     }
 

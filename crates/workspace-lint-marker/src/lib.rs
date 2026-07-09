@@ -40,7 +40,6 @@ macro_rules! allow {
     (stale_expect) => {};
     (architecture) => {};
     (orphan_file) => {};
-    (stale_git_index) => {};
     (feature_drift) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
         $crate::allow!($first);
@@ -67,7 +66,6 @@ macro_rules! expect {
     (stale_expect) => {};
     (architecture) => {};
     (orphan_file) => {};
-    (stale_git_index) => {};
     (feature_drift) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
         $crate::expect!($first);
@@ -92,7 +90,6 @@ mod tests {
         crate::allow!(stale_expect);
         crate::allow!(architecture);
         crate::allow!(orphan_file);
-        crate::allow!(stale_git_index);
         crate::allow!(feature_drift);
     }
 
@@ -115,7 +112,6 @@ mod tests {
         crate::expect!(stale_expect);
         crate::expect!(architecture);
         crate::expect!(orphan_file);
-        crate::expect!(stale_git_index);
         crate::expect!(feature_drift);
     }
 
