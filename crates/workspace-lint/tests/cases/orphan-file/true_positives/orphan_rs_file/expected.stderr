@@ -1,0 +1,13 @@
+error: orphan source file `src/orphan.rs` is never compiled
+ --> crates/demo/src/orphan.rs:1:1
+  |
+  = help: delete the file, or reach it: add `mod orphan;` (or `#[path = "src/orphan.rs"] mod ...;`) in the appropriate parent module
+  = note: no `[engine]` config compiled it, and nothing in crate `demo`'s source names it
+help: if intentional, silence with:
+  |
+1 + workspace_lint::expect!(orphan_file);
+  |
+  = note: `#[deny(workspace_lint::orphan_file)]` on by default
+
+workspace-lint: generated 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (orphan-file)

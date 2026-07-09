@@ -33,7 +33,7 @@ use wl_lint_api::{LintId, LintImpl};
 use wl_lints::{
     architecture::Architecture, centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion, crate_size::CrateSize, duplicate_code::DuplicateCode,
-    feature_drift::FeatureDrift, file_size::FileSize, module_tree::ModuleTree,
+    feature_drift::FeatureDrift, file_size::FileSize, orphan_file::OrphanFile,
     stale_git_index::StaleGitIndex, unused_deps::UnusedDeps, unused_pub::UnusedPub,
 };
 
@@ -51,7 +51,7 @@ pub(crate) fn lint_doc(id: LintId) -> &'static str {
         LintId::DuplicateCode => DuplicateCode::DOC,
         LintId::FeatureDrift => FeatureDrift::DOC,
         LintId::FileSize => FileSize::DOC,
-        LintId::ModuleTree => ModuleTree::DOC,
+        LintId::OrphanFile => OrphanFile::DOC,
         LintId::StaleExpect => include_str!("stale-expect.md"),
         LintId::StaleGitIndex => StaleGitIndex::DOC,
         LintId::UnknownLint => include_str!("unknown-lint.md"),
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(lint_doc(LintId::DuplicateCode), DuplicateCode::DOC);
         assert_eq!(lint_doc(LintId::FeatureDrift), FeatureDrift::DOC);
         assert_eq!(lint_doc(LintId::FileSize), FileSize::DOC);
-        assert_eq!(lint_doc(LintId::ModuleTree), ModuleTree::DOC);
+        assert_eq!(lint_doc(LintId::OrphanFile), OrphanFile::DOC);
         assert_eq!(lint_doc(LintId::StaleGitIndex), StaleGitIndex::DOC);
         assert_eq!(lint_doc(LintId::UnusedDeps), UnusedDeps::DOC);
         assert_eq!(lint_doc(LintId::UnusedPub), UnusedPub::DOC);

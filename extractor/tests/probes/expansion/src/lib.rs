@@ -174,3 +174,25 @@ mod nested_user {
         buried() + shallow()
     }
 }
+
+// --- `loaded_files` probes -------------------------------------------------
+// Each construct below names a file that a *syntactic* walker cannot resolve.
+// rustc opens them all, which is what `IrFragment::loaded_files` records and
+// what the `orphan-file` lint judges. See probe.rs check 21.
+
+// Multi-arm `cfg_attr` path: exactly one arm compiles. Keyed on `test` rather
+// than `unix`/`windows` so the expected set is identical on all three CI OSes.
+#[cfg_attr(test, path = "imp_test.rs")]
+#[cfg_attr(not(test), path = "imp_main.rs")]
+mod imp;
+
+// `include!` in expression position — invisible to an item walk.
+pub static PROBE_TABLE: [u8; 4] = include!("gen_table.rs");
+
+// `include_str!` of a `.rs` file: read as bytes, never parsed as source, yet
+// rustc still registers it in the SourceMap so diagnostics can point into it.
+pub const PROBE_SNIPPET: &str = include_str!("gen_snippet.rs");
+
+pub fn probe_loaded_files() -> u32 {
+    imp::val() + u32::from(PROBE_TABLE[0]) + PROBE_SNIPPET.len() as u32
+}

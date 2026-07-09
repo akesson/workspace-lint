@@ -21,25 +21,29 @@
 //!
 //! Produces a tree of [`Module`] values rooted at each target root, populated
 //! with the *syntactic* facts the fast tier serves: per-module `cfg_features`,
-//! broken `mod` declarations, the spliced `include!` file set, and the backing
+//! the spliced `include!` file set, the macro-named file set, and the backing
 //! file. Inline `mod foo { ... }` blocks become submodules backed by the same
 //! `file` as their parent, and own a deeper `foo/` directory for any file
 //! children declared inside them.
 //!
+//! The walk evaluates **no cfg**. Every `#[cfg_attr(<pred>, path = "…")]` arm
+//! that names a file on disk is walked, so a platform-abstraction module
+//! contributes its whole subtree regardless of the host. [`crate::reach`] turns
+//! this into the "could rustc open this file?" query that `orphan-file` needs.
+//!
 //! `include!("…")` IS followed: the included file is spliced into the including
 //! module, with its argument const-folded against a `CARGO_*`-seeded env (see
 //! `include_resolve` — no build-script harvest in this tier, so `OUT_DIR`
-//! includes stay unresolved). Spliced files land on [`Module::generated_files`].
+//! includes stay unresolved). Spliced files land on [`Module::generated_files`];
+//! `include!` outside item position, and `include_str!` / `include_bytes!`
+//! anywhere, land on [`Module::named_files`] instead (named, never spliced).
 //!
 //! The walk logic is copied from syn-workspace's `resolve::module_tree` /
 //! `walk.rs` with the resolver-feeding passes (use bindings, occurrences,
-//! signature exposures, macro lowering, doc fences) stripped — the module-file
-//! resolution, cfg-feature, broken-decl, orphan, and splice behavior is
-//! preserved verbatim.
+//! signature exposures, macro lowering, doc fences) stripped.
 //!
-//! Documented limitations (inherited): `#[cfg_attr(cond, path = "...")]` is not
-//! expanded, and an `include!` whose argument can't be const-folded to an
-//! existing path is left un-spliced.
+//! Documented limitation: an `include!` whose argument can't be const-folded to
+//! an existing path is left un-spliced (and unnamed).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -48,16 +52,15 @@ use cargo_metadata::TargetKind as CargoTargetKind;
 
 use super::doc_fences;
 use super::include_resolve::{self, IncludeCtx};
-use super::types::{BrokenModDecl, Module, Target, TargetKind};
+use super::types::{Module, Target, TargetKind};
 use super::{FastError, Result};
 
-/// Submodules, broken `mod` declarations, `#[cfg(feature = "...")]` references,
-/// and spliced `include!` files collected while walking a module. The
-/// `include!` splice merges into these fields, see [`ModuleContents::absorb`].
+/// Submodules, `#[cfg(feature = "...")]` references, and spliced `include!`
+/// files collected while walking a module. The `include!` splice merges into
+/// these fields, see [`ModuleContents::absorb`].
 #[derive(Default)]
 struct ModuleContents {
     submodules: Vec<Module>,
-    broken_mod_decls: Vec<BrokenModDecl>,
     cfg_features: Vec<String>,
     /// Files spliced in via `include!(...)` while collecting this module (and any
     /// nested includes). Bubbled onto [`Module::generated_files`].
@@ -74,12 +77,10 @@ impl ModuleContents {
     fn absorb(&mut self, other: ModuleContents) {
         let ModuleContents {
             submodules,
-            broken_mod_decls,
             cfg_features,
             generated_files,
         } = other;
         self.submodules.extend(submodules);
-        self.broken_mod_decls.extend(broken_mod_decls);
         self.cfg_features.extend(cfg_features);
         self.cfg_features.sort();
         self.cfg_features.dedup();
@@ -133,13 +134,65 @@ fn build_module_from_file(file_path: &Path, mod_dir: &Path, inc: IncludeCtx<'_>)
     Ok(Module {
         file: file_path.to_path_buf(),
         cfg_features: contents.cfg_features,
-        broken_mod_decls: contents.broken_mod_decls,
+        // Scanned once per backing file, over the whole syntax tree rather than
+        // its top-level items — an `include!` in expression position and an
+        // `include_str!` in a `const` initializer are invisible to the item
+        // walk, and calling their targets orphaned would advise deleting a file
+        // rustc compiles in.
+        named_files: named_macro_files(&parsed, file_path, inc),
         generated_files: contents.generated_files,
         // Scanned once per backing file; inline `mod {}` blocks share the
         // parent's source, so their fences are already covered here.
         doctest_crate_refs: doc_fences::doc_fence_crate_refs(&source),
         submodules: contents.submodules,
     })
+}
+
+/// Every existing file named by an `include!` / `include_str!` / `include_bytes!`
+/// anywhere in `parsed` — including positions the item walk never reaches
+/// (expression, `const`/`static` initializer, inside a function body).
+///
+/// Item-position `include!`s are found here too and are therefore recorded
+/// twice: once as [`Module::generated_files`] (spliced source) and once here.
+/// The duplication is harmless — both feed a reach *set* — and keeping the scan
+/// position-blind is what makes it total.
+///
+/// Files that don't exist are skipped: an unresolvable `include!(concat!(env!(
+/// "OUT_DIR"), …))` names nothing we could judge, and generated code under
+/// `target/` is outside the `src/` tree the caller scans anyway.
+fn named_macro_files(parsed: &syn::File, parent_file: &Path, inc: IncludeCtx<'_>) -> Vec<PathBuf> {
+    use syn::visit::Visit;
+
+    struct MacroScan<'a> {
+        base_dir: &'a Path,
+        env: &'a HashMap<String, String>,
+        found: Vec<PathBuf>,
+    }
+
+    impl<'ast> Visit<'ast> for MacroScan<'_> {
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            let names = ["include", "include_str", "include_bytes"];
+            if names
+                .iter()
+                .any(|n| include_resolve::macro_is(&mac.path, n))
+                && let Some(path) =
+                    include_resolve::resolve_include_path(mac, self.base_dir, self.env)
+            {
+                self.found.push(path);
+            }
+            syn::visit::visit_macro(self, mac);
+        }
+    }
+
+    let mut scan = MacroScan {
+        base_dir: parent_file.parent().unwrap_or(Path::new(".")),
+        env: inc.env,
+        found: Vec::new(),
+    };
+    scan.visit_file(parsed);
+    scan.found.sort();
+    scan.found.dedup();
+    scan.found
 }
 
 fn collect_module_contents(
@@ -157,7 +210,6 @@ fn collect_module_contents(
     inc: IncludeCtx<'_>,
 ) -> Result<ModuleContents> {
     let mut submodules = Vec::new();
-    let mut broken_mod_decls = Vec::new();
     let mut cfg_features: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // Files pulled in by `include!(...)` at this module level, resolved to real
     // paths in the main loop and spliced in afterwards.
@@ -199,7 +251,9 @@ fn collect_module_contents(
                 submodules.push(Module {
                     file: parent_file.to_path_buf(),
                     cfg_features: inline.cfg_features,
-                    broken_mod_decls: inline.broken_mod_decls,
+                    // The parent's file-level scan already covered this block's
+                    // macros (same syntax tree).
+                    named_files: Vec::new(),
                     // An `include!` inside an inline `mod { … }` block splices its
                     // file into that inline module, so carry the inline recursion's
                     // generated files up.
@@ -209,29 +263,31 @@ fn collect_module_contents(
                     doctest_crate_refs: std::collections::HashSet::new(),
                     submodules: inline.submodules,
                 });
-            } else if let Some(child_file) =
-                resolve_mod_file(parent_file, mod_dir, item_mod, in_inline)?
-            {
-                // A file reached via `mod foo;` owns `dir_owning_children` of
-                // itself: `foo.rs` owns `foo/`, `foo/mod.rs` owns `foo/`.
-                let child_mod_dir = dir_owning_children(&child_file);
-                submodules.push(build_module_from_file(&child_file, &child_mod_dir, inc)?);
             } else {
-                // `mod foo;` with neither inline body nor backing file —
-                // record so consumers (e.g. module-tree integrity
-                // checks) can flag the dangling declaration.
-                broken_mod_decls.push(BrokenModDecl {
-                    name: child_name,
-                    declared_in: parent_file.to_path_buf(),
-                    line: item_mod.mod_token.span.start().line as u32,
-                });
+                // Every existing file this `mod` could resolve to. Usually one;
+                // two or more for the platform idiom
+                // `#[cfg_attr(unix, path = "unix.rs")] #[cfg_attr(windows, …)]`,
+                // where each arm names a real file and exactly one compiles.
+                //
+                // We walk *all* of them. The walker is cfg-agnostic by design,
+                // and taking only the first arm would leave the other platform's
+                // file — and its whole subtree — unreached.
+                //
+                // Zero candidates is not an error here: `mod foo;` with no
+                // backing file is rustc's E0583, a hard compile error, and the
+                // semantic tier only ever runs on a workspace that compiles.
+                for child_file in resolve_mod_files(parent_file, mod_dir, item_mod, in_inline)? {
+                    // A file reached via `mod foo;` owns `dir_owning_children` of
+                    // itself: `foo.rs` owns `foo/`, `foo/mod.rs` owns `foo/`.
+                    let child_mod_dir = dir_owning_children(&child_file);
+                    submodules.push(build_module_from_file(&child_file, &child_mod_dir, inc)?);
+                }
             }
         }
     }
 
     let mut contents = ModuleContents {
         submodules,
-        broken_mod_decls,
         cfg_features: cfg_features.into_iter().collect(),
         generated_files: Vec::new(),
     };
@@ -330,7 +386,7 @@ pub(crate) fn dir_owning_children(file: &Path) -> PathBuf {
     }
 }
 
-/// Locate the source file backing a `mod foo;` declaration.
+/// Every existing source file a `mod foo;` declaration could resolve to.
 ///
 /// A plain `mod foo;` resolves in `mod_dir` (the declaring module's owning
 /// directory — see `dir_owning_children`): `<mod_dir>/foo.rs` then
@@ -345,63 +401,122 @@ pub(crate) fn dir_owning_children(file: &Path) -> PathBuf {
 ///   name on the way down). This holds for both mod-rs files (`src/` + inline)
 ///   and non-mod-rs files (`dir/stem/` + inline), since `mod_dir` starts from
 ///   [`dir_owning_children`].
-fn resolve_mod_file(
+///
+/// **Returns every candidate, not the one rustc would pick.** The platform
+/// idiom
+///
+/// ```ignore
+/// #[cfg_attr(unix,    path = "unix.rs")]
+/// #[cfg_attr(windows, path = "windows.rs")]
+/// mod imp;
+/// ```
+///
+/// names two real files, of which exactly one compiles per target. This walker
+/// evaluates no cfg, so it cannot know which — and must not have to. Returning
+/// only the first would leave the other platform's file (and its whole subtree)
+/// unreached, which is how `orphan-file` once advised deleting `windows.rs` on
+/// a mac. Used by `memmap2`, `socket2`, and `tempfile`, among others.
+fn resolve_mod_files(
     parent_file: &Path,
     mod_dir: &Path,
     item_mod: &syn::ItemMod,
     in_inline: bool,
-) -> Result<Option<PathBuf>> {
+) -> Result<Vec<PathBuf>> {
     let mod_name = item_mod.ident.to_string();
 
-    if let Some(override_path) = path_attribute(&item_mod.attrs) {
+    let overrides = path_attributes(&item_mod.attrs);
+    if !overrides.is_empty() {
         let base = if in_inline {
             mod_dir
         } else {
             parent_file.parent().unwrap_or(Path::new("."))
         };
-        let candidate = base.join(&override_path);
-        return Ok(candidate.exists().then_some(candidate));
+        return Ok(overrides
+            .into_iter()
+            .map(|p| base.join(p))
+            .filter(|c| c.exists())
+            .collect());
     }
 
+    // The two conventional forms are mutually exclusive in valid Rust (rustc
+    // errors when both exist), so this yields at most one.
     let adjacent = mod_dir.join(format!("{mod_name}.rs"));
     if adjacent.exists() {
-        return Ok(Some(adjacent));
+        return Ok(vec![adjacent]);
     }
 
     let nested = mod_dir.join(&mod_name).join("mod.rs");
     if nested.exists() {
-        return Ok(Some(nested));
+        return Ok(vec![nested]);
     }
 
-    Ok(None)
+    Ok(Vec::new())
 }
 
-/// [`resolve_mod_file`] for callers outside the walk (the cfg-region scan):
+/// [`resolve_mod_files`] for callers outside the walk (the cfg-region scan):
 /// file-level `mod` resolution, infallible, `#[path]` anchored at the
-/// declaring file's directory.
+/// declaring file's directory, first candidate only — a cfg region lives in one
+/// file, and the scan asks which file a `mod` leads into, not which files a
+/// `mod` *could* lead into.
 pub(crate) fn resolve_mod_file_simple(
     parent_file: &Path,
     mod_dir: &Path,
     item_mod: &syn::ItemMod,
 ) -> Option<PathBuf> {
-    resolve_mod_file(parent_file, mod_dir, item_mod, false)
-        .ok()
-        .flatten()
+    resolve_mod_files(parent_file, mod_dir, item_mod, false)
+        .ok()?
+        .into_iter()
+        .next()
 }
 
-/// Read a `#[path = "..."]` value from a list of attributes, ignoring
-/// `cfg_attr`-wrapped forms.
-fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
+/// Every `path = "..."` value on a `mod` declaration, from both the bare
+/// `#[path = "..."]` form and every `#[cfg_attr(<pred>, path = "...")]` arm.
+///
+/// Order is source order, and cfg predicates are *not* evaluated: the caller
+/// keeps whichever candidates exist on disk. See [`resolve_mod_files`] for why
+/// every arm matters.
+fn path_attributes(attrs: &[syn::Attribute]) -> Vec<String> {
+    let mut out = Vec::new();
     for attr in attrs {
-        if !attr.path().is_ident("path") {
-            continue;
+        if attr.path().is_ident("path") {
+            if let Some(value) = path_name_value(&attr.meta) {
+                out.push(value);
+            }
+        } else if attr.path().is_ident("cfg_attr") {
+            out.extend(cfg_attr_paths(attr));
         }
-        if let syn::Meta::NameValue(nv) = &attr.meta
-            && let syn::Expr::Lit(lit) = &nv.value
-            && let syn::Lit::Str(s) = &lit.lit
-        {
-            return Some(s.value());
-        }
+    }
+    out
+}
+
+/// The `path = "..."` arms of one `#[cfg_attr(<pred>, <attr>, ...)]`.
+///
+/// `cfg_attr` is `(predicate, attr, attr, ...)`: the first element is the cfg
+/// condition (which may itself be a list — `any(unix, target_os = "wasi")`) and
+/// the rest are the attributes it would apply. We skip the predicate and read
+/// any `path` name-value among the remainder.
+fn cfg_attr_paths(attr: &syn::Attribute) -> Vec<String> {
+    use syn::punctuated::Punctuated;
+
+    let Ok(args) = attr.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+    else {
+        return Vec::new();
+    };
+    args.iter()
+        .skip(1) // the cfg predicate
+        .filter(|meta| meta.path().is_ident("path"))
+        .filter_map(path_name_value)
+        .collect()
+}
+
+/// The string value of a `path = "..."` meta, if that is what this is.
+fn path_name_value(meta: &syn::Meta) -> Option<String> {
+    if let syn::Meta::NameValue(nv) = meta
+        && nv.path.is_ident("path")
+        && let syn::Expr::Lit(lit) = &nv.value
+        && let syn::Lit::Str(s) = &lit.lit
+    {
+        return Some(s.value());
     }
     None
 }
@@ -577,96 +692,33 @@ fn pick_target_kind(kinds: &[CargoTargetKind]) -> Option<TargetKind> {
     None
 }
 
-/// `.rs` files under `<manifest_dir>/src/` that aren't reached by any
-/// target's module tree and aren't the `src_path` of any target.
-pub(super) fn compute_orphans(manifest_dir: &Path, targets: &[Target]) -> Vec<PathBuf> {
-    let src_dir = manifest_dir.join("src");
-    if !src_dir.is_dir() {
-        return Vec::new();
-    }
-
-    // Files reached by any target's module tree, plus each target's
-    // top-level src_path. Canonicalize so symlinks compare equal.
-    let mut reached: HashSet<PathBuf> = HashSet::new();
-    for target in targets {
-        if let Ok(canon) = target.src_path.canonicalize() {
-            reached.insert(canon);
-        } else {
-            reached.insert(target.src_path.clone());
-        }
-        for module in target.all_modules() {
-            if let Ok(canon) = module.file.canonicalize() {
-                reached.insert(canon);
-            } else {
-                reached.insert(module.file.clone());
-            }
-            // A file spliced in via `include!(...)` is reached even though it is
-            // no module's own `file` (its items live in the including module).
-            for gen_file in &module.generated_files {
-                if let Ok(canon) = gen_file.canonicalize() {
-                    reached.insert(canon);
-                } else {
-                    reached.insert(gen_file.clone());
-                }
-            }
-        }
-    }
-
-    let mut orphans = Vec::new();
-    for path in rs_files_under(&src_dir) {
-        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if !reached.contains(&canon) && !reached.contains(&path) {
-            orphans.push(path);
-        }
-    }
-    orphans
-}
-
-/// Recursively list `.rs` files under `dir`, excluding `target/` and
-/// hidden directories.
-fn rs_files_under(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let read = match std::fs::read_dir(&current) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        for entry in read.flatten() {
-            let path = entry.path();
-            let name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default();
-            if name.starts_with('.') || name == "target" {
-                continue;
-            }
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    out
-}
-
+/// Walk-driving helper shared by this module's tests and [`crate::reach`]'s
+/// (which needs a real tree to derive a reach set from).
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
 
     /// Build a module tree from an in-tempdir `src/` layout with an empty
     /// include env (literal includes still resolve).
-    fn build(src: &Path, root: &str) -> Module {
+    pub(crate) fn build(src: &Path, root: &str) -> Module {
         static EMPTY_ENV: std::sync::LazyLock<HashMap<String, String>> =
             std::sync::LazyLock::new(HashMap::new);
         let root_file = src.join(root);
         let mod_dir = root_file.parent().unwrap().to_path_buf();
         build_module_from_file(&root_file, &mod_dir, IncludeCtx::root(&EMPTY_ENV)).expect("build")
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::test_support::build;
+    use super::*;
+
+    /// Both file forms resolve; a `mod` with no backing file is simply not a
+    /// module (it is rustc's E0583, and the semantic tier only runs on a
+    /// workspace that compiles).
     #[test]
-    fn walks_mod_decls_in_both_file_forms_and_records_broken_ones() {
+    fn walks_mod_decls_in_both_file_forms_and_skips_unresolvable_ones() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(src.join("b")).unwrap();
@@ -680,9 +732,6 @@ mod tests {
             .map(|m| m.file.file_name().unwrap().to_str().unwrap().to_string())
             .collect();
         assert_eq!(files, ["lib.rs", "a.rs", "mod.rs"]);
-        assert_eq!(root.broken_mod_decls.len(), 1);
-        assert_eq!(root.broken_mod_decls[0].name, "missing");
-        assert_eq!(root.broken_mod_decls[0].line, 3);
     }
 
     #[test]
@@ -743,23 +792,16 @@ mod tests {
         .unwrap();
         std::fs::write(
             src.join("generated.rs"),
-            "#[cfg(feature = \"genfeat\")]\npub fn g() {}\nmod dangling;\n",
+            "#[cfg(feature = \"genfeat\")]\npub fn g() {}\n",
         )
         .unwrap();
 
         let root = build(&src, "lib.rs");
-        // Spliced once despite the duplicate include; its cfg features and
-        // broken decls land on the including module, anchored in the
-        // generated file.
+        // Spliced once despite the duplicate include; its cfg features land on
+        // the including module.
         assert_eq!(root.generated_files.len(), 1);
         assert!(root.generated_files[0].ends_with("generated.rs"));
         assert_eq!(root.cfg_features, ["genfeat"]);
-        assert_eq!(root.broken_mod_decls.len(), 1);
-        assert!(
-            root.broken_mod_decls[0]
-                .declared_in
-                .ends_with("generated.rs")
-        );
     }
 
     #[test]
@@ -788,24 +830,65 @@ mod tests {
         assert_eq!(names, ["a.rs", "b.rs", "c.rs"]);
     }
 
+    /// A `#[cfg_attr]` whose predicate is itself a list, and which carries a
+    /// second attribute after the `path` — `tempfile`'s exact shape.
     #[test]
-    fn compute_orphans_flags_unreached_src_files_only() {
+    fn cfg_attr_path_parses_list_predicates_and_trailing_attrs() {
+        let attrs: syn::ItemMod = syn::parse_quote! {
+            #[cfg_attr(any(unix, target_os = "wasi"), path = "unix.rs", allow(dead_code))]
+            #[cfg_attr(windows, path = "windows.rs")]
+            #[cfg(feature = "x")]
+            mod imp;
+        };
+        assert_eq!(path_attributes(&attrs.attrs), ["unix.rs", "windows.rs"]);
+    }
+
+    /// A bare `#[path]` still wins, and a `cfg_attr` carrying no `path` at all
+    /// contributes nothing.
+    #[test]
+    fn path_attributes_ignores_unrelated_cfg_attrs() {
+        let item: syn::ItemMod = syn::parse_quote! {
+            #[cfg_attr(test, allow(dead_code))]
+            #[path = "custom.rs"]
+            mod imp;
+        };
+        assert_eq!(path_attributes(&item.attrs), ["custom.rs"]);
+    }
+
+    /// A macro-named file is reached, but it is not *generated code*: nothing
+    /// was spliced, so surgery's no-go set stays empty.
+    #[test]
+    fn macro_named_files_are_not_generated_files() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("lib.rs"), "mod reached;\n").unwrap();
-        std::fs::write(src.join("reached.rs"), "").unwrap();
-        std::fs::write(src.join("stale.rs"), "").unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub const S: &str = include_str!(\"snippet.rs\");\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("snippet.rs"), "fn x() {}").unwrap();
 
         let root = build(&src, "lib.rs");
-        let targets = vec![Target {
-            kind: TargetKind::Lib,
-            name: "demo".into(),
-            src_path: src.join("lib.rs"),
-            root,
-        }];
-        let orphans = compute_orphans(dir.path(), &targets);
-        assert_eq!(orphans.len(), 1);
-        assert!(orphans[0].ends_with("stale.rs"));
+        assert!(root.generated_files.is_empty());
+        assert_eq!(root.named_files.len(), 1);
+        assert!(root.named_files[0].ends_with("snippet.rs"));
+    }
+
+    /// An `include!` naming a file that doesn't exist (an unresolved `OUT_DIR`
+    /// path, say) names nothing judgeable and must not enter the reach set.
+    #[test]
+    fn named_files_skip_nonexistent_macro_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub const S: &str = include_str!(\"absent.rs\");\n",
+        )
+        .unwrap();
+
+        let root = build(&src, "lib.rs");
+        assert!(root.named_files.is_empty());
     }
 }

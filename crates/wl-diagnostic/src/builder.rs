@@ -49,8 +49,10 @@ impl DiagnosticBuilder {
     }
 
     /// Set the level *and* mark it as lint-chosen, so the `[lints]` severity
-    /// table won't override it. Used by lints with their own per-rule
-    /// severity (currently `architecture`).
+    /// table won't override it. Two uses: a lint with its own per-rule severity
+    /// (`architecture`), and a *coverage* note — one saying a finding could not
+    /// be judged, which a `deny` must not escalate into a build failure
+    /// (`unused-deps`, `orphan-file`).
     pub fn level_explicit(mut self, level: Level) -> Self {
         self.level = level;
         self.level_is_explicit = true;

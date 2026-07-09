@@ -29,7 +29,7 @@ use wl_lint_api::util;
 const DEFAULT_CONFIG: &str = r#"# workspace-lint configuration.
 # Docs: https://github.com/akesson/workspace-lint
 #
-# Structural lints (centralized-deps, module-tree, feature-drift, unused-deps,
+# Structural lints (centralized-deps, orphan-file, feature-drift, unused-deps,
 # unused-pub) are ON by default at `warn` with no config needed. This file only
 # escalates/loosens levels and enables the policy lints (which need a rules
 # table to do anything).

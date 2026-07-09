@@ -897,6 +897,66 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         }
     }
 
+    // 21. `loaded_files` — rustc's own record of the files it opened, and the
+    //     substrate of the `orphan-file` lint. Every construct asserted here
+    //     defeats a syntactic walker, which is the whole reason the lint reads
+    //     this instead of guessing. A pin bump that changes any of these
+    //     semantics must fail HERE, not as a confusing case-fixture diff.
+    {
+        let opened: Vec<&str> = frag
+            .loaded_files
+            .iter()
+            .map(|f| file_name(f))
+            .collect();
+        let mut want_present = vec![
+            "lib.rs",       // the crate root
+            "gen.rs",       // a plain `mod`
+            "crlf.rs",      // a plain `mod`
+            "inherent.rs",  // a plain `mod`
+            "imp_main.rs",  // the TAKEN `cfg_attr(.., path = ..)` arm
+            "gen_table.rs", // `include!` in EXPRESSION position
+            // `include_str!` of a `.rs` file. rustc registers the target in the
+            // SourceMap even though it is read as bytes and never parsed as
+            // source. `wl-fast`'s `declared_reach` names it independently, so if
+            // this ever stops holding the lint degrades to a harmless coverage
+            // gap rather than telling someone to delete a compiled-in file.
+            "gen_snippet.rs",
+        ];
+        want_present.sort();
+        for want in &want_present {
+            ck.expect_named(
+                opened.contains(want),
+                want,
+                "is in loaded_files (rustc opened it)",
+            );
+        }
+        // The UNTAKEN cfg_attr arm: rustc never opens it under this cfg. This
+        // is the one residual class the lint reports as a coverage gap.
+        ck.expect_named(
+            !opened.contains(&"imp_test.rs"),
+            "imp_test.rs",
+            "is NOT in loaded_files (untaken cfg_attr arm)",
+        );
+        // build.rs belongs to the build-script unit, not the lib unit.
+        ck.expect_named(
+            !opened.contains(&"build.rs"),
+            "build.rs",
+            "is NOT in the lib unit's loaded_files",
+        );
+        // The CARGO_MANIFEST_DIR filter keeps registry deps and OUT_DIR out.
+        let probe_dir = ck.root.canonicalize().unwrap_or_else(|_| ck.root.clone());
+        let escaped: Vec<&String> = frag
+            .loaded_files
+            .iter()
+            .filter(|f| !Path::new(f).starts_with(&probe_dir))
+            .collect();
+        ck.expect_named(
+            escaped.is_empty(),
+            "loaded_files",
+            "contains only files under CARGO_MANIFEST_DIR",
+        );
+    }
+
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());
     anyhow::ensure!(
         ck.failures.is_empty(),
@@ -904,6 +964,14 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         ck.failures.join("\n")
     );
     Ok(())
+}
+
+/// The final path component of a `loaded_files` entry.
+fn file_name(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
 }
 
 /// Locate the toolchain-suffixed dylib dylint_linting's build script produced.
@@ -965,6 +1033,17 @@ impl Checker {
             many => self
                 .failures
                 .push(format!("[{name}] expected 1 item, found {}", many.len())),
+        }
+    }
+
+    /// [`Self::expect`] for assertions that aren't about an `ItemFact` — the
+    /// `loaded_files` set is fragment-level, with no item to label it by.
+    fn expect_named(&mut self, cond: bool, label: &str, msg: &str) {
+        if cond {
+            self.passes += 1;
+            println!("PASS  {label}: {msg}");
+        } else {
+            self.failures.push(format!("{label}: {msg}"));
         }
     }
 

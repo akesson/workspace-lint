@@ -31,6 +31,7 @@ mod include_resolve;
 mod manifest;
 mod metadata;
 mod module_tree;
+mod reach;
 pub mod shipped_source;
 pub mod timing;
 mod types;
@@ -40,7 +41,7 @@ pub use metadata::{CrateInfo, FastModel};
 /// Re-export `toml_edit` so consumers can name [`toml_edit::Item`] and
 /// friends at the exact version [`Manifest`] parses with.
 pub use toml_edit;
-pub use types::{BrokenModDecl, Module, Target, TargetKind};
+pub use types::{Module, Target, TargetKind};
 
 use std::path::PathBuf;
 

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use cargo_metadata::MetadataCommand;
 
 use super::types::{Module, Target};
-use super::{FastError, Manifest, Result, module_tree};
+use super::{FastError, Manifest, Result, module_tree, reach};
 
 /// The build-free workspace model: root, members, and their parsed manifests
 /// plus lean syntactic module trees.
@@ -39,7 +39,8 @@ pub struct CrateInfo {
     declared_features: Vec<String>,
     feature_values: BTreeMap<String, Vec<String>>,
     targets: Vec<Target>,
-    orphan_files: Vec<PathBuf>,
+    declared_reach: std::collections::HashSet<PathBuf>,
+    src_files: Vec<PathBuf>,
     generated_files: Vec<PathBuf>,
 }
 
@@ -88,7 +89,8 @@ impl FastModel {
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect();
                         let targets = module_tree::build_targets(pkg, &manifest_dir)?;
-                        let orphan_files = module_tree::compute_orphans(&manifest_dir, &targets);
+                        let declared_reach = reach::declared_reach(&targets);
+                        let src_files = reach::src_rs_files(&manifest_dir);
                         // Union of every target's spliced `include!` files (each module
                         // records its own in [`Module::generated_files`]).
                         let generated_files: Vec<PathBuf> = targets
@@ -103,7 +105,8 @@ impl FastModel {
                             declared_features,
                             feature_values,
                             targets,
-                            orphan_files,
+                            declared_reach,
+                            src_files,
                             generated_files,
                         })
                     })
@@ -291,11 +294,23 @@ impl CrateInfo {
         &self.targets
     }
 
-    /// `.rs` files under `<manifest_dir>/src/` that aren't reached by any
-    /// of this crate's targets' module trees and aren't the `src_path` of
-    /// some other target. Useful for module-tree integrity analyses.
-    pub fn orphan_files(&self) -> &[PathBuf] {
-        &self.orphan_files
+    /// Every file this crate's source text names, canonicalized: each target's
+    /// root, each module's backing file, each `include!`-spliced file, and each
+    /// file named by an `include!` / `include_str!` / `include_bytes!` anywhere.
+    ///
+    /// Deliberately cfg-agnostic, so it over-approximates: it answers *could
+    /// some cfg make rustc open this file?*, never *did rustc open it*. Only the
+    /// semantic tier's `loaded_files` answers the latter, and only that may
+    /// judge a file dead. A file named here but compiled by no config is a
+    /// coverage gap, not an orphan — so a gap in *this* set would promote an
+    /// honest finding into a destructive one.
+    pub fn declared_reach(&self) -> &std::collections::HashSet<PathBuf> {
+        &self.declared_reach
+    }
+
+    /// Every `.rs` file under `<manifest_dir>/src/`, as found on disk.
+    pub fn src_files(&self) -> &[PathBuf] {
+        &self.src_files
     }
 
     /// Iterate every module in every target, root-first within each target.
@@ -384,8 +399,15 @@ mod tests {
                 .any(|m| m.file.ends_with("wl-fast/src/metadata.rs")),
             "the module walk should reach wl-fast/src/metadata.rs"
         );
-        // A clean crate has no unreachable `src/**.rs` files (the dogfooded
-        // module-tree lint denies them).
-        assert_eq!(member.orphan_files(), &[] as &[std::path::PathBuf]);
+        // Every `src/**.rs` file in this crate is named by its own source text.
+        // The `orphan-file` lint's syntactic half, dogfooded on wl-fast itself:
+        // a gap here would downgrade a real finding, never invent one.
+        let unnamed: Vec<_> = member
+            .src_files()
+            .iter()
+            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+            .filter(|p| !member.declared_reach().contains(p))
+            .collect();
+        assert!(unnamed.is_empty(), "unnamed src files: {unnamed:?}");
     }
 }

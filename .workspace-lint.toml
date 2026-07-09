@@ -6,7 +6,7 @@
 # back under the limit, `stale-expect` nudges us to clean up.
 
 # Lint levels. `[lints]` is the single place a lint is enabled and leveled.
-# Structural lints (centralized-deps, module-tree, feature-drift, unused-deps,
+# Structural lints (centralized-deps, orphan-file, feature-drift, unused-deps,
 # unused-pub, stale-*) are on by default at `warn`; the entries below escalate
 # the ones this repo enforces to `deny`. Only a surviving `Deny`-level finding
 # flips the exit code, and the dogfood test asserts exit 0.
@@ -24,7 +24,7 @@ file-size = "deny"
 # resolution regression — e.g. a target root failing to find a sibling
 # `mod common;`, or a renamed module leaving a stale file — fails dogfood
 # instead of silently shrinking the analyzed surface.
-module-tree = "deny"
+orphan-file = "deny"
 unused-deps = "deny"
 unused-pub = "deny"
 stale-expect = "deny"

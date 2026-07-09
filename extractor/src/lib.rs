@@ -215,6 +215,7 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
     }
 
     let references = collect_references(tcx, &crate_code);
+    let loaded_files = collect_loaded_files(sm);
 
     IrFragment {
         schema_version: wl_ir::SCHEMA_VERSION,
@@ -222,7 +223,61 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         target_kind: target_kind(tcx).to_string(),
         items,
         references,
+        loaded_files,
     }
+}
+
+/// Every source file rustc opened for this compilation unit, restricted to the
+/// crate's own package directory.
+///
+/// This is the ground truth behind `orphan-file`. The `SourceMap` holds a
+/// `SourceFile` for each file that was *parsed as source* — which is exactly
+/// the set we want: it includes files reached through `#[cfg_attr(…, path)]`,
+/// `macro_rules!`-generated `mod`s, and `include!` in any position, because by
+/// the time a `LateLintPass` runs, expansion has already happened.
+///
+/// `include_str!` / `include_bytes!` targets land here too — rustc registers
+/// them in the `SourceMap` so diagnostics can point into them (verified against
+/// the pinned nightly, not assumed). The fast tier's `declared_reach` names
+/// them independently, so the day that stops being true a live file degrades to
+/// a harmless coverage-gap finding rather than a "delete this file" claim.
+///
+/// The `CARGO_MANIFEST_DIR` filter drops registry dependencies and `OUT_DIR`
+/// generated code. Paths are canonicalized on both sides of the comparison:
+/// rustc hands us paths relative to its working directory (the workspace root),
+/// and on macOS `/tmp` vs `/private/tmp` would otherwise never match.
+fn collect_loaded_files(sm: &rustc_span::source_map::SourceMap) -> Vec<String> {
+    let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
+        return Vec::new();
+    };
+    let manifest_dir = std::path::PathBuf::from(manifest_dir);
+    let manifest_dir = manifest_dir.canonicalize().unwrap_or(manifest_dir);
+    let cwd = std::env::current_dir().ok();
+
+    let mut out = Vec::new();
+    for source_file in sm.files().iter() {
+        let FileName::Real(rfn) = &source_file.name else {
+            continue;
+        };
+        let Some(path) = rfn.local_path() else {
+            continue;
+        };
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            match &cwd {
+                Some(dir) => dir.join(path),
+                None => continue,
+            }
+        };
+        let absolute = absolute.canonicalize().unwrap_or(absolute);
+        if absolute.starts_with(&manifest_dir) {
+            out.push(absolute.to_string_lossy().into_owned());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Project one local def into its [`ItemFact`] — the whole emit policy for a
