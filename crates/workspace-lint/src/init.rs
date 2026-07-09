@@ -1,6 +1,6 @@
 //! The `init` subcommand: scaffold a default `.workspace-lint.toml`.
 //!
-//! A side-effecting command (like `done` / `expand`) — it emits no diagnostics,
+//! A side-effecting command (like `expand`) — it emits no diagnostics,
 //! so it carries no `LintId`. It writes the [`DEFAULT_CONFIG`] template to the
 //! cwd, but *only* when the cwd is a genuine cargo **workspace root**: the root
 //! `Cargo.toml` must declare a `[workspace]` table and the cwd must be that root
@@ -71,11 +71,6 @@ centralized-deps = "deny"
 # values may differ) across the workspace. The bare table enables it with the
 # built-in thresholds; see the README for the tuning fields.
 # [duplicate-code]
-
-# Keep docs fresh: flag a CLAUDE.md older than the sources it documents.
-# [[freshness.rules]]
-# glob = "**/CLAUDE.md"
-# depends-on = "**/*.rs"
 
 # Pin an installed CLI tool's version to a workspace crate's version.
 # [[cli-crate-version.rules]]

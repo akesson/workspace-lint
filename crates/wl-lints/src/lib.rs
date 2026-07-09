@@ -25,7 +25,6 @@ pub mod crate_size;
 pub mod duplicate_code;
 pub mod feature_drift;
 pub mod file_size;
-pub mod freshness;
 pub mod module_tree;
 pub mod stale_git_index;
 pub mod unused_deps;

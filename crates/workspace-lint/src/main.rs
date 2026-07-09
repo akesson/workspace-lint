@@ -40,14 +40,6 @@ fn main() {
         Some(Commands::Init { force }) => {
             init::run(force);
         }
-        Some(Commands::Done) => {
-            // `done` only touches freshness targets; config diagnostics aren't
-            // rendered here, so drop them.
-            let (config, _) = config::load();
-            if let Some(ref fc) = config.freshness {
-                wl_lints::freshness::mark_done(fc);
-            }
-        }
         Some(Commands::Check { rule }) => run_check(rule, &cli, format, fix),
         Some(Commands::Explain { lint }) => docs::explain(&lint),
         Some(Commands::Expand {

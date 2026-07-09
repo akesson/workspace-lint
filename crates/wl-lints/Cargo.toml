@@ -19,7 +19,6 @@ publish = false
 clap = { workspace = true }
 fs-err = { workspace = true }
 globset = { workspace = true }
-ignore = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 strip-ansi-escapes = { workspace = true }

@@ -33,7 +33,6 @@ pub enum LintId {
     DuplicateCode,
     FeatureDrift,
     FileSize,
-    Freshness,
     ModuleTree,
     StaleExpect,
     StaleGitIndex,
@@ -54,7 +53,6 @@ impl LintId {
         LintId::DuplicateCode,
         LintId::FeatureDrift,
         LintId::FileSize,
-        LintId::Freshness,
         LintId::ModuleTree,
         LintId::StaleExpect,
         LintId::StaleGitIndex,
@@ -75,7 +73,6 @@ impl LintId {
             Self::DuplicateCode => "workspace-lint::duplicate-code",
             Self::FeatureDrift => "workspace-lint::feature-drift",
             Self::FileSize => "workspace-lint::file-size",
-            Self::Freshness => "workspace-lint::freshness",
             Self::ModuleTree => "workspace-lint::module-tree",
             Self::StaleExpect => "workspace-lint::stale-expect",
             Self::StaleGitIndex => "workspace-lint::stale-git-index",
@@ -107,7 +104,7 @@ impl LintId {
     /// `true` for the *policy* lints that have no meaning without parameters
     /// (or whose noise profile demands deliberate opt-in), so the presence of
     /// their config table is the enable switch: `file-size`, `crate-size`,
-    /// `freshness`, `cli-crate-version`, `architecture`, `duplicate-code`.
+    /// `cli-crate-version`, `architecture`, `duplicate-code`.
     ///
     /// The remaining (*structural*) lints catch universal mistakes with zero
     /// required config, so they run whenever their effective level isn't
@@ -118,7 +115,6 @@ impl LintId {
             self,
             Self::FileSize
                 | Self::CrateSize
-                | Self::Freshness
                 | Self::CliCrateVersion
                 | Self::Architecture
                 | Self::DuplicateCode
@@ -138,7 +134,6 @@ pub(crate) const ALL_LINTS: &[&str] = &[
     LintId::DuplicateCode.id(),
     LintId::FeatureDrift.id(),
     LintId::FileSize.id(),
-    LintId::Freshness.id(),
     LintId::ModuleTree.id(),
     LintId::StaleExpect.id(),
     LintId::StaleGitIndex.id(),

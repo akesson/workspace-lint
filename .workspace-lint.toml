@@ -12,9 +12,9 @@
 # flips the exit code, and the dogfood test asserts exit 0.
 #
 # `feature-drift` is intentionally left at its default `warn` (visible but not
-# CI-failing). The policy lints `freshness` / `cli-crate-version` are off
-# because this repo configures no rules for them; add a `[[freshness.rules]]` /
-# `[[cli-crate-version.rules]]` table to opt in.
+# CI-failing). The policy lint `cli-crate-version` is off because this repo
+# configures no rules for it; add a `[[cli-crate-version.rules]]` table to
+# opt in.
 [lints]
 centralized-deps = "deny"
 crate-size = "deny"
@@ -83,7 +83,7 @@ max-code-lines = 4000
 # always surfaces). Denied so a copy-paste between lints/crates fails
 # dogfood: the fix is extraction, or a load-bearing `expect!` where the twin
 # structure is deliberate. Adoption surfaced four real clone groups
-# (`LintId::short`'s hand-synced twin match, the freshness/expand walk, the
+# (`LintId::short`'s hand-synced twin match, the expand walk, the
 # unused-deps/-pub check scaffolding, the DegreeView constructors) — all
 # resolved by extraction, so no directive was needed.
 [duplicate-code]

@@ -27,7 +27,6 @@
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 
 pub fn workspace_lint() -> assert_cmd::Command {
     cargo_bin_cmd!("workspace-lint")
@@ -99,10 +98,6 @@ pub fn bless_enabled() -> bool {
 /// [[append]]                  # inject a directive that must stay uncommitted
 /// path = "crates/demo/Cargo.toml"
 /// text = "\n# workspace-lint: expect(centralized-deps)\n"
-///
-/// [[mtime]]                   # for freshness; relative order is deterministic
-/// path = "crates/api/CLAUDE.md"
-/// order = 0                   # lower = older
 /// ```
 pub fn apply_setup(fixture_dir: &Path, tmp: &Path) -> Result<Vec<String>, String> {
     let setup_path = fixture_dir.join("setup.toml");
@@ -174,29 +169,6 @@ pub fn apply_setup(fixture_dir: &Path, tmp: &Path) -> Result<Vec<String>, String
                     .ok_or("args entries must be strings")?
                     .to_string(),
             );
-        }
-    }
-
-    if let Some(entries) = doc.get("mtime").and_then(toml::Value::as_array) {
-        // Assign mtimes in `order`: a deterministic base plus 10s per step, so
-        // a lower order is strictly older regardless of filesystem resolution.
-        let base = SystemTime::now();
-        for entry in entries {
-            let rel = entry
-                .get("path")
-                .and_then(toml::Value::as_str)
-                .ok_or("mtime entry needs a string `path`")?;
-            let order = entry
-                .get("order")
-                .and_then(toml::Value::as_integer)
-                .ok_or("mtime entry needs an integer `order`")?;
-            let when = base + Duration::from_secs(order.max(0) as u64 * 10);
-            let f = std::fs::File::options()
-                .write(true)
-                .open(tmp.join(rel))
-                .map_err(|e| format!("open {rel} for mtime: {e}"))?;
-            f.set_times(std::fs::FileTimes::new().set_modified(when))
-                .map_err(|e| format!("set mtime {rel}: {e}"))?;
         }
     }
 

@@ -22,9 +22,8 @@ pub fn separator_stripped(name: &str) -> String {
 }
 
 /// Walk `root` (`.gitignore`-aware, via the `ignore` crate) and collect every
-/// file whose root-relative path matches `matcher`. Shared by the `freshness`
-/// lint and the binary's `expand` scanner — extracted when `duplicate-code`'s
-/// own dogfood flagged the two hand-rolled copies of this walk as clones.
+/// file whose root-relative path matches `matcher`. Used by the binary's
+/// `expand` scanner.
 pub fn walk_files_matching(
     root: &std::path::Path,
     matcher: &globset::GlobMatcher,

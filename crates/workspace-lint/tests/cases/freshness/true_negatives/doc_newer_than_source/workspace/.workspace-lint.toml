@@ -1,7 +1,0 @@
-[lints]
-default = "allow"
-freshness = "deny"
-
-[[freshness.rules]]
-glob = "**/CLAUDE.md"
-depends-on = "**/*.rs"
