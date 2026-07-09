@@ -14,6 +14,7 @@ error: pub fn `unused_one` in crate `alpha` appears unused — consider removing
   |
   = help: remove the item or its `pub` visibility
   = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
 help: tighten to `pub(crate)`
   |
 3 - pub

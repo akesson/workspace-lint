@@ -156,7 +156,9 @@ fn find_violations(file_lines: &HashMap<String, usize>, rules: &[FileSizeRule]) 
                 .help("split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)")
                 .help("extract related structs, enums, or trait impls into their own modules")
                 .help("only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded")
-                .note(format!(
+                // Rule attribution is identical for every file the rule
+                // matches — once per run is enough.
+                .note_once(format!(
                     "configured by [[file-size.rules]] glob = \"{}\"",
                     rule.glob.as_str()
                 ))

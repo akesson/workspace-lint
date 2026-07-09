@@ -49,18 +49,29 @@ pub(crate) struct FixSummary {
 /// than filtered.
 pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
     let mut structural_count = 0usize;
+    let mut withheld_count = 0usize;
     let mut candidates: Vec<Suggestion> = Vec::new();
     for d in diagnostics {
         for s in &d.suggestions {
             if s.applicability == Applicability::MachineApplicable {
                 structural_count += 1;
                 candidates.push(s.clone());
+            } else {
+                withheld_count += 1;
             }
         }
     }
 
     if candidates.is_empty() {
-        eprintln!("workspace-lint --fix: no structural fixes available");
+        if withheld_count > 0 {
+            eprintln!(
+                "workspace-lint --fix: no machine-applicable fixes — {withheld_count} \
+                 suggestion{} withheld as possibly incorrect (each finding says why)",
+                if withheld_count == 1 { "" } else { "s" },
+            );
+        } else {
+            eprintln!("workspace-lint --fix: no structural fixes available");
+        }
         return FixSummary::default();
     }
 
@@ -68,6 +79,13 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
         "workspace-lint --fix: applying {structural_count} structural fix{}",
         if structural_count == 1 { "" } else { "es" },
     );
+    if withheld_count > 0 {
+        eprintln!(
+            "workspace-lint --fix: {withheld_count} more suggestion{} withheld as possibly \
+             incorrect (each finding says why)",
+            if withheld_count == 1 { "" } else { "s" },
+        );
+    }
 
     let mut by_file: BTreeMap<std::path::PathBuf, Vec<Suggestion>> = BTreeMap::new();
     for s in candidates {

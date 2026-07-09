@@ -147,7 +147,9 @@ fn find_crate_violations(
                 rel.clone(),
             )
             .help("split the crate into smaller, more focused crates")
-            .note(format!(
+            // Rule attribution is identical for every crate the rule
+            // matches — once per run is enough.
+            .note_once(format!(
                 "configured by [[crate-size.rules]] glob = \"{}\"",
                 rule.glob.as_str()
             ))

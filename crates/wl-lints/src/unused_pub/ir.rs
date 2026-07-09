@@ -383,7 +383,7 @@ fn build_diagnostic(
             region.predicate,
             region.file,
         )),
-        None => builder.note(
+        None => builder.note_once(
             "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
         ),
     };
@@ -467,6 +467,13 @@ fn apply_structural_fix(
              via `avoid-breaking-exported-api`) — resolve that first or narrow by hand",
             unmask.lint, unmask.member
         ))
+    } else if verdict == PubVerdict::Unused && !auto_delete {
+        // Without this the finding shows a naked `pub(crate)` diff that reads
+        // as "will be auto-fixed" — say up front that `--fix` won't act on it.
+        builder.note(
+            "not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify \
+             it is truly unused, then delete it or narrow by hand",
+        )
     } else {
         builder
     };
@@ -546,7 +553,7 @@ fn publish_hint(krate: &CrateInfo, crate_code: &str, count: usize) -> Diagnostic
          to treat its public API as external (these findings become exempt)",
         krate.name
     ))
-    .note(
+    .note_once(
         "workspace-lint treats a crate as workspace-internal unless it declares `publish = true` \
          (or a registry); see the unused-pub docs",
     )

@@ -145,8 +145,10 @@ fn build_diagnostic(
         ));
     }
 
+    // A rule's `reason` is rule-level boilerplate (identical on every finding
+    // the rule produces) — once per run is enough.
     if let Some(reason) = &rule.reason {
-        builder = builder.note(reason.clone());
+        builder = builder.note_once(reason.clone());
     }
 
     // The "imported in module" / "imported locally as ..." note loses

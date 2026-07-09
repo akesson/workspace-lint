@@ -56,6 +56,29 @@ impl Applicability {
     }
 }
 
+/// One `= note:` line on a finding.
+///
+/// A note is per-finding signal by default: it renders on every finding that
+/// carries it. `once_per_lint` marks shared boilerplate — the same caveat a
+/// lint stamps on all of its findings — which the human renderer prints on
+/// the first finding only. Structured output (`json`/`github`) always carries
+/// every note; the collapse is a terminal-readability concern.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    pub text: String,
+    pub once_per_lint: bool,
+}
+
+impl<T: Into<String>> From<T> for Note {
+    /// A bare string is a per-finding note — the default, never collapsed.
+    fn from(text: T) -> Self {
+        Note {
+            text: text.into(),
+            once_per_lint: false,
+        }
+    }
+}
+
 /// Pointer at a region of source. Carries everything needed by the three
 /// renderers and by `--fix`'s byte-range applier.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -205,7 +228,7 @@ pub struct Diagnostic {
     pub message: String,
     pub primary: Option<Span>,
     pub helps: Vec<String>,
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
     pub suggestions: Vec<Suggestion>,
     pub silence_anchor: SilenceAnchor,
     /// `true` when the lint itself chose this diagnostic's level (e.g. an

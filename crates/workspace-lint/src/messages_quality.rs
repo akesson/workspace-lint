@@ -101,7 +101,7 @@ fn no_imperative_avoidance_phrases() {
     for (name, d) in scenarios_iter() {
         let blobs = std::iter::once(d.message.as_str())
             .chain(d.helps.iter().map(String::as_str))
-            .chain(d.notes.iter().map(String::as_str));
+            .chain(d.notes.iter().map(|n| n.text.as_str()));
         for blob in blobs {
             for phrase in banned {
                 assert!(
@@ -118,7 +118,7 @@ fn no_double_spaces_or_edge_whitespace() {
     for (name, d) in scenarios_iter() {
         let blobs = std::iter::once(("message", d.message.as_str()))
             .chain(d.helps.iter().map(|h| ("help", h.as_str())))
-            .chain(d.notes.iter().map(|n| ("note", n.as_str())));
+            .chain(d.notes.iter().map(|n| ("note", n.text.as_str())));
         for (kind, blob) in blobs {
             assert_eq!(
                 blob.trim(),
