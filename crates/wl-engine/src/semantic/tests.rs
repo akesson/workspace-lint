@@ -4106,3 +4106,201 @@ fn test_scaffolding_blocks_on_shared_fixture() {
         other => panic!("expected Blocked, got {other:?}"),
     }
 }
+
+/// The target's direct referrer is a shared helper: a test fn outside the
+/// closure still calls it. The universe never chases *inbound* referrers, so
+/// the helper is anchored (`KeptBySurvivor`) and that — not a reach — is the
+/// reported blocker.
+#[test]
+fn test_scaffolding_reports_kept_by_survivor_blocker() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![
+            item(&["beta", "tests", "check"], "K_C", "fn", Some("mod")),
+            item(&["beta", "tests", "t2"], "K_T2", "fn", Some("mod")),
+        ],
+        vec![
+            edge_ext(
+                &["beta", "tests", "check"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            edge(
+                &["beta", "tests", "t2"],
+                &["beta", "tests", "check"],
+                "K_C",
+                false,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Blocked(b) => {
+            assert_eq!(b.test, "beta::tests::check");
+            assert!(
+                matches!(&b.reason, BlockReason::KeptBySurvivor { from } if from == "beta::tests::t2"),
+                "wrong reason: {:?}",
+                b.reason
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+/// A macro-generated referencing test (the `#[rstest]`/`test_case` shape: the
+/// fn's span is from-expansion) has no safe auto-delete surface — the target
+/// is blocked `NotDeletable`, never half-deleted.
+#[test]
+fn test_scaffolding_blocks_on_macro_generated_test() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    let mut t = item(&["beta", "tests", "t"], "K_T", "fn", Some("mod"));
+    t.span.as_mut().unwrap().from_expansion = true;
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![t],
+        vec![edge_ext(
+            &["beta", "tests", "t"],
+            &["alpha", "embalmed"],
+            "K_E",
+            false,
+            true,
+        )],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Blocked(b) => {
+            assert_eq!(b.test, "beta::tests::t");
+            assert!(
+                matches!(&b.reason, BlockReason::NotDeletable),
+                "wrong reason: {:?}",
+                b.reason
+            );
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+/// The harness-main trap, pinned at the rule: the `--test` harness's
+/// generated `fn main` is a *synthetic* def sharing the real `main`'s
+/// identity and referencing every `#[test]` fn. Its edge is compiler
+/// plumbing, not an anchor — the closure must still clear.
+#[test]
+fn test_scaffolding_ignores_synthetic_harness_referrer() {
+    let alpha = frag(
+        "alpha",
+        vec![item(&["alpha", "embalmed"], "K_E", "fn", Some("mod"))],
+        vec![],
+    );
+    // The real bin `main` — makes `beta::main` a production identity, exactly
+    // the collision the synthetic harness main hides behind.
+    let beta = frag_target(
+        "beta",
+        "bin",
+        vec![item(&["beta", "main"], "K_M_REAL", "fn", Some("mod"))],
+        vec![],
+    );
+    let mut harness_main = item(&["beta", "main"], "K_M", "fn", Some("mod"));
+    harness_main.span = None; // spanless ⇒ synthetic
+    harness_main.full_span = None;
+    let mut harness_edge = edge(&["beta", "main"], &["beta", "tests", "t"], "K_T", false);
+    harness_edge.from_key = "K_M".into();
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![
+            harness_main,
+            item(&["beta", "tests", "t"], "K_T", "fn", Some("mod")),
+        ],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed"],
+                "K_E",
+                false,
+                true,
+            ),
+            harness_edge,
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &["alpha::embalmed".to_string()],
+    );
+    match &sc.per_target["alpha::embalmed"] {
+        ScaffoldVerdict::Cleared { scaffolding } => {
+            let ids: Vec<&str> = scaffolding.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(ids, ["beta::tests::t"]);
+        }
+        other => panic!("expected Cleared, got {other:?}"),
+    }
+}
+
+/// One test fn exercises two targets dying in the same round: both clear,
+/// each listing the same scaffold — the shape the cascade must commit once.
+#[test]
+fn test_scaffolding_shared_scaffold_clears_sibling_targets() {
+    let alpha = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "embalmed_a"], "K_A", "fn", Some("mod")),
+            item(&["alpha", "embalmed_b"], "K_B", "fn", Some("mod")),
+        ],
+        vec![],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![item(&["beta", "tests", "t"], "K_T", "fn", Some("mod"))],
+        vec![
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed_a"],
+                "K_A",
+                false,
+                true,
+            ),
+            edge_ext(
+                &["beta", "tests", "t"],
+                &["alpha", "embalmed_b"],
+                "K_B",
+                false,
+                true,
+            ),
+        ],
+    );
+    let m = model(vec![("default", vec![alpha, beta_tests])]);
+    let sc = m.test_scaffolding(
+        &RemovalSet::new(std::iter::empty::<&str>()),
+        &[
+            "alpha::embalmed_a".to_string(),
+            "alpha::embalmed_b".to_string(),
+        ],
+    );
+    for target in ["alpha::embalmed_a", "alpha::embalmed_b"] {
+        match &sc.per_target[target] {
+            ScaffoldVerdict::Cleared { scaffolding } => {
+                let ids: Vec<&str> = scaffolding.iter().map(|s| s.id.as_str()).collect();
+                assert_eq!(ids, ["beta::tests::t"], "{target}");
+            }
+            other => panic!("expected Cleared for {target}, got {other:?}"),
+        }
+    }
+}

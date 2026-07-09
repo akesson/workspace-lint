@@ -397,7 +397,8 @@ fn drop_unmasked_groups(
 
 /// Schedule the surviving groups: target + scaffolds seed the removal set,
 /// the scaffold findings are stashed for final rendering, and the target
-/// gets its "deleted together with its tests" note.
+/// gets its "deleted together with its tests" note. A test fn exercising two
+/// targets clears under BOTH — commit its finding once, not per target.
 fn commit_groups(
     groups: Vec<(String, Vec<PubFinding>)>,
     newly: &mut Vec<String>,
@@ -415,9 +416,11 @@ fn commit_groups(
         );
         newly.push(target);
         for f in fs {
-            if let Some(id) = &f.id {
-                newly.push(id.clone());
+            let Some(id) = &f.id else { continue };
+            if newly.contains(id) {
+                continue; // shared scaffold, committed by a sibling target
             }
+            newly.push(id.clone());
             scaffold_diags.push(f);
         }
     }
@@ -616,5 +619,139 @@ fn downgrade_deletion(d: &mut Diagnostic, note: &str) {
     }
     if changed {
         d.notes.push(note.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wl_engine::wl_ir::Span;
+
+    fn finding(id: &str) -> PubFinding {
+        PubFinding {
+            id: Some(id.into()),
+            removable: true,
+            test_only: false,
+            diagnostic: at_line(LintId::UnusedPub.id(), "x", "src/lib.rs", 1).build(),
+        }
+    }
+
+    fn span() -> Option<Span> {
+        Some(Span {
+            file: "src/lib.rs".into(),
+            lo: 0,
+            hi: 10,
+            line: 214,
+            from_expansion: false,
+        })
+    }
+
+    fn unmask() -> DeletionUnmask {
+        DeletionUnmask::UnreadField {
+            owner: "a::S".into(),
+            field: "f".into(),
+        }
+    }
+
+    /// A test fn exercising two targets clears under both — its finding (and
+    /// removal seed) must be committed once, while each target keeps its own
+    /// cleared note.
+    #[test]
+    fn commit_groups_commits_a_shared_scaffold_once() {
+        let groups = vec![
+            ("a::x".to_string(), vec![finding("b::tests::t")]),
+            ("a::y".to_string(), vec![finding("b::tests::t")]),
+        ];
+        let mut newly = Vec::new();
+        let mut notes = HashMap::new();
+        let mut diags = Vec::new();
+        commit_groups(groups, &mut newly, &mut notes, &mut diags);
+        assert_eq!(newly, ["a::x", "b::tests::t", "a::y"]);
+        assert_eq!(
+            diags.len(),
+            1,
+            "one scaffold diagnostic, not one per target"
+        );
+        assert!(notes.contains_key("a::x") && notes.contains_key("a::y"));
+    }
+
+    /// The unmask trial pulls a group whether the hit landed on the target or
+    /// on one of its scaffolds — never half a group — and vetoes the target.
+    #[test]
+    fn drop_unmasked_groups_pulls_whole_group_atomically() {
+        let mut groups = vec![
+            ("a::x".to_string(), vec![finding("b::tests::t1")]),
+            ("a::y".to_string(), vec![finding("b::tests::t2")]),
+            ("a::z".to_string(), vec![finding("b::tests::t3")]),
+        ];
+        let vetoed = HashMap::from([
+            ("b::tests::t1".to_string(), unmask()),
+            ("a::y".to_string(), unmask()),
+        ]);
+        let mut test_blocked = HashMap::new();
+        drop_unmasked_groups(&mut groups, &vetoed, &mut test_blocked);
+        let survivors: Vec<&str> = groups.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(survivors, ["a::z"]);
+        assert!(
+            test_blocked.contains_key("a::x"),
+            "scaffold hit vetoes the target"
+        );
+        assert!(
+            test_blocked.contains_key("a::y"),
+            "target hit vetoes the target"
+        );
+        assert!(!test_blocked.contains_key("a::z"));
+    }
+
+    /// Each blocker reason renders its own actionable note, anchored at the
+    /// blocking test's `file:line` when the span is known.
+    #[test]
+    fn test_block_note_names_each_reason() {
+        let blocker = |reason| TestBlocker {
+            test: "b::tests::t".into(),
+            span: span(),
+            reason,
+        };
+        let reaches = test_block_note(&blocker(BlockReason::ReachesSurviving {
+            to: "a::kept".into(),
+        }));
+        assert!(
+            reaches.contains("`b::tests::t` (src/lib.rs:214)"),
+            "{reaches}"
+        );
+        assert!(
+            reaches.contains("exercises surviving `a::kept`"),
+            "{reaches}"
+        );
+        let kept = test_block_note(&blocker(BlockReason::KeptBySurvivor {
+            from: "b::tests::fixture".into(),
+        }));
+        assert!(kept.contains("still used"), "{kept}");
+        assert!(kept.contains("`b::tests::fixture`"), "{kept}");
+        let not_deletable = test_block_note(&blocker(BlockReason::NotDeletable));
+        assert!(not_deletable.contains("no safe"), "{not_deletable}");
+        // Span unknown → no dangling anchor parenthesis.
+        let spanless = test_block_note(&TestBlocker {
+            test: "b::tests::t".into(),
+            span: None,
+            reason: BlockReason::NotDeletable,
+        });
+        assert!(spanless.contains("`b::tests::t` has"), "{spanless}");
+    }
+
+    /// The lint-layer veto (engine cleared, scaffold out of fix scope) names
+    /// the test item the same way.
+    #[test]
+    fn scaffold_veto_note_names_the_test_item() {
+        let note = scaffold_veto_note(&TestScaffold {
+            id: "b::tests::t".into(),
+            krate: "b".into(),
+            name: "t".into(),
+            kind: "fn".into(),
+            span: span(),
+            full_span: span(),
+        });
+        assert!(note.contains("`b::tests::t` (src/lib.rs:214)"), "{note}");
+        assert!(note.contains("can't be auto-deleted"), "{note}");
     }
 }
