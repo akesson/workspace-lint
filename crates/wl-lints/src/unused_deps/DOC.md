@@ -30,6 +30,13 @@ cannot be judged. Rather than flag them all, the lint emits one non-failing
 `--target <triple>` universe checks platform code without linking) to judge
 its deps, or `ignore` them.
 
+A subtler case: a dep used *only* behind a `#[cfg(...)]` your `[engine]`
+matrix never compiles. Here the crate itself compiles and is judged, but the
+reference edge lives in shadowed code, so the dep can read as unused. It is a
+`warn` and never breaks a build; add a `--target <triple>` universe that
+compiles the gated code (extraction is `cargo check`, no linking) to judge
+the dep exactly, or `ignore` it.
+
 A dep whose hyphen-stripped name matches a referenced lib target is credited
 (`md-5` declares the crate whose lib is `md5`), so a rename-by-convention
 never reads as unused. This only ever *suppresses* a finding.
