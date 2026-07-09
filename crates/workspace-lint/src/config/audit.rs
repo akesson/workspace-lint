@@ -24,7 +24,6 @@ const SECTIONS: &[&str] = &[
     "lints",
     "file-size",
     "crate-size",
-    "freshness",
     "cli-crate-version",
     "duplicate-code",
     "unused-deps",
@@ -49,7 +48,6 @@ fn section_schema(section: &str) -> Option<Schema> {
     match section {
         "file-size" => s(&["rules"], Some(&["glob", "max-code-lines"])),
         "crate-size" => s(&["rules"], Some(&["glob", "max-code-lines", "include"])),
-        "freshness" => s(&["rules"], Some(&["glob", "depends-on"])),
         "cli-crate-version" => s(&["rules"], Some(&["command", "pattern", "crate"])),
         "architecture" => s(
             &["rules"],
@@ -216,7 +214,7 @@ const PER_CRATE_KEYS: &[&str] = &["lints", "unused-deps", "unused-pub"];
 
 /// Lints whose per-crate scoping is their glob, not a per-crate param section —
 /// so a `[crates.X.<lint>]` block is redirected to a glob rule.
-const GLOB_SCOPED_LINTS: &[&str] = &["file-size", "crate-size", "freshness"];
+const GLOB_SCOPED_LINTS: &[&str] = &["file-size", "crate-size"];
 
 /// Validate the `[crates.*]` tree's *structure* (not crate names — that needs
 /// the resolved workspace; see [`audit_crate_names`]). Each `[crates.<name>]`
@@ -447,10 +445,6 @@ max-code-lines = 500
 glob = "crates/*"
 max-code-lines = 5000
 include = ["*.rs"]
-
-[[freshness.rules]]
-glob = "**/CLAUDE.md"
-depends-on = "**/*.rs"
 
 [[cli-crate-version.rules]]
 command = ["wasm-bindgen", "--version"]

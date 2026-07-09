@@ -11,7 +11,7 @@ Emits clippy-style human output, rustc-compatible JSON, or GitHub Actions
 workflow commands so editor and CI integrations work without glue.
 
 Two tiers, one binary. The **structural lints** (file/crate size, module
-tree, dependency hygiene, freshness, …) are build-free: `cargo metadata`
+tree, dependency hygiene, …) are build-free: `cargo metadata`
 plus parsed manifests and sources, no compilation. The **semantic lints**
 (`unused-deps`, `unused-pub`, `architecture`) are judged on a
 **rustc-fidelity engine**: the workspace is compiled (a cached `cargo
@@ -56,10 +56,6 @@ unused-pub       = "allow"  # turn one off
 [[file-size.rules]]
 glob = "**/*.rs"
 max-code-lines = 500
-
-[[freshness.rules]]
-glob = "**/CLAUDE.md"
-depends-on = "**/*.rs"
 ```
 
 Then run:
@@ -163,21 +159,6 @@ portable content fingerprint so entries survive renames and file moves. See the
 baseline-ratchet section of the docs.
 
 Full docs: [`duplicate_code/DOC.md`](crates/wl-lints/src/duplicate_code/DOC.md) · `workspace-lint explain duplicate-code`
-
-### freshness
-
-Checks that tracked files (e.g. `CLAUDE.md`) are newer than their
-dependencies — a cheap way to keep docs from falling behind their source.
-Skipped when the `CI` environment variable is set. A policy lint — add a
-rule to enable it.
-
-```toml
-[[freshness.rules]]
-glob = "**/CLAUDE.md"
-depends-on = "**/*.rs"
-```
-
-Full docs: [`freshness/DOC.md`](crates/wl-lints/src/freshness/DOC.md) · `workspace-lint explain freshness`
 
 ### cli-crate-version
 
@@ -377,7 +358,6 @@ lint failure (and vice versa).
 workspace-lint check centralized-deps
 workspace-lint check file-size --glob "**/*.rs" --max-code-lines 500
 workspace-lint check duplicate-code --cross-crate-only
-workspace-lint check freshness --glob "**/CLAUDE.md" --depends-on "**/*.rs"
 workspace-lint check unused-deps --ignore prost --ignore tonic
 ```
 
@@ -415,14 +395,6 @@ a `[workspace]` table and the current directory must be that root (not a member
 subdir) — a lone `[package]` is rejected. It refuses to overwrite an existing
 config (a standalone file or `[workspace.metadata.workspace-lint]`); pass
 `--force` to replace an existing `.workspace-lint.toml`.
-
-### Mark freshness targets as up-to-date
-
-```sh
-workspace-lint done
-```
-
-Touches all files matched by freshness rules so they appear newer than their dependencies.
 
 ### Expand markers
 
@@ -650,7 +622,7 @@ an unknown name is reported as [`unknown-lint`](#always-on-lints), not silently
 ignored.
 
 **What runs:** a lint runs when its effective level isn't `allow`, with one
-extra condition for the *policy* lints (`file-size`, `crate-size`, `freshness`,
+extra condition for the *policy* lints (`file-size`, `crate-size`,
 `cli-crate-version`, `architecture`, `duplicate-code`) — they're meaningless
 without parameters (or, for `duplicate-code`, noisy enough to demand deliberate
 opt-in), so they additionally require their config table to be present. The *structural*
@@ -698,11 +670,11 @@ per-crate entry fall through to the global tier.
 
 **Per-crate params — `unused-deps` and `unused-pub` only.** These are the lints
 whose params are workspace-flat (an `ignore` list, an allowlist, …) with no glob
-escape hatch. `file-size`, `crate-size`, and `freshness` already scope per-crate
-through their globs, so a `[crates.<name>.file-size]` (or crate-size /
-freshness) block is a [`config`](#always-on-lints) error that redirects you to
-a glob rule — one obvious way, not two. Any other per-crate params block
-(`cli-crate-version`, `architecture`, …) is a `config` error too. A present
+escape hatch. `file-size` and `crate-size` already scope per-crate
+through their globs, so a `[crates.<name>.file-size]` (or crate-size) block is
+a [`config`](#always-on-lints) error that redirects you to a glob rule — one
+obvious way, not two. Any other per-crate params block (`cli-crate-version`,
+`architecture`, …) is a `config` error too. A present
 `[crates.<name>.unused-deps]` / `unused-pub` section **wholesale-replaces** the
 global section for that crate (predictable: the crate's config is exactly what's
 written).
@@ -801,7 +773,6 @@ removed files in the post-fix tree propagate correctly.
   git-tracked-clean files are touched — the deletion's backup is
   `git checkout`. A manual, CLI-only operation by design: there is no
   config equivalent, so CI `--fix` runs can never delete code.
-- `workspace-lint done` — mark `freshness` targets up-to-date.
 - `workspace-lint expand` — substitute command output into marker blocks.
 
 ### Generated code (`include!`)

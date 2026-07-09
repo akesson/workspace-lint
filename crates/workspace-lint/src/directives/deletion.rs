@@ -283,7 +283,7 @@ mod tests {
         write(
             tmp.path(),
             "README.md",
-            "<!-- workspace-lint: expect(freshness)\n     still inside the comment -->\n",
+            "<!-- workspace-lint: expect(file-size)\n     still inside the comment -->\n",
         );
         assert!(deletion_suggestion(tmp.path(), &origin("README.md", 1, 1)).is_none());
     }
@@ -294,7 +294,7 @@ mod tests {
         write(
             tmp.path(),
             "README.md",
-            "<!-- workspace-lint: expect(freshness) -->\n",
+            "<!-- workspace-lint: expect(file-size) -->\n",
         );
         assert!(deletion_suggestion(tmp.path(), &origin("README.md", 1, 1)).is_some());
     }
@@ -311,7 +311,7 @@ mod tests {
         write(
             tmp.path(),
             "notes.txt",
-            "workspace-lint: expect(freshness)\n",
+            "workspace-lint: expect(file-size)\n",
         );
         assert!(deletion_suggestion(tmp.path(), &origin("notes.txt", 1, 1)).is_none());
     }

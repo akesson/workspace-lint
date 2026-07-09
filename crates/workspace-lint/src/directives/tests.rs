@@ -225,11 +225,11 @@ fn parses_md_comment_directive() {
     write(
         tmp.path(),
         "README.md",
-        "Some text.\n// workspace-lint: allow(freshness)\nMore text.\n",
+        "Some text.\n// workspace-lint: allow(file-size)\nMore text.\n",
     );
     let directives = scan(tmp.path());
     assert_eq!(directives.len(), 1);
-    assert_eq!(directives[0].lint, "freshness");
+    assert_eq!(directives[0].lint, "file-size");
     match &directives[0].anchor {
         SilenceAnchor::File { file } => assert_eq!(file, &PathBuf::from("README.md")),
         other => panic!("expected File anchor, got {other:?}"),
@@ -242,12 +242,12 @@ fn parses_html_comment_directive() {
     write(
         tmp.path(),
         "README.md",
-        "<!-- workspace-lint: expect(freshness) -->\n",
+        "<!-- workspace-lint: expect(file-size) -->\n",
     );
     let directives = scan(tmp.path());
     assert_eq!(directives.len(), 1);
     assert_eq!(directives[0].kind, DirectiveKind::Expect);
-    assert_eq!(directives[0].lint, "freshness");
+    assert_eq!(directives[0].lint, "file-size");
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn md_directive_inside_a_fence_is_ignored() {
     write(
         tmp.path(),
         "README.md",
-        "Example:\n```toml\n# workspace-lint: allow(freshness)\n```\nDone.\n",
+        "Example:\n```toml\n# workspace-lint: allow(file-size)\n```\nDone.\n",
     );
     assert!(
         scan(tmp.path()).is_empty(),
@@ -273,11 +273,11 @@ fn md_directive_after_a_fence_still_fires() {
     write(
         tmp.path(),
         "README.md",
-        "```toml\n# workspace-lint: allow(unused-deps)\n```\n// workspace-lint: allow(freshness)\n",
+        "```toml\n# workspace-lint: allow(unused-deps)\n```\n// workspace-lint: allow(file-size)\n",
     );
     let directives = scan(tmp.path());
     assert_eq!(directives.len(), 1);
-    assert_eq!(directives[0].lint, "freshness");
+    assert_eq!(directives[0].lint, "file-size");
 }
 
 #[test]

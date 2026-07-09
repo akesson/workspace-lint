@@ -46,10 +46,6 @@ glob = "crates/*"
 max-code-lines = 5000
 include = ["*.rs"]
 
-[[freshness.rules]]
-glob = "**/CLAUDE.md"
-depends-on = "**/*.rs"
-
 [[expand.rules]]
 command = ["mise", "tasks"]
 glob = "CLAUDE.md"
@@ -88,10 +84,6 @@ exclude-paths = ["generated/**"]
     let cs_rules = config.crate_size.unwrap().rules;
     assert_eq!(cs_rules[0].glob, "crates/*");
     assert_globs(cs_rules[0].include.as_ref().unwrap(), &["*.rs"]);
-
-    let fr_rules = config.freshness.unwrap().rules;
-    assert_eq!(fr_rules[0].glob, "**/CLAUDE.md");
-    assert_globs(&fr_rules[0].depends_on.0, &["**/*.rs"]);
 
     let ex_rules = config.expand.unwrap().rules;
     assert_eq!(ex_rules[0].command, &["mise", "tasks"]);
@@ -177,19 +169,20 @@ fn parse_crate_size_no_include() {
     assert!(rules[0].include.is_none());
 }
 
+/// `Globs` accepts a bare string or a list in every field it types.
 #[test]
-fn freshness_depends_on_accepts_string_or_list() {
-    let one = parse("[[freshness.rules]]\nglob = \"a\"\ndepends-on = \"**/*.rs\"\n")
-        .freshness
+fn globs_field_accepts_string_or_list() {
+    let one = parse("[duplicate-code]\ninclude = \"**/*.rs\"\n")
+        .duplicate_code
         .unwrap()
-        .rules;
-    assert_globs(&one[0].depends_on.0, &["**/*.rs"]);
+        .include;
+    assert_globs(&one.0, &["**/*.rs"]);
 
-    let many = parse("[[freshness.rules]]\nglob = \"a\"\ndepends-on = [\"x\", \"y\"]\n")
-        .freshness
+    let many = parse("[duplicate-code]\ninclude = [\"x\", \"y\"]\n")
+        .duplicate_code
         .unwrap()
-        .rules;
-    assert_globs(&many[0].depends_on.0, &["x", "y"]);
+        .include;
+    assert_globs(&many.0, &["x", "y"]);
 }
 
 #[test]

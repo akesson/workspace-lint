@@ -68,9 +68,8 @@ fn run_case(kind: Kind, case_dir: &Path, bless: bool) -> Result<(), Failure> {
         reason: format!("copy: {e}"),
     })?;
 
-    // Optional per-case setup: initialize a git repo and/or set relative file
-    // mtimes that can't live inert in a committed fixture (they're needed by
-    // stale-git-index and freshness). See `apply_setup`.
+    // Optional per-case setup: state that can't live inert in a committed
+    // fixture — e.g. the git repo `stale-git-index` needs. See `apply_setup`.
     let args = apply_setup(case_dir, tmp.path()).map_err(|e| Failure {
         case_path: case_dir.to_path_buf(),
         kind,
@@ -80,10 +79,6 @@ fn run_case(kind: Kind, case_dir: &Path, bless: bool) -> Result<(), Failure> {
     let output = workspace_lint()
         .args(&args)
         .current_dir(tmp.path())
-        // Run lints deterministically regardless of the CI env: `freshness`
-        // short-circuits when `CI` is set, which would otherwise make its
-        // true-positive cases silently pass under CI.
-        .env_remove("CI")
         .output()
         .map_err(|e| Failure {
             case_path: case_dir.to_path_buf(),

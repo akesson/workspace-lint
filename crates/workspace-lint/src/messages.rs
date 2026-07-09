@@ -375,18 +375,6 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
-        // freshness: tracked file stale relative to deps.
-        (
-            "freshness_stale",
-            at_file(
-                "workspace-lint::freshness",
-                "`crates/api/CLAUDE.md` is older than source files it depends on",
-                PathBuf::from("crates/api/CLAUDE.md"),
-            )
-            .help("files matching `**/*.rs` in the subtree are newer")
-            .help("run `workspace-lint done` once the tracked file is up to date")
-            .build(),
-        ),
         // cli-crate-version: version mismatch.
         (
             "cli_crate_version_mismatch",
@@ -1181,22 +1169,6 @@ mod tests {
         }
 
         #[test]
-        fn freshness_stale() {
-            insta::assert_snapshot!(render(&scenario("freshness_stale")), @r"
-            warning: `crates/api/CLAUDE.md` is older than source files it depends on
-             --> crates/api/CLAUDE.md:1:1
-              |
-              = help: files matching `**/*.rs` in the subtree are newer
-              = help: run `workspace-lint done` once the tracked file is up to date
-            help: if intentional, silence with:
-              |
-            1 + # workspace-lint: expect(freshness)
-              |
-              = note: `#[warn(workspace_lint::freshness)]` on by default
-            ");
-        }
-
-        #[test]
         fn cli_crate_version_mismatch() {
             insta::assert_snapshot!(render(&scenario("cli_crate_version_mismatch")), @r"
             warning: `wasm-bindgen` CLI version 0.2.89 does not match Cargo.lock 0.2.90
@@ -1792,11 +1764,6 @@ mod tests {
         }
 
         #[test]
-        fn freshness_stale() {
-            insta::assert_snapshot!(render(&scenario("freshness_stale")), @r##"{"level":"warning","message":"`crates/api/CLAUDE.md` is older than source files it depends on","code":{"code":"workspace-lint::freshness","explanation":null},"spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/api/CLAUDE.md","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(freshness)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"files matching `**/*.rs` in the subtree are newer","spans":[]},{"level":"help","message":"run `workspace-lint done` once the tracked file is up to date","spans":[]}],"rendered":null}"##);
-        }
-
-        #[test]
         fn cli_crate_version_rule_error() {
             insta::assert_snapshot!(render(&scenario("cli_crate_version_rule_error")), @r##"{"level":"warning","message":"pattern `v(\\d+)` did not match the output of `wasm-bindgen --version`","code":{"code":"workspace-lint::cli-crate-version","explanation":null},"spans":[],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(cli-crate-version)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"the regex must capture the version in group 1","spans":[]},{"level":"note","message":"ran `wasm-bindgen --version`","spans":[]}],"rendered":null}"##);
         }
@@ -1938,11 +1905,6 @@ mod tests {
         #[test]
         fn duplicate_code_baseline_missing() {
             insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_missing")), @"::warning file=duplicate-code.baseline.toml,line=1,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicate-code baseline file `duplicate-code.baseline.toml` not found");
-        }
-
-        #[test]
-        fn freshness_stale() {
-            insta::assert_snapshot!(render(&scenario("freshness_stale")), @"::warning file=crates/api/CLAUDE.md,line=1,col=1,title=workspace-lint%3A%3Afreshness::`crates/api/CLAUDE.md` is older than source files it depends on");
         }
 
         #[test]

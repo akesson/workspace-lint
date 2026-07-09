@@ -7,9 +7,8 @@ use wl_lint_api::{Lint, LintId};
 use wl_lints::{
     architecture::Architecture, centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion, crate_size::CrateSize, duplicate_code::DuplicateCode,
-    feature_drift::FeatureDrift, file_size::FileSize, freshness::Freshness,
-    module_tree::ModuleTree, stale_git_index::StaleGitIndex, unused_deps::UnusedDeps,
-    unused_pub::UnusedPub,
+    feature_drift::FeatureDrift, file_size::FileSize, module_tree::ModuleTree,
+    stale_git_index::StaleGitIndex, unused_deps::UnusedDeps, unused_pub::UnusedPub,
 };
 
 /// `true` when `id` is enabled *anywhere* — its global effective level isn't
@@ -64,11 +63,6 @@ pub(crate) fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
     {
         out.push(Box::new(FileSize::new(fs.clone())));
     }
-    if level_on(config, LintId::Freshness)
-        && let Some(ref fr) = config.freshness
-    {
-        out.push(Box::new(Freshness::new(fr.clone())));
-    }
 
     // --- structural lints: on by default (no required config) ---
     if level_on(config, LintId::CentralizedDeps) {
@@ -118,10 +112,6 @@ max-code-lines = 500
 [[crate-size.rules]]
 glob = \"crates/*\"
 max-code-lines = 5000
-
-[[freshness.rules]]
-glob = \"**/CLAUDE.md\"
-depends-on = \"**/*.rs\"
 
 [[cli-crate-version.rules]]
 command = [\"wasm-bindgen\", \"--version\"]
@@ -201,8 +191,6 @@ deny = [\"crates/b/**\"]
     /// Omitted today:
     /// - `file-size`, `crate-size`: no structural fix — heuristic refactoring
     ///   isn't tractable. `--fix` is a no-op; users must split files manually.
-    /// - `freshness`: needs mtime manipulation that can't live inert in a
-    ///   committed fixture (timestamps move on every clone / checkout).
     /// - `cli-crate-version`: needs a fake CLI binary the fixture can invoke.
     /// - `stale-git-index`: needs `git ls-files` to disagree with on-disk
     ///   state, which requires an in-tempdir git init/add/rm dance.

@@ -9,7 +9,6 @@ use wl_lints::{
     duplicate_code::{DuplicateCode, DuplicateCodeConfig},
     feature_drift::FeatureDrift,
     file_size::FileSize,
-    freshness::Freshness,
     module_tree::ModuleTree,
     stale_git_index::StaleGitIndex,
     unused_deps::UnusedDeps,
@@ -81,8 +80,6 @@ pub(crate) enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Mark freshness targets as up-to-date (requires TOML config)
-    Done,
     /// Expand markers in files with command output
     Expand {
         /// Command to run (e.g. "mise tasks")
@@ -203,16 +200,6 @@ pub(crate) enum CheckRule {
         #[arg(long)]
         baseline: Option<std::path::PathBuf>,
     },
-    /// Check that files are fresher than their dependencies
-    #[command(after_long_help = crate::docs::rendered_doc(wl_lint_api::LintId::Freshness))]
-    Freshness {
-        /// Glob pattern for files to check
-        #[arg(long)]
-        glob: String,
-        /// Glob pattern for dependency files
-        #[arg(long)]
-        depends_on: String,
-    },
     /// Check that a CLI tool version matches the crate version
     #[command(after_long_help = crate::docs::rendered_doc(wl_lint_api::LintId::CliCrateVersion))]
     CliCrateVersion {
@@ -285,9 +272,6 @@ impl CheckRule {
                 self.duplicate_code_config()
                     .expect("the DuplicateCode variant always resolves a config"),
             )),
-            CheckRule::Freshness { glob, depends_on } => {
-                Box::new(Freshness::from_cli(glob, depends_on))
-            }
             CheckRule::CliCrateVersion {
                 command,
                 pattern,
@@ -522,16 +506,6 @@ mod tests {
                 id.short()
             );
         }
-    }
-
-    #[test]
-    fn into_lint_freshness() {
-        let lint = CheckRule::Freshness {
-            glob: "**/CLAUDE.md".into(),
-            depends_on: "**/*.rs".into(),
-        }
-        .into_lint();
-        assert_eq!(lint.id(), LintId::Freshness);
     }
 
     #[test]

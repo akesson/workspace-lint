@@ -221,7 +221,7 @@ mod tests {
 }
 
 /// One or more glob patterns: accepts either a bare string or a list, so
-/// `depends-on = "**/*.rs"` and `depends-on = ["a", "b"]` both parse.
+/// `include = "**/*.rs"` and `include = ["a", "b"]` both parse.
 #[derive(Debug, Clone, Default)]
 pub struct Globs(pub Vec<GlobPattern>);
 
@@ -233,15 +233,11 @@ impl From<&str> for Globs {
 }
 
 impl Globs {
-    pub fn iter(&self) -> std::slice::Iter<'_, GlobPattern> {
-        self.0.iter()
-    }
-
     /// One matches-nothing-when-empty `GlobSet` over the patterns — the
     /// always-a-set flavor of [`glob_set`] for include/exclude lists where
     /// "no patterns" and "matches nothing" coincide.
     pub fn glob_set(&self) -> GlobSet {
-        glob_set(self.iter()).unwrap_or_default()
+        glob_set(self.0.iter()).unwrap_or_default()
     }
 }
 

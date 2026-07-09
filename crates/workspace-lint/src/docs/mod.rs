@@ -33,14 +33,13 @@ use wl_lint_api::{LintId, LintImpl};
 use wl_lints::{
     architecture::Architecture, centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion, crate_size::CrateSize, duplicate_code::DuplicateCode,
-    feature_drift::FeatureDrift, file_size::FileSize, freshness::Freshness,
-    module_tree::ModuleTree, stale_git_index::StaleGitIndex, unused_deps::UnusedDeps,
-    unused_pub::UnusedPub,
+    feature_drift::FeatureDrift, file_size::FileSize, module_tree::ModuleTree,
+    stale_git_index::StaleGitIndex, unused_deps::UnusedDeps, unused_pub::UnusedPub,
 };
 
 /// The full documentation for `id`. Exhaustive by design: adding a [`LintId`]
 /// variant without wiring its doc is a compile error, mirroring `LintId::id`.
-/// The 12 real lints resolve to their `DOC.md` const; the 3 meta lints to a
+/// The 11 real lints resolve to their `DOC.md` const; the 3 meta lints to a
 /// sibling `.md` bundled here.
 pub(crate) fn lint_doc(id: LintId) -> &'static str {
     match id {
@@ -52,7 +51,6 @@ pub(crate) fn lint_doc(id: LintId) -> &'static str {
         LintId::DuplicateCode => DuplicateCode::DOC,
         LintId::FeatureDrift => FeatureDrift::DOC,
         LintId::FileSize => FileSize::DOC,
-        LintId::Freshness => Freshness::DOC,
         LintId::ModuleTree => ModuleTree::DOC,
         LintId::StaleExpect => include_str!("stale-expect.md"),
         LintId::StaleGitIndex => StaleGitIndex::DOC,
@@ -405,7 +403,6 @@ mod tests {
         assert_eq!(lint_doc(LintId::DuplicateCode), DuplicateCode::DOC);
         assert_eq!(lint_doc(LintId::FeatureDrift), FeatureDrift::DOC);
         assert_eq!(lint_doc(LintId::FileSize), FileSize::DOC);
-        assert_eq!(lint_doc(LintId::Freshness), Freshness::DOC);
         assert_eq!(lint_doc(LintId::ModuleTree), ModuleTree::DOC);
         assert_eq!(lint_doc(LintId::StaleGitIndex), StaleGitIndex::DOC);
         assert_eq!(lint_doc(LintId::UnusedDeps), UnusedDeps::DOC);

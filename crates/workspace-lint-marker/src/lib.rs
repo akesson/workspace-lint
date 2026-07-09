@@ -34,7 +34,6 @@ macro_rules! allow {
     (crate_size) => {};
     (centralized_deps) => {};
     (duplicate_code) => {};
-    (freshness) => {};
     (cli_crate_version) => {};
     (unused_deps) => {};
     (unused_pub) => {};
@@ -62,7 +61,6 @@ macro_rules! expect {
     (crate_size) => {};
     (centralized_deps) => {};
     (duplicate_code) => {};
-    (freshness) => {};
     (cli_crate_version) => {};
     (unused_deps) => {};
     (unused_pub) => {};
@@ -88,7 +86,6 @@ mod tests {
         crate::allow!(crate_size);
         crate::allow!(centralized_deps);
         crate::allow!(duplicate_code);
-        crate::allow!(freshness);
         crate::allow!(cli_crate_version);
         crate::allow!(unused_deps);
         crate::allow!(unused_pub);
@@ -112,7 +109,6 @@ mod tests {
         crate::expect!(crate_size);
         crate::expect!(centralized_deps);
         crate::expect!(duplicate_code);
-        crate::expect!(freshness);
         crate::expect!(cli_crate_version);
         crate::expect!(unused_deps);
         crate::expect!(unused_pub);
