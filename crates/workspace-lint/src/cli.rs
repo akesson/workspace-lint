@@ -9,7 +9,7 @@ use wl_lints::{
     duplicate_code::{DuplicateCode, DuplicateCodeConfig},
     feature_drift::FeatureDrift,
     file_size::FileSize,
-    module_tree::ModuleTree,
+    orphan_file::OrphanFile,
     stale_git_index::StaleGitIndex,
     unused_deps::UnusedDeps,
     unused_pub::{KindFilter, UnusedPub},
@@ -240,9 +240,9 @@ pub(crate) enum CheckRule {
         #[arg(long, default_value_t = false)]
         suppress_intra_crate: bool,
     },
-    /// Check module-tree structural integrity (broken `mod`s, orphan files)
-    #[command(after_long_help = crate::docs::rendered_doc(wl_lint_api::LintId::ModuleTree))]
-    ModuleTree,
+    /// Check for source files no declared `[engine]` config compiles
+    #[command(after_long_help = crate::docs::rendered_doc(wl_lint_api::LintId::OrphanFile))]
+    OrphanFile,
     /// Check for feature drift (declared-but-unused / undeclared features)
     #[command(after_long_help = crate::docs::rendered_doc(wl_lint_api::LintId::FeatureDrift))]
     FeatureDrift,
@@ -284,7 +284,7 @@ impl CheckRule {
                     .expect("the UnusedPub variant always resolves a config");
                 Box::new(UnusedPub::new(config, std::collections::HashMap::new()))
             }
-            CheckRule::ModuleTree => Box::new(ModuleTree::new()),
+            CheckRule::OrphanFile => Box::new(OrphanFile::new()),
             CheckRule::FeatureDrift => Box::new(FeatureDrift::new()),
             CheckRule::StaleGitIndex => Box::new(StaleGitIndex::new()),
         }

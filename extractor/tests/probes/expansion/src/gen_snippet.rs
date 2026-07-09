@@ -1,0 +1,1 @@
+fn snippet_example() {}

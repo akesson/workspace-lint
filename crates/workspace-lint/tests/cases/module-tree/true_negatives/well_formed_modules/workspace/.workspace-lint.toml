@@ -1,3 +1,0 @@
-[lints]
-default = "allow"
-module-tree = "warn"

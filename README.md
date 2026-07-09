@@ -44,7 +44,7 @@ workspace_lint = { package = "workspace-lint-marker", version = "0.1" }
 Create `.workspace-lint.toml` in your workspace root:
 
 ```toml
-# Structural lints (centralized-deps, module-tree, feature-drift, unused-deps,
+# Structural lints (centralized-deps, orphan-file, feature-drift, unused-deps,
 # unused-pub) are on by default at `warn`. The `[lints]` table is where you
 # loosen (`allow`) or escalate (`deny`) — and where policy lints get enabled.
 [lints]
@@ -273,14 +273,18 @@ checked. `architecture` is TOML-only — no `check` subcommand — but
 
 Full docs: [`architecture/DOC.md`](crates/wl-lints/src/architecture/DOC.md) · `workspace-lint explain architecture`
 
-### module-tree
+### orphan-file
 
-Structural integrity of the `mod` graph. A structural lint — on by default at
-`warn`. Flags a `mod foo;` whose target (`foo.rs`, `foo/mod.rs`, or a
-`#[path = "..."]` override) doesn't exist, and orphan `.rs` files under `src/`
-that no `mod` chain reaches. Escalate or silence via `[lints] module-tree`.
+Source files under `src/` that no declared `[engine]` config compiles. A
+semantic lint — on by default at `warn`, skipped under `--fast-only`. rustc
+never opens a file no `mod` chain reaches, so `dead_code` can't see it and
+clippy says nothing; reachability here is rustc's own record of which files it
+opened, unioned across the config matrix. A file the source *names* but no
+config compiles (a platform-gated module, a `#[cfg(test)] mod tests;` under a
+matrix without `cargo test`) is reported as a coverage gap, never as something
+to delete. Escalate or silence via `[lints] orphan-file`.
 
-Full docs: [`module_tree/DOC.md`](crates/wl-lints/src/module_tree/DOC.md) · `workspace-lint explain module-tree`
+Full docs: [`orphan_file/DOC.md`](crates/wl-lints/src/orphan_file/DOC.md) · `workspace-lint explain orphan-file`
 
 ### feature-drift
 
@@ -626,7 +630,7 @@ extra condition for the *policy* lints (`file-size`, `crate-size`,
 `cli-crate-version`, `architecture`, `duplicate-code`) — they're meaningless
 without parameters (or, for `duplicate-code`, noisy enough to demand deliberate
 opt-in), so they additionally require their config table to be present. The *structural*
-lints (`centralized-deps`, `module-tree`, `feature-drift`, `unused-deps`,
+lints (`centralized-deps`, `orphan-file`, `feature-drift`, `unused-deps`,
 `unused-pub`) need no table and are therefore on by default. So:
 
 - `default = "allow"` makes the whole tool opt-in — nothing runs until you set

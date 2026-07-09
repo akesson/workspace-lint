@@ -387,7 +387,7 @@ fn parse_format(arg: Option<&str>) -> Format {
 /// Drop every diagnostic anchored inside a file that was spliced into the model
 /// via `include!(...)` (generated code). Generated code *participates* in
 /// analysis — its references count, so it clears `unused-deps` / `unused-pub` /
-/// `module-tree` false positives — but it is not a place a user can act on, so a
+/// `orphan-file` false positives — but it is not a place a user can act on, so a
 /// finding *on* it (a generated `pub fn` reported unused, a long generated file,
 /// …) is noise. Runs **before** [`apply_suppression`] so a generated finding
 /// never consumes an `expect!` directive or pollutes the `stale-expect` tally.
@@ -769,6 +769,7 @@ mod dump_ir_tests {
             target_kind: "lib".into(),
             items: vec![],
             references: vec![],
+            loaded_files: vec![],
         })
         .expect("fixture fragment serializes")
     }

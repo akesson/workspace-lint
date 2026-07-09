@@ -39,7 +39,7 @@ macro_rules! allow {
     (unused_pub) => {};
     (stale_expect) => {};
     (architecture) => {};
-    (module_tree) => {};
+    (orphan_file) => {};
     (stale_git_index) => {};
     (feature_drift) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
@@ -66,7 +66,7 @@ macro_rules! expect {
     (unused_pub) => {};
     (stale_expect) => {};
     (architecture) => {};
-    (module_tree) => {};
+    (orphan_file) => {};
     (stale_git_index) => {};
     (feature_drift) => {};
     ($first:ident, $($rest:ident),+ $(,)?) => {
@@ -91,7 +91,7 @@ mod tests {
         crate::allow!(unused_pub);
         crate::allow!(stale_expect);
         crate::allow!(architecture);
-        crate::allow!(module_tree);
+        crate::allow!(orphan_file);
         crate::allow!(stale_git_index);
         crate::allow!(feature_drift);
     }
@@ -114,7 +114,7 @@ mod tests {
         crate::expect!(unused_pub);
         crate::expect!(stale_expect);
         crate::expect!(architecture);
-        crate::expect!(module_tree);
+        crate::expect!(orphan_file);
         crate::expect!(stale_git_index);
         crate::expect!(feature_drift);
     }

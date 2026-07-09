@@ -1,0 +1,13 @@
+warning: no declared `[engine]` config compiles `src/never_built.rs`
+ --> crates/demo/src/never_built.rs:1:1
+  |
+  = help: add a config that compiles it — a `--target` for a platform-gated module, or `"cargo test"` for a `#[cfg(test)]` one
+  = note: crate `demo`'s source names this file, so it is not reported as an orphan — but the declared configs (default, tests) never opened it, so nothing in it is checked
+help: if intentional, silence with:
+  |
+1 + workspace_lint::expect!(orphan_file);
+  |
+  = note: `#[warn(workspace_lint::orphan_file)]` on by default
+
+workspace-lint: generated 1 warning
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (orphan-file)

@@ -7,7 +7,7 @@ use wl_lint_api::{Lint, LintId};
 use wl_lints::{
     architecture::Architecture, centralized_deps::CentralizedDeps,
     cli_crate_version::CliCrateVersion, crate_size::CrateSize, duplicate_code::DuplicateCode,
-    feature_drift::FeatureDrift, file_size::FileSize, module_tree::ModuleTree,
+    feature_drift::FeatureDrift, file_size::FileSize, orphan_file::OrphanFile,
     stale_git_index::StaleGitIndex, unused_deps::UnusedDeps, unused_pub::UnusedPub,
 };
 
@@ -71,8 +71,8 @@ pub(crate) fn registry(config: &Config) -> Vec<Box<dyn Lint>> {
     if level_on(config, LintId::FeatureDrift) {
         out.push(Box::new(FeatureDrift::new()));
     }
-    if level_on(config, LintId::ModuleTree) {
-        out.push(Box::new(ModuleTree::new()));
+    if level_on(config, LintId::OrphanFile) {
+        out.push(Box::new(OrphanFile::new()));
     }
     if level_on(config, LintId::StaleGitIndex) {
         out.push(Box::new(StaleGitIndex::new()));
@@ -199,9 +199,12 @@ deny = [\"crates/b/**\"]
     /// - `duplicate-code`: advisory by design, never fixturable — resolving a
     ///   duplicate means *extracting* (naming, parameterizing, choosing a
     ///   home), an author decision no machine-applicable rewrite can make.
-    /// - `architecture`, `feature-drift`, `module-tree`: the structural fixes
-    ///   for these are planned but not yet implemented; once `--fix` rewrites
-    ///   them, add fixtures and move them up.
+    /// - `architecture`, `feature-drift`: the structural fixes for these are
+    ///   planned but not yet implemented; once `--fix` rewrites them, add
+    ///   fixtures and move them up.
+    /// - `orphan-file`: deleting a source file is not a byte-range rewrite,
+    ///   and `--fix` never deletes code (that is `--fix-auto-delete`'s
+    ///   whole-item surgery, which operates on items, not files).
     const FIXTURABLE_LINTS: &[LintId] = &[
         LintId::CentralizedDeps,
         LintId::StaleExpect,

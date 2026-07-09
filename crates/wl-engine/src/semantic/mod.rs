@@ -155,6 +155,39 @@ impl SemanticModel {
         &self.meta
     }
 
+    /// Every source file rustc opened, unioned across the whole `[engine]`
+    /// matrix. Absolute, canonicalized paths — see [`wl_ir::IrFragment::loaded_files`].
+    ///
+    /// The union is load-bearing, not a convenience: a fragment is one
+    /// *compilation unit*, so a `#[cfg(test)] mod tests;` in its own file is
+    /// opened only by a `cargo test` config and a `#[cfg(windows)]` module only
+    /// by a windows-targeted one. A file absent from the union is one that **no
+    /// declared config compiles** — the question `orphan-file` asks.
+    ///
+    /// Build-script fragments contribute too (a `build.rs` may `include!` a
+    /// source file), which is why this reads every fragment rather than
+    /// filtering to [`Self::fragment_crates`].
+    pub fn loaded_files(&self) -> BTreeSet<&str> {
+        self.configs
+            .iter()
+            .flat_map(|(_, assembly)| assembly.archived_fragments())
+            .flat_map(|frag| frag.loaded_files.iter().map(|f| f.as_str()))
+            .collect()
+    }
+
+    /// The crate code-names that actually emitted a fragment, across configs.
+    ///
+    /// A scoped `[engine]` config (`cargo build -p foo`) compiles only some
+    /// members; the rest emit nothing, so *every* file they own would read as
+    /// never-loaded. A consumer of [`Self::loaded_files`] must skip members
+    /// absent here rather than accuse them.
+    pub fn fragment_crates(&self) -> BTreeSet<&str> {
+        self.configs
+            .iter()
+            .flat_map(|(_, assembly)| assembly.crates.iter().map(String::as_str))
+            .collect()
+    }
+
     /// The cfg-matrix-unioned unused-pub verdict.
     pub fn union_verdict(&self) -> UnionVerdict {
         UnionVerdict::compute(&self.configs, Some(&self.meta))

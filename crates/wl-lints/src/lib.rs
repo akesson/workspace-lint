@@ -25,7 +25,7 @@ pub mod crate_size;
 pub mod duplicate_code;
 pub mod feature_drift;
 pub mod file_size;
-pub mod module_tree;
+pub mod orphan_file;
 pub mod stale_git_index;
 pub mod unused_deps;
 pub mod unused_pub;

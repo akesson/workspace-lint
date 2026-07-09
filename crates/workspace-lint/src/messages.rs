@@ -700,33 +700,33 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note("internal types are not part of the published API surface")
             .build(),
         ),
-        // module-tree: a `mod foo;` declaration with no backing file.
+        // orphan-file: no config compiled it and nothing names it — safe to delete.
         (
-            "module_tree_broken_mod_decl",
-            at_line(
-                "workspace-lint::module-tree",
-                "`mod missing` declared but no `missing.rs` or `missing/mod.rs` found",
-                PathBuf::from("crates/demo/src/lib.rs"),
-                3,
-            )
-            .help(
-                "create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = \"…\"]` attribute",
-            )
-            .note("`mod foo;` with no inline body must resolve to a source file")
-            .build(),
-        ),
-        // module-tree: an orphan source file not reachable from any `mod`.
-        (
-            "module_tree_orphan_file",
+            "orphan_file_orphan",
             at_file(
-                "workspace-lint::module-tree",
-                "orphan source file `src/orphan.rs` is not reachable from any `mod` declaration",
+                "workspace-lint::orphan-file",
+                "orphan source file `src/orphan.rs` is never compiled",
                 PathBuf::from("crates/demo/src/orphan.rs"),
             )
             .help(
-                "add `mod orphan;` (or a `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module, or delete the file",
+                "delete the file, or reach it: add `mod orphan;` (or `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module",
             )
-            .note("crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`")
+            .note("no `[engine]` config compiled it, and nothing in crate `demo`'s source names it")
+            .build(),
+        ),
+        // orphan-file: the source names it, but the config matrix never opens it.
+        (
+            "orphan_file_cfg_coverage_gap",
+            at_file(
+                "workspace-lint::orphan-file",
+                "no declared `[engine]` config compiles `src/imp_windows.rs`",
+                PathBuf::from("crates/demo/src/imp_windows.rs"),
+            )
+            .help(
+                "add a config that compiles it — a `--target` for a platform-gated module, or `\"cargo test\"` for a `#[cfg(test)]` one",
+            )
+            .note("crate `demo`'s source names this file, so it is not reported as an orphan — but the declared config (default) never opened it, so nothing in it is checked")
+            .level_explicit(wl_diagnostic::Level::Warn)
             .build(),
         ),
         // feature-drift: a declared feature never appears in `#[cfg]`.
@@ -1482,34 +1482,34 @@ mod tests {
         }
 
         #[test]
-        fn module_tree_broken_mod_decl() {
-            insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @r#"
-            warning: `mod missing` declared but no `missing.rs` or `missing/mod.rs` found
-             --> crates/demo/src/lib.rs:3:1
+        fn orphan_file_orphan() {
+            insta::assert_snapshot!(render(&scenario("orphan_file_orphan")), @r#"
+            warning: orphan source file `src/orphan.rs` is never compiled
+             --> crates/demo/src/orphan.rs:1:1
               |
-              = help: create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = "…"]` attribute
-              = note: `mod foo;` with no inline body must resolve to a source file
+              = help: delete the file, or reach it: add `mod orphan;` (or `#[path = "src/orphan.rs"] mod ...;`) in the appropriate parent module
+              = note: no `[engine]` config compiled it, and nothing in crate `demo`'s source names it
             help: if intentional, silence with:
               |
-            3 + workspace_lint::expect!(module_tree);
+            1 + workspace_lint::expect!(orphan_file);
               |
-              = note: `#[warn(workspace_lint::module_tree)]` on by default
+              = note: `#[warn(workspace_lint::orphan_file)]` on by default
             "#);
         }
 
         #[test]
-        fn module_tree_orphan_file() {
-            insta::assert_snapshot!(render(&scenario("module_tree_orphan_file")), @r#"
-            warning: orphan source file `src/orphan.rs` is not reachable from any `mod` declaration
-             --> crates/demo/src/orphan.rs:1:1
+        fn orphan_file_cfg_coverage_gap() {
+            insta::assert_snapshot!(render(&scenario("orphan_file_cfg_coverage_gap")), @r#"
+            warning: no declared `[engine]` config compiles `src/imp_windows.rs`
+             --> crates/demo/src/imp_windows.rs:1:1
               |
-              = help: add `mod orphan;` (or a `#[path = "src/orphan.rs"] mod ...;`) in the appropriate parent module, or delete the file
-              = note: crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`
+              = help: add a config that compiles it — a `--target` for a platform-gated module, or `"cargo test"` for a `#[cfg(test)]` one
+              = note: crate `demo`'s source names this file, so it is not reported as an orphan — but the declared config (default) never opened it, so nothing in it is checked
             help: if intentional, silence with:
               |
-            1 + workspace_lint::expect!(module_tree);
+            1 + workspace_lint::expect!(orphan_file);
               |
-              = note: `#[warn(workspace_lint::module_tree)]` on by default
+              = note: `#[warn(workspace_lint::orphan_file)]` on by default
             "#);
         }
 
@@ -1655,13 +1655,13 @@ mod tests {
         }
 
         #[test]
-        fn module_tree_broken_mod_decl() {
-            insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @r#"{"level":"warning","message":"`mod missing` declared but no `missing.rs` or `missing/mod.rs` found","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":3,"line_end":3,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"create `missing.rs` adjacent to this file, or `missing/mod.rs`, or add a `#[path = \"…\"]` attribute","spans":[]},{"level":"note","message":"`mod foo;` with no inline body must resolve to a source file","spans":[]}],"rendered":null}"#);
+        fn orphan_file_orphan() {
+            insta::assert_snapshot!(render(&scenario("orphan_file_orphan")), @r#"{"level":"warning","message":"orphan source file `src/orphan.rs` is never compiled","code":{"code":"workspace-lint::orphan-file","explanation":null},"spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(orphan_file);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"delete the file, or reach it: add `mod orphan;` (or `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module","spans":[]},{"level":"note","message":"no `[engine]` config compiled it, and nothing in crate `demo`'s source names it","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
-        fn module_tree_orphan_file() {
-            insta::assert_snapshot!(render(&scenario("module_tree_orphan_file")), @r#"{"level":"warning","message":"orphan source file `src/orphan.rs` is not reachable from any `mod` declaration","code":{"code":"workspace-lint::module-tree","explanation":null},"spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(module_tree);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add `mod orphan;` (or a `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module, or delete the file","spans":[]},{"level":"note","message":"crate `demo`'s module tree was built from `src/lib.rs` or `src/main.rs`","spans":[]}],"rendered":null}"#);
+        fn orphan_file_cfg_coverage_gap() {
+            insta::assert_snapshot!(render(&scenario("orphan_file_cfg_coverage_gap")), @r#"{"level":"warning","message":"no declared `[engine]` config compiles `src/imp_windows.rs`","code":{"code":"workspace-lint::orphan-file","explanation":null},"spans":[{"file_name":"crates/demo/src/imp_windows.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/imp_windows.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(orphan_file);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add a config that compiles it — a `--target` for a platform-gated module, or `\"cargo test\"` for a `#[cfg(test)]` one","spans":[]},{"level":"note","message":"crate `demo`'s source names this file, so it is not reported as an orphan — but the declared config (default) never opened it, so nothing in it is checked","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
@@ -1978,13 +1978,13 @@ mod tests {
         }
 
         #[test]
-        fn module_tree_broken_mod_decl() {
-            insta::assert_snapshot!(render(&scenario("module_tree_broken_mod_decl")), @"::warning file=crates/demo/src/lib.rs,line=3,col=1,title=workspace-lint%3A%3Amodule-tree::`mod missing` declared but no `missing.rs` or `missing/mod.rs` found");
+        fn orphan_file_orphan() {
+            insta::assert_snapshot!(render(&scenario("orphan_file_orphan")), @"::warning file=crates/demo/src/orphan.rs,line=1,col=1,title=workspace-lint%3A%3Aorphan-file::orphan source file `src/orphan.rs` is never compiled");
         }
 
         #[test]
-        fn module_tree_orphan_file() {
-            insta::assert_snapshot!(render(&scenario("module_tree_orphan_file")), @"::warning file=crates/demo/src/orphan.rs,line=1,col=1,title=workspace-lint%3A%3Amodule-tree::orphan source file `src/orphan.rs` is not reachable from any `mod` declaration");
+        fn orphan_file_cfg_coverage_gap() {
+            insta::assert_snapshot!(render(&scenario("orphan_file_cfg_coverage_gap")), @"::warning file=crates/demo/src/imp_windows.rs,line=1,col=1,title=workspace-lint%3A%3Aorphan-file::no declared `[engine]` config compiles `src/imp_windows.rs`");
         }
 
         #[test]

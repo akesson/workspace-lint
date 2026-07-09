@@ -1,0 +1,7 @@
+[lints]
+default = "allow"
+orphan-file = "deny"
+
+[engine]
+# orphan-file is a semantic lint: the fixture workspace is extracted.
+configs = ["cargo build", "cargo test"]

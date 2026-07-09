@@ -86,7 +86,15 @@ use serde::{Deserialize, Serialize};
 /// never clean a deletion-orphaned `use m::*;` (an `unused_imports` warning
 /// on the fixed tree, a `-D warnings` failure) — the misleading-absence bump
 /// trigger, same as bump 3.
-pub const SCHEMA_VERSION: u32 = 8;
+/// 9 — fragments gained [`IrFragment::loaded_files`]: every source file rustc
+/// actually opened while compiling this unit. It is the substrate of
+/// `orphan-file`, which asks "does any declared config compile this file?" —
+/// a question no syntactic walker can answer, since the module graph is only
+/// determined after macro expansion. A pre-9 fragment carries an empty list,
+/// so *every* file would read as never-compiled and the lint would advise
+/// deleting the whole workspace — the most destructive possible instance of
+/// the misleading-absence bump trigger.
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
@@ -126,6 +134,21 @@ pub struct IrFragment {
     /// driver/dylib). `#[serde(default)]` keeps pre-references fragments loadable.
     #[serde(default)]
     pub references: Vec<RefEdge>,
+    /// Every source file rustc opened while compiling this unit, restricted to
+    /// this crate's `CARGO_MANIFEST_DIR` (registry deps and `OUT_DIR` are
+    /// dropped) and stored as absolute, canonicalized paths. Deduped and sorted.
+    ///
+    /// This is rustc's own answer to "which files are part of this crate",
+    /// which is the only sound answer: `#[cfg_attr(unix, path = "…")]`, an
+    /// `include!` in expression position, a `macro_rules!`-generated `mod`, and
+    /// a build-script-computed include path are all resolved here for free,
+    /// where a syntactic walker must re-implement macro expansion to see them.
+    ///
+    /// Scoped per *compilation unit*, so it is cfg-dependent by construction: a
+    /// `#[cfg(test)] mod tests;` in its own file appears only in the `+test`
+    /// fragment. Consumers must union across the `[engine]` config matrix.
+    #[serde(default)]
+    pub loaded_files: Vec<String>,
 }
 
 /// One resolved reference: local item `from` mentions def `to`. Both carry a
@@ -643,6 +666,7 @@ mod transport_tests {
             schema_version: SCHEMA_VERSION,
             crate_name: "demo".into(),
             target_kind: "lib".into(),
+            loaded_files: vec!["src/lib.rs".into()],
             items: vec![ItemFact {
                 path: vec!["demo".into(), "thing".into()],
                 key: "deadbeef".into(),
@@ -718,7 +742,7 @@ mod transport_tests {
         use std::mem::size_of;
         assert_eq!(
             size_of::<ArchivedIrFragment>(),
-            36,
+            44,
             "ArchivedIrFragment layout changed"
         );
         assert_eq!(

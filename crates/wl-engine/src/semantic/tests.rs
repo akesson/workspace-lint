@@ -88,6 +88,17 @@ fn frag_target(
         target_kind: target_kind.into(),
         items,
         references,
+        loaded_files: Vec::new(),
+    }
+}
+
+/// A fragment that carries nothing but the files rustc opened — the substrate
+/// `orphan-file` judges. Paths go in absolute (as the extractor emits them);
+/// the assembler is what normalizes them workspace-relative.
+fn frag_files(name: &str, loaded_files: &[&str]) -> IrFragment {
+    IrFragment {
+        loaded_files: loaded_files.iter().map(|f| (*f).to_string()).collect(),
+        ..frag(name, vec![], vec![])
     }
 }
 
@@ -486,6 +497,7 @@ fn build_frag(references: Vec<RefEdge>) -> IrFragment {
         target_kind: "build".into(),
         items: Vec::new(),
         references,
+        loaded_files: Vec::new(),
     }
 }
 
@@ -3722,4 +3734,65 @@ fn unreferenced_fn_has_no_inbound_refs() {
     let m = model(vec![("default", vec![app])]);
     assert!(m.references_to("app::lonely").is_empty());
     assert!(m.callees_of("app::lonely").is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// `loaded_files` — the substrate `orphan-file` judges. The assembler's only job
+// is the union; the *meaning* of each path is rustc's, pinned by the tier-1
+// probe (`extractor/tests/probe.rs`).
+// ---------------------------------------------------------------------------
+
+/// A fragment is one compilation unit, so a `#[cfg(test)] mod tests;` file is
+/// opened only by the `cargo test` config. Judging any single config would call
+/// it dead; the union is what makes the verdict honest.
+#[test]
+fn loaded_files_union_across_the_config_matrix() {
+    let build = frag_files("demo", &["/w/src/lib.rs"]);
+    let test = frag_files("demo", &["/w/src/lib.rs", "/w/src/tests.rs"]);
+    let m = model(vec![("default", vec![build]), ("tests", vec![test])]);
+    assert_eq!(
+        m.loaded_files().into_iter().collect::<Vec<_>>(),
+        ["/w/src/lib.rs", "/w/src/tests.rs"]
+    );
+}
+
+/// Each member contributes its own files; the union spans crates as well as
+/// configs (one workspace-global answer, like the def hash join).
+#[test]
+fn loaded_files_union_across_crates() {
+    let alpha = frag_files("alpha", &["/w/alpha/src/lib.rs"]);
+    let beta = frag_files("beta", &["/w/beta/src/lib.rs"]);
+    let m = model(vec![("default", vec![alpha, beta])]);
+    assert_eq!(
+        m.loaded_files().into_iter().collect::<Vec<_>>(),
+        ["/w/alpha/src/lib.rs", "/w/beta/src/lib.rs"]
+    );
+}
+
+/// A build-script fragment's files count: a `build.rs` may `include!` a source
+/// file, and that file is then genuinely compiled.
+#[test]
+fn loaded_files_include_build_script_fragments() {
+    let app = frag_files("app", &["/w/src/lib.rs"]);
+    let mut build = build_frag(vec![]);
+    build.loaded_files = vec!["/w/build.rs".into(), "/w/src/shared.rs".into()];
+    let m = model(vec![("default", vec![app, build])]);
+    assert!(m.loaded_files().contains("/w/src/shared.rs"));
+}
+
+/// The zero-fragment guard's substrate: a scoped config (`cargo build -p alpha`)
+/// leaves `beta` uncompiled, so `beta` emits nothing. Its absence here is what
+/// stops a consumer from reading "no files loaded" as "every file is dead".
+/// Build-script carriers are not crates of the assembly and must not appear.
+#[test]
+fn fragment_crates_reports_only_crates_that_emitted() {
+    let alpha = frag_files("alpha", &["/w/alpha/src/lib.rs"]);
+    let build = build_frag(vec![]);
+    let m = model(vec![("default", vec![alpha, build])]);
+    let crates: Vec<&str> = m.fragment_crates().into_iter().collect();
+    assert_eq!(crates, ["alpha"]);
+    assert!(
+        !crates.contains(&"build_script_build"),
+        "a build-script carrier is not a member crate"
+    );
 }

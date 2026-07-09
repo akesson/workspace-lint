@@ -202,6 +202,7 @@ fn git_cmd(dir: &Path, args: &[&str]) -> Result<(), String> {
 pub const SEMANTIC_LINTS: &[&str] = &[
     "architecture",
     "duplicate-code",
+    "orphan-file",
     "unused-deps",
     "unused-pub",
 ];

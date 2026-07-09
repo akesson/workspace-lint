@@ -1,5 +1,5 @@
 //! The fast tier's syntactic tree model: [`Module`] and its walk iterator,
-//! the cargo [`Target`]/[`TargetKind`], and the [`BrokenModDecl`] record.
+//! the cargo [`Target`]/[`TargetKind`].
 //! Built by the lean walker in `module_tree` during [`FastModel`] load.
 //!
 //! This is the *syntactic* slice of syn-workspace's resolved model — the
@@ -25,10 +25,16 @@ pub struct Module {
     /// module (outer attributes only — feature gates inside function
     /// bodies are not extracted here). Deduped, sorted lexicographically.
     pub cfg_features: Vec<String>,
-    /// `mod foo;` declarations encountered in this module whose target file
-    /// couldn't be resolved (and which don't have an inline body). Surfaces
-    /// dangling-module declarations for module-tree integrity analyses.
-    pub broken_mod_decls: Vec<BrokenModDecl>,
+    /// Absolute paths of files this module's source *names* but does not own as
+    /// a submodule: the targets of `include_str!` / `include_bytes!`, and of an
+    /// `include!` outside item position (an expression or initializer, e.g. a
+    /// generated lookup table). Only existing files are recorded.
+    ///
+    /// They are reached — rustc reads every one — but they are not generated
+    /// *code* in the surgery sense (no items, no `use` declarations), so they
+    /// deliberately stay out of [`Self::generated_files`], whose meaning is
+    /// "spliced source; do not edit".
+    pub named_files: Vec<PathBuf>,
     /// Absolute paths of files spliced into this module via `include!(...)`
     /// (generated code). The included items live directly in this module (an
     /// `include!` is not a submodule), so these files are *not* the `file` of
@@ -53,21 +59,6 @@ impl Module {
     pub fn walk(&self) -> impl Iterator<Item = &Module> + '_ {
         ModuleWalk::new(self)
     }
-}
-
-/// A `mod foo;` declaration that didn't resolve to a backing file.
-///
-/// Recorded so consumers can flag the mismatch — typically a rename
-/// that left the declaration dangling, or a `#[cfg_attr(..., path = ...)]`
-/// form the walker doesn't evaluate.
-#[derive(Debug, Clone)]
-pub struct BrokenModDecl {
-    /// The `mod` name (`foo` in `mod foo;`).
-    pub name: String,
-    /// The file containing the failing declaration.
-    pub declared_in: PathBuf,
-    /// 1-indexed line number of the `mod` keyword within `declared_in`.
-    pub line: u32,
 }
 
 /// Kind of a Cargo target. Library crate-types (`lib`/`rlib`/`dylib`/
