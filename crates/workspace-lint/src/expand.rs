@@ -66,7 +66,7 @@ fn run_with_root(config: &ExpandConfig, root: &Path) {
             let new_content = format!(
                 "{}{start_marker}\n{body}{end_marker}\n{}",
                 &content[..start],
-                &content[end + end_marker.len()..].trim_start_matches('\n'),
+                content[end + end_marker.len()..].trim_start_matches('\n'),
             );
 
             if new_content == content {
@@ -118,7 +118,7 @@ fn replace_marker(
     Ok(format!(
         "{}{start_marker}\n{body}{end_marker}\n{}",
         &content[..start],
-        &content[end + end_marker.len()..].trim_start_matches('\n'),
+        content[end + end_marker.len()..].trim_start_matches('\n'),
     ))
 }
 
