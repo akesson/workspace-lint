@@ -86,9 +86,19 @@ fn frag_target(
         schema_version: SCHEMA_VERSION,
         crate_name: name.into(),
         target_kind: target_kind.into(),
+        is_test_cfg: false,
         items,
         references,
         loaded_files: Vec::new(),
+    }
+}
+
+/// The `+test` cfg variant of a lib: same `target_kind`, `is_test_cfg` set —
+/// exactly what the extractor emits for a unit compiled with `--test`.
+fn frag_test_cfg(name: &str, items: Vec<ItemFact>, references: Vec<RefEdge>) -> IrFragment {
+    IrFragment {
+        is_test_cfg: true,
+        ..frag(name, items, references)
     }
 }
 
@@ -495,6 +505,7 @@ fn build_frag(references: Vec<RefEdge>) -> IrFragment {
         schema_version: SCHEMA_VERSION,
         crate_name: "build_script_build".into(),
         target_kind: "build".into(),
+        is_test_cfg: false,
         items: Vec::new(),
         references,
         loaded_files: Vec::new(),

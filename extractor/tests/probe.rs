@@ -436,14 +436,17 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
 
     // 13. (PR 11) Fragment target kind: the probe compiles as a plain lib —
     //     the cargo-env discriminator (`CARGO_BIN_NAME` / `CARGO_TARGET_TMPDIR`
-    //     both absent) must land on "lib".
-    if frag.target_kind == "lib" {
+    //     both absent) must land on "lib", and a plain (non `--test`) unit must
+    //     not read as test cfg (`is_test_cfg` backs unused-pub's test-only
+    //     classification — a false positive here would demote production reach
+    //     to test reach).
+    if frag.target_kind == "lib" && !frag.is_test_cfg {
         ck.passes += 1;
-        println!("PASS  fragment: target_kind == \"lib\"");
+        println!("PASS  fragment: target_kind == \"lib\", is_test_cfg == false");
     } else {
         ck.failures.push(format!(
-            "[fragment] target_kind must be \"lib\", got {:?}",
-            frag.target_kind
+            "[fragment] want target_kind=\"lib\" is_test_cfg=false, got {:?} / {}",
+            frag.target_kind, frag.is_test_cfg
         ));
     }
 
@@ -955,6 +958,43 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             "loaded_files",
             "contains only files under CARGO_MANIFEST_DIR",
         );
+    }
+
+    // 22. `is_test_cfg` on a `--test` unit: re-lint the expansion probe under
+    //     `--tests` (the same `Check.args` channel the production orchestrator
+    //     uses for a `cargo test` config) and assert the `+test` cfg variant
+    //     carries the flag. This is the true-case counterpart of check 13; the
+    //     flag is what lets the assembler tell a `+test` lib apart from its
+    //     plain sibling once the `+test` filename suffix is gone — the
+    //     substrate of unused-pub's "only used by test code" verdict.
+    {
+        std::env::set_current_dir(&ck.root)?;
+        let tests_opts = Dylint {
+            pipe_stderr: None,
+            pipe_stdout: None,
+            quiet: false,
+            operation: Operation::Check(Check {
+                lib_sel: LibrarySelection {
+                    lib_paths: vec![lib_path.to_string_lossy().into_owned()],
+                    ..Default::default()
+                },
+                no_deps: true,
+                args: vec!["--tests".into()],
+                ..Default::default()
+            }),
+        };
+        dylint::run(&tests_opts)?;
+        let frag_path = ir_out.path().join("probe_expansion+test.wlir");
+        let tfrag = read_fragment(&frag_path)?;
+        if tfrag.is_test_cfg && tfrag.target_kind == "lib" {
+            ck.passes += 1;
+            println!("PASS  +test fragment: is_test_cfg == true, target_kind stays \"lib\"");
+        } else {
+            ck.failures.push(format!(
+                "[+test fragment] want is_test_cfg=true target_kind=\"lib\", got {} / {:?}",
+                tfrag.is_test_cfg, tfrag.target_kind
+            ));
+        }
     }
 
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());

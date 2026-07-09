@@ -221,6 +221,10 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         schema_version: wl_ir::SCHEMA_VERSION,
         crate_name: crate_code,
         target_kind: target_kind(tcx).to_string(),
+        // The same signal that keys the `+test` filename suffix, carried
+        // in-archive so the assembler can classify the unit's edges as test
+        // reach (`IrFragment::is_test_cfg` docs the split).
+        is_test_cfg: tcx.sess.opts.test,
         items,
         references,
         loaded_files,
