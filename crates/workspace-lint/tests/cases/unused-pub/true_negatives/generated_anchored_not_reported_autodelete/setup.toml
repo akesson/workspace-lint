@@ -5,6 +5,3 @@
 # the generated file — no finding, no deletion. Clean git tree required for the
 # deletion to be MachineApplicable.
 args = ["--fix-auto-delete"]
-
-[git]
-init = true

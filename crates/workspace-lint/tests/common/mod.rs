@@ -82,32 +82,57 @@ pub fn bless_enabled() -> bool {
 
 /// Apply an optional `setup.toml` (sibling of the fixture's staged tree) to the
 /// copied tempdir before the binary runs. Lets fixtures that need state which
-/// can't be committed inert — a git index, relative file mtimes, or an injected
-/// `# workspace-lint:` directive — stay dogfood-safe: a directive committed
-/// under `tests/**` would be picked up by this repo's own scan. Returns extra
-/// CLI args for the binary invocation. Shared by `cases.rs` and
-/// `fix_fixtures.rs`. Schema:
+/// can't be committed inert — an injected `# workspace-lint:` directive, or a
+/// deliberately dirty file — stay dogfood-safe: a directive committed under
+/// `tests/**` would be picked up by this repo's own scan. Returns extra CLI
+/// args for the binary invocation. Shared by `cases.rs` and `fix_fixtures.rs`.
+///
+/// Every staged tree is git-init'd and committed by default (AFTER `[[append]]`,
+/// so injected directives are committed too): deletion suggestions are
+/// `MachineApplicable` only for a tracked-and-clean file, so a non-repo tempdir
+/// would silently withhold every deletion and grow "commit first" notes in the
+/// snapshots. `[git] init = false` opts a fixture out (to exercise the
+/// no-repo-⇒-withhold behavior itself); `[[append_after_commit]]` dirties a
+/// file *after* the commit (to exercise the dirty-file withhold). Schema:
 ///
 /// ```toml
 /// args = ["--fast-only"]      # extra CLI args for the binary
 ///
-/// [git]                       # a clean tree, for `--fix-auto-delete`
-/// init = true                 # git init + add -A + commit
+/// [git]                       # staged trees are init+committed by default
+/// init = false                # opt out: run in a plain (non-repo) tempdir
 ///
-/// [[append]]                  # inject a directive that must stay uncommitted
+/// [[append]]                  # inject a directive that must stay out of the
+/// path = "crates/demo/Cargo.toml"     # committed FIXTURE (it is committed in
+/// text = "\n# workspace-lint: expect(centralized-deps)\n"  # the tempdir repo)
+///
+/// [[append_after_commit]]     # dirty a tracked file post-commit
 /// path = "crates/demo/Cargo.toml"
-/// text = "\n# workspace-lint: expect(centralized-deps)\n"
+/// text = "\n# a local edit\n"
 /// ```
 pub fn apply_setup(fixture_dir: &Path, tmp: &Path) -> Result<Vec<String>, String> {
     let setup_path = fixture_dir.join("setup.toml");
-    if !setup_path.exists() {
-        return Ok(Vec::new());
-    }
-    let text = std::fs::read_to_string(&setup_path).map_err(|e| format!("read setup.toml: {e}"))?;
-    let doc: toml::Value = toml::from_str(&text).map_err(|e| format!("parse setup.toml: {e}"))?;
+    let doc: toml::Value = if setup_path.exists() {
+        let text =
+            std::fs::read_to_string(&setup_path).map_err(|e| format!("read setup.toml: {e}"))?;
+        toml::from_str(&text).map_err(|e| format!("parse setup.toml: {e}"))?
+    } else {
+        toml::Value::Table(Default::default())
+    };
 
-    if let Some(git) = doc.get("git")
-        && git.get("init").and_then(toml::Value::as_bool) == Some(true)
+    // Append text to a file *after* copy — used to inject a `# workspace-lint:`
+    // directive that must reach the run but stay out of the committed fixture
+    // (otherwise this repo's own dogfood scan would pick the directive up from
+    // tests/ and trip stale-expect / unknown-lint). Runs BEFORE the git commit
+    // so the injected text is tracked-and-clean like the rest of the tree.
+    apply_appends(&doc, "append", tmp)?;
+
+    // Init + commit unless the fixture opts out. The committed repo is what
+    // makes deletion suggestions `MachineApplicable` (git is the backup).
+    if doc
+        .get("git")
+        .and_then(|g| g.get("init"))
+        .and_then(toml::Value::as_bool)
+        != Some(false)
     {
         git_cmd(tmp, &["init", "-q"])?;
         git_cmd(tmp, &["add", "-A"])?;
@@ -126,27 +151,8 @@ pub fn apply_setup(fixture_dir: &Path, tmp: &Path) -> Result<Vec<String>, String
         )?;
     }
 
-    // Append text to a file *after* copy — used to inject a `# workspace-lint:`
-    // directive that must reach the run but stay out of the committed fixture
-    // (otherwise this repo's own dogfood scan would pick the directive up from
-    // tests/ and trip stale-expect / unknown-lint).
-    if let Some(entries) = doc.get("append").and_then(toml::Value::as_array) {
-        for entry in entries {
-            let rel = entry
-                .get("path")
-                .and_then(toml::Value::as_str)
-                .ok_or("append entry needs a string `path`")?;
-            let text = entry
-                .get("text")
-                .and_then(toml::Value::as_str)
-                .ok_or("append entry needs a string `text`")?;
-            let p = tmp.join(rel);
-            let mut content =
-                std::fs::read_to_string(&p).map_err(|e| format!("append read {rel}: {e}"))?;
-            content.push_str(text);
-            std::fs::write(&p, content).map_err(|e| format!("append write {rel}: {e}"))?;
-        }
-    }
+    // Post-commit appends: leave a tracked file deliberately dirty.
+    apply_appends(&doc, "append_after_commit", tmp)?;
 
     // Extra CLI args for the binary — lets a fixture exercise a flagged run
     // (e.g. `--fast-only`) while staying in the standard taxonomy.
@@ -163,6 +169,30 @@ pub fn apply_setup(fixture_dir: &Path, tmp: &Path) -> Result<Vec<String>, String
     }
 
     Ok(args)
+}
+
+/// Process one `[[append]]`-shaped array (`key`): append each entry's `text`
+/// to its `path` under `tmp`.
+fn apply_appends(doc: &toml::Value, key: &str, tmp: &Path) -> Result<(), String> {
+    let Some(entries) = doc.get(key).and_then(toml::Value::as_array) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let rel = entry
+            .get("path")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("{key} entry needs a string `path`"))?;
+        let text = entry
+            .get("text")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("{key} entry needs a string `text`"))?;
+        let p = tmp.join(rel);
+        let mut content =
+            std::fs::read_to_string(&p).map_err(|e| format!("{key} read {rel}: {e}"))?;
+        content.push_str(text);
+        std::fs::write(&p, content).map_err(|e| format!("{key} write {rel}: {e}"))?;
+    }
+    Ok(())
 }
 
 fn git_cmd(dir: &Path, args: &[&str]) -> Result<(), String> {

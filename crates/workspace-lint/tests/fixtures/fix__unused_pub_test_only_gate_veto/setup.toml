@@ -1,7 +1,2 @@
 # Deletion is CLI-opt-in only: the harness's `--fix` alone must never delete.
 args = ["--fix-auto-delete"]
-
-# Git-clean so a deletion COULD apply — this fixture proves the LINT-layer
-# gate (the allowlisted scaffold), not the git gate, is what vetoes.
-[git]
-init = true
