@@ -63,7 +63,7 @@ impl RelinkedDylib {
             Ok(path) => path,
             Err(e) => {
                 eprintln!(
-                    "wl-engine: cannot hard-link the extractor dylib for freshness routing \
+                    "workspace-lint: cannot hard-link the extractor dylib for freshness routing \
                      ({e}) — falling back to {}",
                     self.canonical.display()
                 );

@@ -318,7 +318,7 @@ impl Engine {
             // entry no longer disables the guard for the whole matrix.
             let targets = if spec.kinds == Kinds::Benches {
                 eprintln!(
-                    "wl-engine: completeness guard skipped — bench harness kinds aren't \
+                    "workspace-lint: completeness guard skipped — bench harness kinds aren't \
                      modeled (config `{}`)",
                     spec.id
                 );
@@ -406,7 +406,7 @@ impl Engine {
         let missing = guard::missing_build_fragments(&dirs, &names);
         if !missing.is_empty() {
             eprintln!(
-                "wl-engine: {} build-script fragment(s) missing from every config dir of the \
+                "workspace-lint: {} build-script fragment(s) missing from every config dir of the \
                  universe (cargo freshness skipped their lint pass): {missing:?} — forcing a \
                  re-lint",
                 missing.len(),
@@ -501,7 +501,7 @@ impl Engine {
             // must include their names or the prune would sweep the one copy.
             let mut keep = expected.clone();
             keep.extend(targets.build_fragments());
-            prune_stale_fragments(ir_dir, &keep);
+            prune_stale_fragments(ir_dir, &keep, valid_crates);
         } else {
             // A package-scoped dir's exact population is bet on the closure's
             // precision, so prune only what is provably stale: fragments whose
@@ -518,7 +518,7 @@ impl Engine {
             return Ok(());
         }
         eprintln!(
-            "wl-engine: {} expected fragment(s) missing under `{}` (cargo freshness skipped \
+            "workspace-lint: {} expected fragment(s) missing under `{}` (cargo freshness skipped \
              their lint pass): {missing:?} — forcing a re-lint",
             missing.len(),
             selector.id,
@@ -542,7 +542,21 @@ impl Engine {
 /// Delete `*.wlir` files in `ir_dir` that no complete run of the current
 /// binary would produce. Best-effort: a file that won't delete is at worst the
 /// same stale-fragment exposure that existed before pruning.
-fn prune_stale_fragments(ir_dir: &std::path::Path, expected: &std::collections::BTreeSet<String>) {
+///
+/// Deletion and *reporting* are gated differently. Everything outside the
+/// keep-set is deleted, but only a fragment whose crate part matches no
+/// current workspace target earns a message — a rename/removal leftover or an
+/// older binary's naming scheme, the once-ever cleanups a user might care to
+/// see. A current member's off-set fragment is a routine byproduct: a dirty
+/// member's plain lib unit re-checked under the `cargo test` config emits a
+/// plain fragment that config's keep-set doesn't contain, on *every* edit —
+/// announcing it would make stderr vary with cargo freshness (see the
+/// byte-determinism note in `run_config`).
+fn prune_stale_fragments(
+    ir_dir: &std::path::Path,
+    keep: &std::collections::BTreeSet<String>,
+    valid_crates: &std::collections::BTreeSet<String>,
+) {
     let Ok(entries) = std::fs::read_dir(ir_dir) else {
         return;
     };
@@ -552,16 +566,27 @@ fn prune_stale_fragments(ir_dir: &std::path::Path, expected: &std::collections::
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !expected.contains(&name) {
-            eprintln!("wl-engine: pruning stale IR fragment {name}");
+        if !keep.contains(&name) {
+            if !valid_crates.contains(fragment_crate_part(&name)) {
+                eprintln!(
+                    "workspace-lint: pruning stale IR fragment {name} (no such workspace target)"
+                );
+            }
             let _ = std::fs::remove_file(&path);
         }
     }
 }
 
-/// Delete `*.wlir` files whose crate part matches no current workspace target
-/// (the stem up to the first `@`/`+` marker is the compiled crate name, or the
-/// package name for a `<pkg>@build` build fragment). The conservative prune for
+/// The crate part of a fragment file name: the stem up to the first `@`/`+`
+/// marker — the compiled crate name, or the package name for a `<pkg>@build`
+/// build fragment.
+fn fragment_crate_part(name: &str) -> &str {
+    let stem = name.trim_end_matches(".wlir");
+    stem.split_once(['@', '+']).map(|(k, _)| k).unwrap_or(stem)
+}
+
+/// Delete `*.wlir` files whose crate part (see [`fragment_crate_part`])
+/// matches no current workspace target. The conservative prune for
 /// package-scoped dirs: a renamed/removed crate's fragment can't over-credit
 /// forever, while `valid_crates` — every member's target *and* package names
 /// (see [`guard::crate_name_universe`]) — is a superset of what any closure
@@ -586,10 +611,10 @@ fn prune_nonmember_fragments(
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let stem = name.trim_end_matches(".wlir");
-        let krate = stem.split_once(['@', '+']).map(|(k, _)| k).unwrap_or(stem);
-        if !valid_crates.contains(krate) {
-            eprintln!("wl-engine: pruning stale IR fragment {name} (no such workspace target)");
+        if !valid_crates.contains(fragment_crate_part(&name)) {
+            eprintln!(
+                "workspace-lint: pruning stale IR fragment {name} (no such workspace target)"
+            );
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -619,7 +644,7 @@ fn dedup_build_fragments(runs: &[ConfigRun], names: &std::collections::BTreeSet<
         let (_newest, stale) = copies.split_last().expect("len >= 2");
         for (path, _) in stale {
             eprintln!(
-                "wl-engine: dropping duplicate build fragment {}",
+                "workspace-lint: dropping duplicate build fragment {}",
                 path.display()
             );
             let _ = std::fs::remove_file(path);
@@ -762,19 +787,49 @@ mod tests {
     }
 
     /// The whole-workspace pruner keeps exactly the expected keep-set and
-    /// prunes every other `*.wlir` (leftovers from renamed crates / older
-    /// naming schemes), leaving non-`.wlir` files alone.
+    /// prunes every other `*.wlir`, leaving non-`.wlir` files alone. Both
+    /// off-set classes are deleted alike — a current member's byproduct
+    /// fragment (a plain lib fragment the `cargo test` config re-emits for
+    /// every dirty member) and a genuinely-unknown crate's leftover — only
+    /// the *message* distinguishes them (unknown-crate only; not assertable
+    /// here, but the deletion contract is).
     #[test]
     fn prune_stale_keeps_only_expected() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        for f in ["a.wlir", "b.wlir", "old.wlir", "keep.txt"] {
+        for f in [
+            "a+test.wlir",
+            "b+test.wlir",
+            "a.wlir",
+            "old.wlir",
+            "keep.txt",
+        ] {
             touch(dir, f);
         }
-        let expected = set(&["a.wlir", "b.wlir"]);
+        let keep = set(&["a+test.wlir", "b+test.wlir"]);
+        let valid_crates = set(&["a", "b"]);
 
-        prune_stale_fragments(dir, &expected);
+        prune_stale_fragments(dir, &keep, &valid_crates);
 
-        assert_eq!(names_in(dir), set(&["a.wlir", "b.wlir", "keep.txt"]));
+        assert_eq!(
+            names_in(dir),
+            set(&["a+test.wlir", "b+test.wlir", "keep.txt"]),
+            "member byproduct (a.wlir) and unknown leftover (old.wlir) are both pruned"
+        );
+    }
+
+    /// The message gate's vocabulary: the crate part is the stem up to the
+    /// first `@`/`+` marker, whole stem otherwise.
+    #[test]
+    fn fragment_crate_part_parses_every_naming_form() {
+        for (name, krate) in [
+            ("wl_fast.wlir", "wl_fast"),
+            ("wl_fast+test.wlir", "wl_fast"),
+            ("workspace_lint@bin.wlir", "workspace_lint"),
+            ("workspace_lint@bin+test.wlir", "workspace_lint"),
+            ("wl_orchestrate@build.wlir", "wl_orchestrate"),
+        ] {
+            assert_eq!(fragment_crate_part(name), krate);
+        }
     }
 }
