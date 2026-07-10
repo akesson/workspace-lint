@@ -76,7 +76,7 @@ nightly `extractor/` package:
   `wl-lints`), and the `WL_TIMING` `timing` instrument. Extracted from
   `wl-engine` when the two tiers outgrew one crate-size budget.
 - **`wl-ir`** — the serde-only IR contract between the extractor and the
-  assembler (publishable; schema-versioned).
+  assembler (schema-versioned; ships only vendored inside the binary).
 - **`workspace-lint-marker`** — zero-dep crate exporting the `expect!` / `allow!`
   macros (expand to nothing; workspace-lint scans the *source text* for them).
 - **`extractor/`** (workspace-excluded, own toolchain pin + lockfile) — the
@@ -87,16 +87,16 @@ nightly `extractor/` package:
 Strict layering: `workspace-lint` → `wl-lints` → `wl-lint-api` →
 {`wl-diagnostic`, `wl-engine`}, and `wl-engine` → `wl-orchestrate` →
 `wl-fast`; the leaves are `wl-diagnostic`, `wl-fast`, and `wl-ir`.
-`wl-lints`, `wl-lint-api`, `wl-diagnostic`, and `wl-orchestrate` are
-`publish = false`, so the deny-level `unused-pub` dogfood judges their `pub`
-APIs workspace-internally (a helper reachable only from another crate's *test*
-code is seen correctly — the assembler's hash join is global across `[engine]
-configs`; see the `render_one` note in `.workspace-lint.toml`). `wl-engine`
-and `wl-fast` are `publish = true` (their `pub` APIs are treated as external,
-hence exempt) — the Phase-1 crate is `publish = false` precisely so that
-exemption doesn't hide dead orchestration API, the way it once did.
+Every library crate is `publish = false`, so the deny-level `unused-pub`
+dogfood judges their `pub` APIs workspace-internally (a helper reachable only
+from another crate's *test* code is seen correctly — the assembler's hash
+join is global across `[engine] configs`; see the `render_one` note in
+`.workspace-lint.toml`). The one exception is `wl-ir`: its emit-side API is
+consumed by the workspace-excluded `extractor/`, which the dogfood cannot
+see, so `.workspace-lint.toml` excludes it from `unused-pub` rather than
+judging it blind.
 
-`workspace-lint-marker` and `wl-ir` are published; CI gates them with
+`workspace-lint-marker` is the only published crate; CI gates it with
 `cargo publish --dry-run`.
 
 ## Common commands

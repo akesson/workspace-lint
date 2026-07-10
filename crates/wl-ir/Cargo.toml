@@ -7,10 +7,11 @@ name = "wl-ir"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-# Publishable-intent flag: this schema is the engine's public extension surface,
-# and the flag marks its API external for workspace-lint's publish-aware
-# `unused-pub` (same convention as the marker crates).
-publish = true
+# Deliberately unpublished: the schema ships only vendored inside the binary
+# (alongside `extractor/`). Its real consumer — the extractor — is
+# workspace-excluded and thus invisible to the unused-pub dogfood, so the
+# dogfood config excludes this crate rather than judging it blind.
+publish = false
 repository = "https://github.com/akesson/workspace-lint"
 description = "The serde IR contract between workspace-lint's per-crate rustc extractor (Phase 1) and its workspace assembler (Phase 2)."
 license = "MIT OR Apache-2.0"

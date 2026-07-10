@@ -3,10 +3,10 @@ name = "wl-fast"
 version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
-# Publishable-intent flag (unused-pub convention, mirroring wl-engine): the
-# fast tier is library API surface, not workspace-internal plumbing. Not in
-# the CI publish dry-run gate — it ships only as part of the binary.
-publish = true
+# Deliberately unpublished (mirroring wl-engine): the fast tier ships only
+# inside the binary, and the deny-level unused-pub dogfood judges this
+# crate's pub API workspace-internally.
+publish = false
 repository = "https://github.com/akesson/workspace-lint"
 description = "workspace-lint's build-free fast tier: cargo metadata shape, parsed manifests, and the lean syntactic module walker."
 license = "MIT OR Apache-2.0"
