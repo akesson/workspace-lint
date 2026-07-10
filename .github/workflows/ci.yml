@@ -83,7 +83,7 @@ jobs:
       # `dylint` version in Cargo.lock.
       - name: Cache dylint-link
         id: cache-dylint-link
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/dylint-link*
           key: ${{ runner.os }}-dylint-link-6.0.1
@@ -91,7 +91,7 @@ jobs:
         if: steps.cache-dylint-link.outputs.cache-hit != 'true'
         run: cargo install dylint-link --version 6.0.1 --locked
       - name: Cache dylint driver
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.dylint_drivers
           key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
@@ -102,7 +102,7 @@ jobs:
       # hit is safe by design: materialization is content-compared and
       # self-healing, and cargo freshness rebuilds only what changed.
       - name: Cache vendored extractor build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/workspace-lint
           key: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-${{ hashFiles('extractor/**', 'crates/wl-ir/**') }}
@@ -153,7 +153,7 @@ jobs:
       # Same cached provisioning as the test matrix (see the comments there).
       - name: Cache dylint-link
         id: cache-dylint-link
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/dylint-link*
           key: ${{ runner.os }}-dylint-link-6.0.1
@@ -161,12 +161,12 @@ jobs:
         if: steps.cache-dylint-link.outputs.cache-hit != 'true'
         run: cargo install dylint-link --version 6.0.1 --locked
       - name: Cache dylint driver
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.dylint_drivers
           key: ${{ runner.os }}-dylint-driver-nightly-2026-04-16
       - name: Cache vendored extractor build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/workspace-lint
           key: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-${{ hashFiles('extractor/**', 'crates/wl-ir/**') }}
