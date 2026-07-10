@@ -26,12 +26,13 @@ pub(crate) struct Cli {
     /// reviewable as one diff. Never deletes code — see `--fix-auto-delete`.
     #[arg(long, global = true, default_value_t = false)]
     pub fix: bool,
-    /// Everything `--fix` does, plus: an `unused-pub` item that is unused
-    /// everywhere is whole-item DELETED (doc comment through body), cascading
-    /// through the entire dead chain in one pass and trimming any `use` left
-    /// dangling. Only git-tracked-clean files are touched — the deletion's
-    /// backup is `git checkout`. A manual operation by design: there is no
-    /// config equivalent, so CI `--fix` runs can never delete code.
+    /// Everything `--fix` does, plus the DELETIONS: an `unused-pub` item that
+    /// is unused everywhere is whole-item deleted (doc comment through body),
+    /// cascading through the entire dead chain in one pass and trimming any
+    /// `use` left dangling; an `unused-deps` finding's dep line is removed.
+    /// Only git-tracked-clean files are touched — the deletion's backup is
+    /// `git checkout`. A manual operation by design: there is no config
+    /// equivalent, so CI `--fix` runs can never delete anything.
     #[arg(long, global = true, default_value_t = false)]
     pub fix_auto_delete: bool,
     /// Skip the clean-git-tree guard used by `--fix` and the `expand`

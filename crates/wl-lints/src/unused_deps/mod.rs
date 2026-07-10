@@ -52,6 +52,6 @@ impl LintImpl for UnusedDeps {
         let Some((fast, semantic)) = cx.semantic_models(Self::ID) else {
             return Vec::new();
         };
-        ir::check(&self.config, fast, semantic)
+        ir::check(&self.config, fast, semantic, cx.auto_delete)
     }
 }

@@ -28,6 +28,7 @@ pub(super) fn check(
     per_crate: &PerCrate<UnusedDepsConfig>,
     fast: &FastModel,
     model: &SemanticModel,
+    auto_delete: bool,
 ) -> Vec<Diagnostic> {
     let lint_id = LintId::UnusedDeps.id();
     let verdict = model.deps_verdict();
@@ -105,7 +106,7 @@ pub(super) fn check(
                 entry.section.as_str(),
                 entry.original_name
             ));
-            if let Some((s, withheld)) = build_delete_suggestion(manifest, entry) {
+            if let Some((s, withheld)) = build_delete_suggestion(manifest, entry, auto_delete) {
                 builder = builder.suggestion(s);
                 if let Some(reason) = withheld {
                     // Every entry shares this manifest file, so the reason
@@ -234,12 +235,16 @@ fn kind_of(section: DepSection) -> DepKind {
 
 /// The dep-line deletion suggestion, over the fast tier's `Manifest`
 /// (locator-driven byte spans; swallows the trailing (CR)LF so the whole
-/// line disappears). Gated per-file like every deletion: `MachineApplicable`
-/// only for a git-tracked-clean manifest, otherwise withheld with the reason
-/// in the second element.
+/// line disappears). Doubly gated: removing a dependency is a DELETION, so
+/// it applies under `--fix-auto-delete` only (plain `--fix` withholds it —
+/// the finding's own "possibly unused" hedge must never auto-apply on the
+/// flag that promises never to delete), and like every deletion it is
+/// `MachineApplicable` only for a git-tracked-clean manifest. A withheld
+/// suggestion carries the reason in the second element.
 pub(super) fn build_delete_suggestion(
     manifest: &Manifest,
     entry: &DeclaredDep,
+    auto_delete: bool,
 ) -> Option<(Suggestion, Option<String>)> {
     let location = manifest
         .locate_dep(entry.section, &entry.original_name)
@@ -250,14 +255,23 @@ pub(super) fn build_delete_suggestion(
     );
     let deleted = &manifest.raw()[location.byte_start as usize..location.byte_end as usize];
     let line_end = location.line + deleted.bytes().filter(|&b| b == b'\n').count() as u32;
-    Some(wl_lint_api::surgery::deletion::gated_deletion_suggestion(
+    let (mut suggestion, mut withheld) = wl_lint_api::surgery::deletion::gated_deletion_suggestion(
         manifest.path(),
         (location.byte_start as usize, end),
         (location.line, line_end),
         format!("remove unused dependency `{}`", entry.original_name),
         Some(deleted.to_string()),
-        wl_lint_api::surgery::deletion::FixFlag::Fix,
-    ))
+        wl_lint_api::surgery::deletion::FixFlag::AutoDelete,
+    );
+    if !auto_delete && suggestion.applicability == wl_diagnostic::Applicability::MachineApplicable {
+        suggestion.applicability = wl_diagnostic::Applicability::MaybeIncorrect;
+        withheld = Some(
+            "not auto-applied: removing a dependency is `--fix-auto-delete` only — the \
+             verdict is \"possibly unused\"; verify before deleting"
+                .into(),
+        );
+    }
+    Some((suggestion, withheld))
 }
 
 /// The package name a declared dep resolves to (a `package = "…"` rename,

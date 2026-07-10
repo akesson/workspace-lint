@@ -2,6 +2,7 @@ error: 1 possibly unused dependency in crates/consumer/Cargo.toml
  --> crates/consumer/Cargo.toml:1:1
   |
   = help: [dependencies] provider
+  = note: not auto-applied: removing a dependency is `--fix-auto-delete` only — the verdict is "possibly unused"; verify before deleting
   = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
   = note: verify by removing the dep and running `cargo build --all-targets`
   = note: if the build breaks, add the dep to [unused-deps] ignore in your config
@@ -15,5 +16,5 @@ help: if intentional, silence with:
   |
   = note: `#[deny(workspace_lint::unused_deps)]` on by default
 
-workspace-lint: generated 1 error (run `workspace-lint --fix` to apply 1 suggestion)
+workspace-lint: generated 1 error
 workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unused-deps)

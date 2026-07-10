@@ -200,3 +200,15 @@ pub const PROBE_SNIPPET: &str = include_str!("gen_snippet.rs");
 pub fn probe_loaded_files() -> u32 {
     imp::val() + u32::from(PROBE_TABLE[0]) + PROBE_SNIPPET.len() as u32
 }
+
+// Token-passthrough bang macro from an external crate (the cfg_if shape):
+// the macro re-emits OUR item tokens, so `from_passthrough_macro`'s span has
+// root syntax context — no ExpnData chain to walk, no written path node. The
+// reference graph records NOTHING for `passthrough`; only the resolver-level
+// `used_crates` (schema 12) still names it. See probe.rs check 24.
+passthrough::passthrough! {
+    /// Documented so the `WL_UNDOCUMENTED_PUB` findings demo stays quiet here.
+    pub fn from_passthrough_macro() -> u32 {
+        11
+    }
+}

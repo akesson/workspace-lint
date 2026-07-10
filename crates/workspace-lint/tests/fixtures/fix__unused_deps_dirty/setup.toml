@@ -3,7 +3,7 @@
 # withheld (MaybeIncorrect + "commit first" note) and the tree keeps the dep.
 # --allow-dirty gets past the tree-level gate; the per-file gate cannot be
 # bypassed.
-args = ["--allow-dirty"]
+args = ["--fix-auto-delete", "--allow-dirty"]
 
 [[append_after_commit]]
 path = "crates/alpha/Cargo.toml"

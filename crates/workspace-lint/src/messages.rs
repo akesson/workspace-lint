@@ -438,7 +438,23 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 PathBuf::from("crates/alpha"),
             )
             .help("[dependencies] rand")
-            .note_once("file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix` will not delete it (commit first or use `git stash`)")
+            .note_once("file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix-auto-delete` will not delete it (commit first or use `git stash`)")
+            .note_once("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
+            .note_once("verify by removing the dep and running `cargo build --all-targets`")
+            .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
+            .build(),
+        ),
+        // unused-deps: dep removal is a deletion, so plain `--fix` withholds
+        // it (--fix-auto-delete only); the note names the flag and the hedge.
+        (
+            "unused_deps_removal_withheld",
+            at_crate(
+                "workspace-lint::unused-deps",
+                "1 possibly unused dependency in crates/alpha/Cargo.toml",
+                PathBuf::from("crates/alpha"),
+            )
+            .help("[dependencies] rand")
+            .note_once("not auto-applied: removing a dependency is `--fix-auto-delete` only — the verdict is \"possibly unused\"; verify before deleting")
             .note_once("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
             .note_once("verify by removing the dep and running `cargo build --all-targets`")
             .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
@@ -1307,13 +1323,32 @@ mod tests {
         }
 
         #[test]
+        fn unused_deps_removal_withheld() {
+            insta::assert_snapshot!(render(&scenario("unused_deps_removal_withheld")), @r#"
+            warning: 1 possibly unused dependency in crates/alpha/Cargo.toml
+             --> crates/alpha/Cargo.toml:1:1
+              |
+              = help: [dependencies] rand
+              = note: not auto-applied: removing a dependency is `--fix-auto-delete` only — the verdict is "possibly unused"; verify before deleting
+              = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+              = note: verify by removing the dep and running `cargo build --all-targets`
+              = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(unused-deps)
+              |
+              = note: `#[warn(workspace_lint::unused_deps)]` on by default
+            "#);
+        }
+
+        #[test]
         fn unused_deps_dirty_manifest() {
             insta::assert_snapshot!(render(&scenario("unused_deps_dirty_manifest")), @r"
             warning: 1 possibly unused dependency in crates/alpha/Cargo.toml
              --> crates/alpha/Cargo.toml:1:1
               |
               = help: [dependencies] rand
-              = note: file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix` will not delete it (commit first or use `git stash`)
+              = note: file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix-auto-delete` will not delete it (commit first or use `git stash`)
               = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
               = note: verify by removing the dep and running `cargo build --all-targets`
               = note: if the build breaks, add the dep to [unused-deps] ignore in your config
@@ -1911,7 +1946,7 @@ mod tests {
 
         #[test]
         fn unused_deps_dirty_manifest() {
-            insta::assert_snapshot!(render(&scenario("unused_deps_dirty_manifest")), @r##"{"level":"warning","message":"1 possibly unused dependency in crates/alpha/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] rand","spans":[]},{"level":"note","message":"file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix` will not delete it (commit first or use `git stash`)","spans":[]},{"level":"note","message":"build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
+            insta::assert_snapshot!(render(&scenario("unused_deps_dirty_manifest")), @r##"{"level":"warning","message":"1 possibly unused dependency in crates/alpha/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] rand","spans":[]},{"level":"note","message":"file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix-auto-delete` will not delete it (commit first or use `git stash`)","spans":[]},{"level":"note","message":"build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
         }
 
         #[test]

@@ -1053,6 +1053,40 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
         }
     }
 
+    // 24. `used_crates` — the resolver-level used-crate facts (schema 12) and
+    //     the blind spot they exist for. `probe-passthrough` is consumed ONLY
+    //     via its token-passthrough bang macro (the cfg_if shape): the
+    //     expansion output is this crate's own root-context tokens, so the
+    //     reference graph structurally records nothing — while the resolver
+    //     resolved `passthrough::passthrough!` and flagged the crate used.
+    //     If the no-edge half ever starts failing, the reference graph has
+    //     learned to see passthrough usage and `used_crates` could retire.
+    {
+        ck.check("from_passthrough_macro", &frag, |c, it| {
+            c.expect(it.kind == "fn", it, "kind must be fn");
+            c.expect(it.visibility == Visibility::Public, it, "must be Public");
+        });
+        let edge_to_passthrough = frag
+            .references
+            .iter()
+            .any(|e| e.to.first().is_some_and(|c| c == "probe_passthrough"));
+        ck.expect_named(
+            !edge_to_passthrough,
+            "probe_passthrough",
+            "has NO reference edge (the token-passthrough blind spot)",
+        );
+        ck.expect_named(
+            frag.used_crates.iter().any(|c| c == "probe_passthrough"),
+            "probe_passthrough",
+            "is in used_crates (resolver saw the macro use)",
+        );
+        ck.expect_named(
+            frag.used_crates.iter().any(|c| c == "shim"),
+            "shim",
+            "is in used_crates (ordinary path usage also lands)",
+        );
+    }
+
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());
     anyhow::ensure!(
         ck.failures.is_empty(),

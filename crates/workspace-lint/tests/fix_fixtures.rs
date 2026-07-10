@@ -131,6 +131,14 @@ fn fix_unused_deps() {
     run_fix_fixture("fix__unused_deps");
 }
 
+/// Plain `--fix` withholds dep-line removal (a deletion — `--fix-auto-delete`
+/// only, per the flag's never-deletes promise): same input tree as
+/// `fix__unused_deps`, expected byte-identical to input.
+#[test]
+fn fix_unused_deps_withheld() {
+    run_fix_fixture("fix__unused_deps_withheld");
+}
+
 #[test]
 fn fix_unused_deps_dirty_manifest() {
     // The per-file git gate, dirty flavor: the manifest carrying the unused

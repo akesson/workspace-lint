@@ -1,0 +1,6 @@
+# The quarantine half of the dep-removal gate (same input tree as
+# fix__unused_deps): under plain --fix the dep-line deletions are withheld
+# ("possibly unused" must never auto-apply on the flag that promises never
+# to delete), so the tree comes out byte-identical. fix__unused_deps runs
+# the same tree with --fix-auto-delete and expects the removals.
+args = []
