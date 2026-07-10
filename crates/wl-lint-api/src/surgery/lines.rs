@@ -75,7 +75,7 @@ pub fn line_span(content: &str, start_line: u32, end_line: u32) -> Option<(usize
     Some((byte_start, byte_end))
 }
 
-/// The applier-side EOF counterpart of [`eat_blank_lines`]: a deletion run
+/// The applier-side EOF counterpart of `eat_blank_lines`: a deletion run
 /// that reached EOF turns the blank separator above it into trailing blank
 /// lines — residue only visible after adjacent deletions merged. Trim the
 /// fixed buffer to exactly one final `eol`.
