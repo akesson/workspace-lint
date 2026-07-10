@@ -2,10 +2,11 @@
 //!
 //! A stale directive is resolved by removing it — the mechanical inverse of
 //! writing a silence directive (which `--fix` never does on the author's
-//! behalf). We build a `MachineApplicable`, empty-replacement [`Suggestion`]
-//! whose byte span covers the whole directive line(s), leading indent through
-//! the trailing `\n` / `\r\n`, so the line disappears with no residue. The
-//! shape mirrors `unused_deps::ir::build_delete_suggestion`.
+//! behalf). We build an empty-replacement [`Suggestion`] whose byte span
+//! covers the whole directive line(s), leading indent through the trailing
+//! `\n` / `\r\n`, so the line disappears with no residue — through the
+//! uniform per-file git gate (`surgery::deletion::gated_deletion_suggestion`)
+//! every deletion kind shares.
 //!
 //! A guard (`snippet_is_directive_only`) re-checks that the bytes we're about
 //! to remove are *exactly* a directive and nothing else, so a malformed origin
@@ -17,7 +18,8 @@ use std::path::Path;
 use fs_err as fs;
 
 use super::{DirectiveOrigin, directive_regex, parse_workspace_lint_directive};
-use wl_diagnostic::{Applicability, Span, Suggestion};
+use wl_diagnostic::Suggestion;
+use wl_lint_api::surgery::deletion::{FixFlag, gated_deletion_suggestion};
 use wl_lint_api::surgery::lines::line_span;
 
 /// Build the whole-line deletion suggestion for the stale `expect` directive at
@@ -25,7 +27,11 @@ use wl_lint_api::surgery::lines::line_span;
 /// be read, the recorded line range is out of bounds, or the extracted snippet
 /// isn't exactly a directive. Callers only ask when *every* lint the directive
 /// names is stale, so a successful deletion never removes a live silence.
-pub(crate) fn deletion_suggestion(root: &Path, origin: &DirectiveOrigin) -> Option<Suggestion> {
+/// The second element is the git-gate withhold reason (`None` ⇒ applicable).
+pub(crate) fn deletion_suggestion(
+    root: &Path,
+    origin: &DirectiveOrigin,
+) -> Option<(Suggestion, Option<String>)> {
     let abs = root.join(&origin.file);
     let content = fs::read_to_string(&abs).ok()?;
     let (byte_start, byte_end) = line_span(&content, origin.line, origin.line_end)?;
@@ -37,21 +43,14 @@ pub(crate) fn deletion_suggestion(root: &Path, origin: &DirectiveOrigin) -> Opti
     if !snippet_is_directive_only(snippet, ext) {
         return None;
     }
-    Some(Suggestion {
-        span: Span {
-            file: abs,
-            line_start: origin.line,
-            line_end: origin.line_end,
-            col_start: 1,
-            col_end: 1,
-            byte_start: byte_start as u32,
-            byte_end: byte_end as u32,
-        },
-        message: "remove this stale expect directive".to_string(),
-        replacement: String::new(),
-        applicability: Applicability::MachineApplicable,
-        original: Some(snippet.to_string()),
-    })
+    Some(gated_deletion_suggestion(
+        &abs,
+        (byte_start, byte_end),
+        (origin.line, origin.line_end),
+        "remove this stale expect directive".to_string(),
+        Some(snippet.to_string()),
+        FixFlag::Fix,
+    ))
 }
 
 /// Guard: `snippet` (the bytes about to be deleted, trailing EOL already
@@ -134,9 +133,11 @@ mod tests {
             "crates/demo/Cargo.toml",
             "[dependencies]\n    # workspace-lint: expect(centralized-deps)\nserde = \"1\"\n",
         );
-        let sug = deletion_suggestion(tmp.path(), &origin("crates/demo/Cargo.toml", 2, 2)).unwrap();
+        let (sug, withheld) =
+            deletion_suggestion(tmp.path(), &origin("crates/demo/Cargo.toml", 2, 2)).unwrap();
         assert_eq!(sug.replacement, "");
-        assert_eq!(sug.applicability, Applicability::MachineApplicable);
+        // Non-repo tempdir: the uniform git gate withholds (no backup).
+        assert!(withheld.unwrap().contains("not in a git repository"));
         assert_eq!(
             sug.original.as_deref(),
             Some("    # workspace-lint: expect(centralized-deps)")
@@ -156,7 +157,7 @@ mod tests {
             "src/lib.rs",
             "workspace_lint::expect!(unused_pub);\npub fn f() {}\n",
         );
-        let sug = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 1)).unwrap();
+        let (sug, _) = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 1)).unwrap();
         assert_eq!(
             sug.original.as_deref(),
             Some("workspace_lint::expect!(unused_pub);")
@@ -175,7 +176,7 @@ mod tests {
             "src/lib.rs",
             "// workspace-lint: expect(unused-pub)\npub fn f() {}\n",
         );
-        let sug = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 1)).unwrap();
+        let (sug, _) = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 1)).unwrap();
         assert_eq!(
             sug.original.as_deref(),
             Some("// workspace-lint: expect(unused-pub)")
@@ -191,7 +192,7 @@ mod tests {
             "workspace_lint::expect!(\n    unused_pub,\n);\npub fn f() {}\n",
         );
         // The macro invocation spans lines 1..=3.
-        let sug = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 3)).unwrap();
+        let (sug, _) = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 3)).unwrap();
         let content = std::fs::read_to_string(tmp.path().join("src/lib.rs")).unwrap();
         let mut fixed = content.clone();
         fixed.replace_range(sug.span.byte_start as usize..sug.span.byte_end as usize, "");

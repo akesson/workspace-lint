@@ -20,7 +20,7 @@ pub fn eat_trailing_newline(src: &[u8], end: usize) -> usize {
 /// Consume whole whitespace-only lines starting at `end` (which sits at a
 /// line start, e.g. after [`eat_trailing_newline`]) — a deleted item's blank
 /// separators would otherwise stack into fmt-dirty residue.
-pub fn eat_blank_lines(src: &[u8], mut end: usize) -> usize {
+pub(crate) fn eat_blank_lines(src: &[u8], mut end: usize) -> usize {
     loop {
         let mut i = end;
         while i < src.len() && matches!(src[i], b' ' | b'\t' | b'\r') {
@@ -89,6 +89,11 @@ pub fn trim_trailing_blank_lines(text: &mut String, eol: &str) {
 
 /// A byte range that [`coalesce`] can sort and merge. Implementors carry
 /// their own metadata and decide how it merges (see [`ByteRange::merge`]).
+// Named only as `coalesce`'s generic bound by the out-of-crate consumers
+// (the binary's fix applier), which the engine's signature-exposure guard
+// doesn't yet model — tightening would be E0445. `stale-expect` retires this
+// the day generic-bound exposure is tracked.
+// workspace-lint: expect(unused-pub)
 pub trait ByteRange {
     fn lo(&self) -> usize;
     fn hi(&self) -> usize;

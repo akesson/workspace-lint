@@ -1,0 +1,5 @@
+[workspace]
+members = ["crates/alpha"]
+# Compile-only path stub stays out of the member set (cargo auto-adopts
+# in-tree path deps as members otherwise).
+exclude = ["stubs/unused_stub"]

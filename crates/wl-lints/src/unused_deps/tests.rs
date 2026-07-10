@@ -1,10 +1,5 @@
-//! Helper-level unit tests, split by backend: manifest-side helpers (dep
-//! collection, delete suggestions) target the rustc backend's copies in
-//! [`super::ir`] — the production path over the fast tier's `Manifest` — and
-//! the set-based `find_unused_deps` semantics (separator fallback included)
-//! target [`super::legacy`], which retains that shape until it retires. The
-//! two backends' types are distinct on purpose (verbatim-copy strategy), so
-//! each group speaks its own family.
+//! Helper-level unit tests for [`super::ir`]'s manifest-side helpers (dep
+//! collection, delete suggestions) over the fast tier's `Manifest`.
 
 // ── manifest-side helpers, over the fast tier's types (super::ir) ──────────
 
@@ -89,17 +84,20 @@ c = "1"
 #[test]
 fn delete_consumes_lf_after_dep_line() {
     let m = parse_manifest("[dependencies]\nrand = \"0.8\"\nfoo = \"1\"\n");
-    let s =
+    let (s, withheld) =
         super::ir::build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand")).unwrap();
     let start = s.span.byte_start as usize;
     let end = s.span.byte_end as usize;
     assert_eq!(&m.raw()[start..end], "rand = \"0.8\"\n");
+    // The temp manifest lives in a non-repo tempdir: no git backup, so the
+    // uniform gate withholds the deletion with the no-repo reason.
+    assert!(withheld.unwrap().contains("not in a git repository"));
 }
 
 #[test]
 fn delete_consumes_crlf_after_dep_line() {
     let m = parse_manifest("[dependencies]\r\nrand = \"0.8\"\r\nfoo = \"1\"\r\n");
-    let s =
+    let (s, _) =
         super::ir::build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand")).unwrap();
     let start = s.span.byte_start as usize;
     let end = s.span.byte_end as usize;

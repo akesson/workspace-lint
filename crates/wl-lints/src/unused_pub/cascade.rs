@@ -34,8 +34,8 @@ use wl_engine::semantic::{
     SemanticModel, TestBlocker, TestScaffold,
 };
 
+use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_line;
-use wl_diagnostic::{Applicability, Diagnostic};
 use wl_lint_api::LintId;
 
 use super::config::UnusedPubConfig;
@@ -234,21 +234,21 @@ pub fn run(
                          fix the generator's inputs, then delete the item"
                     }
                 };
-                downgrade_deletion(&mut d, note);
+                d.withhold_deletions(note);
             } else if let Some(note) = shadow_note {
                 // Possibly used under an uncovered cfg — the veto keeps the
                 // item and explains which config would prove it either way.
-                downgrade_deletion(&mut d, note);
+                d.withhold_deletions(note);
             } else if let Some(unmask) = unmask {
                 // Deleting it would activate a warning on a SURVIVOR — the
                 // fixed tree would fail a `-D warnings` gate. Keep it, say
                 // exactly what would fire and where.
-                downgrade_deletion(&mut d, &unmask_note(unmask));
+                d.withhold_deletions(&unmask_note(unmask));
             } else if let Some(note) = f.id.as_deref().and_then(|id| test_blocked.get(id)) {
                 // A TestOnly target whose referencing tests aren't exclusive
                 // scaffolding — the deletion stays shown-not-applied, and the
                 // note names the blocking test.
-                downgrade_deletion(&mut d, note);
+                d.withhold_deletions(note);
             } else if let Some(note) = f.id.as_deref().and_then(|id| cleared_note.get(id)) {
                 // A deleted TestOnly target — say why the test items went too.
                 d.notes.push(note.clone().into());
@@ -277,7 +277,7 @@ pub fn run(
         if let Some(f) = collateral_finding(&o, config, fast) {
             let mut d = f.diagnostic;
             if let Some(unmask) = vetoed.get(&o.id) {
-                downgrade_deletion(&mut d, &unmask_note(unmask));
+                d.withhold_deletions(&unmask_note(unmask));
             }
             diagnostics.push(d);
         }
@@ -591,8 +591,6 @@ fn collateral_finding(
     })
 }
 
-/// Turn a MachineApplicable item deletion into a `MaybeIncorrect` one so
-/// `--fix` leaves it, and explain why.
 /// The veto note for a [`DeletionUnmask`] — names the exact warning the
 /// deletion would activate on a survivor, in the style of the narrow-guard
 /// notes (`ir.rs`): what fires, on what, and what the human can do instead.
@@ -606,19 +604,6 @@ fn unmask_note(unmask: &DeletionUnmask) -> String {
             "deleting `is_empty` would trip clippy `len_without_is_empty` on `{owner}`'s \
              surviving `len` — remove or keep the pair together"
         ),
-    }
-}
-
-fn downgrade_deletion(d: &mut Diagnostic, note: &str) {
-    let mut changed = false;
-    for s in &mut d.suggestions {
-        if s.applicability == Applicability::MachineApplicable && s.replacement.is_empty() {
-            s.applicability = Applicability::MaybeIncorrect;
-            changed = true;
-        }
-    }
-    if changed {
-        d.notes.push(note.into());
     }
 }
 

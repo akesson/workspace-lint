@@ -109,7 +109,7 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
         match apply_to_file(&path, &suggestions) {
             Ok(true) => {
                 summary.modified += 1;
-                summary.deleted_any |= suggestions.iter().any(|s| s.replacement.is_empty());
+                summary.deleted_any |= suggestions.iter().any(Suggestion::is_deletion);
             }
             Ok(false) => {}
             Err(e) => {
@@ -203,7 +203,7 @@ fn apply_to_file(
     let mut deletions: Vec<(usize, usize)> = Vec::new();
     let mut rewrites: Vec<&Suggestion> = Vec::new();
     for s in to_apply {
-        if s.replacement.is_empty() {
+        if s.is_deletion() {
             deletions.push((s.span.byte_start as usize, s.span.byte_end as usize));
         } else {
             rewrites.push(s);

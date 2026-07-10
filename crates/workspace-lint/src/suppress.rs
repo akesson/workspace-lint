@@ -218,9 +218,13 @@ impl SuppressionMap {
             .help(stale_help(&stale, fully_stale))
             .note_once("a stale expect usually means the underlying issue has been fixed");
             if fully_stale
-                && let Some(sug) = crate::directives::deletion_suggestion(root, group.origin)
+                && let Some((sug, withheld)) =
+                    crate::directives::deletion_suggestion(root, group.origin)
             {
                 builder = builder.suggestion(sug);
+                if let Some(reason) = withheld {
+                    builder = builder.note(reason);
+                }
             }
             out.push(builder.build());
         }

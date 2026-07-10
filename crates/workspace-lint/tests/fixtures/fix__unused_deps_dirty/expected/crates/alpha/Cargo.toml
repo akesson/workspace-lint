@@ -1,0 +1,9 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+unused_stub = { path = "../../stubs/unused_stub" }
+
+# a local, uncommitted edit

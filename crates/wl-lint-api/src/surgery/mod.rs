@@ -356,6 +356,12 @@ fn keyword_start(src: &[u8], end: usize, word: &[u8]) -> Option<usize> {
     boundary.then_some(start)
 }
 
+/// Deliberately NOT routed through the per-file git gate
+/// (`deletion::gated_deletion_suggestion`): import excision is the *required
+/// companion* of an item deletion that already passed the gate — once the
+/// item is gone, withholding the dangling `use` on a dirty importer file
+/// would manufacture E0432 instead of preventing damage. The gate decision
+/// was made at the item; this cleanup must follow it unconditionally.
 fn deletion_diagnostic(
     file: &Path,
     lo: u32,

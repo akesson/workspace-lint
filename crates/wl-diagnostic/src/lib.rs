@@ -134,6 +134,14 @@ pub struct Suggestion {
     pub original: Option<String>,
 }
 
+impl Suggestion {
+    /// `true` for an empty-replacement suggestion — a deletion. The `--fix`
+    /// applier keys its union-vs-refuse overlap policy on exactly this.
+    pub fn is_deletion(&self) -> bool {
+        self.replacement.is_empty()
+    }
+}
+
 /// The engine's usage verdict for an `unused-pub` finding — selects the fix
 /// shape. (`CrossCrate` items never produce a fix, so they're absent here.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,6 +247,25 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    /// Withhold every `MachineApplicable` *deletion* this diagnostic carries —
+    /// downgrade it to `MaybeIncorrect` so `--fix` counts it as withheld —
+    /// pushing `note` (the reason the user reads) iff something actually
+    /// changed. Returns whether it did. Rewrites are left alone: a veto is
+    /// always about the deletion.
+    pub fn withhold_deletions(&mut self, note: &str) -> bool {
+        let mut changed = false;
+        for s in &mut self.suggestions {
+            if s.applicability == Applicability::MachineApplicable && s.is_deletion() {
+                s.applicability = Applicability::MaybeIncorrect;
+                changed = true;
+            }
+        }
+        if changed {
+            self.notes.push(note.into());
+        }
+        changed
+    }
+
     /// Snake-case form of the lint name suitable for the marker macro
     /// (`workspace_lint::allow!(<this>)`). Strips the `workspace-lint::`
     /// prefix and converts dashes to underscores.

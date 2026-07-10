@@ -39,8 +39,7 @@ use wl_engine::fast::{CrateInfo, DeclaredDep, DepSection, FastModel, Manifest};
 use wl_engine::semantic::{DepUsage, SemanticModel};
 
 use super::UnusedDepsConfig;
-use wl_diagnostic::Diagnostic;
-use wl_diagnostic::{Applicability, Span, Suggestion};
+use wl_diagnostic::{Diagnostic, Suggestion};
 use wl_lint_api::LintId;
 use wl_lint_api::config::PerCrate;
 
@@ -115,8 +114,13 @@ pub(super) fn check(
                 entry.section.as_str(),
                 entry.original_name
             ));
-            if let Some(s) = build_delete_suggestion(manifest, entry) {
+            if let Some((s, withheld)) = build_delete_suggestion(manifest, entry) {
                 builder = builder.suggestion(s);
+                if let Some(reason) = withheld {
+                    // Every entry shares this manifest file, so the reason
+                    // collapses to one note on the rollup diagnostic.
+                    builder = builder.note_once(reason);
+                }
             }
         }
         diagnostics.push(
@@ -219,11 +223,13 @@ pub(super) fn find_unused_deps(
 
 /// The dep-line deletion suggestion, over the fast tier's `Manifest`
 /// (locator-driven byte spans; swallows the trailing (CR)LF so the whole
-/// line disappears).
+/// line disappears). Gated per-file like every deletion: `MachineApplicable`
+/// only for a git-tracked-clean manifest, otherwise withheld with the reason
+/// in the second element.
 pub(super) fn build_delete_suggestion(
     manifest: &Manifest,
     entry: &DeclaredDep,
-) -> Option<Suggestion> {
+) -> Option<(Suggestion, Option<String>)> {
     let location = manifest
         .locate_dep(entry.section, &entry.original_name)
         .or_else(|| manifest.locate_dep_entry(entry.section, &entry.original_name))?;
@@ -233,21 +239,14 @@ pub(super) fn build_delete_suggestion(
     );
     let deleted = &manifest.raw()[location.byte_start as usize..location.byte_end as usize];
     let line_end = location.line + deleted.bytes().filter(|&b| b == b'\n').count() as u32;
-    Some(Suggestion {
-        span: Span {
-            file: manifest.path().to_path_buf(),
-            line_start: location.line,
-            line_end,
-            col_start: 1,
-            col_end: 1,
-            byte_start: location.byte_start,
-            byte_end: end as u32,
-        },
-        message: format!("remove unused dependency `{}`", entry.original_name),
-        replacement: String::new(),
-        applicability: Applicability::MachineApplicable,
-        original: Some(deleted.to_string()),
-    })
+    Some(wl_lint_api::surgery::deletion::gated_deletion_suggestion(
+        manifest.path(),
+        (location.byte_start as usize, end),
+        (location.line, line_end),
+        format!("remove unused dependency `{}`", entry.original_name),
+        Some(deleted.to_string()),
+        wl_lint_api::surgery::deletion::FixFlag::Fix,
+    ))
 }
 
 /// The package name a declared dep resolves to (a `package = "…"` rename,

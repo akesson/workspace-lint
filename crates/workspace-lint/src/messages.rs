@@ -427,6 +427,23 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
             .build(),
         ),
+        // unused-deps: the manifest has uncommitted changes, so the dep-line
+        // deletion is withheld by the per-file git gate (`--fix` counts it as
+        // withheld and this note says why).
+        (
+            "unused_deps_dirty_manifest",
+            at_crate(
+                "workspace-lint::unused-deps",
+                "1 possibly unused dependency in crates/alpha/Cargo.toml",
+                PathBuf::from("crates/alpha"),
+            )
+            .help("[dependencies] rand")
+            .note_once("file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix` will not delete it (commit first or use `git stash`)")
+            .note_once("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
+            .note_once("verify by removing the dep and running `cargo build --all-targets`")
+            .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
+            .build(),
+        ),
         // unused-deps: a member no [engine] config compiled. Its deps produced
         // zero fragments, so they are unjudgeable — surfaced as a coverage note
         // pinned to `warn` (level_explicit, so `unused-deps = "deny"` can't turn
@@ -1290,6 +1307,25 @@ mod tests {
         }
 
         #[test]
+        fn unused_deps_dirty_manifest() {
+            insta::assert_snapshot!(render(&scenario("unused_deps_dirty_manifest")), @r"
+            warning: 1 possibly unused dependency in crates/alpha/Cargo.toml
+             --> crates/alpha/Cargo.toml:1:1
+              |
+              = help: [dependencies] rand
+              = note: file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix` will not delete it (commit first or use `git stash`)
+              = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+              = note: verify by removing the dep and running `cargo build --all-targets`
+              = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(unused-deps)
+              |
+              = note: `#[warn(workspace_lint::unused_deps)]` on by default
+            ");
+        }
+
+        #[test]
         fn unused_deps_not_compiled() {
             insta::assert_snapshot!(render(&scenario("unused_deps_not_compiled")), @r#"
             warning: 2 dependencies of `gamma` could not be checked in crates/gamma/Cargo.toml
@@ -1874,6 +1910,11 @@ mod tests {
         }
 
         #[test]
+        fn unused_deps_dirty_manifest() {
+            insta::assert_snapshot!(render(&scenario("unused_deps_dirty_manifest")), @r##"{"level":"warning","message":"1 possibly unused dependency in crates/alpha/Cargo.toml","code":{"code":"workspace-lint::unused-deps","explanation":null},"spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/Cargo.toml","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"# workspace-lint: expect(unused-deps)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"[dependencies] rand","spans":[]},{"level":"note","message":"file `crates/alpha/Cargo.toml` is untracked or has uncommitted changes; `--fix` will not delete it (commit first or use `git stash`)","spans":[]},{"level":"note","message":"build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives","spans":[]},{"level":"note","message":"verify by removing the dep and running `cargo build --all-targets`","spans":[]},{"level":"note","message":"if the build breaks, add the dep to [unused-deps] ignore in your config","spans":[]}],"rendered":null}"##);
+        }
+
+        #[test]
         fn unused_pub_test_only() {
             insta::assert_snapshot!(render(&scenario("unused_pub_test_only")), @r#"{"level":"warning","message":"pub fn `helper` in crate `mycrate` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"gate it `#[cfg(test)]`, move it into test code, or remove it","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it","spans":[]}],"rendered":null}"#);
         }
@@ -2025,6 +2066,11 @@ mod tests {
         #[test]
         fn unused_deps_one() {
             insta::assert_snapshot!(render(&scenario("unused_deps_one")), @"::warning file=crates/alpha/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Aunused-deps::1 possibly unused dependency in crates/alpha/Cargo.toml");
+        }
+
+        #[test]
+        fn unused_deps_dirty_manifest() {
+            insta::assert_snapshot!(render(&scenario("unused_deps_dirty_manifest")), @"::warning file=crates/alpha/Cargo.toml,line=1,col=1,title=workspace-lint%3A%3Aunused-deps::1 possibly unused dependency in crates/alpha/Cargo.toml");
         }
 
         #[test]

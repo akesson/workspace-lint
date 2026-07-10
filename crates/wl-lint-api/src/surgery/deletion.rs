@@ -46,12 +46,80 @@ pub fn pick_deletion_fix(
 pub enum DeleteOutcome {
     /// Git-tracked-clean: emit a MachineApplicable deletion suggestion.
     Apply(wl_diagnostic::Suggestion),
-    /// Tracked-but-dirty or untracked: emit MaybeIncorrect so `--fix` passes
-    /// over it, plus a reason note for the user.
+    /// No git backup (dirty, untracked, or no repo at all): emit
+    /// MaybeIncorrect so `--fix` passes over it, plus a reason note.
     Skip(wl_diagnostic::Suggestion, String),
     /// File can't be read, degenerate range, etc. Fall back to the
     /// visibility-narrowing path.
     Unavailable,
+}
+
+/// Which fix flag applies a deletion — selects only the flag name rendered in
+/// the withhold note. Line-grain deletions (a TOML dep line, a stale
+/// directive line) apply under plain `--fix`; whole-item deletion is the
+/// `--fix-auto-delete` escalation.
+#[derive(Clone, Copy)]
+pub enum FixFlag {
+    Fix,
+    AutoDelete,
+}
+
+impl FixFlag {
+    fn as_str(self) -> &'static str {
+        match self {
+            FixFlag::Fix => "--fix",
+            FixFlag::AutoDelete => "--fix-auto-delete",
+        }
+    }
+}
+
+/// Build an empty-replacement deletion [`wl_diagnostic::Suggestion`] with the
+/// uniform per-file git gate applied: `MachineApplicable` iff the file is
+/// git-tracked-and-clean (git is the deletion's backup), withheld otherwise
+/// with the reason returned as the second element — `None` means applicable.
+/// The ONE gate every deletion kind goes through: Rust items (via
+/// [`delete_suggestion`]), TOML dep lines, and stale directive lines.
+pub fn gated_deletion_suggestion(
+    file: &Path,
+    bytes: (usize, usize),
+    lines: (u32, u32),
+    message: String,
+    original: Option<String>,
+    flag: FixFlag,
+) -> (wl_diagnostic::Suggestion, Option<String>) {
+    let reason = match crate::git::file_state(file) {
+        crate::git::FileState::CleanTracked => None,
+        crate::git::FileState::NoRepo => Some(format!(
+            "file `{}` is not in a git repository — no backup to restore from; `{}` will not delete it",
+            file.display(),
+            flag.as_str()
+        )),
+        crate::git::FileState::DirtyOrUntracked => Some(format!(
+            "file `{}` is untracked or has uncommitted changes; `{}` will not delete it (commit first or use `git stash`)",
+            file.display(),
+            flag.as_str()
+        )),
+    };
+    let suggestion = wl_diagnostic::Suggestion {
+        span: wl_diagnostic::Span {
+            file: file.to_path_buf(),
+            line_start: lines.0,
+            line_end: lines.1,
+            col_start: 1,
+            col_end: 1,
+            byte_start: bytes.0 as u32,
+            byte_end: bytes.1 as u32,
+        },
+        message,
+        replacement: String::new(),
+        applicability: if reason.is_none() {
+            Applicability::MachineApplicable
+        } else {
+            Applicability::MaybeIncorrect
+        },
+        original,
+    };
+    (suggestion, reason)
 }
 
 pub fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcome {
@@ -86,37 +154,17 @@ pub fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcome {
     // applier trims the then-trailing blank lines (only it can see the merged
     // picture across adjacent deletions).
     end = lines::eat_blank_lines(bytes, end);
-    let applicability = if is_file_clean_in_git(file) {
-        Applicability::MachineApplicable
-    } else {
-        Applicability::MaybeIncorrect
-    };
-    let suggestion = wl_diagnostic::Suggestion {
-        span: wl_diagnostic::Span {
-            file: file.to_path_buf(),
-            line_start: span.line,
-            line_end: span.line,
-            col_start: 1,
-            col_end: 1,
-            byte_start: start as u32,
-            byte_end: end as u32,
-        },
-        message: "delete the unused item".into(),
-        replacement: String::new(),
-        applicability,
-        original: Some(original),
-        // Filled in by `attach_pub_evidence` once the diagnostic is built.
-    };
-    if applicability == Applicability::MachineApplicable {
-        DeleteOutcome::Apply(suggestion)
-    } else {
-        DeleteOutcome::Skip(
-            suggestion,
-            format!(
-                "file `{}` is untracked or has uncommitted changes; `--fix-auto-delete` will not delete it (commit first or use `git stash`)",
-                file.display()
-            ),
-        )
+    let (suggestion, reason) = gated_deletion_suggestion(
+        file,
+        (start, end),
+        (span.line, span.line),
+        "delete the unused item".into(),
+        Some(original),
+        FixFlag::AutoDelete,
+    );
+    match reason {
+        None => DeleteOutcome::Apply(suggestion),
+        Some(reason) => DeleteOutcome::Skip(suggestion, reason),
     }
 }
 
@@ -205,28 +253,4 @@ fn match_attr_backward(source: &str, end: usize) -> Option<usize> {
         }
     }
     None
-}
-
-/// `true` iff `path` is tracked by git AND has no uncommitted changes.
-/// Returns `false` if we can't determine the state — the safer default is to
-/// downgrade the suggestion's applicability so `--fix` skips it.
-fn is_file_clean_in_git(path: &Path) -> bool {
-    if git_success(path, &["ls-files", "--error-unmatch", "--"]).is_none() {
-        return false;
-    }
-    match git_success(path, &["status", "--porcelain", "--"]) {
-        Some(out) => out.stdout.is_empty(),
-        None => false,
-    }
-}
-
-/// Run one git subcommand with `path` appended; `Some(output)` only on a
-/// zero exit.
-fn git_success(path: &Path, args: &[&str]) -> Option<std::process::Output> {
-    let out = crate::git::command(Path::new("."))
-        .args(args)
-        .arg(path)
-        .output()
-        .ok()?;
-    out.status.success().then_some(out)
 }
