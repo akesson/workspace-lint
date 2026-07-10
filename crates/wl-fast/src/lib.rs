@@ -89,7 +89,7 @@ pub enum FastError {
 impl FastError {
     /// Convenience constructor for [`FastError::Manifest`]. Wraps the source
     /// error in a `Box`.
-    pub fn manifest(
+    pub(crate) fn manifest(
         path: impl Into<PathBuf>,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {

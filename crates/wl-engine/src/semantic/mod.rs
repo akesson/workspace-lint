@@ -153,10 +153,6 @@ impl SemanticModel {
         self.configs.iter().map(|(id, _)| id.as_str())
     }
 
-    pub fn meta(&self) -> &WorkspaceMeta {
-        &self.meta
-    }
-
     /// Every source file rustc opened, unioned across the whole `[engine]`
     /// matrix. Absolute, canonicalized paths — see [`wl_ir::IrFragment::loaded_files`].
     ///

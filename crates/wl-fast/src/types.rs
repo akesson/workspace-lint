@@ -94,7 +94,7 @@ pub struct Target {
 
 impl Target {
     /// Recursively iterate every module in this target's tree, root first.
-    pub fn all_modules(&self) -> impl Iterator<Item = &Module> + '_ {
+    pub(crate) fn all_modules(&self) -> impl Iterator<Item = &Module> + '_ {
         self.root.walk()
     }
 }

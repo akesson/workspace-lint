@@ -68,8 +68,7 @@ pub enum Reach {
 }
 
 /// One resolved reference out of a crate's primary-unit code — what
-/// [`Assembly::references_from`](super::Assembly::references_from) returns
-/// and the `architecture` lint judges.
+/// `Assembly::references_from` returns and the `architecture` lint judges.
 /// `to_path` is canonical: the target's *definition* path for workspace defs
 /// (re-export chains resolved), the display path as-referenced otherwise.
 #[derive(Debug, Clone)]

@@ -196,8 +196,10 @@ impl FastModel {
     }
 
     /// Look up a workspace member by its Cargo-form name (the value users
-    /// write in `Cargo.toml`, hyphens preserved).
-    pub fn member_by_name(&self, name: &str) -> Option<&CrateInfo> {
+    /// write in `Cargo.toml`, hyphens preserved). Test scaffolding for the
+    /// metadata assertions below.
+    #[cfg(test)]
+    fn member_by_name(&self, name: &str) -> Option<&CrateInfo> {
         self.members.iter().find(|c| c.name == name)
     }
 

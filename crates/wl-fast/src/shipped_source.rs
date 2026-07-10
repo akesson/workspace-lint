@@ -78,7 +78,7 @@ pub(crate) fn in_dev_target_dir_rootless(file: &Path) -> bool {
 type ParsedFile<'a> = (&'a PathBuf, String, Vec<(usize, usize)>);
 
 /// Sum shipped (non-test) Rust code lines across `rust_files`. Thin wrapper over
-/// [`shipped_lines_by_file`]; `crate-size` wants one crate total.
+/// `shipped_lines_by_file`; `crate-size` wants one crate total.
 pub fn count_rust_shipped(rust_files: &[PathBuf]) -> usize {
     shipped_lines_by_file(rust_files).values().sum()
 }
@@ -88,7 +88,7 @@ pub fn count_rust_shipped(rust_files: &[PathBuf]) -> usize {
 /// it. Out-of-line `#[cfg(test)] mod x;` target files are dropped from the map
 /// entirely (they have no shipped lines); for the rest, the production lines
 /// (everything outside the test ranges) are counted via `production_code`.
-pub fn shipped_lines_by_file(rust_files: &[PathBuf]) -> HashMap<PathBuf, usize> {
+pub(crate) fn shipped_lines_by_file(rust_files: &[PathBuf]) -> HashMap<PathBuf, usize> {
     // Pass 1: parse each file once; record its test line ranges and collect the
     // sibling files declared as out-of-line test modules (resolvable only with
     // the whole file set in hand).
@@ -202,7 +202,7 @@ impl<'ast> Visit<'ast> for TestRegionScan<'_> {
 /// gate counts as test-only code (the conservative, never-under-count choice).
 /// Shared with `duplicate-code`'s `ignore-test-code` skip so the two lints
 /// agree on what "test code" means.
-pub fn is_cfg_test(attr: &syn::Attribute) -> bool {
+pub(crate) fn is_cfg_test(attr: &syn::Attribute) -> bool {
     if !attr.path().is_ident("cfg") {
         return false;
     }
@@ -213,7 +213,7 @@ pub fn is_cfg_test(attr: &syn::Attribute) -> bool {
 /// True when any attribute marks a test fn: a path ending in `test`
 /// (`#[test]`, `#[tokio::test]`) or the `#[wasm_bindgen_test]` marker.
 /// Shared with `duplicate-code` (see [`is_cfg_test`]).
-pub fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
+pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         a.path()
             .segments

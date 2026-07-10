@@ -635,15 +635,18 @@ impl Assembly {
     /// Is `key`'s def named in some **pub** item's signature (an
     /// `in_signature` edge whose `from` is public)? Tightening such a def
     /// breaks compilation (E0446 / `private_interfaces`), so the unused-pub
-    /// `--fix` must not propose it.
-    pub fn exposed_in_public_signature(&self, key: &str) -> bool {
+    /// `--fix` must not propose it. Production consumes the substrate via the
+    /// [`pub_usage`](super::pub_usage) fold; this accessor exists for the
+    /// assembler tests to assert it directly.
+    #[cfg(test)]
+    pub(super) fn exposed_in_public_signature(&self, key: &str) -> bool {
         self.degrees.signature_exposed.contains(key)
     }
 
     /// Is `key`'s def the target of a `use`/`pub use` declaration? Tightening
     /// or deleting it can break the re-export (E0364/E0365) — the unused-pub
     /// re-export guard.
-    pub fn is_import_target(&self, key: &str) -> bool {
+    pub(crate) fn is_import_target(&self, key: &str) -> bool {
         self.import_targets.contains(key)
     }
 
@@ -656,7 +659,7 @@ impl Assembly {
     /// type also flows through the HIR walk (which carries the use-site span
     /// this query exists for); the lowered twin would only duplicate it at
     /// alias granularity, spanless.
-    pub fn references_from(&self, krate: &str) -> Vec<ResolvedRef> {
+    pub(crate) fn references_from(&self, krate: &str) -> Vec<ResolvedRef> {
         let mut out = Vec::new();
         for fb in &self.fragments {
             let frag = fb.archived();
@@ -732,7 +735,7 @@ impl Assembly {
     ///    (`ItemFact::self_type` — the emitted key link, exact even for impl
     ///    blocks in a different module than the type): `Type::method` is
     ///    nameable iff `Type` is.
-    pub fn is_externally_reachable(&self, key: &str, def: &DefInfo) -> bool {
+    pub(crate) fn is_externally_reachable(&self, key: &str, def: &DefInfo) -> bool {
         if !def.public {
             return false;
         }

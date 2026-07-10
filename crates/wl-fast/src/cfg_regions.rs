@@ -288,7 +288,7 @@ fn collect_subtree_files(file: &Path, out: &mut Vec<PathBuf>, depth: usize) {
 
 /// Parse an attribute's cfg predicate: `#[cfg(<pred>)]` or
 /// `#[cfg_attr(<pred>, …)]` (the condition side). `None` for non-cfg attrs.
-pub fn cfg_predicate(attr: &syn::Attribute) -> Option<CfgPredicate> {
+pub(crate) fn cfg_predicate(attr: &syn::Attribute) -> Option<CfgPredicate> {
     let ident = attr.path().get_ident()?.to_string();
     if ident != "cfg" && ident != "cfg_attr" {
         return None;

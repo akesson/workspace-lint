@@ -36,14 +36,14 @@ impl RemovalSet {
         Self { segs, ids }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
 
     /// Exact identity membership — the import index asks "is *this* import's
     /// target one of the removed defs?" (a dangling import names its target
     /// exactly, not an ancestor).
-    pub fn contains_id(&self, id: &str) -> bool {
+    pub(crate) fn contains_id(&self, id: &str) -> bool {
         self.ids.contains(id)
     }
 

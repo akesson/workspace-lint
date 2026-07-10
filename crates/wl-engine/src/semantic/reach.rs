@@ -16,7 +16,7 @@ impl Assembly {
     /// Export-shaped attributes root a def unconditionally (linker-visible,
     /// no Rust referrer possible). Module-level and inherent-impl items carry
     /// no `trait_item`, so they fall through to Direct-or-Unreached.
-    pub fn reach_of(&self, key: &str, def: &DefInfo) -> Reach {
+    pub(crate) fn reach_of(&self, key: &str, def: &DefInfo) -> Reach {
         self.reach_with(key, def, &self.degrees.in_degree)
     }
 
