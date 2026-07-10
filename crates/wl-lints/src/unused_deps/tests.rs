@@ -164,7 +164,8 @@ fn partition_subtracts_syntactic_credits() {
 fn delete_consumes_lf_after_dep_line() {
     let m = parse_manifest("[dependencies]\nrand = \"0.8\"\nfoo = \"1\"\n");
     let (s, withheld) =
-        super::ir::build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand")).unwrap();
+        super::ir::build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand"), true)
+            .unwrap();
     let start = s.span.byte_start as usize;
     let end = s.span.byte_end as usize;
     assert_eq!(&m.raw()[start..end], "rand = \"0.8\"\n");
@@ -177,7 +178,8 @@ fn delete_consumes_lf_after_dep_line() {
 fn delete_consumes_crlf_after_dep_line() {
     let m = parse_manifest("[dependencies]\r\nrand = \"0.8\"\r\nfoo = \"1\"\r\n");
     let (s, _) =
-        super::ir::build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand")).unwrap();
+        super::ir::build_delete_suggestion(&m, &entry(DepSection::Dependencies, "rand"), true)
+            .unwrap();
     let start = s.span.byte_start as usize;
     let end = s.span.byte_end as usize;
     assert_eq!(&m.raw()[start..end], "rand = \"0.8\"\r\n");

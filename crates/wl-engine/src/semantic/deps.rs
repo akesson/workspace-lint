@@ -19,10 +19,13 @@
 //! counts as used when the referenced-crate set intersects its resolved
 //! dependency **closure** ([`WorkspaceMeta::dep_closure`]).
 //!
-//! Two residual blind spots stay stated, not hidden: **macro-only deps** (a
-//! bare `serde_derive` whose expansion references `serde`) and **side-effect
-//! deps** with no API surface (`cargo-husky`) — the lint's `ignore` config is
-//! the production answer for those.
+//! **Macro-only deps** are covered by a second channel: token-passthrough
+//! bang macros (`cfg_if::cfg_if!`) leave no reference edge, so the resolver-
+//! level [`wl_ir::IrFragment::used_crates`] facts credit them — exact-name
+//! only, never closure-matched (see [`DepUsage::dep_used`]). One residual
+//! blind spot stays stated, not hidden: **side-effect deps** with no API
+//! surface (`cargo-husky`) — the lint's `ignore` config is the production
+//! answer for those.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -96,6 +99,15 @@ pub(super) struct DepUsage {
     /// the crate-names that target references. A dep is declared once per
     /// package but may be used by any of its targets.
     exercised: BTreeMap<String, BTreeSet<String>>,
+    /// pkg → union of the resolver-level used-crate facts (schema 12,
+    /// `IrFragment::used_crates`) across the same targets. Kept OUT of
+    /// [`Self::exercised`]: rustc marks crates used *recursively* (loading
+    /// `std` marks its whole private closure — `libc`, `cfg_if`, `memchr` —
+    /// used too), so these names must only ever exact-match a declared dep's
+    /// own name, never meet a dep's closure — closure-matching would credit
+    /// any dep that shares a transitive crate with `std` (e.g. `rand` via
+    /// `libc`).
+    resolver_used: BTreeMap<String, BTreeSet<String>>,
     /// The members (owner code-names) at least one `[engine] config` compiled —
     /// every package with an owner-mapped fragment, whether or not it references
     /// anything. A member absent here produced zero fragments: its declared deps
@@ -109,6 +121,7 @@ pub(super) struct DepUsage {
 impl DepUsage {
     pub(super) fn compute(configs: &[(String, Assembly)], meta: &WorkspaceMeta) -> DepUsage {
         let mut exercised: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut resolver_used: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut compiled: BTreeSet<String> = BTreeSet::new();
         let mut dev_deps_judged = false;
         for (_, asm) in configs {
@@ -145,24 +158,55 @@ impl DepUsage {
                         set.insert(via.to_owned());
                     }
                 }
+                // Resolver-level used-crate facts (schema 12): the only
+                // signal for a token-passthrough bang macro
+                // (`cfg_if::cfg_if! { pub fn … }` — the expansion output is
+                // the caller's own root-context tokens, so the reference
+                // graph above records nothing). Without this union the dep
+                // read unused and `--fix` removed it, breaking the build
+                // (cargo-nextest's `cfg-if`, 2026-07-10 validation).
+                // Collected apart from `exercised` — see `resolver_used`.
+                let resolver = resolver_used.entry(owner.clone()).or_default();
+                for name in frag.used_crates.iter() {
+                    if name.as_str() != owner.as_str() {
+                        resolver.insert(name.as_str().to_owned());
+                    }
+                }
             }
         }
         DepUsage {
             exercised,
+            resolver_used,
             compiled,
             dev_deps_judged,
         }
     }
 
     /// Is the declared dep `dep_pkg` (package code-name) exercised by any of
-    /// `owner`'s targets under any config? Facade- and lib-rename-aware: true
-    /// iff the owner's referenced-crate set meets the dep's resolved closure
-    /// (which carries both package and lib-target names).
+    /// `owner`'s targets under any config? Two channels:
+    ///
+    /// * reference edges, facade- and lib-rename-aware — true when the
+    ///   owner's referenced-crate set meets the dep's resolved closure
+    ///   (which carries both package and lib-target names);
+    /// * resolver used-crate facts, **exact-name only** (package or lib
+    ///   name, never the closure) — the recursive `used` marking makes
+    ///   anything wider unsound (see [`Self::resolver_used`]). The residual
+    ///   false negative is accepted as fail-toward-not-flagging: a declared-
+    ///   but-unused dep that a *used* crate also pulls in (declare `libc`,
+    ///   use nothing — `std`'s recursion marks `libc` used) is never flagged.
     pub(super) fn dep_used(&self, meta: &WorkspaceMeta, owner: &str, dep_pkg: &str) -> bool {
-        let Some(used) = self.exercised.get(owner) else {
-            return false;
-        };
-        meta.dep_closure(dep_pkg).iter().any(|c| used.contains(c))
+        if let Some(used) = self.exercised.get(owner)
+            && meta.dep_closure(dep_pkg).iter().any(|c| used.contains(c))
+        {
+            return true;
+        }
+        self.resolver_used.get(owner).is_some_and(|r| {
+            r.contains(dep_pkg)
+                || meta
+                    .lib_name_of
+                    .get(dep_pkg)
+                    .is_some_and(|lib| r.contains(lib))
+        })
     }
 
     /// Did any `[engine] config` compile a target of this member (owner

@@ -1,0 +1,14 @@
+[lints]
+default = "allow"
+unused-deps = "deny"
+
+# alpha consumes beta ONLY through a token-passthrough bang macro (the
+# cfg_if shape): the expansion output is alpha's own root-context tokens, so
+# the reference graph records no edge to beta — the resolver-level
+# `used_crates` facts (schema 12) are the only crediting signal. Before them
+# beta read "possibly unused" and --fix-auto-delete removed it (E0433) —
+# cargo-nextest's cfg-if, 2026-07-10 validation.
+[unused-deps]
+
+[engine]
+configs = ["cargo build"]

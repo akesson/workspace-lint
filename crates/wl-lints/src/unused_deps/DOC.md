@@ -69,8 +69,14 @@ workspace-lint check unused-deps --ignore prost --ignore tonic
 
 ## Fix behavior
 
-`--fix` deletes the dep line from its `[dependencies]` /
-`[dev-dependencies]` / `[build-dependencies]` table.
+Removing a dependency is a deletion, so it is quarantined behind
+`--fix-auto-delete` (the same flag that gates unused-pub's whole-item
+deletion): it deletes the dep line from its `[dependencies]` /
+`[dev-dependencies]` / `[build-dependencies]` table. Plain `--fix` never
+removes a dep — the finding's own verdict is "possibly unused", and a
+suggestion the lint itself hedges on must not auto-apply under the flag
+that promises never to delete. Under plain `--fix` the removal is reported
+as withheld with this reason.
 
 ## Silencing
 

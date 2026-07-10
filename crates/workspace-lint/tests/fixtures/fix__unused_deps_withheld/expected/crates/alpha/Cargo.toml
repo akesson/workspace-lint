@@ -1,0 +1,14 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+unused_stub = { path = "../../stubs/unused_stub" }
+serde = { version = "1", features = [
+    "derive",
+] }
+keep = { path = "../../stubs/keep" }
+
+[dependencies.unused_block]
+path = "../../stubs/unused_block"

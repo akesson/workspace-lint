@@ -1,0 +1,13 @@
+# Token-passthrough bang-macro probe dep (the cfg_if shape): an exported
+# macro_rules! that re-emits the CALLER's own item tokens. Its expansion
+# output carries root syntax context — no ExpnData chain, no written path
+# node — so the reference graph structurally records NOTHING for a crate
+# used only this way. `IrFragment::used_crates` (resolver-level, schema 12)
+# is the signal that still sees it; asserted in probe.rs check 24.
+[package]
+name = "probe-passthrough"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]

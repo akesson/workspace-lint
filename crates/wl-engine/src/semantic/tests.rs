@@ -90,6 +90,7 @@ fn frag_target(
         items,
         references,
         loaded_files: Vec::new(),
+        used_crates: Vec::new(),
     }
 }
 
@@ -501,6 +502,80 @@ fn deps_verdict_credits_reexport_shim_via_written_root() {
     assert_eq!(unused2, ["facade", "md_5"], "via credits the shim dep");
 }
 
+/// A dep used ONLY through a token-passthrough bang macro (`cfg_if::cfg_if!
+/// { pub fn … }`) leaves NO reference edge — the expansion output is the
+/// caller's own root-context tokens (verified live: the fragment had the
+/// generated item and zero edges). The resolver-level
+/// [`IrFragment::used_crates`] facts (schema 12) are the crediting signal;
+/// without the union the dep read unused and `--fix` removed it, breaking
+/// the build (cargo-nextest's `cfg-if`, 2026-07-10 validation).
+#[test]
+fn deps_verdict_credits_used_crates_facts() {
+    // Control: zero edges, no used-crates facts → every dep reads unused.
+    let m = model(vec![("default", vec![frag("alpha", vec![], vec![])])]);
+    let unused: Vec<String> = m.deps_verdict().crates[0]
+        .unused
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    assert_eq!(unused, ["facade", "md_5", "never_used"]);
+
+    // Same fragment with the resolver fact under the dep's LIB name (`md5` —
+    // what rustc's crate store actually records for package `md-5`): the dep
+    // is credited, the two genuinely unreferenced deps keep their verdict.
+    let mut f = frag("alpha", vec![], vec![]);
+    f.used_crates = vec!["core".into(), "md5".into(), "std".into()];
+    let m2 = model(vec![("default", vec![f])]);
+    let unused2: Vec<String> = m2.deps_verdict().crates[0]
+        .unused
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    assert_eq!(
+        unused2,
+        ["facade", "never_used"],
+        "used_crates credits the macro-only dep; sysroot names are inert"
+    );
+
+    // The package-form name credits too (`md_5` — belt for hand-written
+    // fragments and any rename-shaped emission).
+    let mut f = frag("alpha", vec![], vec![]);
+    f.used_crates = vec!["md_5".into()];
+    let m3 = model(vec![("default", vec![f])]);
+    let unused3: Vec<String> = m3.deps_verdict().crates[0]
+        .unused
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    assert_eq!(unused3, ["facade", "never_used"]);
+}
+
+/// The resolver facts must NEVER closure-match: rustc marks crates used
+/// *recursively*, so `std`'s private deps (`libc`, `cfg_if`, `memchr`, …)
+/// appear in every fragment's `used_crates`. A declared dep whose resolved
+/// closure merely CONTAINS such a name (`rand` → `libc`) must keep its
+/// unused verdict — closure-matching here made every `rand`-shaped dep read
+/// as used (the `unused_deps_violation` regression).
+#[test]
+fn deps_verdict_used_crates_facts_never_closure_match() {
+    // `facade_core` sits inside declared `facade`'s closure, exactly like
+    // `libc` inside `rand`'s. Its presence as a resolver fact must not
+    // credit `facade`.
+    let mut f = frag("alpha", vec![], vec![]);
+    f.used_crates = vec!["core".into(), "facade_core".into(), "std".into()];
+    let m = model(vec![("default", vec![f])]);
+    let unused: Vec<String> = m.deps_verdict().crates[0]
+        .unused
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    assert_eq!(
+        unused,
+        ["facade", "md_5", "never_used"],
+        "a resolver fact inside a dep's closure is not evidence the dep is used"
+    );
+}
+
 /// Build a references-only build-script fragment (what the extractor emits
 /// for a `build_script_build` unit).
 fn build_frag(references: Vec<RefEdge>) -> IrFragment {
@@ -512,6 +587,7 @@ fn build_frag(references: Vec<RefEdge>) -> IrFragment {
         items: Vec::new(),
         references,
         loaded_files: Vec::new(),
+        used_crates: Vec::new(),
     }
 }
 

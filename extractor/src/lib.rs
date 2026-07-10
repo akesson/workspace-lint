@@ -245,7 +245,29 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         items,
         references,
         loaded_files,
+        used_crates: collect_used_crates(tcx),
     }
+}
+
+/// Every crate the RESOLVER marked used for this unit — `tcx.used_crates`,
+/// the substrate of rustc's own `unused_crate_dependencies` lint (the `used`
+/// flag is set in `CrateLoader::resolve_crate`, i.e. at name-resolution
+/// time). This is the ONLY signal that survives a token-passthrough bang
+/// macro: `cfg_if::cfg_if! { pub fn f() {} }` re-emits the caller's own
+/// root-context tokens, so the generated items carry no `ExpnData` chain and
+/// no written path node — `record_macro_expansion` structurally cannot see
+/// the usage (verified live: the fragment had the item and ZERO reference
+/// edges). Crate-granular is exactly what unused-deps needs; per-item
+/// attribution stays the reference graph's job.
+fn collect_used_crates(tcx: TyCtxt<'_>) -> Vec<String> {
+    let mut used: Vec<String> = tcx
+        .used_crates(())
+        .iter()
+        .map(|c| tcx.crate_name(*c).to_string().replace('-', "_"))
+        .collect();
+    used.sort();
+    used.dedup();
+    used
 }
 
 /// Every source file rustc opened for this compilation unit, restricted to the

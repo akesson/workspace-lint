@@ -110,7 +110,17 @@ use serde::{Deserialize, Serialize};
 /// signature exposure, so unused-pub would keep proposing tightens that are
 /// E0445/E0446 on the fixed tree (`pub fn coalesce<R: ByteRange>` was the
 /// live instance) — the misleading-absence bump trigger, layout unchanged.
-pub const SCHEMA_VERSION: u32 = 11;
+/// 12 — fragments gained [`IrFragment::used_crates`]: the resolver-level
+/// "this unit used crate X" facts (rustc's `tcx.used_crates`, the substrate
+/// of its own `unused_crate_dependencies` lint). The only signal that
+/// survives a token-passthrough bang macro (`cfg_if::cfg_if! { pub fn … }`):
+/// the expansion output is the CALLER's own root-context tokens, so there is
+/// no `ExpnData` chain to walk and no written path node — the reference
+/// graph records nothing, and a dep used only that way read as unused
+/// (`--fix` then removed it and broke the build: cargo-nextest's `cfg-if`,
+/// 2026-07-10 validation). A pre-12 fragment carries an empty list — the
+/// misleading-absence bump trigger.
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
@@ -176,6 +186,20 @@ pub struct IrFragment {
     /// fragment. Consumers must union across the `[engine]` config matrix.
     #[serde(default)]
     pub loaded_files: Vec<String>,
+    /// Code-form names (hyphens → underscores) of every crate the RESOLVER
+    /// marked used while compiling this unit — rustc's `tcx.used_crates`,
+    /// the substrate of its own `unused_crate_dependencies` lint. Includes
+    /// sysroot crates (`std`, `core`); consumers intersect with declared
+    /// deps. Deduped and sorted.
+    ///
+    /// Deliberately crate-granular, not an edge: a token-passthrough bang
+    /// macro (`cfg_if::cfg_if! { pub fn … }`) re-emits the caller's own
+    /// root-context tokens, so its expansion leaves NO node whose span chain
+    /// names the macro — the reference graph structurally cannot see this
+    /// usage, but the resolver resolved `cfg_if::cfg_if!` and flagged the
+    /// crate used. unused-deps unions this into its exercised-crates set.
+    #[serde(default)]
+    pub used_crates: Vec<String>,
 }
 
 /// One resolved reference: local item `from` mentions def `to`. Both carry a
@@ -700,6 +724,7 @@ mod transport_tests {
             target_kind: "lib".into(),
             is_test_cfg: false,
             loaded_files: vec!["src/lib.rs".into()],
+            used_crates: vec!["core".into(), "std".into()],
             items: vec![ItemFact {
                 path: vec!["demo".into(), "thing".into()],
                 key: "deadbeef".into(),
@@ -775,7 +800,7 @@ mod transport_tests {
         use std::mem::size_of;
         assert_eq!(
             size_of::<ArchivedIrFragment>(),
-            48,
+            56,
             "ArchivedIrFragment layout changed"
         );
         assert_eq!(

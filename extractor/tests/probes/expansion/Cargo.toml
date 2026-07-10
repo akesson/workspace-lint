@@ -14,6 +14,11 @@ publish = false
 [dependencies]
 # Re-export-shim stub for the `via` probe (§16) — see ../shim/Cargo.toml.
 shim = { package = "probe-shim", path = "../shim" }
+# Token-passthrough bang-macro dep (the cfg_if shape) — see
+# ../passthrough/Cargo.toml. Consumed ONLY via its macro, so the reference
+# graph must record no edge to it while `used_crates` still names it
+# (probe.rs check 24).
+passthrough = { package = "probe-passthrough", path = "../passthrough" }
 
 [build-dependencies]
 # Build-script-extraction stub (§17) — see ../buildstub/Cargo.toml.

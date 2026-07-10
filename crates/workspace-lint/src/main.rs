@@ -99,7 +99,9 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
         semantic,
         cfg_shadow,
         mut ran,
-    } = wl_engine::timing::phase("run_all", || run_all(&config, cli.fast_only));
+    } = wl_engine::timing::phase("run_all", || {
+        run_all(&config, cli.fast_only, cli.fix_auto_delete)
+    });
     // Config-audit findings (below) are produced on every default
     // run, so expects for `config` are always judgeable here.
     ran.insert(LintId::Config);
@@ -216,7 +218,12 @@ fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
         semantic,
         cfg_shadow,
         ran,
-    } = run_single_check(rule, cli.fast_only, config_for_levels.as_ref());
+    } = run_single_check(
+        rule,
+        cli.fast_only,
+        cli.fix_auto_delete,
+        config_for_levels.as_ref(),
+    );
     // Same backfill as the default run: the drop and the directive
     // scanner's parse cache want the FastModel even when the single
     // checked rule didn't require one.
@@ -545,7 +552,7 @@ struct RunOutput {
     ran: HashSet<LintId>,
 }
 
-fn run_all(config: &config::Config, fast_only: bool) -> RunOutput {
+fn run_all(config: &config::Config, fast_only: bool, auto_delete: bool) -> RunOutput {
     let mut registry = registry::registry(config);
     // `--fast-only` runs only the build-free lints: a semantic lint is
     // *skipped* — not invoked without its model (its `check` rightly demands
@@ -592,6 +599,7 @@ fn run_all(config: &config::Config, fast_only: bool) -> RunOutput {
         fast: fast.as_ref(),
         semantic: semantic.as_ref(),
         cfg_shadow: shadow.as_ref(),
+        auto_delete,
     };
     let ran: HashSet<LintId> = registry.iter().map(|l| l.id()).collect();
     let diagnostics: Vec<Diagnostic> = wl_engine::timing::phase("LINTS (all)", || {
@@ -614,6 +622,7 @@ fn run_all(config: &config::Config, fast_only: bool) -> RunOutput {
 fn run_single_check(
     rule: CheckRule,
     fast_only: bool,
+    auto_delete: bool,
     config: Option<&config::Config>,
 ) -> RunOutput {
     let lint = rule.into_lint();
@@ -647,6 +656,7 @@ fn run_single_check(
         fast: fast.as_ref(),
         semantic: semantic.as_ref(),
         cfg_shadow: shadow.as_ref(),
+        auto_delete,
     };
     let ran = HashSet::from([lint.id()]);
     let diagnostics = lint.check(&cx);
@@ -775,6 +785,7 @@ mod dump_ir_tests {
             items: vec![],
             references: vec![],
             loaded_files: vec![],
+            used_crates: vec![],
         })
         .expect("fixture fragment serializes")
     }

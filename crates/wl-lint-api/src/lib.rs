@@ -112,6 +112,13 @@ pub struct LintContext<'a> {
     /// `Unused` findings that are *possibly used* under an uncovered cfg
     /// (the report-time twin of the `--fix-auto-delete` veto).
     pub cfg_shadow: Option<&'a wl_engine::coverage::CfgShadow>,
+    /// Whether this run is `--fix-auto-delete`. Deletion-shaped fixes are
+    /// quarantined behind that flag (plain `--fix` never deletes): a lint
+    /// whose structural fix REMOVES something (`unused-deps`' dep line,
+    /// `unused-pub`'s whole-item deletion via the cascade) emits it
+    /// `MachineApplicable` only when this is set, withheld-with-reason
+    /// otherwise.
+    pub auto_delete: bool,
 }
 
 impl<'a> LintContext<'a> {

@@ -1,0 +1,4 @@
+# Removing a dependency is a DELETION, so it applies under --fix-auto-delete
+# only (plain --fix withholds it — see fix__unused_deps_withheld for that
+# half). This fixture keeps testing the removal mechanics on the right flag.
+args = ["--fix-auto-delete"]
