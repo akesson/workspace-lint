@@ -36,11 +36,20 @@ fn main() {
     let fix = cli.fix || cli.fix_auto_delete;
 
     match cli.command.take() {
-        None => run_default(&cli, format, fix),
+        None => {
+            config::reroot_to_config(true);
+            run_default(&cli, format, fix)
+        }
         Some(Commands::Init { force }) => {
             init::run(force);
         }
-        Some(Commands::Check { rule }) => run_check(rule, &cli, format, fix),
+        Some(Commands::Check { rule }) => {
+            // Same re-rooting as the default run: a `check` from a member dir
+            // honors the root's `[lints]` levels and engine matrix (without
+            // it, `try_load` found nothing and the engine ran memberless).
+            config::reroot_to_config(false);
+            run_check(rule, &cli, format, fix)
+        }
         Some(Commands::Explain { lint }) => docs::explain(&lint),
         Some(Commands::Expand {
             command,

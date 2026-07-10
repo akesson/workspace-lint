@@ -339,5 +339,81 @@ fn read_cargo_metadata() -> Option<String> {
     extract_metadata_section(&content)
 }
 
+/// Whether `dir` carries a workspace-lint config in either source form.
+fn has_config_at(dir: &Path) -> bool {
+    if dir.join(STANDALONE_FILE).exists() {
+        return true;
+    }
+    fs::read_to_string(dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|c| extract_metadata_section(&c))
+        .is_some()
+}
+
+/// Whether `dir/Cargo.toml` declares a `[workspace]` table — a real workspace
+/// root that simply hasn't been configured yet (named in the error below so
+/// the user isn't pointed at `init` in a directory where `init` would refuse).
+fn defines_workspace(dir: &Path) -> bool {
+    fs::read_to_string(dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|c| c.parse::<toml::Table>().ok())
+        .is_some_and(|t| t.contains_key("workspace"))
+}
+
+/// Re-root a lint run invoked from inside the workspace: when the cwd has no
+/// config, walk parents for one and `chdir` there (with one notice) BEFORE
+/// anything else runs. The entire run model is cwd-rooted — relative
+/// `ir_root`, fix write paths, directive scanning — so re-rooting first
+/// keeps every downstream path assumption intact, exactly as if the user had
+/// invoked from the root. `cargo` itself walks up the same way, which is why
+/// running from a member dir used to dead-end surprisingly ([`load`] was
+/// literal-cwd-only while `cargo metadata` found the root fine).
+///
+/// The walk STOPS at the first `[workspace]` root it meets — the workspace
+/// that owns the cwd. Walking past it would re-root a nested workspace's run
+/// to some outer checkout's config (this repo's own test fixtures are
+/// workspaces nested inside a configured workspace — a `check` from one must
+/// not lint the host repo). An unconfigured owning root fails naming that
+/// root (`require_config`) — the generic "run `workspace-lint init`" hint
+/// would point at a member directory, where `init` refuses to scaffold —
+/// or returns silently for `check`, which runs config-less by design.
+pub(crate) fn reroot_to_config(require_config: bool) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    if has_config_at(&cwd) || defines_workspace(&cwd) {
+        return; // configured here, or cwd IS the owning root: load() decides
+    }
+    let mut dir = cwd.as_path();
+    while let Some(parent) = dir.parent() {
+        dir = parent;
+        if has_config_at(dir) {
+            eprintln!(
+                "workspace-lint: no config in the current directory — running at workspace root {}",
+                dir.display()
+            );
+            if let Err(e) = std::env::set_current_dir(dir) {
+                wl_lint_api::util::fail(format!(
+                    "failed to change directory to workspace root {}: {e}",
+                    dir.display()
+                ));
+            }
+            return;
+        }
+        if defines_workspace(dir) {
+            // The owning workspace root, unconfigured — stop here, never
+            // walk into an enclosing checkout.
+            if require_config {
+                wl_lint_api::util::fail(format!(
+                    "error: no configuration found — the workspace root is {} but it has no \
+                     workspace-lint config; run `workspace-lint init` there",
+                    dir.display()
+                ));
+            }
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
