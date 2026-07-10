@@ -42,7 +42,7 @@ use wl_engine::coverage::CfgShadow;
 
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
-use super::scope::{FindingScope, shadow_report_note};
+use super::scope::{FindingScope, shadow_narrow_note, shadow_report_note};
 use wl_lint_api::surgery::deletion::pick_deletion_fix;
 
 /// One unused-pub finding paired with the two things the `--fix-auto-delete`
@@ -332,21 +332,32 @@ fn build_diagnostic(
     let builder =
         at_line(LintId::UnusedPub.id(), message, file.clone(), span.line).help(suggestion);
     // The specific blind spot beats the generic disclaimer: a shadowed
-    // mention names the exact uncovered cfg (and the config entry that would
-    // cover it); otherwise the standing caveat applies. TestOnly shares the
-    // gate — an uncovered cfg region could hold the production caller that
-    // would retire the verdict.
-    let builder = match matches!(verdict, PubVerdict::Unused | PubVerdict::TestOnly)
-        .then(|| ctx.shadow_mention(&cand.id))
-        .flatten()
-    {
-        Some(region) => builder.note(shadow_report_note(region)),
-        None => builder.note_once(
+    // mention names the exact uncovered region (and the config entry that
+    // would cover it); otherwise the standing caveat applies. TestOnly shares
+    // the gate — an uncovered region could hold the production caller that
+    // would retire the verdict. IntraCrate gets the narrowing flavor: the
+    // mention may be a real use from OUTSIDE the crate (a bench, an
+    // uncompiled target), so the `pub(crate)` tighten below is downgraded
+    // too — auto-narrowing broke ripgrep's `cargo bench` in the 2026-07-10
+    // validation (`is_match_candidate`, used in prod AND from a bench no
+    // config compiled).
+    let shadow = ctx.shadow_mention(&cand.id);
+    let builder = match (verdict, shadow) {
+        (PubVerdict::IntraCrate, Some(region)) => builder.note(shadow_narrow_note(region)),
+        (_, Some(region)) => builder.note(shadow_report_note(region)),
+        (_, None) => builder.note_once(
             "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
         ),
     };
-    let (builder, removable) =
-        apply_structural_fix(builder, cand, ctx.auto_delete, &file, span, verdict);
+    let (builder, removable) = apply_structural_fix(
+        builder,
+        cand,
+        ctx.auto_delete,
+        &file,
+        span,
+        verdict,
+        shadow.is_some(),
+    );
     (builder.build(), removable)
 }
 
@@ -367,6 +378,7 @@ fn apply_structural_fix(
     file: &Path,
     span: &wl_ir::Span,
     verdict: PubVerdict,
+    shadow_mentioned: bool,
 ) -> (wl_diagnostic::builder::DiagnosticBuilder, bool) {
     // Test-only reach gets NO structural suggestion on the plain path:
     // tightening trips `dead_code` on the plain build, and a bare deletion
@@ -395,7 +407,7 @@ fn apply_structural_fix(
         let builder = note.into_iter().fold(with_sugg, |b, reason| b.note(reason));
         return (builder, removable);
     }
-    let builder = build_tighten_suggestion(cand, file, verdict)
+    let builder = build_tighten_suggestion(cand, file, verdict, shadow_mentioned)
         .into_iter()
         .fold(builder, |b, s| b.suggestion(s));
     // `pub(crate)` compiles but trips `dead_code` (or a clippy lint the
@@ -447,6 +459,7 @@ fn build_tighten_suggestion(
     cand: &PubCandidate,
     file: &Path,
     verdict: PubVerdict,
+    shadow_mentioned: bool,
 ) -> Option<wl_diagnostic::Suggestion> {
     let span = cand.span.as_ref()?;
     let vis = cand.vis_span.as_ref()?;
@@ -460,11 +473,15 @@ fn build_tighten_suggestion(
         // `-D warnings` gate — shown, never machine-applied (the data-common
         // `is_days`/`fraction`, ChronoExt, and `wrong_self_convention`
         // clusters from the 2026-07-05 LeaveDates validation).
+        // A shadow mention joins the same class: the mention may be a real
+        // use from outside the crate (bench source, uncovered cfg), so the
+        // narrow could break code the engine never judged.
         PubVerdict::IntraCrate
             if cand.intra_off_home
                 || cand.dead_members
                 || cand.dead_fields
-                || cand.narrow_unmask.is_some() =>
+                || cand.narrow_unmask.is_some()
+                || shadow_mentioned =>
         {
             Applicability::MaybeIncorrect
         }

@@ -1,0 +1,30 @@
+error: pub fn `bench_only` in crate `blib` appears unused — consider removing
+ --> <TMP>/crates/blib/src/lib.rs:2:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: possibly used: mentioned in bench source `crates/blib/benches/measure.rs`, which no declared `[engine]` config compiles — add "cargo bench" to `[engine] configs` to judge that code
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
+help: tighten to `pub(crate)`
+  |
+2 - pub
+2 + pub(crate)
+  |
+help: if intentional, silence with:
+  |
+2 + workspace_lint::expect!(unused_pub);
+  |
+  = note: `#[deny(workspace_lint::unused_pub)]` on by default
+
+error: pub fn `prod_and_bench` in crate `blib` is only used inside the crate
+ --> <TMP>/crates/blib/src/lib.rs:10:1
+  |
+  = help: consider `pub(crate)` to tighten visibility
+  = note: mentioned in bench source `crates/blib/benches/measure.rs`, which no declared `[engine]` config compiles — `pub(crate)` would break that code if the mention is a real use; not auto-applied. Add "cargo bench" to `[engine] configs`, or narrow by hand
+help: tighten to `pub(crate)`
+  |
+10 - pub
+10 + pub(crate)
+  |
+
+workspace-lint: generated 2 errors
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unused-pub)

@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use globset::GlobSet;
-use wl_engine::coverage::ShadowRegion;
+use wl_engine::coverage::{ShadowKind, ShadowRegion};
 use wl_engine::fast::{CrateInfo, FastModel};
 use wl_engine::wl_ir;
 use wl_lint_api::config::glob_set;
@@ -122,31 +122,69 @@ impl<'a> FindingScope<'a> {
     }
 }
 
-/// The shared clause of every cfg-shadow note — one wording for the
-/// report-time flavor (`ir.rs`) and the deletion-veto flavor (`cascade.rs`).
+/// The shared clause of every shadow note — one wording per [`ShadowKind`]
+/// for both the report-time flavor (`ir.rs`) and the deletion-veto flavor
+/// (`cascade.rs`).
 fn shadow_clause(region: &ShadowRegion) -> String {
-    format!(
-        "mentioned under `cfg({})` ({}), which no declared `[engine]` config compiles",
-        region.predicate, region.file,
-    )
+    match region.kind {
+        ShadowKind::Cfg => format!(
+            "mentioned under `cfg({})` ({}), which no declared `[engine]` config compiles",
+            region.predicate, region.file,
+        ),
+        ShadowKind::Bench => format!(
+            "mentioned in bench source `{}`, which no declared `[engine]` config compiles",
+            region.file,
+        ),
+    }
 }
 
-/// The report-time cfg-shadow note: the finding may be a false positive.
+/// The config-matrix entry that would compile the shadowed region — the
+/// actionable half of both notes.
+fn shadow_remedy(region: &ShadowRegion) -> &'static str {
+    match region.kind {
+        ShadowKind::Cfg => "add a matching cargo command to `[engine] configs`",
+        ShadowKind::Bench => "add \"cargo bench\" to `[engine] configs`",
+    }
+}
+
+/// The report-time shadow note: the finding may be a false positive.
 pub(crate) fn shadow_report_note(region: &ShadowRegion) -> String {
     format!(
-        "possibly used: {} — add a matching cargo command to `[engine] configs` to judge \
-         that code",
-        shadow_clause(region)
+        "possibly used: {} — {} to judge that code",
+        shadow_clause(region),
+        shadow_remedy(region),
     )
 }
 
-/// The deletion-veto cfg-shadow note: the cascade keeps the item.
+/// The narrowing-veto shadow note: an IntraCrate verdict whose item a
+/// shadowed region mentions — the mention may be a real use from outside
+/// the crate (a bench, an uncompiled target), so `pub(crate)` could break
+/// code the engine never judged. The tighten is shown, never applied.
+pub(crate) fn shadow_narrow_note(region: &ShadowRegion) -> String {
+    format!(
+        "{} — `pub(crate)` would break that code if the mention is a real use; not \
+         auto-applied. {}, or narrow by hand",
+        shadow_clause(region),
+        capitalized(shadow_remedy(region)),
+    )
+}
+
+/// The deletion-veto shadow note: the cascade keeps the item.
 pub(crate) fn shadow_veto_note(region: &ShadowRegion) -> String {
     format!(
-        "{} — possibly used on a target the engine never saw; not deleting. Add a matching \
-         command to `[engine] configs`, or remove manually",
-        shadow_clause(region)
+        "{} — possibly used by code the engine never saw; not deleting. {}, or remove manually",
+        shadow_clause(region),
+        capitalized(shadow_remedy(region)),
     )
+}
+
+/// First letter uppercased — the remedy opens a sentence in the veto note.
+fn capitalized(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]

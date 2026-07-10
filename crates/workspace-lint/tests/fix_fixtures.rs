@@ -214,6 +214,20 @@ fn fix_unused_pub_cfg_veto() {
 }
 
 #[test]
+fn fix_unused_pub_bench_veto() {
+    // The bench-mention deletion veto (the cfg-shadow veto's bench sibling):
+    // `blib::bench_only` is unused in every DECLARED config (host
+    // `cargo build` only), but blib's own bench references it and no config
+    // has bench kind — cargo never compiled `benches/measure.rs`, so the
+    // reference is invisible to the engine. Deleting the item would break
+    // `cargo bench`, so the cascade downgrades the deletion (MaybeIncorrect
+    // + the bench-source note naming the `"cargo bench"` config entry) and
+    // the item survives — while the genuinely-unmentioned `dead_helper` is
+    // still deleted in the same run.
+    run_fix_fixture("fix__unused_pub_bench_veto");
+}
+
+#[test]
 fn fix_unused_pub_glob_import() {
     // The glob-import cleanup (LeaveDates 2026-07-07, `feature-state/util.rs`):
     // deleting a module's last consumer of `use demo::prelude::*;` removes the

@@ -555,6 +555,44 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
+        // unused-pub: unused in every DECLARED config, but mentioned in a
+        // bench source while no config has bench kind — the bench flavor of
+        // the shadow note names the exact config entry that would compile it.
+        (
+            "unused_pub_bench_shadowed",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub fn `is_match_candidate` in crate `globset` appears unused — consider removing",
+                PathBuf::from("crates/globset/src/lib.rs"),
+                17,
+            )
+            .help("remove the item or its `pub` visibility")
+            .note(
+                "possibly used: mentioned in bench source `crates/globset/benches/bench.rs`, which no declared `[engine]` config compiles — add \"cargo bench\" to `[engine] configs` to judge that code",
+            )
+            .note(
+                "not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand",
+            )
+            .build(),
+        ),
+        // unused-pub: intra-crate verdict whose item a bench source also
+        // mentions while no config has bench kind — the `pub(crate)` narrow
+        // is withheld (it would break `cargo bench` if the mention is a real
+        // use; ripgrep's `is_match_candidate`, 2026-07-10 validation).
+        (
+            "unused_pub_bench_narrow_veto",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub fn `is_match_candidate` in crate `globset` is only used inside the crate",
+                PathBuf::from("crates/globset/src/lib.rs"),
+                350,
+            )
+            .help("consider `pub(crate)` to tighten visibility")
+            .note(
+                "mentioned in bench source `crates/globset/benches/bench.rs`, which no declared `[engine]` config compiles — `pub(crate)` would break that code if the mention is a real use; not auto-applied. Add \"cargo bench\" to `[engine] configs`, or narrow by hand",
+            )
+            .build(),
+        ),
         // unused-pub: reached only from test code (any crate) — the
         // dead-family verdict between "unused" and "intra-crate": nothing
         // production reaches it, so neither a tighten (trips `dead_code` on
@@ -1468,6 +1506,39 @@ mod tests {
             help: if intentional, silence with:
               |
             9 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            "#);
+        }
+
+        #[test]
+        fn unused_pub_bench_shadowed() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_bench_shadowed")), @r#"
+            warning: pub fn `is_match_candidate` in crate `globset` appears unused — consider removing
+             --> crates/globset/src/lib.rs:17:1
+              |
+              = help: remove the item or its `pub` visibility
+              = note: possibly used: mentioned in bench source `crates/globset/benches/bench.rs`, which no declared `[engine]` config compiles — add "cargo bench" to `[engine] configs` to judge that code
+              = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
+            help: if intentional, silence with:
+              |
+            17 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            "#);
+        }
+
+        #[test]
+        fn unused_pub_bench_narrow_veto() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_bench_narrow_veto")), @r#"
+            warning: pub fn `is_match_candidate` in crate `globset` is only used inside the crate
+             --> crates/globset/src/lib.rs:350:1
+              |
+              = help: consider `pub(crate)` to tighten visibility
+              = note: mentioned in bench source `crates/globset/benches/bench.rs`, which no declared `[engine]` config compiles — `pub(crate)` would break that code if the mention is a real use; not auto-applied. Add "cargo bench" to `[engine] configs`, or narrow by hand
+            help: if intentional, silence with:
+              |
+            350 + workspace_lint::expect!(unused_pub);
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             "#);

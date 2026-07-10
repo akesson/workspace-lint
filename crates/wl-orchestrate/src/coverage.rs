@@ -23,9 +23,24 @@ use crate::{ConfigSpec, Kinds};
 use wl_fast::FastModel;
 use wl_fast::cfg_regions::{CfgAtom, CfgPredicate, CfgRegion, scan_target};
 
+/// What makes a region invisible to the declared config matrix — selects the
+/// note wording on the consumer side (`unused-pub`'s veto/report notes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadowKind {
+    /// A `#[cfg(...)]` region no declared config compiles;
+    /// [`ShadowRegion::predicate`] names the uncovered predicate.
+    Cfg,
+    /// A bench-target source file, present while no declared config has
+    /// bench kind (`"cargo bench"` absent from `[engine] configs`) — cargo
+    /// never compiles it, so a mention there is invisible to the reference
+    /// graph exactly like shadowed cfg code.
+    Bench,
+}
+
 /// One shadowed region, text pre-read for mention queries.
 #[derive(Debug)]
 pub struct ShadowRegion {
+    pub kind: ShadowKind,
     /// Owning member's crate code name (underscored).
     pub krate: String,
     /// Workspace-relative, `/`-separated on every OS: this feeds diagnostic
@@ -33,7 +48,8 @@ pub struct ShadowRegion {
     /// (the cases harness blesses one expected.stderr for all three OSes).
     pub file: String,
     /// Human rendering of the uncovered predicate, e.g.
-    /// `target_arch = "wasm32"`.
+    /// `target_arch = "wasm32"` — [`ShadowKind::Cfg`] only (empty for
+    /// [`ShadowKind::Bench`], where the whole FILE is the region).
     pub predicate: String,
     text: String,
 }
@@ -95,11 +111,44 @@ impl CfgShadow {
                     .collect::<Vec<_>>()
                     .join("/");
                 regions.push(ShadowRegion {
+                    kind: ShadowKind::Cfg,
                     krate: member.name.replace('-', "_"),
                     file,
                     predicate: render(&region.predicate),
                     text: slice,
                 });
+            }
+        }
+        // Bench sources are a second region source: with no bench-kind entry
+        // in the matrix, cargo never compiles `benches/…`, so a reference
+        // from there is invisible to the engine exactly like shadowed cfg
+        // code — and deleting the item it names breaks `cargo bench`. Every
+        // module file of every bench target joins the mention index (a bench
+        // helper `mod` can carry the only mention). One region per file.
+        if !specs.iter().any(|s| s.kinds == Kinds::Benches) {
+            for member in fast.members() {
+                let mut files: BTreeSet<&std::path::Path> = BTreeSet::new();
+                for target in member.targets() {
+                    if target.kind == wl_fast::TargetKind::Bench {
+                        files.extend(target.root.walk().map(|m| m.file.as_path()));
+                    }
+                }
+                for path in files {
+                    let file = path
+                        .strip_prefix(fast.root())
+                        .unwrap_or(path)
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    regions.push(ShadowRegion {
+                        kind: ShadowKind::Bench,
+                        krate: member.name.replace('-', "_"),
+                        file,
+                        predicate: String::new(),
+                        text: std::fs::read_to_string(path).unwrap_or_default(),
+                    });
+                }
             }
         }
         Self {
@@ -510,6 +559,7 @@ mod tests {
         .into();
         let shadow = CfgShadow {
             regions: vec![ShadowRegion {
+                kind: ShadowKind::Cfg,
                 krate: "app".into(),
                 file: "src/lib.rs".to_string(),
                 predicate: "target_arch = \"wasm32\"".into(),

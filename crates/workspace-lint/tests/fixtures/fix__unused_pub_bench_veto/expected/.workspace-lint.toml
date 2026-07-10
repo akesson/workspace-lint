@@ -1,0 +1,14 @@
+# The bench-mention deletion veto: `blib::bench_only` is unused in every
+# DECLARED config (host build only), but blib's own bench references it and
+# no config has bench kind — deleting it would break `cargo bench` on code
+# the engine never compiled. The veto keeps it (downgraded to a report with
+# the bench-source note) while the genuinely-dead `dead_helper` — mentioned
+# nowhere, bench or otherwise — is still deleted in the same run.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]
