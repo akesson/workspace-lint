@@ -120,7 +120,7 @@ impl SourceMeasure {
     }
 
     /// Shipped (test-mass-excluded) Rust code lines for the requested files —
-    /// see [`shipped_source::shipped_lines_by_file`]. Out-of-line test-mod
+    /// see `shipped_source::shipped_lines_by_file`. Out-of-line test-mod
     /// targets are resolved within the requested set; dev-target exclusion is
     /// the caller's concern ([`Self::in_dev_target`]).
     pub fn shipped_rust_lines(&self, files: &[PathBuf]) -> HashMap<PathBuf, usize> {

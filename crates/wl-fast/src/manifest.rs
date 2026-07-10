@@ -98,11 +98,10 @@ pub struct DeclaredDep {
 /// `[section.name]` block table alike. The manifest-shape knowledge a
 /// dep-auditing lint needs, kept model-side so it can't drift per lint.
 ///
-/// Distinct from the name-keyed helpers below ([`Manifest::get_dep_version`]
-/// etc.), which look up TOP-LEVEL section entries only and whose block-form
-/// `None` is a tested contract — this type wraps an item the caller already
-/// holds (e.g. from [`Manifest::deps`], which includes `[target.<cfg>.…]`
-/// tables).
+/// Distinct from the name-keyed helpers below ([`Manifest::dep_package_name`]
+/// etc.), which look up TOP-LEVEL section entries only — this type wraps an
+/// item the caller already holds (e.g. from [`Manifest::deps`], which
+/// includes `[target.<cfg>.…]` tables).
 pub struct DepEntry<'a>(&'a Item);
 
 impl<'a> DepEntry<'a> {
@@ -175,7 +174,7 @@ pub enum Publish {
     Registries(Vec<String>),
     /// `publish.workspace = true` — inherits `[workspace.package] publish`.
     /// Resolve against the workspace root manifest's
-    /// [`Manifest::workspace_package_publish`].
+    /// `Manifest::workspace_package_publish`.
     Inherited,
     /// No `publish` key (cargo default: publishable to crates.io).
     Absent,
@@ -230,18 +229,6 @@ impl Manifest {
         Ok(Self { path, raw, doc })
     }
 
-    /// An empty manifest at a synthetic path. Provided for tests and
-    /// synthesized `Crate` fixtures — callers building a workspace by hand
-    /// (rather than via `Workspace::load`) can use this to satisfy the
-    /// `manifest` field without touching disk.
-    pub fn empty() -> Self {
-        Self {
-            path: PathBuf::new(),
-            raw: String::new(),
-            doc: Document::parse(String::new()).expect("empty toml is parseable"),
-        }
-    }
-
     /// Absolute path of the manifest file.
     pub fn path(&self) -> &Path {
         &self.path
@@ -251,11 +238,6 @@ impl Manifest {
     /// for callers that scan comment-form directives in the manifest text.
     pub fn raw(&self) -> &str {
         &self.raw
-    }
-
-    /// The parsed read-only document.
-    pub fn doc(&self) -> &Document<String> {
-        &self.doc
     }
 
     /// Iterate `(name, item)` pairs in a given section. Returns an empty
@@ -374,27 +356,6 @@ impl Manifest {
         )
     }
 
-    /// The version string for `dep_name` in `section`, if the entry uses
-    /// the plain-string form (`serde = "1.0"`) or an inline table with a
-    /// `version` key (`serde = { version = "1.0", ... }`).
-    ///
-    /// Returns `None` if the entry is absent, uses `workspace = true`, or
-    /// is a shape that doesn't carry a version literal (e.g. pure-`git`
-    /// or `path` deps).
-    ///
-    /// Lets callers stay off the raw `toml_edit::Item` API for the common
-    /// "read this dep's version" lookup.
-    pub fn get_dep_version(&self, section: DepSection, dep_name: &str) -> Option<&str> {
-        let table = self.section_table(section)?;
-        let item = table.get(dep_name)?;
-        let value = item.as_value()?;
-        if let Some(s) = value.as_str() {
-            return Some(s);
-        }
-        let table = value.as_inline_table()?;
-        table.get("version")?.as_str()
-    }
-
     /// The package a dependency entry actually resolves to, when the entry
     /// renames it via `package = "…"` — `foo = { package = "bar" }` or a
     /// `[section.foo]` block with a `package` key. Returns `None` when the
@@ -433,7 +394,7 @@ impl Manifest {
     /// Returns [`Publish::Inherited`] for `publish.workspace = true`; resolve
     /// it against the workspace root with
     /// [`Manifest::workspace_package_publish`].
-    pub fn publish(&self) -> Publish {
+    pub(crate) fn publish(&self) -> Publish {
         let item = self
             .doc
             .as_table()
@@ -454,7 +415,7 @@ impl Manifest {
     /// `[workspace.package] publish` from a workspace *root* manifest — the
     /// inheritance source for members that declare `publish.workspace = true`.
     /// [`Publish::Absent`] if there's no such key.
-    pub fn workspace_package_publish(&self) -> Publish {
+    pub(crate) fn workspace_package_publish(&self) -> Publish {
         let item = self
             .doc
             .as_table()
@@ -1234,63 +1195,5 @@ my-crate = "1"
             .map(|(k, _)| k.to_string())
             .collect();
         assert_eq!(pairs, vec!["serde", "tokio"]);
-    }
-
-    // --- get_dep_version ---
-
-    #[test]
-    fn get_dep_version_reads_plain_string_form() {
-        let m = parse("[dependencies]\nserde = \"1.0.200\"\n");
-        assert_eq!(
-            m.get_dep_version(DepSection::Dependencies, "serde"),
-            Some("1.0.200")
-        );
-    }
-
-    #[test]
-    fn get_dep_version_reads_inline_table_version_key() {
-        let m = parse("[dependencies]\nserde = { version = \"1.0\", features = [\"derive\"] }\n");
-        assert_eq!(
-            m.get_dep_version(DepSection::Dependencies, "serde"),
-            Some("1.0")
-        );
-    }
-
-    #[test]
-    fn get_dep_version_returns_none_for_workspace_inherit() {
-        let m = parse("[dependencies]\nserde = { workspace = true }\n");
-        assert_eq!(m.get_dep_version(DepSection::Dependencies, "serde"), None);
-    }
-
-    #[test]
-    fn get_dep_version_returns_none_for_git_only() {
-        let m = parse(
-            "[dependencies]\ntonic = { git = \"https://github.com/hyperium/tonic\", branch = \"master\" }\n",
-        );
-        assert_eq!(m.get_dep_version(DepSection::Dependencies, "tonic"), None);
-    }
-
-    #[test]
-    fn get_dep_version_returns_none_for_missing_dep() {
-        let m = parse("[dependencies]\nserde = \"1\"\n");
-        assert_eq!(m.get_dep_version(DepSection::Dependencies, "missing"), None);
-    }
-
-    #[test]
-    fn get_dep_version_returns_none_for_wrong_section() {
-        let m = parse("[dependencies]\nserde = \"1\"\n");
-        assert_eq!(
-            m.get_dep_version(DepSection::DevDependencies, "serde"),
-            None
-        );
-    }
-
-    #[test]
-    fn get_dep_version_returns_none_for_table_block_form() {
-        // `[dependencies.<name>]` is `Item::Table`, not a `Value` — the helper
-        // only handles single-line entries, so this returns None rather than
-        // returning a misleading partial result.
-        let m = parse("[dependencies.serde]\nversion = \"1.0\"\n");
-        assert_eq!(m.get_dep_version(DepSection::Dependencies, "serde"), None);
     }
 }

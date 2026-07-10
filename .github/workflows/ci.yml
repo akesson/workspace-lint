@@ -41,9 +41,7 @@ jobs:
       - name: Docs
         run: cargo doc --workspace --no-deps --locked
       - name: Publish dry-run (publishable libs)
-        run: |
-          cargo publish --dry-run -p workspace-lint-marker --allow-dirty
-          cargo publish --dry-run -p wl-ir --allow-dirty
+        run: cargo publish --dry-run -p workspace-lint-marker --allow-dirty
 
   test:
     name: Test (${{ matrix.os }})

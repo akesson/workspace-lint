@@ -3,10 +3,10 @@ name = "wl-engine"
 version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
-# Publishable-intent flag (unused-pub convention): the engine library is the
-# stable data layer both tiers consume. Not in the CI publish dry-run gate —
-# it path-depends on the unpublished wl-ir, so a dry-run cannot resolve.
-publish = true
+# Deliberately unpublished: the engine ships only inside the binary, and the
+# deny-level unused-pub dogfood judges this crate's pub API workspace-
+# internally (same convention as wl-orchestrate).
+publish = false
 repository = "https://github.com/akesson/workspace-lint"
 description = "workspace-lint's engine library: the Phase-2 workspace-model assembler, and the single engine surface re-exporting the Phase-1 orchestrator (wl-orchestrate) and the build-free tier (wl-fast)."
 license = "MIT OR Apache-2.0"

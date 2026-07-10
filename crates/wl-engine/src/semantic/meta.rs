@@ -83,7 +83,7 @@ impl WorkspaceMeta {
     /// cargo.
     ///
     /// [`ExtractionRuns`]: crate::ExtractionRuns
-    pub fn from_metadata(md: &cargo_metadata::Metadata) -> Self {
+    pub(crate) fn from_metadata(md: &cargo_metadata::Metadata) -> Self {
         let member_ids: BTreeSet<String> = md
             .workspace_members
             .iter()
@@ -204,12 +204,8 @@ impl WorkspaceMeta {
         meta
     }
 
-    pub fn is_published_lib(&self, krate: &str) -> bool {
+    pub(crate) fn is_published_lib(&self, krate: &str) -> bool {
         self.published_libs.contains(krate)
-    }
-
-    pub fn members(&self) -> impl Iterator<Item = &str> {
-        self.members.iter().map(String::as_str)
     }
 
     /// The resolved dependency **closure** of a crate — the crate itself plus

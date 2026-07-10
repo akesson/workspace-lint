@@ -114,10 +114,14 @@ ignore = [
 
 # `unused-pub` runs on the rustc engine, so it runs everywhere — local + CI
 # dogfood. It's publish-aware: a crate's public API is treated as external
-# (and exempt) only when the crate declares `publish = true`. The published
-# libraries here (workspace-lint-marker, wl-ir) set `publish = true`, so their
-# APIs aren't flagged; the `workspace-lint` binary publishes no API, so its
-# `pub` items are checked as workspace-internal (as before).
+# (and exempt) only when the crate declares `publish = true`. The one
+# published library here (workspace-lint-marker) sets `publish = true`, so
+# its API isn't flagged; every other crate — the binary included — is checked
+# as workspace-internal.
+# `wl-ir` is excluded outright: its emit-side API is consumed by the
+# workspace-excluded `extractor/` (own toolchain, never compiled in this
+# workspace), so the engine cannot see those uses and would judge the crate
+# blind.
 # Test-only reach note: an item used ONLY from test code — even another
 # crate's (the assembler's hash join is global across `[engine] configs`, see
 # `wl-engine/src/semantic/join.rs`) — is production-dead and reports "only
@@ -127,3 +131,4 @@ ignore = [
 # `// workspace-lint: expect(unused-pub)` with its rationale; `stale-expect`
 # retires that directive the day a production caller appears.
 [unused-pub]
+exclude-crates = ["wl-ir"]

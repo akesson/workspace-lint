@@ -63,8 +63,10 @@ fn vendored_extract_this_repo() {
     );
 
     // Phase 2 over the real extraction (the orchestrate→semantic seam):
-    // assembly succeeds, and wl-ir's schema types read as published API
-    // surface (its crate declares publish intent), never as hard-dead.
+    // assembly succeeds, and — wl-ir being unpublished, with its real consumer
+    // (the workspace-excluded `extractor/`) invisible to this universe — its
+    // emit-side API classifies as dead leads. This is the very blindness that
+    // makes the dogfood config exclude wl-ir from unused-pub.
     let model = SemanticModel::load(&runs).expect("assemble");
     let ids: Vec<&str> = model.config_ids().collect();
     assert_eq!(ids.len(), 1);
@@ -74,8 +76,13 @@ fn vendored_extract_this_repo() {
     );
     let verdict = model.union_verdict();
     assert!(
-        verdict.leads.iter().all(|l| !l.dead),
-        "wl-ir is a publishable lib — unused pub API must classify as surface, not dead: {:?}",
+        verdict
+            .leads
+            .iter()
+            .any(|l| l.dead && l.id == "wl_ir::to_archive"),
+        "wl-ir is unpublished and its consumer (extractor/) is outside this \
+         universe — emit-side API like `to_archive` must classify as a dead \
+         lead: {:?}",
         verdict.leads
     );
 }
