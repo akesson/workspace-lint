@@ -7,6 +7,7 @@ mod dup_stats;
 mod expand;
 mod fix;
 mod init;
+mod levels;
 // The message-surface catalog is a test fixture (every distinct diagnostic next
 // to its rendered output) with no production caller — `scenarios()` is consumed
 // only by the snapshot tests and the registry-coverage guard. Gate it out of
@@ -175,7 +176,8 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     wl_engine::timing::phase("apply_suppression[scan expect!/allow!/directives]", || {
         apply_suppression(fast.as_ref(), ran, &mut diagnostics)
     });
-    apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
+    levels::apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
+    levels::mark_marker_availability(fast.as_ref(), &mut diagnostics);
     if fix && engine_error.is_none() {
         let summary = fix::run(&diagnostics);
         // Any applied fix can leave fmt-relevant residue (a
@@ -292,8 +294,9 @@ fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
     }
     apply_suppression(fast.as_ref(), ran, &mut diagnostics);
     if let Some(cfg) = &config_for_levels {
-        apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
+        levels::apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
     }
+    levels::mark_marker_availability(fast.as_ref(), &mut diagnostics);
     if fix {
         fix::run(&diagnostics);
     }
@@ -334,97 +337,6 @@ fn render_ir(bytes: &[u8], json: bool) -> Result<String, String> {
     } else {
         Ok(format!("{frag:#?}"))
     }
-}
-
-/// Apply the lint-level cascade to the collected diagnostics: **drop** any
-/// whose effective level is `allow`, and rewrite the rest to their effective
-/// level. The level resolves through the per-crate tier first — each
-/// diagnostic is mapped to its owning workspace member (by its silence
-/// anchor's path), then leveled via [`config::Config::effective_level`]
-/// (per-crate override → per-crate default → global override → global default
-/// → built-in `warn`). Diagnostics whose level the lint chose itself
-/// (`level_is_explicit`, e.g. an `architecture` rule's `severity`) are left
-/// untouched, so a blanket `[lints] <lint> = …` can't silently clobber a
-/// deliberate per-rule severity.
-fn apply_lint_levels(
-    config: &config::Config,
-    fast: Option<&FastModel>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let crate_dirs = crate_dirs(fast);
-    diagnostics.retain_mut(|d| {
-        if d.level_is_explicit {
-            return true;
-        }
-        let Some(id) = LintId::from_short(d.lint_short()) else {
-            // A diagnostic carrying an unknown lint id shouldn't happen (they
-            // all come from `LintId::*.id()`); keep it rather than drop.
-            return true;
-        };
-        let krate = owning_crate(&crate_dirs, &d.silence_anchor);
-        match config.effective_level(id, krate).to_diagnostic_level() {
-            None => false, // `allow` → drop before render & exit-code tally
-            Some(level) => {
-                d.level = level;
-                true
-            }
-        }
-    });
-}
-
-/// A workspace member's manifest-dir match candidates. Each member carries
-/// **both** its workspace-relative and absolute manifest dir, because
-/// diagnostics anchor with mixed path bases: `unused-deps` / `file-size` /
-/// `crate-size` emit workspace-relative paths, while resolver-span lints
-/// (`unused-pub`) emit absolute ones. Matching either form maps any diagnostic
-/// to its crate. `depth` is the relative component count, used to match the
-/// most specific crate first for nested layouts.
-struct CrateDir {
-    forms: Vec<std::path::PathBuf>,
-    name: String,
-    depth: usize,
-}
-
-/// Build the per-crate match table. Empty when no [`FastModel`] was loaded —
-/// then every diagnostic resolves to the global level.
-fn crate_dirs(fast: Option<&FastModel>) -> Vec<CrateDir> {
-    let Some(fm) = fast else {
-        return Vec::new();
-    };
-    let mut dirs: Vec<CrateDir> = fm
-        .members()
-        .iter()
-        .map(|c| {
-            let rel = fm.crate_relative_path(&c.manifest_dir);
-            let depth = rel.components().count();
-            CrateDir {
-                forms: vec![rel, c.manifest_dir.clone()],
-                name: c.name.clone(),
-                depth,
-            }
-        })
-        .collect();
-    dirs.sort_by_key(|d| std::cmp::Reverse(d.depth));
-    dirs
-}
-
-/// The Cargo name of the workspace member that owns `anchor`, found by matching
-/// the anchor's path (in either base) against each member's manifest-dir forms.
-/// `None` for a workspace-level anchor or a path outside every member. An empty
-/// (root) relative form is skipped so it can't match every path.
-fn owning_crate<'a>(
-    crate_dirs: &'a [CrateDir],
-    anchor: &wl_diagnostic::SilenceAnchor,
-) -> Option<&'a str> {
-    let file = anchor.file()?;
-    crate_dirs
-        .iter()
-        .find(|cd| {
-            cd.forms
-                .iter()
-                .any(|f| !f.as_os_str().is_empty() && file.starts_with(f))
-        })
-        .map(|cd| cd.name.as_str())
 }
 
 fn parse_format(arg: Option<&str>) -> Format {

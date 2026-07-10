@@ -182,7 +182,7 @@ fn findings_with_shadow(
                 id: None,
                 removable: false,
                 test_only: false,
-                diagnostic: publish_hint(krate, &crate_code, crate_findings.len()),
+                diagnostic: publish_hint(fast, krate, &crate_code, crate_findings.len()),
             });
         }
         out.extend(crate_findings);
@@ -328,7 +328,12 @@ fn build_diagnostic(
         ),
     };
 
-    let file = ctx.scope.abs_file(span);
+    // Workspace-relative, like every other lint's anchor (the IR span is
+    // already relative, and the whole run is workspace-rooted): an absolute
+    // path here leaked the checkout prefix into the rendered findings — the
+    // one lint that did (2026-07-10 validation, Issue 9). The same relative
+    // path serves the suggestion spans and file reads below (cwd = root).
+    let file = PathBuf::from(&span.file);
     let builder =
         at_line(LintId::UnusedPub.id(), message, file.clone(), span.line).help(suggestion);
     // The specific blind spot beats the generic disclaimer: a shadowed
@@ -517,11 +522,13 @@ fn build_tighten_suggestion(
 
 /// One crate-level hint suggesting `publish = true` for an internal crate
 /// that produced `count` findings.
-fn publish_hint(krate: &CrateInfo, crate_code: &str, count: usize) -> Diagnostic {
+fn publish_hint(fast: &FastModel, krate: &CrateInfo, crate_code: &str, count: usize) -> Diagnostic {
     at_crate(
         LintId::UnusedPub.id(),
         format!("crate `{crate_code}` has {count} public items unused within the workspace"),
-        krate.manifest_dir.clone(),
+        // Workspace-relative like every other crate anchor — the metadata
+        // manifest_dir is absolute and leaked the checkout prefix.
+        fast.crate_relative_path(&krate.manifest_dir),
     )
     .help(format!(
         "if `{}` is published outside this workspace, set `publish = true` in its Cargo.toml \

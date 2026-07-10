@@ -8,7 +8,7 @@ error: duplicated code: 2 structurally identical instances (~9 lines)
   = note: 2 call sites reference the copies (first at crates/demo/src/lib.rs:27)
 help: if intentional, silence with:
   |
-6 + workspace_lint::expect!(duplicate_code);
+6 + // workspace-lint: expect(duplicate-code)
   |
   = note: `#[deny(workspace_lint::duplicate_code)]` on by default
 

@@ -1,0 +1,10 @@
+# Silence-hint FORM, macro direction (Issue 11, 2026-07-10 validation):
+# `with_marker` declares the workspace-lint-marker dependency, so the hint
+# offers the `workspace_lint::expect!` macro — it compiles there.
+[[file-size.rules]]
+glob = "crates/with_marker/**/*.rs"
+max-code-lines = 3
+
+[lints]
+default = "allow"
+file-size = "deny"

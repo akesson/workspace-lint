@@ -1,5 +1,5 @@
 error: pub struct `Unrelated` in crate `alpha` is only used inside the crate
- --> <TMP>/crates/alpha/src/lib.rs:29:1
+ --> crates/alpha/src/lib.rs:29:1
   |
   = help: consider `pub(crate)` to tighten visibility
   = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
@@ -10,7 +10,7 @@ help: tighten to `pub(crate)`
   |
 help: if intentional, silence with:
   |
-29 + workspace_lint::expect!(unused_pub);
+29 + // workspace-lint: expect(unused-pub)
   |
   = note: `#[deny(workspace_lint::unused_pub)]` on by default
 

@@ -119,9 +119,13 @@ fn location_line(d: &Diagnostic) -> Option<String> {
     match &d.silence_anchor {
         SilenceAnchor::Line { file, line } => Some(format!("{}:{}:1", display_path(file), line)),
         SilenceAnchor::File { file } => Some(format!("{}:1:1", display_path(file))),
-        SilenceAnchor::Crate { manifest_dir } => {
-            Some(format!("{}/Cargo.toml:1:1", display_path(manifest_dir)))
-        }
+        // Path-join, not string-concat: a ROOT package's `manifest_dir` is
+        // empty, and `"{}/Cargo.toml"` rendered it as the absolute-looking
+        // `/Cargo.toml` (the other two renderers already join).
+        SilenceAnchor::Crate { manifest_dir } => Some(format!(
+            "{}:1:1",
+            display_path(&manifest_dir.join("Cargo.toml"))
+        )),
         SilenceAnchor::Workspace => None,
     }
 }
@@ -287,11 +291,18 @@ mod tests {
 
     #[test]
     fn silence_suggestion_renders_as_diff() {
+        // Builder default: no marker dep known -> the dependency-free
+        // comment directive. The macro form needs `marker_available`.
         let d = at_file("workspace-lint::file-size", "x", "src/lib.rs").build();
         let s = render_one(&d);
         assert!(s.contains("help: if intentional, silence with:"));
-        assert!(s.contains("workspace_lint::expect!(file_size);"));
+        assert!(s.contains("// workspace-lint: expect(file-size)"));
         assert!(s.contains("on by default"));
+
+        let mut d = at_file("workspace-lint::file-size", "x", "src/lib.rs").build();
+        d.marker_available = true;
+        let s = render_one(&d);
+        assert!(s.contains("workspace_lint::expect!(file_size);"));
     }
 
     #[test]

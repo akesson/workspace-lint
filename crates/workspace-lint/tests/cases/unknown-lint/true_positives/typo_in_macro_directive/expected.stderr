@@ -4,7 +4,7 @@ error: unknown lint `file-siz` in `allow` directive
   = help: did you mean `file-size`?
 help: if intentional, silence with:
   |
-3 + workspace_lint::expect!(unknown_lint);
+3 + // workspace-lint: expect(unknown-lint)
   |
   = note: `#[deny(workspace_lint::unknown_lint)]` on by default
 

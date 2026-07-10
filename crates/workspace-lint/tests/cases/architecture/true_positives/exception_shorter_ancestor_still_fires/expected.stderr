@@ -4,7 +4,7 @@ error: reference to `data_models::internal::Secret` from `apps-foo` violates arc
   = help: `data_models::internal::Secret` matches deny pattern of rule `apps-no-data-internals`
 help: if intentional, silence with:
   |
-5 + workspace_lint::expect!(architecture);
+5 + // workspace-lint: expect(architecture)
   |
   = note: `#[deny(workspace_lint::architecture)]` on by default
 

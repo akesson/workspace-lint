@@ -1,0 +1,12 @@
+# Silence-hint FORM, comment direction (Issue 11, 2026-07-10 validation):
+# `plain` does NOT depend on workspace-lint-marker, so the hint offers the
+# dependency-free `// workspace-lint: expect(…)` comment — hinting a macro
+# that won't compile is the strictly worse failure (every hint pasted
+# verbatim previously broke the build).
+[[file-size.rules]]
+glob = "crates/plain/**/*.rs"
+max-code-lines = 3
+
+[lints]
+default = "allow"
+file-size = "deny"

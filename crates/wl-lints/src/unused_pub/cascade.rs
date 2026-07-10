@@ -481,7 +481,9 @@ fn scaffold_finding(
 ) -> Option<PubFinding> {
     let span = s.span.as_ref()?;
     let full = s.full_span.as_ref()?;
-    let file = fast.root().join(&span.file);
+    // Workspace-relative like the main findings (ir.rs) — one path form
+    // per file, or the applier splits its edit groups.
+    let file = PathBuf::from(&span.file);
     let krate = fast
         .members()
         .iter()
@@ -489,7 +491,7 @@ fn scaffold_finding(
         .or_else(|| {
             fast.members()
                 .iter()
-                .find(|k| file.starts_with(&k.manifest_dir))
+                .find(|k| fast.root().join(&file).starts_with(&k.manifest_dir))
         })?;
     let config = per_crate.for_crate(&krate.name);
     let scope = FindingScope::new(config, fast, krate, generated, None);
@@ -538,7 +540,10 @@ fn collateral_finding(
     let config = per_crate.for_crate(&krate.name);
     let span = o.span.as_ref()?;
     let full = o.full_span.as_ref()?;
-    let file = fast.root().join(&span.file);
+    // Workspace-relative like the main findings (ir.rs) — the run is
+    // workspace-rooted, so the relative IR path serves anchor, git gate,
+    // and file reads alike.
+    let file = PathBuf::from(&span.file);
     let scope = FindingScope::new(config, fast, krate, generated, None);
     if scope.crate_excluded(&o.krate) || scope.skips(&o.id, &o.kind, Some(span)) {
         return None;

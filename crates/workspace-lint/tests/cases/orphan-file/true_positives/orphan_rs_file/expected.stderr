@@ -5,7 +5,7 @@ error: orphan source file `src/orphan.rs` is never compiled
   = note: no `[engine]` config compiled it, and nothing in crate `demo`'s source names it
 help: if intentional, silence with:
   |
-1 + workspace_lint::expect!(orphan_file);
+1 + // workspace-lint: expect(orphan-file)
   |
   = note: `#[deny(workspace_lint::orphan_file)]` on by default
 

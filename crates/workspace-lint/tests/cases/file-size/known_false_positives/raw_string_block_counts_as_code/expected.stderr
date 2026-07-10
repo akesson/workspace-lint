@@ -7,7 +7,7 @@ error: file exceeds 5 code lines (12)
   = note: configured by [[file-size.rules]] glob = "**/*.rs"
 help: if intentional, silence with:
   |
-1 + workspace_lint::expect!(file_size);
+1 + // workspace-lint: expect(file-size)
   |
   = note: `#[deny(workspace_lint::file_size)]` on by default
 

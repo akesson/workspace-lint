@@ -7,7 +7,7 @@ error: duplicated code: 2 structurally identical instances (~12 lines)
   = note: possible copy-paste drift: crates/demo/src/lib.rs:23 has "alpha" where the mapping elsewhere expects "beta"
 help: if intentional, silence with:
   |
-1 + workspace_lint::expect!(duplicate_code);
+1 + // workspace-lint: expect(duplicate-code)
   |
   = note: `#[deny(workspace_lint::duplicate_code)]` on by default
 
