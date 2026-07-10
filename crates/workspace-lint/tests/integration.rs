@@ -145,6 +145,44 @@ fn no_config_errors() {
         .stderr(predicate::str::contains("no configuration found"));
 }
 
+/// A run from INSIDE a member directory re-roots to the configured workspace
+/// root (with a notice) instead of dead-ending on "no configuration found" —
+/// cargo itself walks up the same way, so the old literal-cwd-only load was
+/// the surprising one (2026-07-10 validation, Issue 10).
+#[test]
+fn member_dir_run_reroots_to_configured_root() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    copy_tree(fixture("unused_deps_clean"), tmp.path()).expect("copy fixture");
+    std::fs::write(
+        tmp.path().join(".workspace-lint.toml"),
+        "[unused-deps]\n[lints]\ndefault = \"allow\"\nunused-deps = \"warn\"\n",
+    )
+    .expect("write config");
+    workspace_lint()
+        .current_dir(tmp.path().join("crates/alpha"))
+        .arg("--fast-only")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("running at workspace root"))
+        .stderr(predicate::str::contains("all passed"));
+}
+
+/// With no config anywhere but a `[workspace]` root above, the error names
+/// that root — the generic "run `workspace-lint init`" hint pointed at the
+/// member dir, where `init` refuses to scaffold.
+#[test]
+fn member_dir_run_names_unconfigured_workspace_root() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    copy_tree(fixture("unused_deps_clean"), tmp.path()).expect("copy fixture");
+    workspace_lint()
+        .current_dir(tmp.path().join("crates/alpha"))
+        .arg("--fast-only")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("the workspace root is"))
+        .stderr(predicate::str::contains("run `workspace-lint init` there"));
+}
+
 // --- config fail-fast paths (parse errors abort the run with exit 1) ---
 
 /// Write a minimal workspace whose standalone config is `config_body`, run the
