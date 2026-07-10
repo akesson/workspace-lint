@@ -1,0 +1,14 @@
+# The workspace has NO [workspace.dependencies] table: --fix must CREATE it
+# exactly once, carrying every agreed entry — one insertion per applied dep
+# stacked N duplicate `[workspace.dependencies]` headers here (cargo rejects
+# the manifest; broke ripgrep with 17 of them, 2026-07-10 validation).
+[package]
+name = "alpha"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+# `default-features = false` must ride onto the CREATED workspace entry:
+# cargo ignores a member-side flag the workspace entry doesn't declare (the
+# helix-gix breakage — silently regained default features).
+log = { workspace = true, default-features = false }

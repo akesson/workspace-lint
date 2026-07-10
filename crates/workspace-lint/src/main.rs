@@ -173,7 +173,9 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
         // rather than letting the next run's new fixes read as a bug.
         if summary.modified > 0 {
             eprintln!(
-                "note: applied fixes can enable further tightenings — re-run until no fixes remain"
+                "note: applied fixes can enable further tightenings — commit these changes, \
+                 then re-run `--fix` until no fixes remain (the clean-tree guard keeps each \
+                 pass reviewable as its own diff)"
             );
         }
     }

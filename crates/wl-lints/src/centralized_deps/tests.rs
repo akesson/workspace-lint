@@ -1,7 +1,17 @@
 use super::*;
 
-fn ws(names: &[&str]) -> BTreeSet<String> {
-    names.iter().map(|s| s.to_string()).collect()
+/// A workspace-deps view where every named entry keeps cargo's default
+/// `default-features = true`. [`ws_df`] declares deviating entries.
+fn ws(names: &[&str]) -> std::collections::BTreeMap<String, bool> {
+    names.iter().map(|s| (s.to_string(), true)).collect()
+}
+
+/// A workspace-deps view with explicit per-entry `default-features`.
+fn ws_df(entries: &[(&str, bool)]) -> std::collections::BTreeMap<String, bool> {
+    entries
+        .iter()
+        .map(|(name, df)| (name.to_string(), *df))
+        .collect()
 }
 
 fn parse_item(toml_str: &str, section: DepSection, dep_name: &str) -> Item {
@@ -190,4 +200,80 @@ fn build_suggestion_returns_none_for_already_workspace() {
     let m = parse_manifest("[dependencies]\nserde = { workspace = true }\n");
     let s = build_rewrite_suggestion(&m, DepSection::Dependencies, "serde", true);
     assert!(s.is_none(), "expected no rewrite, got {s:?}");
+}
+
+/// Member `default-features = false` vs a workspace entry without it: the
+/// rewrite is blocked (cargo would ignore the member flag — the feature set
+/// silently changes) and the message says why.
+#[test]
+fn default_features_mismatch_blocks_rewrite() {
+    let item = parse_item(
+        "[dependencies]\ngix = { version = \"0.85\", default-features = false }\n",
+        DepSection::Dependencies,
+        "gix",
+    );
+    let issue = check_dep("gix", &item, DepSection::Dependencies, &ws(&["gix"])).unwrap();
+    assert!(issue.rewrite_blocked);
+    assert!(issue.insertable.is_none());
+    assert!(
+        issue.message.contains("`default-features` (false)"),
+        "{}",
+        issue.message
+    );
+    assert!(issue.message.contains("align the two declarations"));
+}
+
+/// The mirror direction: workspace entry says `default-features = false`,
+/// member relies on the default (true). Inheriting would silently STRIP the
+/// member's default features — equally blocked.
+#[test]
+fn default_features_mismatch_blocks_rewrite_inverse() {
+    let item = parse_item(
+        "[dependencies]\ngix = \"0.85\"\n",
+        DepSection::Dependencies,
+        "gix",
+    );
+    let issue = check_dep(
+        "gix",
+        &item,
+        DepSection::Dependencies,
+        &ws_df(&[("gix", false)]),
+    )
+    .unwrap();
+    assert!(issue.rewrite_blocked);
+}
+
+/// Matching `default-features = false` on both sides: an ordinary
+/// auto-fixable finding (the member rewrite preserves the key — explicit
+/// agreement, no semantics change).
+#[test]
+fn default_features_agreement_is_not_blocked() {
+    let item = parse_item(
+        "[dependencies]\ngix = { version = \"0.85\", default-features = false }\n",
+        DepSection::Dependencies,
+        "gix",
+    );
+    let issue = check_dep(
+        "gix",
+        &item,
+        DepSection::Dependencies,
+        &ws_df(&[("gix", false)]),
+    )
+    .unwrap();
+    assert!(!issue.rewrite_blocked);
+    assert!(issue.message.contains("use { workspace = true }"));
+}
+
+/// A missing dep with `default-features = false` seeds the insertion WITH
+/// the flag — the workspace entry is where cargo resolves it from
+/// (member-side alone is ignored; the helix-gix breakage).
+#[test]
+fn missing_dep_carries_default_features_into_insertable() {
+    let item = parse_item(
+        "[dependencies]\ngix = { version = \"0.85\", default-features = false }\n",
+        DepSection::Dependencies,
+        "gix",
+    );
+    let issue = check_dep("gix", &item, DepSection::Dependencies, &ws(&[])).unwrap();
+    assert_eq!(issue.insertable, Some(("0.85".to_string(), false)));
 }

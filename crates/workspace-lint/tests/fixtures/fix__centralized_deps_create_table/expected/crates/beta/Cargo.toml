@@ -1,0 +1,7 @@
+[package]
+name = "beta"
+version = "0.1.0"
+
+[dependencies]
+# Same agreed version as alpha — one shared entry in the created table.
+serde = { workspace = true }
