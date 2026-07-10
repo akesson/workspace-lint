@@ -1,0 +1,15 @@
+error: file exceeds 3 code lines (5)
+ --> crates/with_marker/src/lib.rs:1:1
+  |
+  = help: split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)
+  = help: extract related structs, enums, or trait impls into their own modules
+  = help: only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded
+  = note: configured by [[file-size.rules]] glob = "crates/with_marker/**/*.rs"
+help: if intentional, silence with:
+  |
+1 + workspace_lint::expect!(file_size);
+  |
+  = note: `#[deny(workspace_lint::file_size)]` on by default
+
+workspace-lint: generated 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (file-size)

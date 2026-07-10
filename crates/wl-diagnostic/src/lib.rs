@@ -244,6 +244,15 @@ pub struct Diagnostic {
     /// `apply_lint_levels` pass leaves these untouched, so a per-rule severity
     /// isn't silently clobbered by a blanket `[lints] <lint> = …` override.
     pub level_is_explicit: bool,
+    /// `true` when the crate owning this diagnostic's anchor declares the
+    /// `workspace-lint-marker` dependency, so the `workspace_lint::expect!`
+    /// macro actually compiles there. Selects the silence-hint form for
+    /// `.rs` anchors: macro when available, the `// workspace-lint:
+    /// expect(…)` comment (which needs no dependency) otherwise. Set by a
+    /// post-collection pass in the binary (it has the `FastModel`); the
+    /// builder default is `false` — hinting a macro that won't compile is
+    /// the strictly worse failure.
+    pub marker_available: bool,
 }
 
 impl Diagnostic {
@@ -319,9 +328,15 @@ impl Diagnostic {
         // `stale-expect` when the underlying lint stops firing — silences
         // can't quietly rot. `allow!` remains in the marker crate for
         // genuinely permanent silences and for items the lint can't reach
-        // (e.g. `unused-pub` items inside `exclude-crates`).
-        let replacement = if is_rust {
+        // (e.g. `unused-pub` items inside `exclude-crates`). The macro form
+        // is hinted only when the anchored crate actually depends on the
+        // marker crate ([`Diagnostic::marker_available`]); otherwise the
+        // dependency-free `//` comment directive — pasting a hint must
+        // never be a compile error.
+        let replacement = if is_rust && self.marker_available {
             format!("workspace_lint::expect!({});\n", self.lint_ident())
+        } else if is_rust {
+            format!("// workspace-lint: expect({})\n", self.lint_short())
         } else {
             format!("# workspace-lint: expect({})\n", self.lint_short())
         };
@@ -421,17 +436,28 @@ mod tests {
             suggestions: vec![],
             silence_anchor: anchor,
             level_is_explicit: false,
+            marker_available: false,
         }
     }
 
     #[test]
-    fn silence_for_rust_file_uses_macro_form() {
+    fn silence_for_rust_file_uses_macro_form_only_with_marker() {
+        // Default (no marker dep known): the dependency-free comment form —
+        // hinting a macro that won't compile is the strictly worse failure.
         let d = diag(SilenceAnchor::File {
             file: PathBuf::from("src/lib.rs"),
         });
         let s = d.silence_suggestion().unwrap();
-        assert_eq!(s.replacement, "workspace_lint::expect!(file_size);\n");
+        assert_eq!(s.replacement, "// workspace-lint: expect(file-size)\n");
         assert_eq!(s.applicability, Applicability::MachineApplicable);
+
+        // With the marker dependency declared, the macro form.
+        let mut d = diag(SilenceAnchor::File {
+            file: PathBuf::from("src/lib.rs"),
+        });
+        d.marker_available = true;
+        let s = d.silence_suggestion().unwrap();
+        assert_eq!(s.replacement, "workspace_lint::expect!(file_size);\n");
     }
 
     #[test]
@@ -441,7 +467,7 @@ mod tests {
             line: 42,
         });
         let s = d.silence_suggestion().unwrap();
-        assert_eq!(s.replacement, "workspace_lint::expect!(file_size);\n");
+        assert_eq!(s.replacement, "// workspace-lint: expect(file-size)\n");
         assert_eq!(s.span.line_start, 42);
     }
 

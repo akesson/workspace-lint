@@ -334,6 +334,7 @@ mod tests {
                 file: path.to_path_buf(),
             },
             level_is_explicit: false,
+            marker_available: false,
         }
     }
 

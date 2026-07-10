@@ -104,6 +104,7 @@ impl DiagnosticBuilder {
             suggestions: self.suggestions,
             silence_anchor: self.silence_anchor,
             level_is_explicit: self.level_is_explicit,
+            marker_available: false,
         }
     }
 }

@@ -450,6 +450,24 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
             .build(),
         ),
+        // unused-deps: the workspace root IS the package (non-virtual
+        // workspace) — `manifest_dir` is empty and the silence anchor must
+        // render as `Cargo.toml`, not the absolute-looking `/Cargo.toml`
+        // (the 2026-07-10 validation's Issue 8; human.rs now path-joins
+        // like the other two renderers).
+        (
+            "unused_deps_root_package",
+            at_crate(
+                "workspace-lint::unused-deps",
+                "1 possibly unused dependency in Cargo.toml",
+                PathBuf::new(),
+            )
+            .help("[dependencies] rand")
+            .note_once("build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives")
+            .note_once("verify by removing the dep and running `cargo build --all-targets`")
+            .note_once("if the build breaks, add the dep to [unused-deps] ignore in your config")
+            .build(),
+        ),
         // unused-deps: multiple unused deps.
         (
             "unused_deps_multiple",
@@ -1103,7 +1121,7 @@ mod tests {
               = note: configured by [[file-size.rules]] glob = "**/*.rs"
             help: if intentional, silence with:
               |
-            1 + workspace_lint::expect!(file_size);
+            1 + // workspace-lint: expect(file-size)
               |
               = note: `#[warn(workspace_lint::file_size)]` on by default
             "#);
@@ -1137,7 +1155,7 @@ mod tests {
               = note: extracting would take ~2 parameters for the differing literals
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1155,7 +1173,7 @@ mod tests {
               = note: possible copy-paste drift: crates/beta/src/render.rs:96 has "alpha" where the mapping elsewhere expects "beta"
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             "#);
@@ -1174,7 +1192,7 @@ mod tests {
               = note: 2 call sites reference the copies (first at crates/alpha/src/main.rs:15)
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1192,7 +1210,7 @@ mod tests {
               = note: instances are identical (differing at most in local names)
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1210,7 +1228,7 @@ mod tests {
               = note: instances are identical (differing at most in local names)
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1228,7 +1246,7 @@ mod tests {
               = note: extracting would take ~1 parameter for the differing literals
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1246,7 +1264,7 @@ mod tests {
               = note: extracting would take ~1 parameter for the differing literals
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1265,7 +1283,7 @@ mod tests {
               = note: instances resolve different callees — the copies may not be interchangeable
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1284,7 +1302,7 @@ mod tests {
               = note: an extracted fn would take 2 parameters (items, config) and return total
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1303,7 +1321,7 @@ mod tests {
               = note: an extracted fn would take 1 parameter (items) but needs 3 return values (count, total, errors) — extraction is awkward; consider restructuring
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1322,7 +1340,7 @@ mod tests {
               = note: instances are identical (differing at most in local names)
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(duplicate_code);
+            42 + // workspace-lint: expect(duplicate-code)
               |
               = note: `#[warn(workspace_lint::duplicate_code)]` on by default
             ");
@@ -1407,6 +1425,24 @@ mod tests {
             insta::assert_snapshot!(render(&scenario("unused_deps_one")), @r"
             warning: 1 possibly unused dependency in crates/alpha/Cargo.toml
              --> crates/alpha/Cargo.toml:1:1
+              |
+              = help: [dependencies] rand
+              = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
+              = note: verify by removing the dep and running `cargo build --all-targets`
+              = note: if the build breaks, add the dep to [unused-deps] ignore in your config
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(unused-deps)
+              |
+              = note: `#[warn(workspace_lint::unused_deps)]` on by default
+            ");
+        }
+
+        #[test]
+        fn unused_deps_root_package() {
+            insta::assert_snapshot!(render(&scenario("unused_deps_root_package")), @r"
+            warning: 1 possibly unused dependency in Cargo.toml
+             --> Cargo.toml:1:1
               |
               = help: [dependencies] rand
               = note: build.rs-generated code, *-sys link-only deps, and feature-plumbing-only deps may still cause false positives
@@ -1506,7 +1542,7 @@ mod tests {
               = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(unused_pub);
+            42 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1523,7 +1559,7 @@ mod tests {
               = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
             help: if intentional, silence with:
               |
-            9 + workspace_lint::expect!(unused_pub);
+            9 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             "#);
@@ -1540,7 +1576,7 @@ mod tests {
               = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
             help: if intentional, silence with:
               |
-            17 + workspace_lint::expect!(unused_pub);
+            17 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             "#);
@@ -1556,7 +1592,7 @@ mod tests {
               = note: mentioned in bench source `crates/globset/benches/bench.rs`, which no declared `[engine]` config compiles — `pub(crate)` would break that code if the mention is a real use; not auto-applied. Add "cargo bench" to `[engine] configs`, or narrow by hand
             help: if intentional, silence with:
               |
-            350 + workspace_lint::expect!(unused_pub);
+            350 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             "#);
@@ -1573,7 +1609,7 @@ mod tests {
               = note: no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it
             help: if intentional, silence with:
               |
-            42 + workspace_lint::expect!(unused_pub);
+            42 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1590,7 +1626,7 @@ mod tests {
               = note: only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand
             help: if intentional, silence with:
               |
-            6 + workspace_lint::expect!(unused_pub);
+            6 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1606,7 +1642,7 @@ mod tests {
               = note: exclusive test scaffolding: every workspace item it references is also deleted by this `--fix`
             help: if intentional, silence with:
               |
-            12 + workspace_lint::expect!(unused_pub);
+            12 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1623,7 +1659,7 @@ mod tests {
               = note: transitively unused: the only item(s) that referenced it are also deleted by this `--fix`
             help: if intentional, silence with:
               |
-            14 + workspace_lint::expect!(unused_pub);
+            14 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1639,7 +1675,7 @@ mod tests {
               = note: deleting this would leave variant `Fast` of surviving `store::Mode` never constructed, tripping `dead_code` on the fixed tree — remove the variant first or delete by hand
             help: if intentional, silence with:
               |
-            19 + workspace_lint::expect!(unused_pub);
+            19 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1655,7 +1691,7 @@ mod tests {
               = note: deleting this would leave field `open` of surviving `widgets::Panel` never-read, tripping `dead_code` on the fixed tree — remove the field first or delete by hand
             help: if intentional, silence with:
               |
-            13 + workspace_lint::expect!(unused_pub);
+            13 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1671,7 +1707,7 @@ mod tests {
               = note: deleting `is_empty` would trip clippy `len_without_is_empty` on `store::Buf`'s surviving `len` — remove or keep the pair together
             help: if intentional, silence with:
               |
-            17 + workspace_lint::expect!(unused_pub);
+            17 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1690,7 +1726,7 @@ mod tests {
               |
             help: if intentional, silence with:
               |
-            3 + workspace_lint::expect!(unused_pub);
+            3 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1706,7 +1742,7 @@ mod tests {
               = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
             help: if intentional, silence with:
               |
-            7 + workspace_lint::expect!(unused_pub);
+            7 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1739,7 +1775,7 @@ mod tests {
               = note: `pub(crate)` would unmask clippy `wrong_self_convention` on `is_wide` (clippy exempts exported items via `avoid-breaking-exported-api`) — resolve that first or narrow by hand
             help: if intentional, silence with:
               |
-            11 + workspace_lint::expect!(unused_pub);
+            11 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1755,7 +1791,7 @@ mod tests {
               = note: transitively dead: the only item(s) that referenced it are also deleted by this `--fix`
             help: if intentional, silence with:
               |
-            21 + workspace_lint::expect!(unused_pub);
+            21 + // workspace-lint: expect(unused-pub)
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");
@@ -1775,7 +1811,7 @@ mod tests {
               |
             help: if intentional, silence with:
               |
-            1 + workspace_lint::expect!(stale_expect);
+            1 + // workspace-lint: expect(stale-expect)
               |
               = note: `#[warn(workspace_lint::stale_expect)]` on by default
             ");
@@ -1791,7 +1827,7 @@ mod tests {
               = note: internal types are not part of the published API surface
             help: if intentional, silence with:
               |
-            7 + workspace_lint::expect!(architecture);
+            7 + // workspace-lint: expect(architecture)
               |
               = note: `#[warn(workspace_lint::architecture)]` on by default
             ");
@@ -1807,7 +1843,7 @@ mod tests {
               = note: internal types are not part of the published API surface
             help: if intentional, silence with:
               |
-            12 + workspace_lint::expect!(architecture);
+            12 + // workspace-lint: expect(architecture)
               |
               = note: `#[warn(workspace_lint::architecture)]` on by default
             ");
@@ -1823,7 +1859,7 @@ mod tests {
               = note: no `[engine]` config compiled it, and nothing in crate `demo`'s source names it
             help: if intentional, silence with:
               |
-            1 + workspace_lint::expect!(orphan_file);
+            1 + // workspace-lint: expect(orphan-file)
               |
               = note: `#[warn(workspace_lint::orphan_file)]` on by default
             "#);
@@ -1839,7 +1875,7 @@ mod tests {
               = note: crate `demo`'s source names this file, so it is not reported as an orphan — but the declared config (default) never opened it, so nothing in it is checked
             help: if intentional, silence with:
               |
-            1 + workspace_lint::expect!(orphan_file);
+            1 + // workspace-lint: expect(orphan-file)
               |
               = note: `#[warn(workspace_lint::orphan_file)]` on by default
             "#);
@@ -1944,7 +1980,7 @@ mod tests {
             // Validates the most important JSON contract: a Rust file
             // diagnostic carries a suggested_replacement with the `allow!`
             // macro text so the IDE quick-fix Just Works.
-            insta::assert_snapshot!(render(&scenario("file_size_over_limit")), @r#"{"level":"warning","message":"file exceeds 500 code lines (612)","code":{"code":"workspace-lint::file-size","explanation":null},"spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(file_size);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)","spans":[]},{"level":"help","message":"extract related structs, enums, or trait impls into their own modules","spans":[]},{"level":"help","message":"only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded","spans":[]},{"level":"note","message":"configured by [[file-size.rules]] glob = \"**/*.rs\"","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("file_size_over_limit")), @r#"{"level":"warning","message":"file exceeds 500 code lines (612)","code":{"code":"workspace-lint::file-size","explanation":null},"spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/web-api/src/handler.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(file-size)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"split this file into focused submodules (e.g. a `foo/` directory with a `mod.rs`)","spans":[]},{"level":"help","message":"extract related structs, enums, or trait impls into their own modules","spans":[]},{"level":"help","message":"only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded","spans":[]},{"level":"note","message":"configured by [[file-size.rules]] glob = \"**/*.rs\"","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
@@ -1958,7 +1994,9 @@ mod tests {
             assert_eq!(silence_span["line_start"], 42);
             assert_eq!(
                 silence_span["suggested_replacement"],
-                "workspace_lint::expect!(unused_pub);\n"
+                // Scenarios carry no marker-dep knowledge, so the hint is
+                // the dependency-free comment form.
+                "// workspace-lint: expect(unused-pub)\n"
             );
         }
 
@@ -1978,22 +2016,22 @@ mod tests {
 
         #[test]
         fn architecture_denied_import() {
-            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r#"{"level":"warning","message":"import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(architecture);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("architecture_denied_import")), @r#"{"level":"warning","message":"import of `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(architecture)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn architecture_denied_code_reference() {
-            insta::assert_snapshot!(render(&scenario("architecture_denied_code_reference")), @r#"{"level":"warning","message":"reference to `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(architecture);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("architecture_denied_code_reference")), @r#"{"level":"warning","message":"reference to `data_models::internal::User` from `apps-foo` violates architecture rule `no-internal-imports`","code":{"code":"workspace-lint::architecture","explanation":null},"spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/apps-foo/src/lib.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(architecture)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"import from `data-models::api` instead","spans":[]},{"level":"note","message":"internal types are not part of the published API surface","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn orphan_file_orphan() {
-            insta::assert_snapshot!(render(&scenario("orphan_file_orphan")), @r#"{"level":"warning","message":"orphan source file `src/orphan.rs` is never compiled","code":{"code":"workspace-lint::orphan-file","explanation":null},"spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(orphan_file);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"delete the file, or reach it: add `mod orphan;` (or `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module","spans":[]},{"level":"note","message":"no `[engine]` config compiled it, and nothing in crate `demo`'s source names it","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("orphan_file_orphan")), @r#"{"level":"warning","message":"orphan source file `src/orphan.rs` is never compiled","code":{"code":"workspace-lint::orphan-file","explanation":null},"spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/orphan.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(orphan-file)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"delete the file, or reach it: add `mod orphan;` (or `#[path = \"src/orphan.rs\"] mod ...;`) in the appropriate parent module","spans":[]},{"level":"note","message":"no `[engine]` config compiled it, and nothing in crate `demo`'s source names it","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn orphan_file_cfg_coverage_gap() {
-            insta::assert_snapshot!(render(&scenario("orphan_file_cfg_coverage_gap")), @r#"{"level":"warning","message":"no declared `[engine]` config compiles `src/imp_windows.rs`","code":{"code":"workspace-lint::orphan-file","explanation":null},"spans":[{"file_name":"crates/demo/src/imp_windows.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/imp_windows.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(orphan_file);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add a config that compiles it — a `--target` for a platform-gated module, or `\"cargo test\"` for a `#[cfg(test)]` one","spans":[]},{"level":"note","message":"crate `demo`'s source names this file, so it is not reported as an orphan — but the declared config (default) never opened it, so nothing in it is checked","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("orphan_file_cfg_coverage_gap")), @r#"{"level":"warning","message":"no declared `[engine]` config compiles `src/imp_windows.rs`","code":{"code":"workspace-lint::orphan-file","explanation":null},"spans":[{"file_name":"crates/demo/src/imp_windows.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/demo/src/imp_windows.rs","byte_start":0,"byte_end":0,"line_start":1,"line_end":1,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(orphan-file)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"add a config that compiles it — a `--target` for a platform-gated module, or `\"cargo test\"` for a `#[cfg(test)]` one","spans":[]},{"level":"note","message":"crate `demo`'s source names this file, so it is not reported as an orphan — but the declared config (default) never opened it, so nothing in it is checked","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
@@ -2032,52 +2070,52 @@ mod tests {
 
         #[test]
         fn duplicate_code_group() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_group")), @r#"{"level":"warning","message":"duplicated code: 3 structurally identical instances (~14 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"extracting would take ~2 parameters for the differing literals","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_group")), @r#"{"level":"warning","message":"duplicated code: 3 structurally identical instances (~14 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"extracting would take ~2 parameters for the differing literals","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_merge_identical_fns() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_merge_identical_fns")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~8 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"these are copies of the same function — keep one and redirect the other call sites","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"2 call sites reference the copies (first at crates/alpha/src/main.rs:15)","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_merge_identical_fns")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~8 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"these are copies of the same function — keep one and redirect the other call sites","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"2 call sites reference the copies (first at crates/alpha/src/main.rs:15)","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_delete_dead_copy() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_delete_dead_copy")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~8 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"the copy at crates/beta/src/render.rs:88 is never referenced — delete it","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_delete_dead_copy")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~8 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"the copy at crates/beta/src/render.rs:88 is never referenced — delete it","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_default_trait_method() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_default_trait_method")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~6 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"every copy implements `Formatter::render` — make it a default method on the trait","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_default_trait_method")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~6 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"every copy implements `Formatter::render` — make it a default method on the trait","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_method_on_receiver_type() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_method_on_receiver_type")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~5 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into a method on `Config` — every copy takes it as the first parameter","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"extracting would take ~1 parameter for the differing literals","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_method_on_receiver_type")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~5 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into a method on `Config` — every copy takes it as the first parameter","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"extracting would take ~1 parameter for the differing literals","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_ui_component() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_ui_component")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~4 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared `rsx!` markup into one component the copies can render","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"extracting would take ~1 parameter for the differing literals","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_ui_component")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~4 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared `rsx!` markup into one component the copies can render","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"extracting would take ~1 parameter for the differing literals","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_merge_withheld() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_merge_withheld")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~6 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"instances resolve different callees — the copies may not be interchangeable","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_merge_withheld")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~6 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"instances resolve different callees — the copies may not be interchangeable","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_run_signature() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_run_signature")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~6 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"an extracted fn would take 2 parameters (items, config) and return total","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_run_signature")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~6 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"an extracted fn would take 2 parameters (items, config) and return total","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_run_live_out_downgrade() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_run_live_out_downgrade")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~7 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"an extracted fn would take 1 parameter (items) but needs 3 return values (count, total, errors) — extraction is awkward; consider restructuring","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_run_live_out_downgrade")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~7 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"an extracted fn would take 1 parameter (items) but needs 3 return values (count, total, errors) — extraction is awkward; consider restructuring","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn duplicate_code_baseline_grew() {
-            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_grew")), @r#"{"level":"warning","message":"duplicated code: 3 structurally identical instances (~8 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(duplicate_code);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"grew beyond its baseline: 2 instances accepted, now 3","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("duplicate_code_baseline_grew")), @r#"{"level":"warning","message":"duplicated code: 3 structurally identical instances (~8 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"extract the shared logic into one function the copies can call","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88, crates/gamma/src/emit.rs:17","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"grew beyond its baseline: 2 instances accepted, now 3","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
@@ -2117,22 +2155,22 @@ mod tests {
 
         #[test]
         fn unused_pub_test_only() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_test_only")), @r#"{"level":"warning","message":"pub fn `helper` in crate `mycrate` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"gate it `#[cfg(test)]`, move it into test code, or remove it","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only")), @r#"{"level":"warning","message":"pub fn `helper` in crate `mycrate` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"gate it `#[cfg(test)]`, move it into test code, or remove it","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn unused_pub_test_only_blocked() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @r#"{"level":"warning","message":"pub fn `embalmed` in crate `alpha` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"gate it `#[cfg(test)]`, move it into test code, or remove it","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @r#"{"level":"warning","message":"pub fn `embalmed` in crate `alpha` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"gate it `#[cfg(test)]`, move it into test code, or remove it","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn unused_pub_test_scaffold() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_test_scaffold")), @r#"{"level":"warning","message":"test fn `exercises_embalmed` in crate `beta` only exercises items deleted by this `--fix`","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/beta/src/main.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/beta/src/main.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"deleting it too — it would reference deleted items and break the test build","spans":[]},{"level":"note","message":"exclusive test scaffolding: every workspace item it references is also deleted by this `--fix`","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_scaffold")), @r#"{"level":"warning","message":"test fn `exercises_embalmed` in crate `beta` only exercises items deleted by this `--fix`","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/beta/src/main.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/beta/src/main.rs","byte_start":0,"byte_end":0,"line_start":12,"line_end":12,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"deleting it too — it would reference deleted items and break the test build","spans":[]},{"level":"note","message":"exclusive test scaffolding: every workspace item it references is also deleted by this `--fix`","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn unused_pub_tighten_visibility() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r#"{"level":"warning","message":"pub struct `Builder` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_visibility")), @r#"{"level":"warning","message":"pub struct `Builder` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/builder.rs","byte_start":0,"byte_end":0,"line_start":7,"line_end":7,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
@@ -2142,12 +2180,12 @@ mod tests {
 
         #[test]
         fn unused_pub_tighten_unmask() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_unmask")), @r#"{"level":"warning","message":"pub struct `Rect` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/geometry.rs","byte_start":0,"byte_end":0,"line_start":11,"line_end":11,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/geometry.rs","byte_start":0,"byte_end":0,"line_start":11,"line_end":11,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"`pub(crate)` would unmask clippy `wrong_self_convention` on `is_wide` (clippy exempts exported items via `avoid-breaking-exported-api`) — resolve that first or narrow by hand","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("unused_pub_tighten_unmask")), @r#"{"level":"warning","message":"pub struct `Rect` in crate `mycrate` is only used inside the crate","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/geometry.rs","byte_start":0,"byte_end":0,"line_start":11,"line_end":11,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/geometry.rs","byte_start":0,"byte_end":0,"line_start":11,"line_end":11,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"consider `pub(crate)` to tighten visibility","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"`pub(crate)` would unmask clippy `wrong_self_convention` on `is_wide` (clippy exempts exported items via `avoid-breaking-exported-api`) — resolve that first or narrow by hand","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn unused_pub_private_collateral() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_private_collateral")), @r#"{"level":"warning","message":"private fn `helper` in crate `mycrate` loses its last user in this `--fix`","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":21,"line_end":21,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":21,"line_end":21,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"workspace_lint::expect!(unused_pub);\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"deleting it too — rustc `dead_code` would flag it on the fixed tree","spans":[]},{"level":"note","message":"transitively dead: the only item(s) that referenced it are also deleted by this `--fix`","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("unused_pub_private_collateral")), @r#"{"level":"warning","message":"private fn `helper` in crate `mycrate` loses its last user in this `--fix`","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":21,"line_end":21,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":21,"line_end":21,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"deleting it too — rustc `dead_code` would flag it on the fixed tree","spans":[]},{"level":"note","message":"transitively dead: the only item(s) that referenced it are also deleted by this `--fix`","spans":[]}],"rendered":null}"#);
         }
     }
 

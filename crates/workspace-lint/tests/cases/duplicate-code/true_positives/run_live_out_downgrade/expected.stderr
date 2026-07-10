@@ -8,7 +8,7 @@ warning: duplicated code: 2 structurally identical instances (~10 lines)
   = note: an extracted fn would take 1 parameter (items) but needs 3 return values (count, total, errors) — extraction is awkward; consider restructuring
 help: if intentional, silence with:
   |
-19 + workspace_lint::expect!(duplicate_code);
+19 + // workspace-lint: expect(duplicate-code)
   |
   = note: `#[warn(workspace_lint::duplicate_code)]` on by default
 

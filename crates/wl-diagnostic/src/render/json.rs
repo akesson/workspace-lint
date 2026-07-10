@@ -190,7 +190,8 @@ mod tests {
 
     #[test]
     fn json_silence_suggestion_appears_as_help_child_with_replacement() {
-        let d = at_file("workspace-lint::file-size", "msg", "src/lib.rs").build();
+        let mut d = at_file("workspace-lint::file-size", "msg", "src/lib.rs").build();
+        d.marker_available = true; // macro form; the builder default is the comment form
         let v = render_one(&d);
         let children = v["children"].as_array().unwrap();
         let silence = children

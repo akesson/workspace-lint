@@ -69,7 +69,19 @@ pub fn import_surgery(dangling: Vec<DanglingImport>, root: &Path) -> Vec<Diagnos
         collapse_emptied_groups(&src, &mut merged);
         for r in merged {
             let original = src.get(r.lo as usize..r.hi as usize).map(str::to_string);
-            out.push(deletion_diagnostic(&abs, r.lo, r.hi, r.line, original));
+            // Anchor at the workspace-RELATIVE path (`root` is only for
+            // reading): the item-deletion suggestions anchor relative, and
+            // the fix applier groups edits by path string — a mixed-form
+            // pair for one file split into two groups, and the second
+            // group's offsets no longer matched the rewritten content
+            // (partial fix under macOS's /var → /private/var tempdirs).
+            out.push(deletion_diagnostic(
+                Path::new(&file),
+                r.lo,
+                r.hi,
+                r.line,
+                original,
+            ));
         }
     }
     out
