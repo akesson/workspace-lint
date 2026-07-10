@@ -158,9 +158,15 @@ never deleted; the diagnostic names the uncovered cfg (or the bench file)
 and the `[engine]` entry that would cover it.
 
 A deletion is also vetoed when the fixed tree would newly fail a
-`-D warnings` gate on something that *survives* (e.g. removing the last read
-of a surviving type's field, or an `is_empty` out from under a surviving
-`len`) — the finding stays, downgraded, with a note naming what would fire.
+`-D warnings` gate on something that *survives* — the finding stays,
+downgraded, with a note naming what would fire. The covered classes:
+removing the last **read of a surviving type's field**, the last
+**construction of a surviving enum's variant** (match arms naming it don't
+keep it alive — rustc counts only constructions), or an `is_empty` out from
+under a surviving `len`. Reads and constructions inside derived
+`Clone`/`Debug` impls don't count toward liveness, exactly as rustc's
+`dead_code` discounts them — a field whose only surviving reader is its
+`#[derive(Debug)]` is judged unread.
 
 **Re-run to converge.** Deletions cascade within one run, but a *narrowing*'s
 consequences can't: once `pub fn make(opts: CreateOpts)` becomes

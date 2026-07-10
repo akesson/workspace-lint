@@ -70,6 +70,12 @@ pub struct Assembly {
     /// rustc `dead_code` excludes them) — the dead-field narrow guard's
     /// enumeration ([`Assembly::has_unread_field`]).
     pub(super) fields_of: BTreeMap<String, Vec<String>>,
+    /// Enum key → its variant keys (underscore-prefixed excluded, as rustc
+    /// `dead_code` excludes them) — the unconstructed-variant deletion
+    /// veto's enumeration. Variant keys receive only expression-position
+    /// CONSTRUCTION edges (the extractor projects pattern mentions onto the
+    /// enum), so a variant with zero in-degree really is never constructed.
+    pub(super) variants_of: BTreeMap<String, Vec<String>>,
     /// Keys that are the target of a `pub use` re-export
     /// (`RefEdge::reexport`). Tightening or deleting such a def can break the
     /// re-export (E0364/E0365), so the unused-pub port suppresses these — the
@@ -287,6 +293,7 @@ impl Assembly {
         //    edge-derived maps empty, then fold into them.
         let assoc_members = super::clippy_guard::assoc_members_index(&defs, &trait_parent);
         let fields_of = super::clippy_guard::fields_of_index(&defs, &id_key);
+        let variants_of = super::clippy_guard::variants_of_index(&defs, &id_key);
         let mut asm = Assembly {
             fragments,
             crates,
@@ -296,6 +303,7 @@ impl Assembly {
             import_edges: 0,
             assoc_members,
             fields_of,
+            variants_of,
             trait_parent,
             import_targets: BTreeSet::new(),
             reexporters: BTreeMap::new(),

@@ -2930,6 +2930,92 @@ fn deletion_unmask_flags_last_field_reader() {
     );
 }
 
+/// The variant twin (`Sorter::ByPath`, 2026-07-10 ripgrep validation):
+/// removing the LAST construction site of a surviving enum's variant would
+/// trip `dead_code` ("variant is never constructed") on the fixed tree — the
+/// constructor must be vetoed. Match arms don't keep a variant alive, so the
+/// fixture's variant edge models exactly what the schema-13 extractor emits:
+/// construction sites only. No veto when the enum goes too, when another
+/// construction survives, when the variant was never constructed to begin
+/// with, or when the exported (`pub` enum) exemption applies.
+#[test]
+fn deletion_unmask_flags_last_variant_constructor() {
+    let mk = |public_enum: bool, constructions: &[&str]| {
+        let mk_item = if public_enum {
+            item
+        } else {
+            private_item as fn(&[&str], &str, &str, Option<&str>) -> ItemFact
+        };
+        let items = vec![
+            mk_item(&["alpha", "State"], "K_E", "enum", Some("mod")),
+            mk_item(&["alpha", "State", "Busy"], "K_V", "variant", Some("other")),
+            item(&["alpha", "maker"], "K_M", "fn", Some("mod")),
+            item(&["alpha", "backup"], "K_B", "fn", Some("mod")),
+            item(&["alpha", "keeper"], "K_K", "fn", Some("mod")),
+        ];
+        let mut refs = vec![edge(
+            &["alpha", "keeper"],
+            &["alpha", "State"],
+            "K_E",
+            false,
+        )];
+        for c in constructions {
+            refs.push(edge(
+                &["alpha", c],
+                &["alpha", "State", "Busy"],
+                "K_V",
+                false,
+            ));
+        }
+        frag("alpha", items, refs)
+    };
+    let newly = vec!["alpha::maker".to_string()];
+
+    let m = model(vec![("default", vec![mk(false, &["maker"])])]);
+    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly);
+    assert!(
+        matches!(
+            unmasks.get("alpha::maker"),
+            Some(DeletionUnmask::UnconstructedVariant { owner, variant })
+                if owner == "alpha::State" && variant == "Busy"
+        ),
+        "the last constructor is vetoed, attributed to owner+variant: {unmasks:?}"
+    );
+
+    // Owner deleted in the same trial: nothing survives to fire on.
+    let both = vec!["alpha::maker".to_string(), "alpha::State".to_string()];
+    let m = model(vec![("default", vec![mk(false, &["maker"])])]);
+    assert!(
+        m.deletion_unmasks(&RemovalSet::new(["alpha::maker", "alpha::State"]), &both)
+            .is_empty(),
+        "co-deleting the enum clears the veto"
+    );
+
+    // A surviving second construction site: the variant stays constructed.
+    let m = model(vec![("default", vec![mk(false, &["maker", "backup"])])]);
+    assert!(
+        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+            .is_empty(),
+        "a surviving constructor lifts the veto"
+    );
+
+    // Never constructed at all (pattern-only): not this deletion's doing.
+    let m = model(vec![("default", vec![mk(false, &[])])]);
+    assert!(
+        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+            .is_empty(),
+        "a variant that was never constructed is not this deletion's doing"
+    );
+
+    // Exported exemption: a pub variant of a pub enum is dead_code-exempt.
+    let m = model(vec![("default", vec![mk(true, &["maker"])])]);
+    assert!(
+        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+            .is_empty(),
+        "pub variant of a pub enum is exempt"
+    );
+}
+
 /// The `PasswordData::is_empty` case: deleting a pub `is_empty` out from under
 /// a surviving pub `len(&self)` unmasks clippy `len_without_is_empty` on the
 /// survivor — vetoed. Deleting the pair together is fine.

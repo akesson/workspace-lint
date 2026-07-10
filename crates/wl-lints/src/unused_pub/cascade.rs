@@ -582,6 +582,11 @@ fn unmask_note(unmask: &DeletionUnmask) -> String {
             "deleting `is_empty` would trip clippy `len_without_is_empty` on `{owner}`'s \
              surviving `len` — remove or keep the pair together"
         ),
+        DeletionUnmask::UnconstructedVariant { owner, variant } => format!(
+            "deleting this would leave variant `{variant}` of surviving `{owner}` never \
+             constructed, tripping `dead_code` on the fixed tree — remove the variant first \
+             or delete by hand"
+        ),
     }
 }
 

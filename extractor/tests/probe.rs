@@ -150,12 +150,14 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
                 "derive span must be from expansion",
             );
             // The invocation-site policy: the span lands in whichever probe
-            // file WROTE the `#[derive(…)]` (lib.rs, inherent.rs), never a
-            // macro-definition file.
+            // file WROTE the `#[derive(…)]` (lib.rs, inherent.rs,
+            // dead_veto.rs), never a macro-definition file.
             ck.expect(
-                it.span
-                    .as_ref()
-                    .is_some_and(|s| s.file.ends_with("lib.rs") || s.file.ends_with("inherent.rs")),
+                it.span.as_ref().is_some_and(|s| {
+                    s.file.ends_with("lib.rs")
+                        || s.file.ends_with("inherent.rs")
+                        || s.file.ends_with("dead_veto.rs")
+                }),
                 it,
                 "derive span must map to the deriving probe file",
             );
@@ -1113,6 +1115,104 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             "shim",
             "is in used_crates (ordinary path usage also lands)",
         );
+    }
+
+    // 25. (schema 13) dead_code deletion-veto substrate (`src/dead_veto.rs`):
+    //     variant facts + construction-only variant edges, and the derived
+    //     `Clone`/`Debug` liveness discount — the facts must mirror what
+    //     rustc's `dead_code` counts, or the `--fix-auto-delete` veto is
+    //     blind (the five ripgrep classes, 2026-07-10 validation).
+    {
+        let variant_key = |enm: &str, name: &str| {
+            frag.items
+                .iter()
+                .find(|it| it.kind == "variant" && it.path.ends_with(&[enm.into(), name.into()]))
+                .map(|it| it.key.clone())
+        };
+        let construction_of = |key: &str| {
+            frag.references
+                .iter()
+                .any(|e| e.to_key == key && !e.import && e.receiver_resolved)
+        };
+        // Tuple-ctor and struct-expr constructions land on the variant.
+        for (name, via) in [("Built", "tuple ctor"), ("Braced", "struct expr")] {
+            match variant_key("Signal", name) {
+                None => ck
+                    .failures
+                    .push(format!("[Signal::{name}] variant fact not emitted")),
+                Some(key) if construction_of(&key) => {
+                    ck.passes += 1;
+                    println!("PASS  Signal::{name}: variant fact + construction edge ({via})");
+                }
+                Some(_) => ck
+                    .failures
+                    .push(format!("[Signal::{name}] no construction edge ({via})")),
+            }
+        }
+        // A pattern-only variant gets a fact but NO landing edge: `match`
+        // arms don't construct (rustc would still warn on it).
+        match variant_key("Signal", "MatchedOnly") {
+            None => ck
+                .failures
+                .push("[Signal::MatchedOnly] variant fact not emitted".into()),
+            Some(key) if !frag.references.iter().any(|e| e.to_key == key) => {
+                ck.passes += 1;
+                println!("PASS  Signal::MatchedOnly: pattern mention lands no variant edge");
+            }
+            Some(_) => ck
+                .failures
+                .push("[Signal::MatchedOnly] pattern mention must not land an edge".into()),
+        }
+        // Derived Clone constructs every variant — discounted, as rustc
+        // discounts it; the real construction site still records.
+        match (
+            variant_key("Sorted", "CloneOnly"),
+            variant_key("Sorted", "Used"),
+        ) {
+            (Some(clone_only), Some(used)) => {
+                ck.expect_named(
+                    !construction_of(&clone_only),
+                    "Sorted::CloneOnly",
+                    "derived Clone's construction is discounted",
+                );
+                ck.expect_named(
+                    construction_of(&used),
+                    "Sorted::Used",
+                    "the real construction site records",
+                );
+            }
+            _ => ck
+                .failures
+                .push("[Sorted] variant facts not emitted".into()),
+        }
+        // Field reads: `Meter.shadow` is read only by the derives → NO read
+        // edge; `Meter.lit` is read by its same-named getter → the edge must
+        // survive the path-level self-edge dedup (`Glob::from`, ripgrep).
+        let field_key = |name: &str| {
+            frag.items
+                .iter()
+                .find(|it| it.kind == "field" && it.path.ends_with(&["Meter".into(), name.into()]))
+                .map(|it| it.key.clone())
+        };
+        match (field_key("shadow"), field_key("lit")) {
+            (Some(shadow), Some(lit)) => {
+                ck.expect_named(
+                    !frag.references.iter().any(|e| e.to_key == shadow),
+                    "Meter::shadow",
+                    "derive-only reads are discounted (no read edge)",
+                );
+                ck.expect_named(
+                    frag.references.iter().any(|e| {
+                        e.to_key == lit
+                            && e.receiver_resolved
+                            && e.from.ends_with(&["Meter".into(), "lit".into()])
+                    }),
+                    "Meter::lit",
+                    "same-named getter's read survives the self-edge dedup",
+                );
+            }
+            _ => ck.failures.push("[Meter] field facts not emitted".into()),
+        }
     }
 
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());
