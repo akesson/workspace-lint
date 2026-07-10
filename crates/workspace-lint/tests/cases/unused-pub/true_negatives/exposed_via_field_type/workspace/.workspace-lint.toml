@@ -1,0 +1,17 @@
+# Signature-exposure guard, field-type form. `Meta` is named only inside the
+# crate (IntraCrate), but it is the type of the public `meta` field of the
+# public `Wrapper` struct — a public-signature position (E0446 /
+# `private_interfaces` if tightened). Fields are not in `definitions()`, so
+# until schema 11 they had NO signature walk at all; the sweep emits the edge
+# from the FIELD def, gating exposure on the field's own visibility → all
+# passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# Pinned single-config matrix: this case is not about the engine matrix —
+# keep the fixture single-pass (the absent-table default is build+test).
+[engine]
+configs = ["cargo build"]

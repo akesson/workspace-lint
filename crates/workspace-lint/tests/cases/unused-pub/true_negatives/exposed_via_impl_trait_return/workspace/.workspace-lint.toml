@@ -1,0 +1,16 @@
+# Signature-exposure guard, return-position `impl Trait` form. `Producer` is
+# named only inside the crate (IntraCrate), but it is the opaque return bound
+# of the public `produce` fn — a public-signature position reachable only
+# through the opaque's item bounds, which `fn_sig` alone never carries. The
+# predicate sweep (schema 11) drains opaques, so the guard suppresses the
+# tighten → all passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# Pinned single-config matrix: this case is not about the engine matrix —
+# keep the fixture single-pass (the absent-table default is build+test).
+[engine]
+configs = ["cargo build"]

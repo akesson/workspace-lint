@@ -655,6 +655,57 @@ fn signature_exposure_requires_pub_from() {
     assert!(!asm.exposed_in_public_signature("K_HIDDEN"));
 }
 
+/// (schema 11) The predicate-surface exposure classes: a TRAIT named by a pub
+/// fn's generic bound (`pub fn api<R: Bound>`) flags exactly like a parameter
+/// type — the derivation is kind-agnostic — and a field-type edge carries the
+/// FIELD as `from`, so a *private* field's type stays unexposed (tightenable)
+/// while the extractor emits the edge unconditionally.
+#[test]
+fn signature_exposure_covers_bounds_and_field_visibility() {
+    let bound = item(&["alpha", "Bound"], "K_BOUND", "trait", Some("mod"));
+    let api = item(&["alpha", "api"], "K_API", "fn", Some("mod"));
+    let inner = item(&["alpha", "Inner"], "K_INNER", "struct", Some("mod"));
+    let holder = item(&["alpha", "Holder"], "K_HOLDER", "struct", Some("mod"));
+    let mut priv_field = item(
+        &["alpha", "Holder", "hidden"],
+        "K_FIELD",
+        "field",
+        Some("other"),
+    );
+    priv_field.visibility = Visibility::Restricted("crate".into());
+
+    let mut bound_edge = edge(&["alpha", "api"], &["alpha", "Bound"], "K_BOUND", false);
+    bound_edge.from_key = "K_API".into();
+    bound_edge.to_kind = "trait".into();
+    bound_edge.in_signature = true;
+    let mut field_edge = edge(
+        &["alpha", "Holder", "hidden"],
+        &["alpha", "Inner"],
+        "K_INNER",
+        false,
+    );
+    field_edge.from_key = "K_FIELD".into();
+    field_edge.in_signature = true;
+
+    let m = model(vec![(
+        "default",
+        vec![frag(
+            "alpha",
+            vec![bound, api, inner, holder, priv_field],
+            vec![bound_edge, field_edge],
+        )],
+    )]);
+    let asm = m.primary();
+    assert!(
+        asm.exposed_in_public_signature("K_BOUND"),
+        "a pub fn's bound trait is signature exposure"
+    );
+    assert!(
+        !asm.exposed_in_public_signature("K_INNER"),
+        "a private field's type is not exposed (field-level from gates it)"
+    );
+}
+
 /// (PR 9) Pub-module-hop reachability: pub def under pub modules is
 /// externally reachable; the same def under a private module is not; a
 /// non-module path segment (impl rendering) is transparent.
