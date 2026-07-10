@@ -18,6 +18,7 @@ use fs_err as fs;
 
 use super::{DirectiveOrigin, directive_regex, parse_workspace_lint_directive};
 use wl_diagnostic::{Applicability, Span, Suggestion};
+use wl_lint_api::surgery::lines::line_span;
 
 /// Build the whole-line deletion suggestion for the stale `expect` directive at
 /// `origin`, or `None` (leaving the diagnostic help-only) when the file can't
@@ -51,37 +52,6 @@ pub(crate) fn deletion_suggestion(root: &Path, origin: &DirectiveOrigin) -> Opti
         applicability: Applicability::MachineApplicable,
         original: Some(snippet.to_string()),
     })
-}
-
-/// Byte range `[start, end)` covering source lines `start_line..=end_line`
-/// (1-based) *including* the trailing line terminator (`\n` or `\r\n`), or
-/// through EOF for an unterminated final line. `None` if the range is degenerate
-/// or runs past the end of the file. CRLF is handled for free: the `\r` lives
-/// inside the line, so the range swallows the whole `\r\n`.
-fn line_span(content: &str, start_line: u32, end_line: u32) -> Option<(usize, usize)> {
-    if start_line == 0 || end_line < start_line {
-        return None;
-    }
-    let bytes = content.as_bytes();
-    // Byte offset where each line begins; `line_starts[n]` starts line `n + 1`.
-    let mut line_starts = vec![0usize];
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\n' {
-            line_starts.push(i + 1);
-        }
-    }
-    let s = start_line as usize - 1;
-    let e = end_line as usize - 1;
-    if s >= line_starts.len() || e >= line_starts.len() {
-        return None;
-    }
-    let byte_start = line_starts[s];
-    // End of `end_line` = start of the next line, or EOF for the last line.
-    let byte_end = line_starts.get(e + 1).copied().unwrap_or(bytes.len());
-    if byte_end <= byte_start {
-        return None;
-    }
-    Some((byte_start, byte_end))
 }
 
 /// Guard: `snippet` (the bytes about to be deleted, trailing EOL already
@@ -153,44 +123,8 @@ mod tests {
         std::fs::write(path, content).unwrap();
     }
 
-    // --- line_span ---
-
-    #[test]
-    fn line_span_single_line_lf() {
-        // Line 2 of three, LF-terminated.
-        let (s, e) = line_span("aaa\nbbb\nccc\n", 2, 2).unwrap();
-        assert_eq!(&"aaa\nbbb\nccc\n"[s..e], "bbb\n");
-    }
-
-    #[test]
-    fn line_span_swallows_crlf() {
-        let content = "aaa\r\nbbb\r\nccc\r\n";
-        let (s, e) = line_span(content, 1, 1).unwrap();
-        assert_eq!(&content[s..e], "aaa\r\n");
-    }
-
-    #[test]
-    fn line_span_last_line_without_trailing_newline() {
-        let content = "aaa\nbbb";
-        let (s, e) = line_span(content, 2, 2).unwrap();
-        assert_eq!(&content[s..e], "bbb");
-    }
-
-    #[test]
-    fn line_span_multi_line() {
-        let content = "aaa\nbbb\nccc\nddd\n";
-        let (s, e) = line_span(content, 2, 3).unwrap();
-        assert_eq!(&content[s..e], "bbb\nccc\n");
-    }
-
-    #[test]
-    fn line_span_out_of_range_is_none() {
-        assert_eq!(line_span("aaa\n", 5, 5), None);
-        assert_eq!(line_span("aaa\n", 0, 0), None);
-        assert_eq!(line_span("aaa\n", 3, 2), None);
-    }
-
     // --- deletion_suggestion: happy paths ---
+    // (`line_span` itself is tested where it lives: `wl_lint_api::surgery::lines`.)
 
     #[test]
     fn deletes_toml_comment_line_including_indent_and_eol() {

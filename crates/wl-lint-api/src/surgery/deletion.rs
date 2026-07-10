@@ -14,6 +14,7 @@ use std::path::Path;
 
 use wl_engine::wl_ir;
 
+use super::lines;
 use wl_diagnostic::{Applicability, PubVerdict};
 
 /// Pick a deletion suggestion when the run asked for one (`auto_delete`, i.e.
@@ -70,26 +71,21 @@ pub fn delete_suggestion(file: &Path, span: &wl_ir::Span) -> DeleteOutcome {
     // attributes bind to the item below them, so extending the deletion
     // backward over contiguous `#[…]` blocks (and doc lines) is always sound.
     start = extend_over_preceding_attrs(&source, start);
-    // Eat the item's leading indentation (horizontal whitespace back to the
-    // line start) so a deleted nested item leaves no orphaned indent. Safe: it
-    // only crosses spaces/tabs, never a newline or another item's text.
+    // Eat the item's leading indentation so a deleted nested item leaves no
+    // orphaned indent.
     let bytes = source.as_bytes();
-    while start > 0 && matches!(bytes[start - 1], b' ' | b'\t') {
-        start -= 1;
-    }
+    start = lines::eat_leading_indent(bytes, start);
     // The item text itself (sans the trailing newline the deletion also
     // eats), for the rendered `-` diff line.
     let original = source[start..end].to_string();
-    if end < source.len() && source.as_bytes()[end] == b'\n' {
-        end += 1;
-    }
+    end = lines::eat_trailing_newline(bytes, end);
     // Also consume whole blank lines below the item: the item's surrounding
     // blank separators would otherwise stack into fmt-dirty residue
     // (`cargo fmt --check` fails on the fixed tree). The blank ABOVE survives
     // as the neighbors' separator; when a deletion run reaches EOF, the
     // applier trims the then-trailing blank lines (only it can see the merged
     // picture across adjacent deletions).
-    end = eat_blank_lines(&source, end);
+    end = lines::eat_blank_lines(bytes, end);
     let applicability = if is_file_clean_in_git(file) {
         Applicability::MachineApplicable
     } else {
@@ -209,26 +205,6 @@ fn match_attr_backward(source: &str, end: usize) -> Option<usize> {
         }
     }
     None
-}
-
-/// Consume whole whitespace-only lines starting at `end` (which sits at a
-/// line start after the deletion ate its trailing newline).
-pub(super) fn eat_blank_lines(source: &str, end: usize) -> usize {
-    eat_blank_lines_bytes(source.as_bytes(), end)
-}
-
-pub(super) fn eat_blank_lines_bytes(bytes: &[u8], mut end: usize) -> usize {
-    loop {
-        let mut i = end;
-        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r') {
-            i += 1;
-        }
-        if i < bytes.len() && bytes[i] == b'\n' {
-            end = i + 1;
-        } else {
-            return end;
-        }
-    }
 }
 
 /// `true` iff `path` is tracked by git AND has no uncommitted changes.

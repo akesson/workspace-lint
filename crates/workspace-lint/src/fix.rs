@@ -209,17 +209,7 @@ fn apply_to_file(
             rewrites.push(s);
         }
     }
-    deletions.sort_unstable();
-    let deletions =
-        deletions
-            .into_iter()
-            .fold(Vec::<(usize, usize)>::new(), |mut merged, (lo, hi)| {
-                match merged.last_mut() {
-                    Some((_, mhi)) if lo <= *mhi => *mhi = (*mhi).max(hi),
-                    _ => merged.push((lo, hi)),
-                }
-                merged
-            });
+    let deletions = wl_lint_api::surgery::lines::coalesce(&mut deletions);
 
     let mut ranges: Vec<(usize, usize)> = rewrites
         .iter()
@@ -264,11 +254,7 @@ fn apply_to_file(
     // trailing blank lines — fmt-dirty residue only visible here, after
     // adjacent deletions merged. Trim to exactly one final newline.
     if !deletions.is_empty() && !fixed.is_empty() {
-        let body = fixed.trim_end_matches(['\n', '\r', ' ', '\t']);
-        if !body.is_empty() && body.len() + eol.len() < fixed.len() {
-            fixed.truncate(body.len());
-            fixed.push_str(eol);
-        }
+        wl_lint_api::surgery::lines::trim_trailing_blank_lines(&mut fixed, eol);
     }
 
     if fixed != source {

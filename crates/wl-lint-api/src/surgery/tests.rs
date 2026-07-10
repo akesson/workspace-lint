@@ -350,11 +350,11 @@ fn attr_extension_bails_on_raw_string_fence() {
 
 #[test]
 fn blank_line_eating_below_item() {
-    let src = "fn a() {}\n\n\nfn b() {}\n";
+    let src = b"fn a() {}\n\n\nfn b() {}\n";
     // `end` sits after "fn a() {}\n" — the two blank lines are consumed.
-    assert_eq!(deletion::eat_blank_lines(src, 10), 12);
+    assert_eq!(lines::eat_blank_lines(src, 10), 12);
     // No blanks → unchanged.
-    assert_eq!(deletion::eat_blank_lines("fn a() {}\nfn b() {}\n", 10), 10);
+    assert_eq!(lines::eat_blank_lines(b"fn a() {}\nfn b() {}\n", 10), 10);
 }
 
 #[test]

@@ -227,14 +227,10 @@ pub(super) fn build_delete_suggestion(
     let location = manifest
         .locate_dep(entry.section, &entry.original_name)
         .or_else(|| manifest.locate_dep_entry(entry.section, &entry.original_name))?;
-    let mut end = location.byte_end as usize;
-    let bytes = manifest.raw().as_bytes();
-    if end < bytes.len() && bytes[end] == b'\r' {
-        end += 1;
-    }
-    if end < bytes.len() && bytes[end] == b'\n' {
-        end += 1;
-    }
+    let end = wl_lint_api::surgery::lines::eat_trailing_newline(
+        manifest.raw().as_bytes(),
+        location.byte_end as usize,
+    );
     let deleted = &manifest.raw()[location.byte_start as usize..location.byte_end as usize];
     let line_end = location.line + deleted.bytes().filter(|&b| b == b'\n').count() as u32;
     Some(Suggestion {

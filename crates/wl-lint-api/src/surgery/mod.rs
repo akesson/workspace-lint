@@ -27,9 +27,12 @@
 //! a wrong deletion.
 
 pub mod deletion;
+pub mod lines;
 
 use std::collections::BTreeMap;
 use std::path::Path;
+
+use lines::{ByteRange, coalesce, eat_blank_lines, eat_leading_indent, eat_trailing_newline};
 
 use wl_engine::semantic::DanglingImport;
 
@@ -83,6 +86,22 @@ struct Range {
     braced: bool,
 }
 
+impl ByteRange for Range {
+    fn lo(&self) -> usize {
+        self.lo as usize
+    }
+    fn hi(&self) -> usize {
+        self.hi as usize
+    }
+    /// Adjacency only ever occurs between two dead leaves in one brace (whose
+    /// separator ranges touch); merging them deletes `b, c` as one span.
+    /// Statements are never adjacent.
+    fn merge(&mut self, other: &Self) {
+        self.hi = self.hi.max(other.hi);
+        self.braced |= other.braced;
+    }
+}
+
 /// The raw deletion range for one dangling leaf, before coalescing. `None` on a
 /// degenerate span (unreadable / out of bounds).
 fn deletion_range(source: &str, d: &DanglingImport) -> Option<Range> {
@@ -107,7 +126,7 @@ fn deletion_range(source: &str, d: &DanglingImport) -> Option<Range> {
         let hi = eat_trailing_newline(src, dhi);
         return Some(Range {
             lo: lo as u32,
-            hi: deletion::eat_blank_lines_bytes(src, hi) as u32,
+            hi: eat_blank_lines(src, hi) as u32,
             line: d.decl.line,
             braced: false,
         });
@@ -126,7 +145,7 @@ fn deletion_range(source: &str, d: &DanglingImport) -> Option<Range> {
         // line behind).
         let lo = deletion::extend_over_preceding_attrs(source, dlo);
         let hi = eat_trailing_newline(src, dhi);
-        (lo, deletion::eat_blank_lines_bytes(src, hi))
+        (lo, eat_blank_lines(src, hi))
     };
     Some(Range {
         lo: lo as u32,
@@ -167,36 +186,6 @@ fn leaf_range(src: &[u8], elo: usize, ehi: usize) -> (usize, usize) {
         return (l, ehi);
     }
     (elo, ehi) // sole leaf
-}
-
-/// Extend a whole-statement deletion over its line-terminating newline
-/// (CRLF-safe) so no blank line is left — mirroring the item-deletion policy.
-fn eat_trailing_newline(src: &[u8], hi: usize) -> usize {
-    if hi < src.len() && src[hi] == b'\n' {
-        hi + 1
-    } else if hi + 1 < src.len() && src[hi] == b'\r' && src[hi + 1] == b'\n' {
-        hi + 2
-    } else {
-        hi
-    }
-}
-
-/// Merge overlapping or byte-adjacent ranges. Adjacency only ever occurs
-/// between two dead leaves in one brace (whose separator ranges touch);
-/// merging them deletes `b, c` as one span. Statements are never adjacent.
-fn coalesce(ranges: &mut [Range]) -> Vec<Range> {
-    ranges.sort_by_key(|r| r.lo);
-    let mut out: Vec<Range> = Vec::new();
-    for &r in ranges.iter() {
-        match out.last_mut() {
-            Some(last) if r.lo <= last.hi => {
-                last.hi = last.hi.max(r.hi);
-                last.braced |= r.braced;
-            }
-            _ => out.push(r),
-        }
-    }
-    out
 }
 
 /// Widen brace-leaf ranges whose deletion empties their group, re-coalescing
@@ -283,11 +272,8 @@ fn widen_emptied_group(source: &str, all: &[Range], r: Range) -> Option<Range> {
         return None;
     }
     end = eat_trailing_newline(src, end + 1);
-    end = deletion::eat_blank_lines_bytes(src, end);
-    let mut start = deletion::extend_over_preceding_attrs(source, stmt);
-    while start > 0 && matches!(src[start - 1], b' ' | b'\t') {
-        start -= 1;
-    }
+    end = eat_blank_lines(src, end);
+    let start = eat_leading_indent(src, deletion::extend_over_preceding_attrs(source, stmt));
     Some(Range {
         lo: start as u32,
         hi: end as u32,
