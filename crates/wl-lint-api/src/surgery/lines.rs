@@ -89,11 +89,6 @@ pub fn trim_trailing_blank_lines(text: &mut String, eol: &str) {
 
 /// A byte range that [`coalesce`] can sort and merge. Implementors carry
 /// their own metadata and decide how it merges (see [`ByteRange::merge`]).
-// Named only as `coalesce`'s generic bound by the out-of-crate consumers
-// (the binary's fix applier), which the engine's signature-exposure guard
-// doesn't yet model — tightening would be E0445. `stale-expect` retires this
-// the day generic-bound exposure is tracked.
-// workspace-lint: expect(unused-pub)
 pub trait ByteRange {
     fn lo(&self) -> usize;
     fn hi(&self) -> usize;

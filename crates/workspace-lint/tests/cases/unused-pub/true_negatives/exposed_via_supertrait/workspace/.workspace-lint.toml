@@ -1,0 +1,15 @@
+# Signature-exposure guard, supertrait form. `Base` is named only inside the
+# crate (IntraCrate), but it is the supertrait of the public `Extended` trait
+# — a public-signature position (`pub trait Extended: Base`; tightening `Base`
+# is E0445). The predicate sweep (schema 11) records supertraits, so the guard
+# suppresses the tighten → all passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# Pinned single-config matrix: this case is not about the engine matrix —
+# keep the fixture single-pass (the absent-table default is build+test).
+[engine]
+configs = ["cargo build"]

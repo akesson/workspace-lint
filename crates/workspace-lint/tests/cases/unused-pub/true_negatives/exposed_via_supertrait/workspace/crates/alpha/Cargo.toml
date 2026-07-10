@@ -1,0 +1,7 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+# Published → the public carrier item is exempt as external API surface; only
+# the private-`mod` def goes through the cross-crate-usage check.
+publish = true

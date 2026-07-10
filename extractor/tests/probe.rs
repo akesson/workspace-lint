@@ -667,8 +667,7 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
                 .push(format!("[build fragment] missing {build_path:?}: {e}")),
             Ok(bytes) => {
                 wl_ir::validate_header(&bytes).map_err(anyhow::Error::msg)?;
-                let bfrag: IrFragment =
-                    wl_ir::from_archive_bytes(&bytes[wl_ir::HEADER_LEN..])?;
+                let bfrag: IrFragment = wl_ir::from_archive_bytes(&bytes[wl_ir::HEADER_LEN..])?;
                 if bfrag.target_kind == "build"
                     && bfrag.crate_name == "build_script_build"
                     && bfrag.items.is_empty()
@@ -906,11 +905,7 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
     //     this instead of guessing. A pin bump that changes any of these
     //     semantics must fail HERE, not as a confusing case-fixture diff.
     {
-        let opened: Vec<&str> = frag
-            .loaded_files
-            .iter()
-            .map(|f| file_name(f))
-            .collect();
+        let opened: Vec<&str> = frag.loaded_files.iter().map(|f| file_name(f)).collect();
         let mut want_present = vec![
             "lib.rs",       // the crate root
             "gen.rs",       // a plain `mod`
@@ -994,6 +989,67 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
                 "[+test fragment] want is_test_cfg=true target_kind=\"lib\", got {} / {:?}",
                 tfrag.is_test_cfg, tfrag.target_kind
             ));
+        }
+    }
+
+    // 23. Signature exposure, predicate/bounds family (`src/sig_exposure.rs`):
+    //     defs named ONLY in bounds, where-clauses, supertraits, assoc-type
+    //     item bounds, `dyn` types, or field types. None of these appear in
+    //     `fn_sig`/`type_of` trees, so each edge exists only if the predicate
+    //     sweep emits it. The `expect(unused-pub)` on `ByteRange`
+    //     (wl-lint-api surgery/lines.rs) documented exactly the first class.
+    {
+        let last = |v: &[String]| v.last().cloned().unwrap_or_default();
+        let sig_edge = |from: &str, to: &str| {
+            frag.references
+                .iter()
+                .any(|e| e.in_signature && last(&e.from) == from && last(&e.to) == to)
+        };
+        let cases = [
+            ("takes_inline_bound", "BoundInline", "inline generic bound"),
+            ("takes_where_bound", "BoundWhere", "where-clause bound"),
+            ("takes_apit", "BoundApit", "argument-position impl Trait"),
+            ("returns_rpit", "BoundRpit", "return-position impl Trait"),
+            (
+                "returns_nested_rpit",
+                "BoundRpitNested",
+                "nested impl Trait (opaque item bounds recurse)",
+            ),
+            ("HasSuper", "BoundSuper", "supertrait"),
+            ("Item", "BoundAssoc", "trait-decl assoc-type bound"),
+            ("takes_dyn", "BoundDyn", "dyn-Trait parameter"),
+            // Field types: `from` must be the FIELD def, so the assembler can
+            // gate exposure on the field's own visibility.
+            ("named", "OnlyFieldType", "pub field type, from = field def"),
+            (
+                "hidden",
+                "PrivInner",
+                "private field type, from = field def (visibility gate stays stable-side)",
+            ),
+        ];
+        for (from, to, what) in cases {
+            if sig_edge(from, to) {
+                ck.passes += 1;
+                println!("PASS  {from}: in_signature edge to {to} ({what})");
+            } else {
+                ck.failures.push(format!(
+                    "[{from}] missing in_signature edge to {to} ({what})"
+                ));
+            }
+        }
+        // Enum variant fields reach the sweep via `all_fields()`; the tuple
+        // field's `from` renders as `…::Carry::0`.
+        let variant_field = frag.references.iter().any(|e| {
+            e.in_signature
+                && last(&e.to) == "OnlyEnumFieldType"
+                && e.from.iter().any(|s| s == "Carry")
+        });
+        if variant_field {
+            ck.passes += 1;
+            println!("PASS  HasVariants::Carry: variant-field in_signature edge");
+        } else {
+            ck.failures
+                .push("[HasVariants::Carry] missing variant-field in_signature edge".into());
         }
     }
 

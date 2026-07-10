@@ -1,0 +1,17 @@
+# Signature-exposure guard, generic-bound form (the `pub fn coalesce<R:
+# ByteRange>` shape that shipped behind an expect! directive). `Bound` is
+# named only inside the crate, so the resolver classes it IntraCrate and would
+# tighten it to `pub(crate)` — but it is the generic bound of the public
+# `apply` fn, a public-signature position (E0445 / `private_bounds` if
+# tightened). The predicate sweep (schema 11) records bounds, so the guard
+# suppresses it → all passed.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# Pinned single-config matrix: this case is not about the engine matrix —
+# keep the fixture single-pass (the absent-table default is build+test).
+[engine]
+configs = ["cargo build"]

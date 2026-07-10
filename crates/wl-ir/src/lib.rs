@@ -102,7 +102,15 @@ use serde::{Deserialize, Serialize};
 /// to `false`, so a `+test` unit's edges would read as production reach and a
 /// test-embalmed `pub` item would silently escape the `TestOnly` verdict — the
 /// misleading-absence bump trigger.
-pub const SCHEMA_VERSION: u32 = 10;
+/// 11 — no field change; the extractor's signature pass widened to the whole
+/// privacy-checked surface: generic bounds and `where`-clauses
+/// (`explicit_predicates_of`), supertraits, trait-decl assoc-type and
+/// `impl Trait` item bounds, `dyn` principals, and field types now emit
+/// [`RefEdge::in_signature`] edges. A pre-11 fragment *under-reports*
+/// signature exposure, so unused-pub would keep proposing tightens that are
+/// E0445/E0446 on the fixed tree (`pub fn coalesce<R: ByteRange>` was the
+/// live instance) — the misleading-absence bump trigger, layout unchanged.
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
@@ -246,11 +254,16 @@ pub struct RefEdge {
     /// does this module re-export" — legitimately want import edges.
     #[serde(default)]
     pub import: bool,
-    /// `true` iff this edge came from the *signature-position* walk
-    /// (`fn_sig`/`type_of` type projections) rather than a body/path use-site.
-    /// Backs `exposed_in_public_signature`: tightening an item that appears in
-    /// a pub item's signature would break compilation (E0446 /
+    /// `true` iff this edge came from the *signature-position* walk rather
+    /// than a body/path use-site: the lowered types (`fn_sig`/`type_of`,
+    /// incl. field types and generic-parameter defaults) plus the written
+    /// predicate surface (bounds/`where`-clauses, supertraits, assoc-type and
+    /// `impl Trait` item bounds, `dyn` principals). Backs
+    /// `exposed_in_public_signature`: tightening a def that appears in a pub
+    /// item's signature would break compilation (E0445/E0446 /
     /// `private_interfaces`), so the unused-pub `--fix` must not propose it.
+    /// Field-type edges carry the FIELD as `from`, so exposure gates on the
+    /// field's own visibility.
     #[serde(default)]
     pub in_signature: bool,
     /// For an `import` edge: `true` iff the `use` declaration is itself `pub`

@@ -63,6 +63,10 @@ pub fn exposes_probed() -> Probed {
     Probed { field: 6 }
 }
 
+// Signature exposure, predicate/bounds family (check 23): defs named only in
+// bounds / where-clauses / supertraits / item bounds / field types.
+pub mod sig_exposure;
+
 // CRLF-pinned file (see its `//!` doc and the sibling `.gitattributes`):
 // on-disk byte-offset fidelity for spans in `\r\n` sources. Declared last so
 // the line-number assertions above stay put.
