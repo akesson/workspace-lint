@@ -1,0 +1,13 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2024"
+
+# Harness-less integration test: cargo compiles tests/custom.rs under
+# `--tests` as an ordinary executable (no `--test` flag, no libtest harness,
+# no cfg(test)). Very common in the wild (criterion, datatest, custom
+# integration mains) — and the shape that bricked the semantic tier on
+# cargo-nextest in the 2026-07-10 validation.
+[[test]]
+name = "custom"
+harness = false

@@ -165,7 +165,20 @@ impl<'tcx> LateLintPass<'tcx> for WlIrExtract {
         } else {
             ""
         };
-        let suffix = if tcx.sess.opts.test { "+test" } else { "" };
+        // `+test` marks every test-config unit, not just `--test` harnesses: a
+        // `[[test]] harness = false` target compiles WITHOUT `--test` (cargo
+        // passes the flag only for libtest harnesses), but it is still a test
+        // unit the completeness guard expects under `--tests` as
+        // `<name>+test.wlir` — keying on `opts.test` alone made such workspaces
+        // fail the guard forever. `target_kind == "test"` (CARGO_TARGET_TMPDIR)
+        // covers the harness-less shape; there is no filename collision to
+        // disambiguate for them (an integration test compiles exactly once),
+        // the suffix is purely the guard's naming contract.
+        let suffix = if tcx.sess.opts.test || fragment.target_kind == "test" {
+            "+test"
+        } else {
+            ""
+        };
         let stem = format!("{}{kind_infix}{suffix}", fragment.crate_name);
         write_fragment(&fragment, &stem);
     }
@@ -221,9 +234,13 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         schema_version: wl_ir::SCHEMA_VERSION,
         crate_name: crate_code,
         target_kind: target_kind(tcx).to_string(),
-        // The same signal that keys the `+test` filename suffix, carried
+        // Whether this unit compiled with `cfg(test)` (`--test`). Carried
         // in-archive so the assembler can classify the unit's edges as test
-        // reach (`IrFragment::is_test_cfg` docs the split).
+        // reach (`IrFragment::is_test_cfg` docs the split). NOT identical to
+        // the `+test` filename suffix: a `harness = false` integration test
+        // gets the suffix (it's a test unit) but compiles without `--test`,
+        // so `is_test_cfg` is false — classification must also honor
+        // `target_kind == "test"`.
         is_test_cfg: tcx.sess.opts.test,
         items,
         references,

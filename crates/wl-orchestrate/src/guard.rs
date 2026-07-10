@@ -141,8 +141,11 @@ impl TargetSet {
     /// extractor's `write_fragment` keys them: `<crate>[@bin].wlir` for a
     /// default `cargo check`; `<crate>[@bin]+test.wlir` for everything
     /// compiled under `--tests` (unit-test harnesses of lib/bin/proc-macro AND
-    /// integration tests, all with `sess.opts.test` — a bin's harness keeps
-    /// the `@bin` infix, since the sibling lib harness shares its crate name).
+    /// integration tests — a bin's harness keeps the `@bin` infix, since the
+    /// sibling lib harness shares its crate name). The extractor keys the
+    /// suffix on `sess.opts.test` OR test target kind: a `[[test]]
+    /// harness = false` target compiles without `--test` but is still a test
+    /// unit, and both sides of this contract name it `<name>+test.wlir`.
     /// Only `harnessed` targets flip to `+test`: `--tests` selects by the
     /// manifest `test` flag, so a `test = false` target never compiles in
     /// test mode (its cross-crate uses are still credited — the assembler's
@@ -358,6 +361,32 @@ mod tests {
             tests.iter().map(String::as_str).collect::<Vec<_>>(),
             ["beta+test.wlir"],
             "only the harnessed unit flips to +test"
+        );
+    }
+
+    /// A `[[test]] harness = false` target is still a test unit: cargo builds
+    /// it under `--tests` (just without passing `--test` to rustc), so the
+    /// guard expects `<name>+test.wlir` — and the extractor now keys the
+    /// suffix on the target KIND too, so emission agrees. Keying emission on
+    /// `sess.opts.test` alone made every harness-less workspace fail the
+    /// guard forever (the 2026-07-10 validation blocker).
+    #[test]
+    fn harness_false_test_targets_expected_as_plus_test() {
+        let set = TargetSet {
+            compile_units: ["alpha".to_string()].into(),
+            harnessed: ["alpha".to_string()].into(),
+            // [[test]] name = "custom" harness = false — cargo_metadata carries
+            // no harness field; kind "test" + `test = true` is all we see.
+            test_targets: ["custom".to_string()].into(),
+            build_units: BTreeSet::new(),
+        };
+        let tests = set.expected_fragments(Kinds::Tests);
+        assert!(tests.contains("custom+test.wlir"), "{tests:?}");
+        // And never under the default config (cargo check builds no tests).
+        assert!(
+            !set.expected_fragments(Kinds::Default)
+                .iter()
+                .any(|f| f.starts_with("custom"))
         );
     }
 

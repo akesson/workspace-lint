@@ -19,4 +19,14 @@ shim = { package = "probe-shim", path = "../shim" }
 # Build-script-extraction stub (§17) — see ../buildstub/Cargo.toml.
 buildstub = { package = "probe-buildstub", path = "../buildstub" }
 
+# Harness-less integration test (the criterion/datatest shape): cargo builds
+# it under `--tests` but does NOT pass `--test` to rustc, so `sess.opts.test`
+# is false — the fragment must still be keyed `custom_harness+test.wlir` (the
+# completeness guard expects every test-kind target as `+test`; keying the
+# suffix on `opts.test` alone bricked such workspaces). Asserted in probe.rs
+# check 22.
+[[test]]
+name = "custom_harness"
+harness = false
+
 [workspace]

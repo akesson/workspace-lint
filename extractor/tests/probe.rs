@@ -990,6 +990,34 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
                 tfrag.is_test_cfg, tfrag.target_kind
             ));
         }
+
+        // The `harness = false` counterpart (tests/custom_harness.rs): cargo
+        // builds it under `--tests` WITHOUT `--test`, so `opts.test` is false —
+        // yet the fragment must be keyed `+test` off the target kind, or the
+        // completeness guard (which expects every test-kind target as
+        // `<name>+test.wlir`) hard-fails such workspaces forever. Also pins
+        // the assembler's classification inputs: `target_kind == "test"` is
+        // what makes this unit count as test reach despite `is_test_cfg`
+        // being false (`is_test_unit` keys on either).
+        let hf_path = ir_out.path().join("custom_harness+test.wlir");
+        match read_fragment(&hf_path) {
+            Ok(hf) if hf.target_kind == "test" && !hf.is_test_cfg => {
+                ck.passes += 1;
+                println!(
+                    "PASS  harness=false fragment: keyed +test, target_kind \"test\", \
+                     is_test_cfg == false"
+                );
+            }
+            Ok(hf) => ck.failures.push(format!(
+                "[harness=false fragment] want target_kind=\"test\" is_test_cfg=false, \
+                 got {:?} / {}",
+                hf.target_kind, hf.is_test_cfg
+            )),
+            Err(e) => ck.failures.push(format!(
+                "[harness=false fragment] custom_harness+test.wlir missing after --tests \
+                 (the 2026-07-10 guard blocker): {e}"
+            )),
+        }
     }
 
     // 23. Signature exposure, predicate/bounds family (`src/sig_exposure.rs`):
