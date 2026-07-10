@@ -54,14 +54,15 @@ pub fn in_dev_target_dir(crate_dir: &Path, file: &Path) -> bool {
         .is_some_and(|first| DEV_TARGET_DIRS.contains(&first))
 }
 
-/// Like [`in_dev_target_dir`], but for callers without cargo metadata: discover
-/// the owning crate root by walking ancestors to the nearest one holding a
-/// `Cargo.toml`, then apply the same top-level dev-target rule against it. Used
-/// by `file-size`, which counts files by glob and never loads a `Workspace`.
+/// Like [`in_dev_target_dir`], but for a file outside every workspace member
+/// (an excluded package's sources matched by a broad glob): discover the
+/// owning crate root by walking ancestors to the nearest one holding a
+/// `Cargo.toml`, then apply the same top-level dev-target rule against it.
+/// The fallback arm of `SourceMeasure::in_dev_target`.
 ///
 /// A `.rs` file with no `Cargo.toml` ancestor (outside any crate) is treated as
 /// shipped — never under-count.
-pub fn in_dev_target_dir_rootless(file: &Path) -> bool {
+pub(crate) fn in_dev_target_dir_rootless(file: &Path) -> bool {
     let mut ancestor = file.parent();
     while let Some(dir) = ancestor {
         if dir.join("Cargo.toml").is_file() {
@@ -172,7 +173,7 @@ struct TestRegionScan<'a> {
 
 impl<'ast> Visit<'ast> for TestRegionScan<'_> {
     fn visit_item(&mut self, item: &'ast syn::Item) {
-        let attrs = item_attrs(item);
+        let attrs = crate::syn_util::item_attrs(item);
         if attrs.iter().any(is_cfg_test) {
             self.ranges.push(item_line_range(attrs, item));
             // `#[cfg(test)] mod x;` (no inline body) → exclude the file the
@@ -241,29 +242,6 @@ fn out_of_line_mod_files(dir: &Path, name: &str) -> [PathBuf; 2] {
         dir.join(format!("{name}.rs")),
         dir.join(name).join("mod.rs"),
     ]
-}
-
-/// Outer attributes of a syn item (mirrors the resolver's own `item_attrs`).
-/// Shared with `duplicate-code` (see [`is_cfg_test`]).
-pub fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
-    match item {
-        syn::Item::Const(i) => &i.attrs,
-        syn::Item::Enum(i) => &i.attrs,
-        syn::Item::ExternCrate(i) => &i.attrs,
-        syn::Item::Fn(i) => &i.attrs,
-        syn::Item::ForeignMod(i) => &i.attrs,
-        syn::Item::Impl(i) => &i.attrs,
-        syn::Item::Macro(i) => &i.attrs,
-        syn::Item::Mod(i) => &i.attrs,
-        syn::Item::Static(i) => &i.attrs,
-        syn::Item::Struct(i) => &i.attrs,
-        syn::Item::Trait(i) => &i.attrs,
-        syn::Item::TraitAlias(i) => &i.attrs,
-        syn::Item::Type(i) => &i.attrs,
-        syn::Item::Union(i) => &i.attrs,
-        syn::Item::Use(i) => &i.attrs,
-        _ => &[],
-    }
 }
 
 #[cfg(test)]

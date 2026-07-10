@@ -2,10 +2,11 @@
 //!
 //! A stale directive is resolved by removing it — the mechanical inverse of
 //! writing a silence directive (which `--fix` never does on the author's
-//! behalf). We build a `MachineApplicable`, empty-replacement [`Suggestion`]
-//! whose byte span covers the whole directive line(s), leading indent through
-//! the trailing `\n` / `\r\n`, so the line disappears with no residue. The
-//! shape mirrors `unused_deps::ir::build_delete_suggestion`.
+//! behalf). We build an empty-replacement [`Suggestion`] whose byte span
+//! covers the whole directive line(s), leading indent through the trailing
+//! `\n` / `\r\n`, so the line disappears with no residue — through the
+//! uniform per-file git gate (`surgery::deletion::gated_deletion_suggestion`)
+//! every deletion kind shares.
 //!
 //! A guard (`snippet_is_directive_only`) re-checks that the bytes we're about
 //! to remove are *exactly* a directive and nothing else, so a malformed origin
@@ -17,14 +18,20 @@ use std::path::Path;
 use fs_err as fs;
 
 use super::{DirectiveOrigin, directive_regex, parse_workspace_lint_directive};
-use wl_diagnostic::{Applicability, Span, Suggestion};
+use wl_diagnostic::Suggestion;
+use wl_lint_api::surgery::deletion::{FixFlag, gated_deletion_suggestion};
+use wl_lint_api::surgery::lines::line_span;
 
 /// Build the whole-line deletion suggestion for the stale `expect` directive at
 /// `origin`, or `None` (leaving the diagnostic help-only) when the file can't
 /// be read, the recorded line range is out of bounds, or the extracted snippet
 /// isn't exactly a directive. Callers only ask when *every* lint the directive
 /// names is stale, so a successful deletion never removes a live silence.
-pub(crate) fn deletion_suggestion(root: &Path, origin: &DirectiveOrigin) -> Option<Suggestion> {
+/// The second element is the git-gate withhold reason (`None` ⇒ applicable).
+pub(crate) fn deletion_suggestion(
+    root: &Path,
+    origin: &DirectiveOrigin,
+) -> Option<(Suggestion, Option<String>)> {
     let abs = root.join(&origin.file);
     let content = fs::read_to_string(&abs).ok()?;
     let (byte_start, byte_end) = line_span(&content, origin.line, origin.line_end)?;
@@ -36,52 +43,14 @@ pub(crate) fn deletion_suggestion(root: &Path, origin: &DirectiveOrigin) -> Opti
     if !snippet_is_directive_only(snippet, ext) {
         return None;
     }
-    Some(Suggestion {
-        span: Span {
-            file: abs,
-            line_start: origin.line,
-            line_end: origin.line_end,
-            col_start: 1,
-            col_end: 1,
-            byte_start: byte_start as u32,
-            byte_end: byte_end as u32,
-        },
-        message: "remove this stale expect directive".to_string(),
-        replacement: String::new(),
-        applicability: Applicability::MachineApplicable,
-        original: Some(snippet.to_string()),
-    })
-}
-
-/// Byte range `[start, end)` covering source lines `start_line..=end_line`
-/// (1-based) *including* the trailing line terminator (`\n` or `\r\n`), or
-/// through EOF for an unterminated final line. `None` if the range is degenerate
-/// or runs past the end of the file. CRLF is handled for free: the `\r` lives
-/// inside the line, so the range swallows the whole `\r\n`.
-fn line_span(content: &str, start_line: u32, end_line: u32) -> Option<(usize, usize)> {
-    if start_line == 0 || end_line < start_line {
-        return None;
-    }
-    let bytes = content.as_bytes();
-    // Byte offset where each line begins; `line_starts[n]` starts line `n + 1`.
-    let mut line_starts = vec![0usize];
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\n' {
-            line_starts.push(i + 1);
-        }
-    }
-    let s = start_line as usize - 1;
-    let e = end_line as usize - 1;
-    if s >= line_starts.len() || e >= line_starts.len() {
-        return None;
-    }
-    let byte_start = line_starts[s];
-    // End of `end_line` = start of the next line, or EOF for the last line.
-    let byte_end = line_starts.get(e + 1).copied().unwrap_or(bytes.len());
-    if byte_end <= byte_start {
-        return None;
-    }
-    Some((byte_start, byte_end))
+    Some(gated_deletion_suggestion(
+        &abs,
+        (byte_start, byte_end),
+        (origin.line, origin.line_end),
+        "remove this stale expect directive".to_string(),
+        Some(snippet.to_string()),
+        FixFlag::Fix,
+    ))
 }
 
 /// Guard: `snippet` (the bytes about to be deleted, trailing EOL already
@@ -153,44 +122,8 @@ mod tests {
         std::fs::write(path, content).unwrap();
     }
 
-    // --- line_span ---
-
-    #[test]
-    fn line_span_single_line_lf() {
-        // Line 2 of three, LF-terminated.
-        let (s, e) = line_span("aaa\nbbb\nccc\n", 2, 2).unwrap();
-        assert_eq!(&"aaa\nbbb\nccc\n"[s..e], "bbb\n");
-    }
-
-    #[test]
-    fn line_span_swallows_crlf() {
-        let content = "aaa\r\nbbb\r\nccc\r\n";
-        let (s, e) = line_span(content, 1, 1).unwrap();
-        assert_eq!(&content[s..e], "aaa\r\n");
-    }
-
-    #[test]
-    fn line_span_last_line_without_trailing_newline() {
-        let content = "aaa\nbbb";
-        let (s, e) = line_span(content, 2, 2).unwrap();
-        assert_eq!(&content[s..e], "bbb");
-    }
-
-    #[test]
-    fn line_span_multi_line() {
-        let content = "aaa\nbbb\nccc\nddd\n";
-        let (s, e) = line_span(content, 2, 3).unwrap();
-        assert_eq!(&content[s..e], "bbb\nccc\n");
-    }
-
-    #[test]
-    fn line_span_out_of_range_is_none() {
-        assert_eq!(line_span("aaa\n", 5, 5), None);
-        assert_eq!(line_span("aaa\n", 0, 0), None);
-        assert_eq!(line_span("aaa\n", 3, 2), None);
-    }
-
     // --- deletion_suggestion: happy paths ---
+    // (`line_span` itself is tested where it lives: `wl_lint_api::surgery::lines`.)
 
     #[test]
     fn deletes_toml_comment_line_including_indent_and_eol() {
@@ -200,9 +133,11 @@ mod tests {
             "crates/demo/Cargo.toml",
             "[dependencies]\n    # workspace-lint: expect(centralized-deps)\nserde = \"1\"\n",
         );
-        let sug = deletion_suggestion(tmp.path(), &origin("crates/demo/Cargo.toml", 2, 2)).unwrap();
+        let (sug, withheld) =
+            deletion_suggestion(tmp.path(), &origin("crates/demo/Cargo.toml", 2, 2)).unwrap();
         assert_eq!(sug.replacement, "");
-        assert_eq!(sug.applicability, Applicability::MachineApplicable);
+        // Non-repo tempdir: the uniform git gate withholds (no backup).
+        assert!(withheld.unwrap().contains("not in a git repository"));
         assert_eq!(
             sug.original.as_deref(),
             Some("    # workspace-lint: expect(centralized-deps)")
@@ -222,7 +157,7 @@ mod tests {
             "src/lib.rs",
             "workspace_lint::expect!(unused_pub);\npub fn f() {}\n",
         );
-        let sug = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 1)).unwrap();
+        let (sug, _) = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 1)).unwrap();
         assert_eq!(
             sug.original.as_deref(),
             Some("workspace_lint::expect!(unused_pub);")
@@ -241,7 +176,7 @@ mod tests {
             "src/lib.rs",
             "// workspace-lint: expect(unused-pub)\npub fn f() {}\n",
         );
-        let sug = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 1)).unwrap();
+        let (sug, _) = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 1)).unwrap();
         assert_eq!(
             sug.original.as_deref(),
             Some("// workspace-lint: expect(unused-pub)")
@@ -257,7 +192,7 @@ mod tests {
             "workspace_lint::expect!(\n    unused_pub,\n);\npub fn f() {}\n",
         );
         // The macro invocation spans lines 1..=3.
-        let sug = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 3)).unwrap();
+        let (sug, _) = deletion_suggestion(tmp.path(), &origin("src/lib.rs", 1, 3)).unwrap();
         let content = std::fs::read_to_string(tmp.path().join("src/lib.rs")).unwrap();
         let mut fixed = content.clone();
         fixed.replace_range(sug.span.byte_start as usize..sug.span.byte_end as usize, "");

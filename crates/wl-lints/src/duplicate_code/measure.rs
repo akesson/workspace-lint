@@ -74,9 +74,7 @@ pub fn measure(fast: &FastModel, config: &DuplicateCodeConfig) -> MeasureReport 
                 .ignore_literals
                 .then(|| analyzer.analyze(g))
                 .flatten();
-            let identical = divergence
-                .as_ref()
-                .is_none_or(|d| d.params == 0 && d.violations.is_empty());
+            let identical = divergence.as_ref().is_none_or(Divergence::is_identical);
             GroupMeasure {
                 fingerprint: g.fingerprint,
                 file: anchor.file.clone(),

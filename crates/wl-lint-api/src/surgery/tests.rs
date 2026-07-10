@@ -256,7 +256,9 @@ fn delete_suggestion_unavailable_when_start_ge_end() {
 }
 
 #[test]
-fn delete_suggestion_skips_untracked_file_and_eats_trailing_newline() {
+fn delete_suggestion_skips_outside_a_repo_and_eats_trailing_newline() {
+    // A plain tempdir is no git repository: the uniform gate withholds (no
+    // backup to restore a deleted item from), with the no-repo reason.
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("lib.rs");
     std::fs::write(&file, "pub fn gone() {}\nrest").unwrap();
@@ -265,12 +267,70 @@ fn delete_suggestion_skips_untracked_file_and_eats_trailing_newline() {
             assert_eq!(s.span.byte_start, 0);
             assert_eq!(s.span.byte_end, 17, "deletion eats the trailing newline");
             assert_eq!(s.original.as_deref(), Some("pub fn gone() {}"));
-            assert!(reason.contains("untracked or has uncommitted changes"));
+            assert!(reason.contains("not in a git repository"), "{reason}");
         }
-        other => panic!(
-            "expected Skip for an untracked file, got {}",
-            outcome(&other)
-        ),
+        other => panic!("expected Skip outside a repo, got {}", outcome(&other)),
+    }
+}
+
+/// Run git in `dir` via the scrub chokepoint, asserting success.
+fn git_ok(dir: &std::path::Path, args: &[&str]) {
+    let out = crate::git::command(dir).args(args).output().expect("git");
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+}
+
+fn init_repo_with(dir: &std::path::Path, file: &std::path::Path, content: &str) {
+    std::fs::write(file, content).unwrap();
+    git_ok(dir, &["init", "-q"]);
+    git_ok(dir, &["config", "user.email", "t@t.test"]);
+    git_ok(dir, &["config", "user.name", "Test"]);
+    git_ok(dir, &["add", "-A"]);
+    git_ok(dir, &["commit", "-q", "-m", "init"]);
+}
+
+#[test]
+fn delete_suggestion_applies_for_tracked_clean_file() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("lib.rs");
+    init_repo_with(dir.path(), &file, "pub fn gone() {}\nrest");
+    match deletion::delete_suggestion(&file, &ir_span(0, 16)) {
+        deletion::DeleteOutcome::Apply(s) => {
+            assert_eq!(s.applicability, Applicability::MachineApplicable);
+            assert_eq!(s.span.byte_end, 17);
+        }
+        other => panic!("expected Apply for a clean file, got {}", outcome(&other)),
+    }
+}
+
+#[test]
+fn delete_suggestion_skips_untracked_and_dirty_files_in_a_repo() {
+    let dir = TempDir::new().unwrap();
+    let tracked = dir.path().join("lib.rs");
+    init_repo_with(dir.path(), &tracked, "pub fn gone() {}\nrest");
+
+    // Untracked sibling: in a repo, but no committed state to restore.
+    let untracked = dir.path().join("new.rs");
+    std::fs::write(&untracked, "pub fn gone() {}\n").unwrap();
+    match deletion::delete_suggestion(&untracked, &ir_span(0, 16)) {
+        deletion::DeleteOutcome::Skip(_, reason) => {
+            assert!(
+                reason.contains("untracked or has uncommitted changes"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected Skip for untracked, got {}", outcome(&other)),
+    }
+
+    // Tracked but dirtied after the commit.
+    std::fs::write(&tracked, "pub fn gone() {}\nedited").unwrap();
+    match deletion::delete_suggestion(&tracked, &ir_span(0, 16)) {
+        deletion::DeleteOutcome::Skip(_, reason) => {
+            assert!(
+                reason.contains("untracked or has uncommitted changes"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected Skip for dirty, got {}", outcome(&other)),
     }
 }
 
@@ -350,11 +410,11 @@ fn attr_extension_bails_on_raw_string_fence() {
 
 #[test]
 fn blank_line_eating_below_item() {
-    let src = "fn a() {}\n\n\nfn b() {}\n";
+    let src = b"fn a() {}\n\n\nfn b() {}\n";
     // `end` sits after "fn a() {}\n" — the two blank lines are consumed.
-    assert_eq!(deletion::eat_blank_lines(src, 10), 12);
+    assert_eq!(lines::eat_blank_lines(src, 10), 12);
     // No blanks → unchanged.
-    assert_eq!(deletion::eat_blank_lines("fn a() {}\nfn b() {}\n", 10), 10);
+    assert_eq!(lines::eat_blank_lines(b"fn a() {}\nfn b() {}\n", 10), 10);
 }
 
 #[test]

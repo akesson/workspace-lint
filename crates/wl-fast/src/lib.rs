@@ -33,17 +33,28 @@ mod metadata;
 mod module_tree;
 mod reach;
 pub mod shipped_source;
+pub mod source_measure;
+mod syn_util;
 pub mod timing;
 mod types;
 
-pub use manifest::{DeclaredDep, DepLocation, DepSection, Manifest, Publish};
+pub use manifest::{DeclaredDep, DepEntry, DepLocation, DepSection, Manifest, Publish};
 pub use metadata::{CrateInfo, FastModel};
+pub use source_measure::{MeasuredFile, SourceMeasure};
 /// Re-export `toml_edit` so consumers can name [`toml_edit::Item`] and
 /// friends at the exact version [`Manifest`] parses with.
 pub use toml_edit;
 pub use types::{Module, Target, TargetKind};
 
 use std::path::PathBuf;
+
+/// `path.canonicalize()`, falling back to the path itself when it doesn't
+/// resolve — the set-comparison normalization every reach/orphan surface
+/// shares (on macOS a `/tmp` fixture path and its `/private/tmp` real path
+/// are the same file and must compare equal).
+pub fn canonicalized(path: &std::path::Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
 
 pub type Result<T> = std::result::Result<T, FastError>;
 

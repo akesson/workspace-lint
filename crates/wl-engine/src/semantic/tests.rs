@@ -380,11 +380,13 @@ fn deps_verdict_scopes_and_facades() {
     let not_judged: Vec<(&str, NotJudged)> = alpha_deps
         .not_judged
         .iter()
-        .map(|(n, r)| (n.as_str(), *r))
+        .map(|n| (n.name.as_str(), n.reason))
         .collect();
     assert!(not_judged.contains(&("dev_helper", NotJudged::DevWithoutTestConfig)));
     assert!(not_judged.contains(&("hook_installer", NotJudged::BuildDep)));
     assert!(not_judged.contains(&("feature_gated", NotJudged::Optional)));
+    // Platform-gated: never judged, even though it is a plain normal dep.
+    assert!(not_judged.contains(&("platform_only", NotJudged::TargetGated)));
 
     // With a --tests config that compiled the integration-test target and
     // exercised dev_helper: judged and exercised.
@@ -438,16 +440,17 @@ fn deps_verdict_uncompiled_member_routes_to_not_compiled() {
     let not_judged: Vec<(&str, NotJudged)> = alpha
         .not_judged
         .iter()
-        .map(|(n, r)| (n.as_str(), *r))
+        .map(|n| (n.name.as_str(), n.reason))
         .collect();
     // Normal deps that would be judged if compiled land under NotCompiled.
     assert!(not_judged.contains(&("facade", NotJudged::NotCompiled)));
     assert!(not_judged.contains(&("never_used", NotJudged::NotCompiled)));
     assert!(not_judged.contains(&("md_5", NotJudged::NotCompiled)));
-    // Dev/build/optional deps keep their pre-existing, more-specific reasons.
+    // Dev/build/optional/target-gated deps keep their more-specific reasons.
     assert!(not_judged.contains(&("dev_helper", NotJudged::DevWithoutTestConfig)));
     assert!(not_judged.contains(&("hook_installer", NotJudged::BuildDep)));
     assert!(not_judged.contains(&("feature_gated", NotJudged::Optional)));
+    assert!(not_judged.contains(&("platform_only", NotJudged::TargetGated)));
 }
 
 /// Unused-deps: a re-export shim dep is credited through [`RefEdge::via`] —

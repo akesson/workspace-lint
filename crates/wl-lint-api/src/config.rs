@@ -127,7 +127,7 @@ impl GlobPattern {
 
     /// The original pattern text. Cross-crate comparisons go through the
     /// [`PartialEq`]`<&str>` impl below rather than this accessor.
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         self.0.glob()
     }
 

@@ -93,6 +93,59 @@ pub(crate) fn tree_state(dir: &Path) -> TreeState {
     }
 }
 
+/// The git state of ONE file — the per-file gate every deletion suggestion's
+/// applicability is decided by (the tree-level [`ensure_clean_for_fix`] gate
+/// can be bypassed with `--allow-dirty`; this one cannot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileState {
+    /// Tracked with no uncommitted changes: git is the backup, deletion may
+    /// be `MachineApplicable`.
+    CleanTracked,
+    /// Not inside any git work tree. There is NO backup to restore a deleted
+    /// item from, so deletions are withheld — the uniform strictest policy
+    /// (the tree-level gate merely warns here, because rewrites are
+    /// reviewable in place; a deletion is not).
+    NoRepo,
+    /// In a repo but untracked, or tracked with uncommitted changes —
+    /// withhold, with a "commit first" reason.
+    DirtyOrUntracked,
+}
+
+/// Classify one file's git state, discovering the repository from the FILE's
+/// own directory (never the process cwd — lint anchors are mixed
+/// relative/absolute and the binary may run from a subdirectory).
+pub(crate) fn file_state(path: &Path) -> FileState {
+    let Ok(abs) = std::path::absolute(path) else {
+        return FileState::DirtyOrUntracked; // can't classify — the safe default
+    };
+    let (Some(dir), Some(name)) = (abs.parent(), abs.file_name()) else {
+        return FileState::DirtyOrUntracked;
+    };
+    let probe = command(dir)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output();
+    match probe {
+        Ok(out) if out.status.success() => {}
+        _ => return FileState::NoRepo, // no repo, or git unavailable
+    }
+    let tracked = command(dir)
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(name)
+        .output();
+    match tracked {
+        Ok(out) if out.status.success() => {}
+        _ => return FileState::DirtyOrUntracked,
+    }
+    match command(dir)
+        .args(["status", "--porcelain", "--"])
+        .arg(name)
+        .output()
+    {
+        Ok(out) if out.status.success() && out.stdout.is_empty() => FileState::CleanTracked,
+        _ => FileState::DirtyOrUntracked,
+    }
+}
+
 /// Enforce the clean-tree precondition for `--fix`. `--allow-dirty` bypasses
 /// the check entirely. A dirty tracked tree exits with code 2 and a message
 /// listing the offending files; a missing repo warns and returns.

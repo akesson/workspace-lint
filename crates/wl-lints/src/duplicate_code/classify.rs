@@ -29,9 +29,7 @@ use wl_engine::fast::clones::{CandidateKind, CloneGroup, Region};
 pub(crate) const GENERIC_HELP: &str =
     "extract the shared logic into one function the copies can call";
 
-/// Cap on per-help site lists (dead copies), matching the diagnostic's other
-/// site-list caps.
-const MAX_LISTED: usize = 5;
+use super::MAX_LISTED;
 
 /// A `file:line` location — a dead copy, or a call site to redirect.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

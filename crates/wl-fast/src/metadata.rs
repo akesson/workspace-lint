@@ -25,6 +25,9 @@ pub struct FastModel {
     root_manifest: Manifest,
     /// Workspace members, sorted by name for deterministic iteration.
     members: Vec<CrateInfo>,
+    /// The shared source-measurement sweep (one tokei walk), built on first
+    /// query — a run with neither size lint enabled never pays for it.
+    source_measure: std::sync::OnceLock<crate::SourceMeasure>,
 }
 
 /// One workspace member: identity, location, its parsed `Cargo.toml`, its
@@ -118,7 +121,16 @@ impl FastModel {
             target_directory,
             root_manifest,
             members,
+            source_measure: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The shared source-measurement sweep (one tokei walk over the whole
+    /// workspace), built on first use and cached — however many lints ask,
+    /// the tree is scanned once. See [`crate::SourceMeasure`].
+    pub fn source_measure(&self) -> &crate::SourceMeasure {
+        self.source_measure
+            .get_or_init(|| crate::SourceMeasure::scan(self))
     }
 
     /// Workspace root directory (absolute, from `cargo metadata`).

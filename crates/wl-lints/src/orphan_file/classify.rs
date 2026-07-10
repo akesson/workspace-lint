@@ -48,18 +48,3 @@ pub(crate) fn classify(
         Verdict::Orphan
     }
 }
-
-/// Canonicalize for set comparison. The extractor canonicalizes what it emits
-/// and `declared_reach` canonicalizes what it collects, so the candidate side
-/// must too: on macOS a `/tmp` fixture path and its `/private/tmp` real path
-/// are the same file and must compare equal.
-pub(crate) fn canonical(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// A package name in the code form the IR keys crates by (`wl-fast` →
-/// `wl_fast`). The zero-fragment guard compares against
-/// `SemanticModel::fragment_crates`, which speaks that form.
-pub(crate) fn code_name(package: &str) -> String {
-    package.replace('-', "_")
-}

@@ -132,6 +132,16 @@ fn fix_unused_deps() {
 }
 
 #[test]
+fn fix_unused_deps_dirty_manifest() {
+    // The per-file git gate, dirty flavor: the manifest carrying the unused
+    // dep is dirtied post-commit (setup.toml's `[[append_after_commit]]`),
+    // so the dep-line deletion is withheld (MaybeIncorrect + "commit first"
+    // note) and the tree keeps both the dep and the local edit — even under
+    // `--allow-dirty`, which bypasses only the tree-level gate.
+    run_fix_fixture("fix__unused_deps_dirty");
+}
+
+#[test]
 fn fix_unused_pub() {
     run_fix_fixture("fix__unused_pub");
 }

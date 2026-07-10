@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::classify::{Verdict, classify, code_name};
+use super::classify::{Verdict, classify};
 
 fn set(paths: &[&str]) -> HashSet<PathBuf> {
     paths.iter().map(PathBuf::from).collect()
@@ -79,14 +79,4 @@ fn either_tier_naming_the_file_prevents_a_delete_suggestion() {
     assert_ne!(classify(f, &named, &empty), Verdict::Orphan);
     assert_ne!(classify(f, &empty, &named), Verdict::Orphan);
     assert_eq!(classify(f, &empty, &empty), Verdict::Orphan);
-}
-
-/// The zero-fragment guard compares package names against the IR's crate
-/// key-space, which underscores hyphens. Getting this wrong would make every
-/// hyphenated member look uncompiled — and every one of its files an orphan.
-#[test]
-fn code_name_matches_the_ir_crate_key_form() {
-    assert_eq!(code_name("wl-fast"), "wl_fast");
-    assert_eq!(code_name("workspace-lint-marker"), "workspace_lint_marker");
-    assert_eq!(code_name("already_code"), "already_code");
 }

@@ -1,0 +1,15 @@
+[package]
+name = "consumer"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Bare `optional = true` with NO `[features]` table naming it: cargo still
+# synthesizes an implicit `provider` feature, so the dep is activatable and
+# only compiled when that feature is on — a config that didn't enable it
+# cannot observe usage. The engine's `Optional` gate exempts it (the old
+# lint-side judgment had no optional gate and would have flagged it).
+provider = { path = "../provider", optional = true }

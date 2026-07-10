@@ -23,6 +23,12 @@ Dev-dependencies are judged only when a test-compiling entry (`cargo test`)
 is in the `[engine]` config matrix — without one they are skipped, never
 guessed. The default matrix includes one.
 
+Two dep shapes are never judged, because no config run on one host can
+observe them: `optional = true` deps (feature-gated — only compiled when
+their feature is enabled, whether or not a `[features]` table names them)
+and deps declared under `[target.<cfg>.…]` tables (platform-gated — only
+compiled when the cfg matches the build host).
+
 A member that no `[engine]` config compiles (e.g. a platform-gated crate
 absent from a `-p`-scoped matrix) produces no compiler output, so its deps
 cannot be judged. Rather than flag them all, the lint emits one non-failing

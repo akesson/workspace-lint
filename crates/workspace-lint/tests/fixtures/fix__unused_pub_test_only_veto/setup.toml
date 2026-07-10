@@ -1,7 +1,2 @@
 # Deletion is CLI-opt-in only: the harness's `--fix` alone must never delete.
 args = ["--fix-auto-delete"]
-
-# Git-clean so a deletion COULD apply — this fixture proves the scaffolding
-# veto (not the git gate) is what keeps the tree untouched.
-[git]
-init = true

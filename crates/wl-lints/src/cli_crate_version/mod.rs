@@ -1,10 +1,12 @@
 use fs_err as fs;
 use regex::Regex;
+use std::path::Path;
 use std::process::Command;
 
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_workspace;
-use wl_lint_api::{LintContext, LintId, LintImpl};
+use wl_engine::fast::FastModel;
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 pub mod config;
 #[cfg(test)]
@@ -35,16 +37,22 @@ impl CliCrateVersion {
 impl LintImpl for CliCrateVersion {
     const ID: LintId = LintId::CliCrateVersion;
     const DOC: &'static str = include_str!("DOC.md");
+    // Only for `fast.root()`: the lockfile is resolved at the workspace root,
+    // never the process cwd.
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: false,
+    };
 
-    fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        check(&self.config)
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        check(&self.config, cx.fast_model(Self::ID))
     }
 }
 
-pub(crate) fn check(config: &CliCrateVersionConfig) -> Vec<Diagnostic> {
+pub(crate) fn check(config: &CliCrateVersionConfig, fast: &FastModel) -> Vec<Diagnostic> {
     // A missing / unparsable Cargo.lock is a single setup error — surface it
     // as one diagnostic and stop, rather than aborting the whole lint run.
-    let lock_packages = match read_lock_packages() {
+    let lock_packages = match read_lock_packages(fast.root()) {
         Ok(p) => p,
         Err(msg) => {
             return vec![error_diagnostic(
@@ -186,12 +194,16 @@ fn find_lock_version<'a>(
         .map(|(_, version)| version.as_str())
 }
 
-fn read_lock_packages() -> Result<Vec<(String, String)>, String> {
-    let content =
-        fs::read_to_string("Cargo.lock").map_err(|e| format!("failed to read Cargo.lock: {e}"))?;
+fn read_lock_packages(root: &Path) -> Result<Vec<(String, String)>, String> {
+    let content = fs::read_to_string(root.join("Cargo.lock"))
+        .map_err(|e| format!("failed to read Cargo.lock: {e}"))?;
     parse_lock_packages(&content)
 }
 
+/// Parsed with the plain `toml` crate (a serde read of a generated file is
+/// all this needs; `toml_edit`'s span-preserving document model buys nothing
+/// here, and `toml` stays a workspace dep regardless — the config loader and
+/// duplicate-code's baseline both use it).
 fn parse_lock_packages(content: &str) -> Result<Vec<(String, String)>, String> {
     let doc: toml::Value =
         toml::from_str(content).map_err(|e| format!("failed to parse Cargo.lock: {e}"))?;

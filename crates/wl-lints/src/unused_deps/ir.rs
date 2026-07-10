@@ -1,46 +1,26 @@
-//! The rustc backend of `unused-deps`: declared deps vs the compiler-resolved
-//! reference graph (the extracted IR), unioned across the `[engine]` config
-//! matrix.
+//! The rustc backend of `unused-deps`: the engine's [`DepsVerdict`] — the
+//! single judgement (usage fold, facade closures, and every exemption gate:
+//! build/dev-without-test/optional/target-gated/not-compiled — see
+//! `wl_engine::semantic::deps`) — joined back onto the manifest's declared
+//! entries. The lint layers only what the manifest side owns:
 //!
-//! What replaces what, relative to `legacy.rs`:
-//!
-//! - `Workspace::references_from_crate` (syn's resolver) →
-//!   [`wl_engine::semantic::DepUsage`]: every target's compiler-true edges,
-//!   folded onto the owning package, facade- and lib-rename-aware via the
-//!   resolved dependency closure (`clap` credited by a `clap_builder` edge,
-//!   `md-5` by an `md5` one — the resolve graph carries lib-target names the
-//!   legacy separator-stripping only approximated).
-//! - `Workspace::doctest_dep_refs` → `CrateInfo::doctest_dep_refs` (the
-//!   FastModel's syntactic doc-fence scan — doc-test code is a separate
-//!   compilation unit the IR never sees).
-//! - `Manifest::feature_dep_refs` — unchanged (pure manifest data).
-//!
-//! Judgement scope the compiler view imposes (the syn backend judged
-//! everything against its cfg-blind parse of every source file):
-//!
-//! - **dev deps** are judged only when a test/example/bench target actually
-//!   compiled (a `--tests` entry in `[engine] configs`); otherwise their
-//!   usage is invisible and they are skipped, never flagged.
-//! - **build deps** are never judged. Build scripts ARE lint-passed (their
-//!   `<pkg>@build.wlir` fragments back unused-pub's build.rs-consumer
-//!   crediting), but `DepUsage` deliberately finds no owner for the shared
-//!   `build_script_build` crate name, so their references credit no
-//!   package's `[dependencies]` and `[build-dependencies]` stay unjudged.
-//!   The legacy backend parsed `build.rs` syntactically and could judge
-//!   them; the `ignore` knob remains the answer for link-only deps.
-//!
-//! The diagnostic shape (message, helps, notes, suggestion bytes) mirrors
-//! `legacy.rs` exactly — fixtures pin the two backends to byte-identical
-//! output wherever their verdicts agree.
+//! - the `ignore` config (filtered before the join, in [`collect_deps`]);
+//! - the syntactic used-credits the compiled IR structurally can't carry:
+//!   doc-fence refs (`CrateInfo::doctest_dep_refs` — doc-test code is a
+//!   separate compilation unit) and feature plumbing
+//!   (`Manifest::feature_dep_refs`), with the separator-stripped fallback;
+//! - rename resolution back to manifest keys ([`resolve_package_name`] — the
+//!   verdict speaks package names, the manifest its local aliases);
+//! - the byte-exact deletion suggestions over the `Manifest` locators, and
+//!   the diagnostic shaping.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use wl_engine::fast::{CrateInfo, DeclaredDep, DepSection, FastModel, Manifest};
-use wl_engine::semantic::{DepUsage, SemanticModel};
+use wl_engine::semantic::{CrateDeps, DepKind, NotJudged, SemanticModel};
 
 use super::UnusedDepsConfig;
-use wl_diagnostic::Diagnostic;
-use wl_diagnostic::{Applicability, Span, Suggestion};
+use wl_diagnostic::{Diagnostic, Suggestion};
 use wl_lint_api::LintId;
 use wl_lint_api::config::PerCrate;
 
@@ -50,7 +30,12 @@ pub(super) fn check(
     model: &SemanticModel,
 ) -> Vec<Diagnostic> {
     let lint_id = LintId::UnusedDeps.id();
-    let usage = model.dep_usage();
+    let verdict = model.deps_verdict();
+    let by_crate: BTreeMap<&str, &CrateDeps> = verdict
+        .crates
+        .iter()
+        .map(|c| (c.krate.as_str(), c))
+        .collect();
     let mut diagnostics = Vec::new();
 
     for krate in fast.members() {
@@ -62,6 +47,9 @@ pub(super) fn check(
         if deps.is_empty() {
             continue;
         }
+        let Some(crate_verdict) = by_crate.get(krate.code_name().as_str()) else {
+            continue; // no declared deps per cargo metadata — nothing judged
+        };
 
         // The syntactic half of "referenced": doc-fence refs + feature
         // plumbing — usage the compiled IR structurally can't carry.
@@ -72,27 +60,29 @@ pub(super) fn check(
             .collect();
         syntactic.extend(manifest.feature_dep_refs());
 
-        let owner = krate.code_name();
-        let unused = find_unused_deps(
+        let (unused, not_compiled) = partition_by_verdict(
             deps,
-            &usage,
-            model,
-            &owner,
+            crate_verdict,
             &syntactic,
             fast.root_manifest(),
             manifest,
         );
-        if unused.is_empty() {
-            continue;
-        }
 
         // Zero fragments: no `[engine] config` compiled this member, so every
         // dep reads "unused" only for lack of compiler output. They are
         // unjudgeable, not unused — report the coverage gap instead of
         // false-positive findings. (unused-pub is immune structurally: an
         // uncompiled crate contributes no defs, hence no candidates.)
-        if !usage.crate_compiled(&owner) {
-            diagnostics.push(build_not_compiled_note(fast, krate, manifest, &unused));
+        if !not_compiled.is_empty() {
+            diagnostics.push(build_not_compiled_note(
+                fast,
+                krate,
+                manifest,
+                &not_compiled,
+            ));
+            continue;
+        }
+        if unused.is_empty() {
             continue;
         }
 
@@ -115,8 +105,13 @@ pub(super) fn check(
                 entry.section.as_str(),
                 entry.original_name
             ));
-            if let Some(s) = build_delete_suggestion(manifest, entry) {
+            if let Some((s, withheld)) = build_delete_suggestion(manifest, entry) {
                 builder = builder.suggestion(s);
+                if let Some(reason) = withheld {
+                    // Every entry shares this manifest file, so the reason
+                    // collapses to one note on the rollup diagnostic.
+                    builder = builder.note_once(reason);
+                }
             }
         }
         diagnostics.push(
@@ -173,85 +168,96 @@ fn build_not_compiled_note(
         .build()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn find_unused_deps(
+/// Join the engine's per-crate verdict onto the manifest's declared entries,
+/// subtracting the manifest-side used-evidence (syntactic credits; `ignore`
+/// was already filtered in [`collect_deps`]). Returns the entries whose
+/// verdict is unused, and those whose verdict is [`NotJudged::NotCompiled`]
+/// (the coverage note) — mutually exclusive per crate by engine construction.
+/// Manifest order is preserved (it drives help-line order and display names).
+pub(super) fn partition_by_verdict(
     deps: BTreeMap<String, Vec<DeclaredDep>>,
-    usage: &DepUsage,
-    model: &SemanticModel,
-    owner: &str,
+    verdict: &CrateDeps,
     syntactic: &HashSet<String>,
     root_manifest: &Manifest,
     manifest: &Manifest,
-) -> Vec<DeclaredDep> {
-    deps.into_iter()
-        .filter(|(normalized, _)| {
-            // Syntactic: doc fences + feature plumbing, with the legacy
-            // backend's separator-stripped fallback applied to the manifest
-            // side only (see legacy.rs for the rationale).
-            !syntactic.contains(normalized)
-                && !syntactic.contains(&wl_lint_api::util::separator_stripped(normalized))
-        })
-        .flat_map(|(_, entries)| entries)
-        .filter(|entry| {
-            // Judgement gates: a dep the compiled configs can't observe is
-            // skipped, never flagged.
-            if entry.target_gated {
-                // Platform-gated: only compiles when its cfg matches the
-                // build host — a foreign platform's dep is invisible here.
-                return false;
+) -> (Vec<DeclaredDep>, Vec<DeclaredDep>) {
+    let unused_set: BTreeSet<(&str, DepKind)> = verdict
+        .unused
+        .iter()
+        .map(|u| (u.name.as_str(), u.kind))
+        .collect();
+    let not_compiled_set: BTreeSet<(&str, DepKind)> = verdict
+        .not_judged
+        .iter()
+        .filter(|n| n.reason == NotJudged::NotCompiled)
+        .map(|n| (n.name.as_str(), n.kind))
+        .collect();
+
+    let mut unused = Vec::new();
+    let mut not_compiled = Vec::new();
+    for (normalized, entries) in deps {
+        // Syntactic: doc fences + feature plumbing, with the separator-
+        // stripped fallback applied to the manifest side only (`md_5`
+        // collapses to `md5` to match a doc fence's `use md5::…`).
+        if syntactic.contains(&normalized)
+            || syntactic.contains(&wl_lint_api::util::separator_stripped(&normalized))
+        {
+            continue;
+        }
+        for entry in entries {
+            // The verdict speaks (package code-name, kind); the manifest its
+            // local alias — resolve a `package = "…"` rename (local or
+            // workspace-inherited) before joining.
+            let pkg = resolve_package_name(root_manifest, manifest, &entry).replace('-', "_");
+            let key = (pkg.as_str(), kind_of(entry.section));
+            if unused_set.contains(&key) {
+                unused.push(entry);
+            } else if not_compiled_set.contains(&key) {
+                not_compiled.push(entry);
             }
-            match entry.section {
-                // Build scripts aren't lint-passed — no fragment.
-                DepSection::BuildDependencies => return false,
-                // Dev deps are judgeable only when a dev target compiled.
-                DepSection::DevDependencies if !usage.dev_deps_judged() => return false,
-                _ => {}
-            }
-            // Semantic: seed the closure with the RESOLVED package — a
-            // `package = "…"` rename points the declared key at a different
-            // package, and both the reference edges and the resolve graph
-            // speak package/lib-target names, never the local alias.
-            let pkg = resolve_package_name(root_manifest, manifest, entry).replace('-', "_");
-            !usage.dep_used(model.meta(), owner, &pkg)
-        })
-        .collect()
+            // Anything else is used, or engine-exempt (build / dev-without-
+            // test-config / optional / target-gated) — nothing to report.
+        }
+    }
+    (unused, not_compiled)
+}
+
+/// The engine [`DepKind`] a manifest section judges as. `declared_deps` only
+/// yields the three member sections, never `WorkspaceDependencies`.
+fn kind_of(section: DepSection) -> DepKind {
+    match section {
+        DepSection::DevDependencies => DepKind::Dev,
+        DepSection::BuildDependencies => DepKind::Build,
+        _ => DepKind::Normal,
+    }
 }
 
 /// The dep-line deletion suggestion, over the fast tier's `Manifest`
 /// (locator-driven byte spans; swallows the trailing (CR)LF so the whole
-/// line disappears).
+/// line disappears). Gated per-file like every deletion: `MachineApplicable`
+/// only for a git-tracked-clean manifest, otherwise withheld with the reason
+/// in the second element.
 pub(super) fn build_delete_suggestion(
     manifest: &Manifest,
     entry: &DeclaredDep,
-) -> Option<Suggestion> {
+) -> Option<(Suggestion, Option<String>)> {
     let location = manifest
         .locate_dep(entry.section, &entry.original_name)
         .or_else(|| manifest.locate_dep_entry(entry.section, &entry.original_name))?;
-    let mut end = location.byte_end as usize;
-    let bytes = manifest.raw().as_bytes();
-    if end < bytes.len() && bytes[end] == b'\r' {
-        end += 1;
-    }
-    if end < bytes.len() && bytes[end] == b'\n' {
-        end += 1;
-    }
+    let end = wl_lint_api::surgery::lines::eat_trailing_newline(
+        manifest.raw().as_bytes(),
+        location.byte_end as usize,
+    );
     let deleted = &manifest.raw()[location.byte_start as usize..location.byte_end as usize];
     let line_end = location.line + deleted.bytes().filter(|&b| b == b'\n').count() as u32;
-    Some(Suggestion {
-        span: Span {
-            file: manifest.path().to_path_buf(),
-            line_start: location.line,
-            line_end,
-            col_start: 1,
-            col_end: 1,
-            byte_start: location.byte_start,
-            byte_end: end as u32,
-        },
-        message: format!("remove unused dependency `{}`", entry.original_name),
-        replacement: String::new(),
-        applicability: Applicability::MachineApplicable,
-        original: Some(deleted.to_string()),
-    })
+    Some(wl_lint_api::surgery::deletion::gated_deletion_suggestion(
+        manifest.path(),
+        (location.byte_start as usize, end),
+        (location.line, line_end),
+        format!("remove unused dependency `{}`", entry.original_name),
+        Some(deleted.to_string()),
+        wl_lint_api::surgery::deletion::FixFlag::Fix,
+    ))
 }
 
 /// The package name a declared dep resolves to (a `package = "…"` rename,

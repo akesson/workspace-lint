@@ -218,9 +218,13 @@ impl SuppressionMap {
             .help(stale_help(&stale, fully_stale))
             .note_once("a stale expect usually means the underlying issue has been fixed");
             if fully_stale
-                && let Some(sug) = crate::directives::deletion_suggestion(root, group.origin)
+                && let Some((sug, withheld)) =
+                    crate::directives::deletion_suggestion(root, group.origin)
             {
                 builder = builder.suggestion(sug);
+                if let Some(reason) = withheld {
+                    builder = builder.note(reason);
+                }
             }
             out.push(builder.build());
         }
@@ -725,7 +729,16 @@ mod tests {
             .first()
             .expect("a deletion suggestion");
         assert_eq!(sug.replacement, "");
-        assert_eq!(sug.applicability, Applicability::MachineApplicable);
+        // The tempdir is no git repo, so the uniform per-file gate withholds
+        // the deletion (MaybeIncorrect) and the diagnostic carries the reason.
+        assert_eq!(sug.applicability, Applicability::MaybeIncorrect);
+        assert!(
+            stales[0]
+                .notes
+                .iter()
+                .any(|n| n.text.contains("not in a git repository")),
+            "the withhold reason is on the finding"
+        );
         assert!(sug.span.byte_end > sug.span.byte_start);
         assert_eq!(apply_deletion(body, sug), "[dependencies]\nserde = \"1\"\n");
     }

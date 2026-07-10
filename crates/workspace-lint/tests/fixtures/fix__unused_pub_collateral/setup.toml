@@ -1,6 +1,2 @@
 # Deletion is CLI-opt-in only: the harness's `--fix` alone must never delete.
 args = ["--fix-auto-delete"]
-
-# Deletion needs a git-tracked-clean tree (git is the deletion's backup).
-[git]
-init = true
