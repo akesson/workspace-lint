@@ -24,6 +24,8 @@ pub(crate) struct Cli {
     /// Apply machine-applicable structural rewrites in-place. Requires a clean
     /// git working tree (override with `--allow-dirty`) so every change is
     /// reviewable as one diff. Never deletes code — see `--fix-auto-delete`.
+    /// Applied fixes can unlock further ones, so the natural loop is `--fix`,
+    /// commit, `--fix` again until no fixes remain.
     #[arg(long, global = true, default_value_t = false)]
     pub fix: bool,
     /// Everything `--fix` does, plus: an `unused-pub` item that is unused

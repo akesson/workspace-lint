@@ -380,7 +380,7 @@ mod tests {
     fn root_manifest_carries_workspace_dependencies() {
         let model = load_this_workspace();
         assert!(
-            !model.root_manifest().workspace_dep_names().is_empty(),
+            model.root_manifest().has_workspace_deps_table(),
             "the repo root declares [workspace.dependencies]"
         );
     }

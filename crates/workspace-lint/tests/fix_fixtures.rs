@@ -126,6 +126,15 @@ fn fix_centralized_deps() {
     run_fix_fixture("fix__centralized_deps");
 }
 
+/// The absent-table shape: --fix creates `[workspace.dependencies]` exactly
+/// once, carrying every agreed entry (incl. `default-features = false`) —
+/// per-dep header insertions stacked N duplicate sections here and cargo
+/// rejected the manifest (ripgrep, 2026-07-10 validation Issues 2 + 3).
+#[test]
+fn fix_centralized_deps_create_table() {
+    run_fix_fixture("fix__centralized_deps_create_table");
+}
+
 #[test]
 fn fix_unused_deps() {
     run_fix_fixture("fix__unused_deps");

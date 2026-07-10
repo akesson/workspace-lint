@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/alpha"]
+
+# The workspace entry does NOT declare `default-features = false` while the
+# member does. Rewriting the member to `{ workspace = true, default-features
+# = false }` would be a lie: cargo ignores the member-side flag when the
+# workspace entry lacks it (prints a warning, resolves default features
+# anyway) — the shape that broke helix's gix in the 2026-07-10 validation.
+# The finding must fire but its rewrite stays withheld until the humans
+# align the two declarations.
+[workspace.dependencies]
+demo = "1"

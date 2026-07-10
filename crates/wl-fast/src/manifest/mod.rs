@@ -33,6 +33,11 @@ use toml_edit::{Document, Item, Table, TableLike, Value};
 
 use super::{FastError as Error, Result};
 
+/// The rewrite/insertion builders behind the centralized-deps `--fix` — a
+/// second `impl Manifest` kept out of this file so the read model stays under
+/// the file-size ceiling. See [`Manifest::format_workspace_dep`] et al.
+mod edit;
+
 /// Which dependency table a query targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DepSection {
@@ -145,6 +150,18 @@ impl<'a> DepEntry<'a> {
         self.0
             .as_table_like()
             .is_some_and(|t| t.contains_key("package"))
+    }
+
+    /// The entry's `default-features` key, `None` when absent (cargo's
+    /// default is `true`). Resolution-relevant: cargo IGNORES a member's
+    /// `default-features = false` when the inherited
+    /// `[workspace.dependencies]` entry doesn't declare it — hoisting a dep
+    /// without carrying this flag silently changes its feature set.
+    pub fn default_features(&self) -> Option<bool> {
+        self.0
+            .as_table_like()
+            .and_then(|t| t.get("default-features"))
+            .and_then(Item::as_bool)
     }
 }
 
@@ -292,68 +309,17 @@ impl Manifest {
         tables
     }
 
-    /// All dep names in `[workspace.dependencies]`. Convenience for
-    /// callers that need to test "is this dep centralized?".
-    pub fn workspace_dep_names(&self) -> BTreeSet<String> {
+    /// Whether this (root) manifest declares a `[workspace.dependencies]`
+    /// table at all — the distinction that decides which insertion API
+    /// applies: an existing table takes per-dep insertions
+    /// ([`Manifest::workspace_dep_insertion`]), an absent one must be created
+    /// ONCE with every entry ([`Manifest::workspace_table_creation`]), or
+    /// each insertion would carry its own duplicate `[workspace.dependencies]`
+    /// header. (Entries themselves are read via
+    /// [`Manifest::deps`]`(DepSection::WorkspaceDependencies)`.)
+    pub fn has_workspace_deps_table(&self) -> bool {
         self.section_table(DepSection::WorkspaceDependencies)
-            .map(|t| t.iter().map(|(k, _)| k.to_string()).collect())
-            .unwrap_or_default()
-    }
-
-    /// Byte position + text for inserting `<name> = "<version>"` into this
-    /// (root) manifest's `[workspace.dependencies]` at the alphabetically
-    /// sorted position — the workspace half of the centralized-deps two-file
-    /// auto-fix (the member half is [`Manifest::format_workspace_dep`]).
-    /// Creates the table at end-of-file when absent (always-valid TOML).
-    /// Returns `(line, byte_pos, insert_text)`.
-    pub fn workspace_dep_insertion(&self, name: &str, version: &str) -> (u32, u32, String) {
-        let entry = format!("{name} = \"{version}\"\n");
-        if let Some(table) = self.section_table(DepSection::WorkspaceDependencies) {
-            // The first existing key alphabetically after `name` marks the
-            // insertion line; with none, insert after the last entry.
-            let mut before: Option<usize> = None;
-            let mut last_end: Option<usize> = None;
-            for (key, item) in table.iter() {
-                let Some(span) = item.span() else { continue };
-                if key > name {
-                    before = Some(before.map_or(span.start, |b: usize| b.min(span.start)));
-                } else {
-                    last_end = Some(last_end.map_or(span.end, |e: usize| e.max(span.end)));
-                }
-            }
-            let pos = match (before, last_end) {
-                // Start of the successor entry's line.
-                (Some(b), _) => self.raw[..b].rfind('\n').map(|i| i + 1).unwrap_or(0),
-                // Just past the last predecessor entry's line.
-                (None, Some(e)) => self.raw[e..]
-                    .find('\n')
-                    .map(|i| e + i + 1)
-                    .unwrap_or(self.raw.len()),
-                // Empty table: right after its header line.
-                (None, None) => {
-                    let header = self.raw.find("[workspace.dependencies]").unwrap_or(0);
-                    self.raw[header..]
-                        .find('\n')
-                        .map(|i| header + i + 1)
-                        .unwrap_or(self.raw.len())
-                }
-            };
-            let line = self.raw[..pos].bytes().filter(|&b| b == b'\n').count() as u32 + 1;
-            return (line, pos as u32, entry);
-        }
-        // No table at all: append one at end-of-file.
-        let pos = self.raw.len();
-        let line = self.raw[..pos].bytes().filter(|&b| b == b'\n').count() as u32 + 1;
-        let lead = if self.raw.ends_with('\n') {
-            "\n"
-        } else {
-            "\n\n"
-        };
-        (
-            line,
-            pos as u32,
-            format!("{lead}[workspace.dependencies]\n{entry}"),
-        )
+            .is_some()
     }
 
     /// The package a dependency entry actually resolves to, when the entry
@@ -594,34 +560,6 @@ impl Manifest {
         })
     }
 
-    /// Build the canonical workspace-form replacement *line* for `dep_name`:
-    /// `<indent><name> = { workspace = true[, features = [...], optional = true,
-    /// default-features = false] }`.
-    ///
-    /// Indent is preserved from the original line (read via [`Manifest::raw`]).
-    /// Returns `None` if the dep can't be located or the value is a shape we
-    /// don't rewrite (multi-line inline table, or a `[dependencies.<name>]`
-    /// table block — those aren't single-line replacements).
-    ///
-    /// `version`/`git`/`registry`/`path` keys are dropped (the workspace
-    /// inherit covers them); `features`/`optional`/`default-features` are
-    /// preserved alongside `workspace = true`.
-    pub fn format_workspace_dep(&self, section: DepSection, dep_name: &str) -> Option<String> {
-        let location = self.locate_dep(section, dep_name)?;
-        let original_line = &self.raw[location.byte_start as usize..location.byte_end as usize];
-        let indent_end = original_line
-            .char_indices()
-            .find(|(_, c)| !c.is_whitespace())
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        let indent = &original_line[..indent_end];
-
-        let table = self.section_table(section)?;
-        let item = table.get(dep_name)?;
-        let new_value = format_workspace_value(item)?;
-        Some(format!("{indent}{dep_name} = {new_value}"))
-    }
-
     fn section_table(&self, section: DepSection) -> Option<&dyn TableLike> {
         let root: &Table = self.doc.as_table();
         match section {
@@ -639,37 +577,6 @@ impl Manifest {
                 .and_then(Item::as_table_like),
         }
     }
-}
-
-/// Build the inline-table value `{ workspace = true[, ...preserved] }` for a
-/// dep currently shaped as `Value::String("1.0")` or
-/// `Value::InlineTable({...})`. Returns `None` for shapes we don't rewrite
-/// (e.g. `[dependencies.<name>]` block — those are `Item::Table`, not a
-/// `Value`, and don't fit a single-line replacement).
-fn format_workspace_value(item: &Item) -> Option<String> {
-    let value = item.as_value()?;
-    let mut new_table = toml_edit::InlineTable::new();
-    new_table.insert("workspace", true.into());
-
-    // Inline-table source: preserve the keys that cargo allows alongside
-    // workspace = true.
-    if let Value::InlineTable(existing) = value {
-        for key in ["features", "optional", "default-features"] {
-            if let Some(v) = existing.get(key) {
-                let mut cloned = v.clone();
-                // Strip decor so the rendered table is canonical (no inherited
-                // newlines or trailing comments from the source).
-                cloned.decor_mut().clear();
-                new_table.insert(key, cloned);
-            }
-        }
-    } else if !value.is_str() {
-        // Anything else (datetime, integer, array, …) doesn't fit a dep
-        // line — bail rather than emit nonsense.
-        return None;
-    }
-
-    Some(new_table.to_string())
 }
 
 fn locate_dep_line(content: &str, section: DepSection, dep_name: &str) -> Option<DepLocation> {
@@ -953,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_dep_names_collects_root_table() {
+    fn workspace_deps_table_readable_via_deps_and_presence_flag() {
         let m = parse(
             r#"
 [workspace.dependencies]
@@ -961,19 +868,71 @@ serde = "1"
 tokio = { version = "1", features = ["full"] }
 "#,
         );
-        let names = m.workspace_dep_names();
+        assert!(m.has_workspace_deps_table());
+        let names: BTreeSet<String> = m
+            .deps(DepSection::WorkspaceDependencies)
+            .map(|(name, _)| name.to_string())
+            .collect();
         assert_eq!(names, BTreeSet::from(["serde".into(), "tokio".into()]));
+
+        let absent = parse("[package]\nname = \"foo\"\n");
+        assert!(!absent.has_workspace_deps_table());
+        assert_eq!(absent.deps(DepSection::WorkspaceDependencies).count(), 0);
+    }
+
+    /// Sorted-position insertion into an EXISTING table; `default-features =
+    /// false` rides along on the entry (cargo resolves features from the
+    /// workspace side — a member-only flag is ignored).
+    #[test]
+    fn workspace_dep_insertion_sorts_and_carries_default_features() {
+        let m = parse("[workspace.dependencies]\nanyhow = \"1\"\nserde = \"1\"\n");
+        assert!(m.has_workspace_deps_table());
+        let (_, pos, text) = m.workspace_dep_insertion("log", "0.4", false).unwrap();
+        assert_eq!(
+            text,
+            "log = { version = \"0.4\", default-features = false }\n"
+        );
+        // Between anyhow and serde: at the start of serde's line.
+        assert_eq!(&m.raw()[pos as usize..pos as usize + 5], "serde");
+        // Plain entry keeps the string form.
+        let (_, _, plain) = m.workspace_dep_insertion("log", "0.4", true).unwrap();
+        assert_eq!(plain, "log = \"0.4\"\n");
+    }
+
+    /// No table → per-dep insertion refuses (`None`); creating the table is
+    /// [`Manifest::workspace_table_creation`]'s job, ONCE with every entry.
+    /// The per-dep path used to emit its own `[workspace.dependencies]`
+    /// header here — N applied fixes stacked N duplicate sections and cargo
+    /// rejected the manifest (ripgrep, 2026-07-10 validation).
+    #[test]
+    fn absent_table_refuses_per_dep_insertion_and_creates_once() {
+        let m = parse("[workspace]\nmembers = [\"crates/*\"]\n");
+        assert!(m.workspace_dep_insertion("log", "0.4", true).is_none());
+
+        let (_, pos, text) =
+            m.workspace_table_creation(&[("serde", "1", true), ("log", "0.4", false)]);
+        assert_eq!(pos as usize, m.raw().len());
+        assert_eq!(
+            text,
+            "\n[workspace.dependencies]\n\
+             log = { version = \"0.4\", default-features = false }\n\
+             serde = \"1\"\n"
+        );
     }
 
     #[test]
-    fn workspace_dep_names_empty_when_absent() {
+    fn dep_entry_default_features_reads_the_key() {
         let m = parse(
-            r#"
-[package]
-name = "foo"
-"#,
+            "[dependencies]\na = \"1\"\nb = { version = \"1\", default-features = false }\n\
+             c = { version = \"1\", default-features = true }\n",
         );
-        assert!(m.workspace_dep_names().is_empty());
+        let df = |name: &str| {
+            let table = m.doc.as_table().get("dependencies").unwrap();
+            DepEntry::new(table.as_table_like().unwrap().get(name).unwrap()).default_features()
+        };
+        assert_eq!(df("a"), None);
+        assert_eq!(df("b"), Some(false));
+        assert_eq!(df("c"), Some(true));
     }
 
     #[test]

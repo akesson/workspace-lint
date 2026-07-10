@@ -94,6 +94,44 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             })
             .build(),
         ),
+        // centralized-deps: the absent-table shape of the two-file fix — no
+        // [workspace.dependencies] exists, so ONE suggestion creates it with
+        // every agreed entry (per-dep insertions would each carry their own
+        // duplicate header — cargo rejects the manifest). Entries whose
+        // members declare `default-features = false` carry the flag into the
+        // created table: cargo resolves features from the workspace side.
+        (
+            "centralized_deps_table_creation",
+            at_crate(
+                "workspace-lint::centralized-deps",
+                "2 dependencies in crates/alpha/Cargo.toml should use `workspace = true`",
+                PathBuf::from("crates/alpha"),
+            )
+            .help(
+                r#"[dependencies] log: version "0.4" not in [workspace.dependencies] — add it there and use { workspace = true }"#,
+            )
+            .help(
+                r#"[dependencies] serde: version "1" not in [workspace.dependencies] — add it there and use { workspace = true }"#,
+            )
+            .suggestion(Suggestion {
+                span: Span {
+                    file: PathBuf::from("Cargo.toml"),
+                    line_start: 3,
+                    line_end: 3,
+                    col_start: 1,
+                    col_end: 1,
+                    byte_start: 55,
+                    byte_end: 55,
+                },
+                message: "create [workspace.dependencies] with `log`, `serde`".into(),
+                replacement:
+                    "\n[workspace.dependencies]\nlog = { version = \"0.4\", default-features = false }\nserde = \"1\"\n"
+                        .into(),
+                applicability: Applicability::MachineApplicable,
+                original: None,
+            })
+            .build(),
+        ),
         // centralized-deps: multiple offending deps in one crate.
         (
             "centralized_deps_multiple_deps",
@@ -933,6 +971,29 @@ mod tests {
               |
             7 - rand = "0.8"
             7 + rand = { workspace = true }
+              |
+            help: if intentional, silence with:
+              |
+            1 + # workspace-lint: expect(centralized-deps)
+              |
+              = note: `#[warn(workspace_lint::centralized_deps)]` on by default
+            "#);
+        }
+
+        #[test]
+        fn centralized_deps_table_creation() {
+            insta::assert_snapshot!(render(&scenario("centralized_deps_table_creation")), @r#"
+            warning: 2 dependencies in crates/alpha/Cargo.toml should use `workspace = true`
+             --> crates/alpha/Cargo.toml:1:1
+              |
+              = help: [dependencies] log: version "0.4" not in [workspace.dependencies] — add it there and use { workspace = true }
+              = help: [dependencies] serde: version "1" not in [workspace.dependencies] — add it there and use { workspace = true }
+            help: create [workspace.dependencies] with `log`, `serde`
+              |
+            3 + 
+            3 + [workspace.dependencies]
+            3 + log = { version = "0.4", default-features = false }
+            3 + serde = "1"
               |
             help: if intentional, silence with:
               |
