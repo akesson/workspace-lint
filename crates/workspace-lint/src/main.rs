@@ -425,9 +425,11 @@ fn drop_generated_anchored(fast: Option<&FastModel>, diagnostics: &mut Vec<Diagn
 
 /// Best-effort [`FastModel`] load used when no enabled lint required one: the
 /// generated-file drop and the suppression scanner's parse cache still want it.
-/// Non-fatal: a directory that isn't a loadable cargo workspace yields `None`,
-/// so a structural-only run like `check file-size` still works outside a
-/// workspace (the drop is skipped; the directive scan parses on demand).
+/// Non-fatal: a directory that isn't a loadable cargo workspace yields `None`
+/// (the drop is skipped; the directive scan parses on demand). Lints that
+/// DECLARE `needs_fast` — since the measurement-sweep port that includes
+/// `check file-size` — instead go through the loud-fail load: they are
+/// workspace-rooted by design and exit 2 outside one.
 fn try_load_fast_model() -> Option<FastModel> {
     FastModel::load(std::path::Path::new(".")).ok()
 }

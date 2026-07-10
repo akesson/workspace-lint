@@ -2939,7 +2939,6 @@ dependencies = [
  "strip-ansi-escapes",
  "syn",
  "tempfile",
- "tokei",
  "toml 1.1.2+spec-1.1.0",
  "wl-diagnostic",
  "wl-engine",

@@ -1,10 +1,11 @@
-// These tests call the production `find_violations` directly (the tokei walk in
-// `check`/`collect_file_lines` is exercised end-to-end by tests/cases/file-size).
+// These tests call the production `find_violations` directly (the measurement
+// sweep in `check`/`collect_file_lines` is exercised end-to-end by
+// tests/cases/file-size).
 use super::*;
 use std::collections::HashMap;
 
 fn run(file_lines: &HashMap<String, usize>, config: &FileSizeConfig) -> Vec<Diagnostic> {
-    find_violations(file_lines, &config.rules)
+    find_violations(file_lines, &config.rules, &rule_globset(&config.rules))
 }
 
 fn make_config(rules: Vec<(&str, usize)>) -> FileSizeConfig {

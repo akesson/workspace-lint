@@ -1,13 +1,13 @@
 use globset::GlobSet;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use tokei::{Config as TokeiConfig, Languages};
+use std::path::PathBuf;
 
-use crate::shipped_source;
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_file;
+use wl_engine::fast::FastModel;
 use wl_lint_api::config::{GlobPattern, glob_set};
-use wl_lint_api::{LintContext, LintId, LintImpl};
+use wl_lint_api::util::rule_glob_note;
+use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
 
 pub mod config;
 #[cfg(test)]
@@ -37,17 +37,26 @@ impl FileSize {
 impl LintImpl for FileSize {
     const ID: LintId = LintId::FileSize;
     const DOC: &'static str = include_str!("DOC.md");
+    // The shared source-measurement sweep lives on the FastModel — this is
+    // what makes the lint workspace-rooted (cwd-invariant) and lets it share
+    // one tokei walk with crate-size.
+    const REQUIRES: Requirements = Requirements {
+        needs_fast: true,
+        needs_semantic: false,
+    };
 
-    fn run(&self, _cx: &LintContext<'_>) -> Vec<Diagnostic> {
-        check(&self.config)
+    fn run(&self, cx: &LintContext<'_>) -> Vec<Diagnostic> {
+        check(&self.config, cx.fast_model(Self::ID))
     }
 }
 
-pub(crate) fn check(config: &FileSizeConfig) -> Vec<Diagnostic> {
-    find_violations(&collect_file_lines(&config.rules), &config.rules)
+pub(crate) fn check(config: &FileSizeConfig, fast: &FastModel) -> Vec<Diagnostic> {
+    let globset = rule_globset(&config.rules);
+    find_violations(&collect_file_lines(fast, &globset), &config.rules, &globset)
 }
 
-/// Count code lines per file by running tokei from the process cwd.
+/// Per-file code-line counts from the FastModel's shared measurement sweep,
+/// keyed by workspace-root-relative path.
 ///
 /// Two counting regimes, picked per file:
 /// - **`.rs` files matched by a rule glob** are counted as *shipped* source
@@ -57,54 +66,36 @@ pub(crate) fn check(config: &FileSizeConfig) -> Vec<Diagnostic> {
 ///   out-of-line `#[cfg(test)] mod x;` target, or sits under a dev-target dir,
 ///   produces no entry (and therefore no diagnostic).
 /// - **everything else** (non-Rust globs like `**/*.ts`, or `.rs` files no rule
-///   targets) keeps tokei's raw whole-file count. Embedded languages (tokei
-///   `children` reports — e.g. Rust inside a doc-code-fence) are summed into the
-///   host file's key, matching the historical behavior for those globs.
+///   targets) keeps tokei's raw whole-file count, embedded languages (a Rust
+///   doc-code-fence in Markdown) summed into the host file's key.
 ///
 /// Only glob-matched `.rs` files are read+parsed by the syn pass, so vendored
 /// `corpus/` submodules and other untargeted trees are never parsed.
-fn collect_file_lines(rules: &[FileSizeRule]) -> HashMap<String, usize> {
-    let globset = rule_globset(rules);
-
-    let mut languages = Languages::new();
-    languages.get_statistics(&["."], &[], &TokeiConfig::default());
+fn collect_file_lines(fast: &FastModel, globset: &GlobSet) -> HashMap<String, usize> {
+    let measure = fast.source_measure();
 
     let mut file_lines: HashMap<String, usize> = HashMap::new();
     // `.rs` files a rule targets: deferred to the shipped-source recount below.
     let mut rust_targets: Vec<(String, PathBuf)> = Vec::new();
-    // A `.rs` file a rule targets is recounted as shipped source; everything
-    // else keeps tokei's raw count (children summed into the host file's key).
-    let mut route = |name: &Path, code: usize| {
-        let rel = name.strip_prefix("./").unwrap_or(name);
-        if is_rust(rel) && globset.is_match(rel) {
-            rust_targets.push((rel.display().to_string(), rel.to_path_buf()));
-        } else {
-            *file_lines.entry(rel.display().to_string()).or_default() += code;
-        }
-    };
-    for language in languages.values() {
-        for report in &language.reports {
-            route(&report.name, report.stats.code);
-        }
-        for child_reports in language.children.values() {
-            for report in child_reports {
-                route(&report.name, report.stats.code);
+    for f in measure.files() {
+        // An out-of-root member's files have no workspace-relative spelling;
+        // the old cwd-rooted walk never saw them either — scope preserved.
+        let Some(rel) = &f.rel else { continue };
+        if f.is_rust() && globset.is_match(rel) {
+            if !measure.in_dev_target(&f.abs) {
+                rust_targets.push((rel.display().to_string(), f.abs.clone()));
             }
+        } else {
+            *file_lines.entry(rel.display().to_string()).or_default() += f.code + f.embedded;
         }
     }
 
-    // Recount the targeted `.rs` files as shipped source. Dev-target files are
-    // dropped here (file-size has no cargo metadata, so the owning crate root is
-    // discovered by walking to the nearest `Cargo.toml`); out-of-line test-mod
-    // files are dropped by `shipped_lines_by_file` itself.
-    let to_count: Vec<PathBuf> = rust_targets
-        .iter()
-        .filter(|(_, path)| !shipped_source::in_dev_target_dir_rootless(path))
-        .map(|(_, path)| path.clone())
-        .collect();
-    let shipped = shipped_source::shipped_lines_by_file(&to_count);
-    for (rel, path) in rust_targets {
-        if let Some(&code) = shipped.get(&path) {
+    // Recount the targeted `.rs` files as shipped source; out-of-line
+    // test-mod files are dropped by `shipped_rust_lines` itself.
+    let to_count: Vec<PathBuf> = rust_targets.iter().map(|(_, abs)| abs.clone()).collect();
+    let shipped = measure.shipped_rust_lines(&to_count);
+    for (rel, abs) in rust_targets {
+        if let Some(&code) = shipped.get(&abs) {
             file_lines.insert(rel, code);
         }
     }
@@ -116,18 +107,16 @@ fn rule_globset(rules: &[FileSizeRule]) -> GlobSet {
     glob_set(rules.iter().map(|r| &r.glob)).unwrap_or_default()
 }
 
-fn is_rust(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("rs")
-}
-
 /// Pure projection over per-file code-line counts: emit a diagnostic for every
 /// file that exceeds a matching rule's `max_code_lines` (strict `>`). Kept
-/// separate from the tokei walk so the glob-match + threshold + message logic
-/// is unit-testable without the filesystem. Violations are sorted by path
-/// within each rule for deterministic output.
-fn find_violations(file_lines: &HashMap<String, usize>, rules: &[FileSizeRule]) -> Vec<Diagnostic> {
-    let globset = rule_globset(rules);
-
+/// separate from the measurement sweep so the glob-match + threshold + message
+/// logic is unit-testable without the filesystem. Violations are sorted by
+/// path within each rule for deterministic output.
+fn find_violations(
+    file_lines: &HashMap<String, usize>,
+    rules: &[FileSizeRule],
+    globset: &GlobSet,
+) -> Vec<Diagnostic> {
     let mut violations: Vec<Vec<(&String, usize)>> = vec![Vec::new(); rules.len()];
     for (path_str, code_lines) in file_lines {
         let path = std::path::Path::new(path_str);
@@ -158,10 +147,7 @@ fn find_violations(file_lines: &HashMap<String, usize>, rules: &[FileSizeRule]) 
                 .help("only shipped source counts — `#[cfg(test)]` and `#[test]` code is already excluded")
                 // Rule attribution is identical for every file the rule
                 // matches — once per run is enough.
-                .note_once(format!(
-                    "configured by [[file-size.rules]] glob = \"{}\"",
-                    rule.glob.as_str()
-                ))
+                .note_once(rule_glob_note(LintId::FileSize, &rule.glob))
                 .build(),
             );
         }

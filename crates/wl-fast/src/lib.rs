@@ -33,11 +33,13 @@ mod metadata;
 mod module_tree;
 mod reach;
 pub mod shipped_source;
+pub mod source_measure;
 pub mod timing;
 mod types;
 
 pub use manifest::{DeclaredDep, DepLocation, DepSection, Manifest, Publish};
 pub use metadata::{CrateInfo, FastModel};
+pub use source_measure::{MeasuredFile, SourceMeasure};
 /// Re-export `toml_edit` so consumers can name [`toml_edit::Item`] and
 /// friends at the exact version [`Manifest`] parses with.
 pub use toml_edit;

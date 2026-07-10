@@ -54,14 +54,15 @@ pub fn in_dev_target_dir(crate_dir: &Path, file: &Path) -> bool {
         .is_some_and(|first| DEV_TARGET_DIRS.contains(&first))
 }
 
-/// Like [`in_dev_target_dir`], but for callers without cargo metadata: discover
-/// the owning crate root by walking ancestors to the nearest one holding a
-/// `Cargo.toml`, then apply the same top-level dev-target rule against it. Used
-/// by `file-size`, which counts files by glob and never loads a `Workspace`.
+/// Like [`in_dev_target_dir`], but for a file outside every workspace member
+/// (an excluded package's sources matched by a broad glob): discover the
+/// owning crate root by walking ancestors to the nearest one holding a
+/// `Cargo.toml`, then apply the same top-level dev-target rule against it.
+/// The fallback arm of `SourceMeasure::in_dev_target`.
 ///
 /// A `.rs` file with no `Cargo.toml` ancestor (outside any crate) is treated as
 /// shipped — never under-count.
-pub fn in_dev_target_dir_rootless(file: &Path) -> bool {
+pub(crate) fn in_dev_target_dir_rootless(file: &Path) -> bool {
     let mut ancestor = file.parent();
     while let Some(dir) = ancestor {
         if dir.join("Cargo.toml").is_file() {

@@ -28,8 +28,3 @@ pub mod file_size;
 pub mod orphan_file;
 pub mod unused_deps;
 pub mod unused_pub;
-
-/// Production-only line counting shared by `crate-size` and `file-size`
-/// (lives in `wl-fast` with the other syntactic scanners; imported here so
-/// lint modules keep their `crate::shipped_source` paths).
-use wl_engine::fast::shipped_source;

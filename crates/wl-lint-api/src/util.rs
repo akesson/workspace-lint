@@ -53,6 +53,17 @@ pub fn split_command(command: &str) -> Vec<String> {
     })
 }
 
+/// The "configured by [[<lint>.rules]] glob = …" attribution note the size
+/// lints stamp once per rule (via `note_once`) — one wording, one format
+/// string, instead of a per-lint copy.
+pub fn rule_glob_note(lint: crate::LintId, glob: &crate::config::GlobPattern) -> String {
+    format!(
+        "configured by [[{}.rules]] glob = \"{}\"",
+        lint.short(),
+        glob.as_str()
+    )
+}
+
 /// Start a crate-anchored diagnostic for a manifest-level finding.
 /// Workspace-relative paths everywhere — both the in-message path handed to
 /// `message` and the suppression anchor — so a per-Cargo.toml
