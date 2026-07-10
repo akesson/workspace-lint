@@ -1,0 +1,15 @@
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# alpha has a `[[test]] harness = false` target (criterion/datatest shape):
+# cargo builds it under `--tests` WITHOUT passing `--test` to rustc. Two
+# contracts pinned here, both broken before the 2026-07-10 fix:
+#  1. The completeness guard expects `custom+test.wlir` and the extractor now
+#     keys the suffix on the target KIND too — keying on `opts.test` alone
+#     made this workspace hard-error (exit 2, all findings withheld) forever.
+#  2. The harness-less unit's reach is still TEST reach (`is_test_unit` keys
+#     on `target_kind == "test"`, not just `cfg(test)`) — the "only used by
+#     test code" wording is the proof.
+[engine]
+configs = ["cargo build", "cargo test"]
