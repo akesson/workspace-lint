@@ -22,8 +22,11 @@ pub struct Module {
     pub file: PathBuf,
     /// Feature names referenced via `#[cfg(feature = "...")]` or
     /// `#[cfg_attr(feature = "...", ...)]` on any item declared in this
-    /// module (outer attributes only — feature gates inside function
-    /// bodies are not extracted here). Deduped, sorted lexicographically.
+    /// module, plus any `feature = "..."` token sequence inside an
+    /// item-position bang-macro invocation (the expansion may weave the gate
+    /// into generated items — coarse by design, fail-toward-not-flagging).
+    /// Outer attributes only — feature gates inside function bodies are not
+    /// extracted here. Deduped, sorted lexicographically.
     pub cfg_features: Vec<String>,
     /// Absolute paths of files this module's source *names* but does not own as
     /// a submodule: the targets of `include_str!` / `include_bytes!`, and of an

@@ -1,0 +1,9 @@
+# A feature whose only gate is woven in by a bang-macro invocation
+# (`gated!(if feature = "special")` expands to a `#[cfg(feature = "special")]`
+# item): the gate is invisible to attribute extraction, so the feature read
+# as declared-but-never-gated (the dioxus config-macro FPs, 2026-07-10
+# validation). Invocation tokens are scanned for `feature = "…"` sequences —
+# coarse by design, fail-toward-not-flagging.
+[lints]
+default = "allow"
+feature-drift = "deny"

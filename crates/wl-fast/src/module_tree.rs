@@ -220,13 +220,22 @@ fn collect_module_contents(
             extract_cfg_feature_names(attr, &mut cfg_features);
         }
 
-        if let syn::Item::Macro(item_macro) = syn_item
-            && let Some(path) = resolve_include_site(item_macro, parent_file, inc)
-        {
-            // Queue the resolved generated file for splicing after the main
-            // loop. An argument we can't const-fold to an existing path yields
-            // `None` and is left un-spliced.
-            include_sites.push(path);
+        if let syn::Item::Macro(item_macro) = syn_item {
+            // A bang-macro invocation can weave `feature = "…"` gates into
+            // its generated items (`define_config_macro!(desktop if feature =
+            // "desktop")`) — invisible to the attribute extraction above,
+            // which made feature-drift flag such features as undeclared-use
+            // (the dioxus config-macro FPs, 2026-07-10 validation). Scan the
+            // raw invocation tokens; deliberately imprecise in the
+            // fail-toward-not-flagging direction (any `feature = "x"` token
+            // sequence in a macro call credits the feature).
+            scan_cfg_tokens(item_macro.mac.tokens.clone(), &mut cfg_features);
+            if let Some(path) = resolve_include_site(item_macro, parent_file, inc) {
+                // Queue the resolved generated file for splicing after the
+                // main loop. An argument we can't const-fold to an existing
+                // path yields `None` and is left un-spliced.
+                include_sites.push(path);
+            }
         }
 
         if let syn::Item::Mod(item_mod) = syn_item {
