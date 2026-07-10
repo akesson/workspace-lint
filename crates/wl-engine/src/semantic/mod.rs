@@ -30,7 +30,7 @@ pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
 pub use callgraph::{Callee, EnclosingFn, InboundRef};
 pub use clippy_guard::{DeletionUnmask, NarrowUnmask};
 pub use collateral::PrivateOrphan;
-pub use deps::{CrateDeps, DepUsage, DepsVerdict, NotJudged, UnusedDep};
+pub use deps::{CrateDeps, DepsVerdict, NotJudged, NotJudgedDep, UnusedDep};
 pub use imports::{DanglingImport, ExcisionBlock};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage};
@@ -254,10 +254,11 @@ impl SemanticModel {
         DepsVerdict::compute(&self.configs, &self.meta)
     }
 
-    /// The per-package exercised-crate sets — the primitive the ported
-    /// `unused-deps` lint layers its manifest-driven judgement on.
-    pub fn dep_usage(&self) -> DepUsage {
-        DepUsage::compute(&self.configs, &self.meta)
+    /// The per-package exercised-crate sets — kept for the in-crate golden
+    /// fixtures; the lint consumes [`Self::deps_verdict`].
+    #[cfg(test)]
+    fn dep_usage(&self) -> deps::DepUsage {
+        deps::DepUsage::compute(&self.configs, &self.meta)
     }
 
     /// The call-graph index, built on first use (see [`callgraph`]).

@@ -9,6 +9,8 @@
 //!     compiled (a `--tests` config present); else never flagged;
 //!   * **build** deps — never judged (`build.rs` isn't lint-passed);
 //!   * **optional** deps — never judged (feature-gated);
+//!   * **`[target.<cfg>]`-gated** deps — never judged (they only compile when
+//!     the cfg matches the build host; [`NotJudged::TargetGated`]);
 //!   * deps of a member **no config compiled** — never judged (zero fragments
 //!     means no compiler output to observe; [`NotJudged::NotCompiled`]).
 //!
@@ -35,7 +37,7 @@ pub struct CrateDeps {
     pub unused: Vec<UnusedDep>,
     /// Declared deps that could NOT be judged under the provided configs,
     /// with the reason — never findings.
-    pub not_judged: Vec<(String, NotJudged)>,
+    pub not_judged: Vec<NotJudgedDep>,
 }
 
 #[derive(Debug)]
@@ -43,6 +45,18 @@ pub struct UnusedDep {
     /// Code-form package name of the dependency.
     pub name: String,
     pub kind: DepKind,
+}
+
+/// One declared dep exempt from judgement, and why. Kinded like
+/// [`UnusedDep`]: a name alone is ambiguous — the same package can be a
+/// `NotCompiled` normal dep AND a (never-judged) build dep of one member,
+/// and a consumer joining back to manifest entries must not conflate them.
+#[derive(Debug)]
+pub struct NotJudgedDep {
+    /// Code-form package name of the dependency.
+    pub name: String,
+    pub kind: DepKind,
+    pub reason: NotJudged,
 }
 
 /// Why a declared dep was exempt from judgement.
@@ -55,6 +69,9 @@ pub enum NotJudged {
     BuildDep,
     /// `optional = true`: feature-gated, not compiled unless enabled.
     Optional,
+    /// Declared under `[target.<cfg>.…]`: only compiles when the cfg matches
+    /// the build host — a foreign platform's dep is unobservable here.
+    TargetGated,
     /// The owning member produced zero fragments — no `[engine] config`
     /// compiled it, so none of its deps can be observed. Add a config that
     /// builds it (e.g. a `--target` universe) to judge these.
@@ -70,11 +87,11 @@ pub struct DepsVerdict {
     pub dev_deps_judged: bool,
 }
 
-/// The per-package exercised-crate sets — the reusable primitive under both
-/// [`DepsVerdict`] and the ported `unused-deps` lint (which layers its own
-/// manifest-driven judgement — ignore config, doctest refs, feature plumbing —
-/// on top of this semantic signal).
-pub struct DepUsage {
+/// The per-package exercised-crate sets — the primitive under
+/// [`DepsVerdict`], which is the single unused-deps judgement (the lint
+/// layers its manifest-driven extras — ignore config, doctest refs, feature
+/// plumbing, rename resolution — on the verdict, not on this).
+pub(super) struct DepUsage {
     /// pkg → union, over every config and every target the package owns, of
     /// the crate-names that target references. A dep is declared once per
     /// package but may be used by any of its targets.
@@ -141,22 +158,18 @@ impl DepUsage {
     /// `owner`'s targets under any config? Facade- and lib-rename-aware: true
     /// iff the owner's referenced-crate set meets the dep's resolved closure
     /// (which carries both package and lib-target names).
-    pub fn dep_used(&self, meta: &WorkspaceMeta, owner: &str, dep_pkg: &str) -> bool {
+    pub(super) fn dep_used(&self, meta: &WorkspaceMeta, owner: &str, dep_pkg: &str) -> bool {
         let Some(used) = self.exercised.get(owner) else {
             return false;
         };
         meta.dep_closure(dep_pkg).iter().any(|c| used.contains(c))
     }
 
-    pub fn dev_deps_judged(&self) -> bool {
-        self.dev_deps_judged
-    }
-
     /// Did any `[engine] config` compile a target of this member (owner
     /// code-name)? `false` ⇒ zero owner-mapped fragments: the member's declared
     /// deps are unjudgeable (no compiler output to observe), not unused — the
     /// lint reports a coverage note rather than flagging them.
-    pub fn crate_compiled(&self, owner: &str) -> bool {
+    pub(super) fn crate_compiled(&self, owner: &str) -> bool {
         self.compiled.contains(owner)
     }
 }
@@ -177,6 +190,8 @@ impl DepsVerdict {
             for d in decls {
                 let exempt = if d.optional {
                     Some(NotJudged::Optional)
+                } else if d.target_gated {
+                    Some(NotJudged::TargetGated)
                 } else {
                     match d.kind {
                         DepKind::Build => Some(NotJudged::BuildDep),
@@ -187,14 +202,22 @@ impl DepsVerdict {
                     }
                 };
                 if let Some(reason) = exempt {
-                    not_judged.push((d.name.clone(), reason));
+                    not_judged.push(NotJudgedDep {
+                        name: d.name.clone(),
+                        kind: d.kind,
+                        reason,
+                    });
                     continue;
                 }
                 // A member no config compiled produces zero fragments: every
                 // surviving dep reads as unexercised only for lack of compiler
                 // output. Report the coverage gap, never a false "unused".
                 if !usage.crate_compiled(member) {
-                    not_judged.push((d.name.clone(), NotJudged::NotCompiled));
+                    not_judged.push(NotJudgedDep {
+                        name: d.name.clone(),
+                        kind: d.kind,
+                        reason: NotJudged::NotCompiled,
+                    });
                     continue;
                 }
                 // Exercised iff the referenced-crate set meets the dep's

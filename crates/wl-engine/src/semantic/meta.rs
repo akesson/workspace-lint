@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// build; `Dev` deps only when a test/example/bench target was compiled;
 /// `Build` deps drive `build.rs`, which isn't lint-passed, so they're never
 /// judged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DepKind {
     Normal,
     Dev,
@@ -33,6 +33,10 @@ pub struct DepDecl {
     /// feature is on, so a config that didn't enable it can't observe usage.
     /// Never flagged (skipped), to avoid calling a feature-gated dep dead.
     pub optional: bool,
+    /// Platform-gated (declared under `[target.<cfg>.…]`): it only compiles
+    /// when the cfg matches the build host, so a config run on the wrong host
+    /// can't observe usage. Never flagged (skipped), like `optional`.
+    pub target_gated: bool,
 }
 
 /// Workspace facts the semantic verdicts need, from one
@@ -192,6 +196,7 @@ impl WorkspaceMeta {
                         _ => DepKind::Normal, // Normal + any future/unknown kind
                     },
                     optional: d.optional,
+                    target_gated: d.target.is_some(),
                 })
                 .collect();
             meta.declared.insert(pkg, decls);
@@ -259,31 +264,43 @@ pub(super) mod test_support {
                             name: "facade".into(),
                             kind: DepKind::Normal,
                             optional: false,
+                            target_gated: false,
                         },
                         DepDecl {
                             name: "never_used".into(),
                             kind: DepKind::Normal,
                             optional: false,
+                            target_gated: false,
                         },
                         DepDecl {
                             name: "dev_helper".into(),
                             kind: DepKind::Dev,
                             optional: false,
+                            target_gated: false,
                         },
                         DepDecl {
                             name: "hook_installer".into(),
                             kind: DepKind::Build,
                             optional: false,
+                            target_gated: false,
                         },
                         DepDecl {
                             name: "feature_gated".into(),
                             kind: DepKind::Normal,
                             optional: true,
+                            target_gated: false,
                         },
                         DepDecl {
                             name: "md_5".into(),
                             kind: DepKind::Normal,
                             optional: false,
+                            target_gated: false,
+                        },
+                        DepDecl {
+                            name: "platform_only".into(),
+                            kind: DepKind::Normal,
+                            optional: false,
+                            target_gated: true,
                         },
                     ],
                 ),

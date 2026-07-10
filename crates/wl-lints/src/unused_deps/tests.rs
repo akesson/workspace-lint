@@ -18,7 +18,6 @@ fn entry(section: DepSection, name: &str) -> DeclaredDep {
         section,
         original_name: name.into(),
         normalized_name: name.replace('-', "_"),
-        target_gated: false,
     }
 }
 
@@ -79,6 +78,86 @@ c = "1"
     assert_eq!(deps["a"][0].section, DepSection::Dependencies);
     assert_eq!(deps["b"][0].section, DepSection::DevDependencies);
     assert_eq!(deps["c"][0].section, DepSection::BuildDependencies);
+}
+
+// ── the verdict join (partition_by_verdict) ────────────────────────────────
+
+use std::collections::HashSet;
+use wl_engine::semantic::{CrateDeps, DepKind, NotJudged, NotJudgedDep, UnusedDep};
+
+fn verdict(unused: &[(&str, DepKind)], not_judged: &[(&str, DepKind, NotJudged)]) -> CrateDeps {
+    CrateDeps {
+        krate: "alpha".into(),
+        unused: unused
+            .iter()
+            .map(|(n, k)| UnusedDep {
+                name: n.to_string(),
+                kind: *k,
+            })
+            .collect(),
+        not_judged: not_judged
+            .iter()
+            .map(|(n, k, r)| NotJudgedDep {
+                name: n.to_string(),
+                kind: *k,
+                reason: *r,
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn partition_routes_unused_and_not_compiled_by_name_and_kind() {
+    let m = parse_manifest(
+        "[dependencies]\nrand = \"0.8\"\n[dev-dependencies]\nrand = \"0.8\"\n[build-dependencies]\ncc = \"1\"\n",
+    );
+    let deps = super::ir::collect_deps(&m, &[]);
+    // The NORMAL `rand` is unused; the DEV `rand` was exercised — the kinded
+    // join must not conflate the two entries of the same package.
+    let v = verdict(&[("rand", DepKind::Normal)], &[]);
+    let (unused, nc) = super::ir::partition_by_verdict(deps, &v, &HashSet::new(), &m, &m);
+    assert_eq!(unused.len(), 1);
+    assert_eq!(unused[0].section, DepSection::Dependencies);
+    assert!(nc.is_empty());
+
+    // NotCompiled routes to the coverage bucket, not the findings.
+    let deps = super::ir::collect_deps(&m, &[]);
+    let v = verdict(&[], &[("rand", DepKind::Normal, NotJudged::NotCompiled)]);
+    let (unused, nc) = super::ir::partition_by_verdict(deps, &v, &HashSet::new(), &m, &m);
+    assert!(unused.is_empty());
+    assert_eq!(nc.len(), 1);
+
+    // Other exemption reasons surface nowhere.
+    let deps = super::ir::collect_deps(&m, &[]);
+    let v = verdict(&[], &[("cc", DepKind::Build, NotJudged::BuildDep)]);
+    let (unused, nc) = super::ir::partition_by_verdict(deps, &v, &HashSet::new(), &m, &m);
+    assert!(unused.is_empty() && nc.is_empty());
+}
+
+#[test]
+fn partition_joins_renamed_deps_on_the_resolved_package() {
+    // The manifest key is the local alias `md5`; the verdict speaks the real
+    // package `md_5` (code form of `md-5`).
+    let m = parse_manifest("[dependencies]\nmd5 = { package = \"md-5\", version = \"0.10\" }\n");
+    let deps = super::ir::collect_deps(&m, &[]);
+    let v = verdict(&[("md_5", DepKind::Normal)], &[]);
+    let (unused, _) = super::ir::partition_by_verdict(deps, &v, &HashSet::new(), &m, &m);
+    assert_eq!(unused.len(), 1);
+    assert_eq!(
+        unused[0].original_name, "md5",
+        "display name stays the alias"
+    );
+}
+
+#[test]
+fn partition_subtracts_syntactic_credits() {
+    let m = parse_manifest("[dependencies]\nmy-doc-dep = \"1\"\n");
+    let deps = super::ir::collect_deps(&m, &[]);
+    let v = verdict(&[("my_doc_dep", DepKind::Normal)], &[]);
+    // A doc-fence credit (separator-stripped form included) clears the finding.
+    let syntactic: HashSet<String> = ["mydocdep".to_string()].into();
+    let (unused, _) = super::ir::partition_by_verdict(deps, &v, &syntactic, &m, &m);
+    assert!(unused.is_empty(), "doc-fence evidence beats the verdict");
 }
 
 #[test]
