@@ -206,11 +206,7 @@ fn enumerate(fast: &FastModel, config: &DuplicateCodeConfig) -> Vec<ScanFile> {
                 continue;
             }
             for module in target.root.walk() {
-                let canonical = module
-                    .file
-                    .canonicalize()
-                    .unwrap_or_else(|_| module.file.clone());
-                if !seen.insert(canonical) {
+                if !seen.insert(wl_engine::fast::canonicalized(&module.file)) {
                     continue;
                 }
                 let rel = fast.crate_relative_path(&module.file);
@@ -271,7 +267,7 @@ fn emit(
     // Classify the survivor. `identical` — differing at most in local names —
     // gates the merge family (no divergence ⇒ exact-literals mode ⇒ identical).
     let class = classifier.map(|c| {
-        let identical = divergence.is_none_or(|d| d.params == 0 && d.violations.is_empty());
+        let identical = divergence.is_none_or(Divergence::is_identical);
         c.classify(group, identical)
     });
     let help = match &class {
@@ -353,28 +349,34 @@ fn extraction_signature_note(lv: &Liveness) -> String {
     format!("an extracted fn would {take} {ret}")
 }
 
-/// A comma-joined name list, capped at [`MAX_LISTED`] with an `and N more`
-/// tail (matching the diagnostic's other site-list caps).
+/// A comma-joined name list, capped via [`capped_list`] (matching the
+/// diagnostic's other site-list caps).
 fn name_list(names: &[String]) -> String {
-    let mut listed: Vec<String> = names.iter().take(MAX_LISTED).cloned().collect();
-    if names.len() > MAX_LISTED {
-        listed.push(format!("and {} more", names.len() - MAX_LISTED));
+    capped_list(names.iter().cloned(), names.len())
+}
+
+/// Cap for per-diagnostic site lists (cross-references, drift notes, dead
+/// copies), so a pathological group doesn't turn the notes into a wall.
+pub(super) const MAX_LISTED: usize = 5;
+
+/// The one comma-joined, `and N more`-capped list builder behind every
+/// site/name list this lint renders. (`classify::dead_copy_help` keeps its
+/// own phrasing — no comma before its `and N more`, singular/plural sentence
+/// forms — and shares only the cap.)
+fn capped_list(items: impl Iterator<Item = String>, total: usize) -> String {
+    let mut listed: Vec<String> = items.take(MAX_LISTED).collect();
+    if total > MAX_LISTED {
+        listed.push(format!("and {} more", total - MAX_LISTED));
     }
     listed.join(", ")
 }
-
-/// Cap for per-diagnostic site lists (cross-references and drift notes), so
-/// a pathological group doesn't turn the notes into a wall.
-const MAX_LISTED: usize = 5;
 
 /// `file:line` list of the group's instances beyond the anchor, capped at
 /// [`MAX_LISTED`].
 fn other_sites(group: &CloneGroup) -> String {
     let others: &[Region] = &group.instances[1..];
-    let mut listed: Vec<String> = others
-        .iter()
-        .take(MAX_LISTED)
-        .map(|r| {
+    capped_list(
+        others.iter().map(|r| {
             // `display_path` forces forward slashes so the note text matches
             // the renderer's span paths on Windows.
             format!(
@@ -382,12 +384,9 @@ fn other_sites(group: &CloneGroup) -> String {
                 wl_diagnostic::render::display_path(&r.file),
                 r.line_start
             )
-        })
-        .collect();
-    if others.len() > MAX_LISTED {
-        listed.push(format!("and {} more", others.len() - MAX_LISTED));
-    }
-    listed.join(", ")
+        }),
+        others.len(),
+    )
 }
 
 #[cfg(test)]

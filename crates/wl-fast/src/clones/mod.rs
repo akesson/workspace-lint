@@ -85,7 +85,8 @@ pub mod meta;
 mod tests;
 
 use self::encode::{Encoder, FlatTok, Interner, Measured, NormState, flatten};
-use crate::shipped_source::{has_test_attr, is_cfg_test, item_attrs};
+use crate::shipped_source::{has_test_attr, is_cfg_test};
+use crate::syn_util::item_attrs;
 
 /// One already-parsed source file to scan. `rel_path` is the
 /// workspace-relative display path (what diagnostics anchor on and what the

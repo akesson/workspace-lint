@@ -93,6 +93,62 @@ pub struct DeclaredDep {
     pub normalized_name: String,
 }
 
+/// A shape-aware read-only view over ONE dependency entry's `toml_edit` item —
+/// plain string (`serde = "1"`), inline table, dotted keys, and
+/// `[section.name]` block table alike. The manifest-shape knowledge a
+/// dep-auditing lint needs, kept model-side so it can't drift per lint.
+///
+/// Distinct from the name-keyed helpers below ([`Manifest::get_dep_version`]
+/// etc.), which look up TOP-LEVEL section entries only and whose block-form
+/// `None` is a tested contract — this type wraps an item the caller already
+/// holds (e.g. from [`Manifest::deps`], which includes `[target.<cfg>.…]`
+/// tables).
+pub struct DepEntry<'a>(&'a Item);
+
+impl<'a> DepEntry<'a> {
+    pub fn new(item: &'a Item) -> Self {
+        Self(item)
+    }
+
+    /// The declared version string: the whole value for the string form, or
+    /// the `version` key of any table shape.
+    pub fn version(&self) -> Option<&'a str> {
+        self.0
+            .as_str()
+            .or_else(|| self.0.as_table_like()?.get("version")?.as_str())
+    }
+
+    /// `workspace = true` — already centralized.
+    pub fn uses_workspace(&self) -> bool {
+        self.0
+            .as_table_like()
+            .and_then(|t| t.get("workspace"))
+            .and_then(Item::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// Carries a `path` source (a local dep — never centralized by version).
+    pub fn is_path(&self) -> bool {
+        self.0
+            .as_table_like()
+            .is_some_and(|t| t.contains_key("path"))
+    }
+
+    /// Carries a `git` source.
+    pub fn is_git(&self) -> bool {
+        self.0
+            .as_table_like()
+            .is_some_and(|t| t.contains_key("git"))
+    }
+
+    /// Carries a `package = "…"` rename (the dep key is a local alias).
+    pub fn is_renamed(&self) -> bool {
+        self.0
+            .as_table_like()
+            .is_some_and(|t| t.contains_key("package"))
+    }
+}
+
 /// A parsed Cargo manifest. Pure read-only data on the model side.
 #[derive(Debug, Clone)]
 pub struct Manifest {
@@ -731,6 +787,40 @@ mod tests {
             raw: content.to_string(),
             doc: Document::parse(content.to_string()).unwrap(),
         }
+    }
+
+    /// The [`DepEntry`] shape view over every TOML form a dep entry takes.
+    #[test]
+    fn dep_entry_reads_every_toml_shape() {
+        let m = parse(
+            "[dependencies]\n\
+             plain = \"1.0\"\n\
+             inline = { version = \"2.0\", features = [\"x\"] }\n\
+             ws = { workspace = true }\n\
+             local = { path = \"../local\" }\n\
+             gitdep = { git = \"https://example.com/r.git\" }\n\
+             alias = { package = \"real-name\", version = \"3.0\" }\n\
+             dotted.workspace = true\n\
+             \n\
+             [dependencies.block]\n\
+             version = \"4.0\"\n",
+        );
+        let table = m.section_table(DepSection::Dependencies).unwrap();
+        let entry = |name: &str| DepEntry::new(table.get(name).unwrap());
+
+        assert_eq!(entry("plain").version(), Some("1.0"));
+        assert!(!entry("plain").uses_workspace());
+        assert!(!entry("plain").is_renamed());
+
+        assert_eq!(entry("inline").version(), Some("2.0"));
+        assert!(entry("ws").uses_workspace());
+        assert!(entry("dotted").uses_workspace());
+        assert!(entry("local").is_path());
+        assert!(entry("gitdep").is_git());
+        assert_eq!(entry("gitdep").version(), None);
+        assert!(entry("alias").is_renamed());
+        assert_eq!(entry("alias").version(), Some("3.0"));
+        assert_eq!(entry("block").version(), Some("4.0"));
     }
 
     #[test]

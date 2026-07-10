@@ -27,9 +27,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use wl_engine::SemanticModel;
-use wl_engine::fast::{CrateInfo, FastModel};
+use wl_engine::fast::{CrateInfo, FastModel, canonicalized};
 
-use classify::{Verdict, canonical, classify, code_name};
+use classify::{Verdict, classify};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::builder::at_file;
 use wl_diagnostic::render::display_path;
@@ -68,24 +68,28 @@ impl LintImpl for OrphanFile {
 }
 
 pub(crate) fn check(fast: &FastModel, semantic: &SemanticModel) -> Vec<Diagnostic> {
+    // Canonicalized for set comparison: the extractor canonicalizes what it
+    // emits and `declared_reach` what it collects, so the candidate side
+    // must too.
     let rustc_reached: HashSet<PathBuf> = semantic
         .loaded_files()
         .iter()
-        .map(|f| canonical(Path::new(f)))
+        .map(|f| canonicalized(Path::new(f)))
         .collect();
     // A crate that emitted no fragment was never compiled by any config — a
     // scoped `[engine] configs = ["cargo build -p foo"]` does exactly that.
     // Judging one would report *every* file it owns as an orphan.
+    // (`fragment_crates` speaks the IR's code form, hence `code_name()`.)
     let compiled = semantic.fragment_crates();
     let configs: Vec<&str> = semantic.config_ids().collect();
 
     let mut diagnostics = Vec::new();
     for krate in fast.members() {
-        if !compiled.contains(code_name(&krate.name).as_str()) {
+        if !compiled.contains(krate.code_name().as_str()) {
             continue;
         }
         for file in krate.src_files() {
-            let canon = canonical(file);
+            let canon = canonicalized(file);
             match classify(&canon, &rustc_reached, krate.declared_reach()) {
                 Verdict::Live => {}
                 Verdict::Orphan => diagnostics.push(orphan(fast, krate, file)),
@@ -99,7 +103,9 @@ pub(crate) fn check(fast: &FastModel, semantic: &SemanticModel) -> Vec<Diagnosti
 /// The crate-relative form (`src/stale.rs`) is the right shape for the message:
 /// the crate root is the natural origin for a reader thinking about `mod`
 /// declarations. The *anchor*, though, must be workspace-relative so a
-/// directive in a sibling file can match it.
+/// directive in a sibling file can match it. Deliberately NOT
+/// `FastModel::crate_relative_path` (which relativizes against the workspace
+/// root) — the two bases differ and both are load-bearing here.
 fn crate_relative(krate: &CrateInfo, file: &Path) -> String {
     file.strip_prefix(&krate.manifest_dir)
         .map(display_path)

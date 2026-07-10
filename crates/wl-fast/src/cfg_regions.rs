@@ -114,7 +114,7 @@ impl RegionVisitor<'_> {
     }
 
     fn visit_item(&mut self, item: &syn::Item) {
-        self.record(crate::module_tree::item_attrs(item), item.span());
+        self.record(crate::syn_util::item_attrs(item), item.span());
         match item {
             syn::Item::Mod(m) => self.visit_mod(m),
             syn::Item::Fn(f) => self.visit_block(&f.block),

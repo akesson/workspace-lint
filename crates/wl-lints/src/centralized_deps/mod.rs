@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use wl_engine::fast::toml_edit::Item;
-use wl_engine::fast::{DepSection, FastModel, Manifest};
+use wl_engine::fast::{DepEntry, DepSection, FastModel, Manifest};
 
 use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion};
 use wl_lint_api::{LintContext, LintId, LintImpl, Requirements};
@@ -246,36 +246,13 @@ fn check_dep(
     workspace_deps: &BTreeSet<String>,
 ) -> Option<DepIssue> {
     let section_str = section.as_str();
+    let entry = DepEntry::new(item);
 
-    if let Some(version) = item.as_str() {
-        if workspace_deps.contains(name) {
-            return Some(DepIssue::plain(format!(
-                "[{section_str}] {name}: has own version \"{version}\" — use {{ workspace = true }} instead"
-            )));
-        }
-        return Some(DepIssue {
-            message: format!(
-                "[{section_str}] {name}: version \"{version}\" not in [workspace.dependencies] — add it there and use {{ workspace = true }}"
-            ),
-            insertable_version: Some(version.to_string()),
-        });
+    if entry.uses_workspace() || entry.is_path() {
+        return None; // already centralized / a local path dep
     }
 
-    let table = item.as_table_like()?;
-
-    if table
-        .get("workspace")
-        .and_then(Item::as_bool)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-
-    if table.contains_key("path") {
-        return None;
-    }
-
-    if let Some(version) = table.get("version").and_then(Item::as_str) {
+    if let Some(version) = entry.version() {
         if workspace_deps.contains(name) {
             return Some(DepIssue::plain(format!(
                 "[{section_str}] {name}: has own version \"{version}\" — use {{ workspace = true }} instead"
@@ -284,7 +261,7 @@ fn check_dep(
         // A renamed dep (`{ package = "other", … }`) needs the rename in the
         // workspace entry too — not the simple `name = "version"` insert, so
         // it stays a manual (MaybeIncorrect) case.
-        let insertable_version = (!table.contains_key("package")).then(|| version.to_string());
+        let insertable_version = (!entry.is_renamed()).then(|| version.to_string());
         return Some(DepIssue {
             message: format!(
                 "[{section_str}] {name}: version \"{version}\" not in [workspace.dependencies] — add it there and use {{ workspace = true }}"
@@ -293,7 +270,7 @@ fn check_dep(
         });
     }
 
-    if table.contains_key("git") {
+    if entry.is_git() {
         if workspace_deps.contains(name) {
             return Some(DepIssue::plain(format!(
                 "[{section_str}] {name}: has own git source — use {{ workspace = true }} instead"

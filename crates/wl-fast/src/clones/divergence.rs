@@ -52,6 +52,15 @@ pub struct Divergence {
     pub violations: Vec<Violation>,
 }
 
+impl Divergence {
+    /// Instances differ at most in local names: no parameterizable literal
+    /// positions and no drift violations — the `identical` gate of the
+    /// duplicate-code merge family.
+    pub fn is_identical(&self) -> bool {
+        self.params == 0 && self.violations.is_empty()
+    }
+}
+
 /// One probable copy-paste drift: a literal breaking an otherwise consistent
 /// cross-instance mapping.
 #[derive(Debug)]

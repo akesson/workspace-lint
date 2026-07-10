@@ -27,7 +27,7 @@ use super::types::Target;
 pub(super) fn declared_reach(targets: &[Target]) -> HashSet<PathBuf> {
     let mut reached: HashSet<PathBuf> = HashSet::new();
     let mut insert = |path: &Path| {
-        reached.insert(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+        reached.insert(crate::canonicalized(path));
     };
     for target in targets {
         insert(&target.src_path);

@@ -216,7 +216,7 @@ fn collect_module_contents(
     let mut include_sites: Vec<PathBuf> = Vec::new();
 
     for syn_item in syn_items {
-        for attr in item_attrs(syn_item) {
+        for attr in crate::syn_util::item_attrs(syn_item) {
             extract_cfg_feature_names(attr, &mut cfg_features);
         }
 
@@ -519,30 +519,6 @@ fn path_name_value(meta: &syn::Meta) -> Option<String> {
         return Some(s.value());
     }
     None
-}
-
-/// Outer attributes of a syn item. Returned as a slice so the caller can
-/// iterate without copying.
-pub(crate) fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
-    match item {
-        syn::Item::Const(i) => &i.attrs,
-        syn::Item::Enum(i) => &i.attrs,
-        syn::Item::ExternCrate(i) => &i.attrs,
-        syn::Item::Fn(i) => &i.attrs,
-        syn::Item::ForeignMod(i) => &i.attrs,
-        syn::Item::Impl(i) => &i.attrs,
-        syn::Item::Macro(i) => &i.attrs,
-        syn::Item::Mod(i) => &i.attrs,
-        syn::Item::Static(i) => &i.attrs,
-        syn::Item::Struct(i) => &i.attrs,
-        syn::Item::Trait(i) => &i.attrs,
-        syn::Item::TraitAlias(i) => &i.attrs,
-        syn::Item::Type(i) => &i.attrs,
-        syn::Item::Union(i) => &i.attrs,
-        syn::Item::Use(i) => &i.attrs,
-        syn::Item::Verbatim(_) => &[],
-        _ => &[],
-    }
 }
 
 /// Scan an attribute for `feature = "name"` predicates inside `cfg(...)` or
