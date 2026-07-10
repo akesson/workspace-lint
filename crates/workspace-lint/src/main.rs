@@ -15,6 +15,7 @@ mod init;
 mod messages;
 mod provision;
 mod registry;
+mod run;
 mod suggest;
 mod suppress;
 
@@ -26,7 +27,11 @@ use cli::{CheckRule, Cli, Commands};
 use wl_diagnostic::Diagnostic;
 use wl_diagnostic::render::{Format, render};
 use wl_engine::fast::FastModel;
-use wl_lint_api::{LintContext, LintId, git, util};
+use wl_lint_api::{LintId, git, util};
+
+use run::{
+    RunOutput, load_fast_model, load_semantic_model, run_all, run_single_check, try_load_fast_model,
+};
 
 fn main() {
     let mut cli = Cli::parse();
@@ -90,7 +95,8 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     // plumbing end-to-end — extract on the pinned toolchain, assemble,
     // print stats — then exit 0 without running any lints.
     if cli.engine_dump {
-        let model = load_semantic_model(config.engine.selectors());
+        let model = load_semantic_model(config.engine.selectors())
+            .unwrap_or_else(|f| util::fail(f.message));
         print_engine_stats(&model);
         return;
     }
@@ -108,6 +114,7 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
         semantic,
         cfg_shadow,
         mut ran,
+        engine_error,
     } = wl_engine::timing::phase("run_all", || {
         run_all(&config, cli.fast_only, cli.fix_auto_delete)
     });
@@ -169,7 +176,7 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
         apply_suppression(fast.as_ref(), ran, &mut diagnostics)
     });
     apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
-    if fix {
+    if fix && engine_error.is_none() {
         let summary = fix::run(&diagnostics);
         // Any applied fix can leave fmt-relevant residue (a
         // `pub`→`pub(crate)` rewrite alone can push a line past the
@@ -189,6 +196,30 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
                  pass reviewable as its own diff)"
             );
         }
+    }
+    // An engine failure aborts the run (exit 2) — but only AFTER the
+    // fast-tier findings above rendered through the normal pipeline. `--fix`
+    // was skipped for this run (the semantic tier never produced the model a
+    // fix pass would consult); the findings are report-only.
+    if let Some(failure) = engine_error {
+        {
+            let mut stdout = io::stdout().lock();
+            let mut stderr = io::stderr().lock();
+            let out: &mut dyn io::Write = match format {
+                Format::Human => &mut stderr,
+                Format::Json | Format::Github => &mut stdout,
+            };
+            let _ = render(format, &diagnostics, out);
+        }
+        if !failure.shown {
+            eprintln!("{}", failure.message);
+        }
+        eprintln!(
+            "workspace-lint: the rustc-backed tier failed — semantic lints did not run \
+             (findings above are from the build-free tier; use --fast-only to run without \
+             the engine)"
+        );
+        std::process::exit(2);
     }
     report_and_exit(diagnostics, format);
 }
@@ -227,6 +258,10 @@ fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
         semantic,
         cfg_shadow,
         ran,
+        // A single `check <semantic-lint>` has no fast findings to salvage —
+        // an engine failure already printed and exited inside
+        // `run_single_check`.
+        engine_error: _,
     } = run_single_check(
         rule,
         cli.fast_only,
@@ -441,17 +476,6 @@ fn drop_generated_anchored(fast: Option<&FastModel>, diagnostics: &mut Vec<Diagn
     });
 }
 
-/// Best-effort [`FastModel`] load used when no enabled lint required one: the
-/// generated-file drop and the suppression scanner's parse cache still want it.
-/// Non-fatal: a directory that isn't a loadable cargo workspace yields `None`
-/// (the drop is skipped; the directive scan parses on demand). Lints that
-/// DECLARE `needs_fast` — since the measurement-sweep port that includes
-/// `check file-size` — instead go through the loud-fail load: they are
-/// workspace-rooted by design and exit 2 outside one.
-fn try_load_fast_model() -> Option<FastModel> {
-    FastModel::load(std::path::Path::new(".")).ok()
-}
-
 /// Scan the workspace for `allow!`/`expect!` directives and use them to
 /// filter the diagnostic stream. Stale `expect` directives are appended as
 /// new diagnostics — these pass back through the suppression map so an
@@ -547,182 +571,6 @@ fn run_unused_pub_cascade(
     did_surgery
 }
 
-/// The default run's lint pipeline. The returned [`LintId`] set records which
-/// lints actually ran (post-`--fast-only`, post-`allow`) — the staleness
-/// domain for `expect` directives.
-/// One lint pass's outputs: the diagnostic stream plus the shared models the
-/// caller's `--fix-auto-delete` cascade reuses, and the ran-set that scopes
-/// `stale-expect`.
-struct RunOutput {
-    diagnostics: Vec<Diagnostic>,
-    fast: Option<FastModel>,
-    semantic: Option<wl_engine::SemanticModel>,
-    cfg_shadow: Option<wl_engine::coverage::CfgShadow>,
-    ran: HashSet<LintId>,
-}
-
-fn run_all(config: &config::Config, fast_only: bool, auto_delete: bool) -> RunOutput {
-    let mut registry = registry::registry(config);
-    // `--fast-only` runs only the build-free lints: a semantic lint is
-    // *skipped* — not invoked without its model (its `check` rightly demands
-    // one) and not silently degraded to a weaker analysis.
-    if fast_only {
-        registry.retain(|l| !l.requirements().needs_semantic);
-    }
-    // The build-free FastModel is needed when some enabled lint asks for it,
-    // or when a per-crate `[crates.*]` tier is present — the latter so
-    // per-crate levels can map diagnostics to their owning crate and crate
-    // names can be validated against the membership, even if no lint itself
-    // needs the metadata.
-    let needs_fast =
-        registry.iter().any(|l| l.requirements().needs_fast) || !config.crates.is_empty();
-    // The rustc-backed tier runs only when some (still-enabled) lint asks
-    // for it — never under `--fast-only` (the retain above emptied those).
-    let needs_semantic = registry.iter().any(|l| l.requirements().needs_semantic);
-    let fast = needs_fast.then(|| wl_engine::timing::phase("FastModel::load", load_fast_model));
-    // A memberless workspace (a bare virtual manifest) has nothing to extract
-    // or judge — cargo would just error "the workspace has no members" — so
-    // the tier is skipped; semantic lints see zero members and emit nothing.
-    // `needs_semantic ⇒ needs_fast` (every semantic lint declares both), so
-    // `fast` is loaded whenever this check runs.
-    let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
-    let semantic = (needs_semantic && has_members).then(|| {
-        wl_engine::timing::phase("SEMANTIC (extract+assemble)", || {
-            load_semantic_model(config.engine.selectors())
-        })
-    });
-    // The cfg-shadow index rides along whenever the semantic tier ran: it is
-    // what lets `unused-pub` (and the `--fix-auto-delete` cascade, which
-    // reuses it) say "possibly used under `cfg(...)` no config compiles"
-    // instead of a generic blind-spot disclaimer.
-    let shadow = semantic.as_ref().and(fast.as_ref()).map(|fm| {
-        wl_engine::timing::phase("cfg_shadow[scan+eval]", || {
-            wl_engine::coverage::CfgShadow::compute(
-                fm,
-                &config.engine.selectors(),
-                wl_engine::coverage::host_triple().as_deref(),
-            )
-        })
-    });
-    let cx = LintContext {
-        fast: fast.as_ref(),
-        semantic: semantic.as_ref(),
-        cfg_shadow: shadow.as_ref(),
-        auto_delete,
-    };
-    let ran: HashSet<LintId> = registry.iter().map(|l| l.id()).collect();
-    let diagnostics: Vec<Diagnostic> = wl_engine::timing::phase("LINTS (all)", || {
-        registry
-            .iter()
-            .flat_map(|l| wl_engine::timing::phase(l.id().short(), || l.check(&cx)))
-            .collect()
-    });
-    // `cx`'s borrows end here (last use above), so the models move out for
-    // the `--fix` cascade the caller runs.
-    RunOutput {
-        diagnostics,
-        fast,
-        semantic,
-        cfg_shadow: shadow,
-        ran,
-    }
-}
-
-fn run_single_check(
-    rule: CheckRule,
-    fast_only: bool,
-    auto_delete: bool,
-    config: Option<&config::Config>,
-) -> RunOutput {
-    let lint = rule.into_lint();
-    let requirements = lint.requirements();
-    // A semantic lint cannot run without its model; under `--fast-only` that
-    // is a contradiction the user should hear about, not a silent no-op.
-    if requirements.needs_semantic && fast_only {
-        util::fail(format!(
-            "error: `{}` needs the rustc-backed semantic tier, which `--fast-only` skips — drop the flag to run it",
-            lint.id().short()
-        ));
-    }
-    let fast = requirements.needs_fast.then(load_fast_model);
-    // Outside a configured workspace (`config::try_load` → None) the engine
-    // falls back to its default single-config matrix. A memberless workspace
-    // skips the tier entirely (see run_all).
-    let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
-    let semantic = (requirements.needs_semantic && has_members).then(|| {
-        let engine = config.map(|c| c.engine.clone()).unwrap_or_default();
-        load_semantic_model(engine.selectors())
-    });
-    let shadow = semantic.as_ref().and(fast.as_ref()).map(|fm| {
-        let engine = config.map(|c| c.engine.clone()).unwrap_or_default();
-        wl_engine::coverage::CfgShadow::compute(
-            fm,
-            &engine.selectors(),
-            wl_engine::coverage::host_triple().as_deref(),
-        )
-    });
-    let cx = LintContext {
-        fast: fast.as_ref(),
-        semantic: semantic.as_ref(),
-        cfg_shadow: shadow.as_ref(),
-        auto_delete,
-    };
-    let ran = HashSet::from([lint.id()]);
-    let diagnostics = lint.check(&cx);
-    // `cx`'s borrows end above, so the models can move out for the
-    // `--fix-auto-delete` cascade the caller may run.
-    RunOutput {
-        diagnostics,
-        fast,
-        semantic,
-        cfg_shadow: shadow,
-        ran,
-    }
-}
-
-/// Build the full (rustc-backed) tier: vendored extractor → one embedded
-/// dylint extraction per config → Phase-2 assembly. Loud-fail on error,
-/// mirroring [`load_fast_model`], but printing the error `Display` verbatim —
-/// the `EngineError` toolchain variants carry the full rustup remediation
-/// text, which must reach the user unwrapped and untruncated. On an
-/// interactive terminal, provisionable preflight failures (missing pinned
-/// toolchain / component / dylint-link) are first offered as a one-keypress
-/// install-and-retry ([`provision::Provisioner`]); each stage repairs at most
-/// once, so the loop is bounded by the number of preflight checks.
-///
-/// NOTE (deferred): today extraction runs before any lint, so an extraction
-/// failure aborts the run before the fast-tier lints report. Reordering so
-/// fast lints still report their findings first is deferred to the first
-/// semantic-lint port, where the behavior becomes testable.
-fn load_semantic_model(configs: Vec<wl_engine::ConfigSpec>) -> wl_engine::SemanticModel {
-    let root = std::path::absolute(".")
-        .unwrap_or_else(|e| util::fail(format!("failed to resolve the workspace root: {e}")));
-    let engine = wl_engine::Engine::new(wl_engine::ExtractorSource::vendored());
-    let engine_config = wl_engine::EngineConfig {
-        workspace_root: root.clone(),
-        configs,
-
-        // Relative on purpose: `Engine::extract` enters the workspace
-        // root, so the per-config IR dirs land under the target dir of
-        // the linted workspace (stable across runs — warm-cache friendly).
-        ir_root: std::path::PathBuf::from("target/workspace-lint/ir"),
-    };
-    let mut provisioner = provision::Provisioner::new();
-    let runs = wl_engine::timing::phase("EXTRACT (phase 1)", || {
-        loop {
-            match engine.extract(&engine_config) {
-                Ok(runs) => break runs,
-                // Returning at all means a remediation ran successfully → retry;
-                // every other path exits inside.
-                Err(e) => provisioner.repair_or_fail(&e),
-            }
-        }
-    });
-    wl_engine::timing::phase("ASSEMBLE (phase 2)", || {
-        wl_engine::SemanticModel::load(&runs).unwrap_or_else(|e| util::fail(e))
-    })
-}
-
 /// The hidden `--engine-dump` debug output: a compact plain-line stats block
 /// on stdout summarizing one extract→assemble round trip. This is the only
 /// consumer of the semantic model until the first semantic-lint port.
@@ -747,17 +595,6 @@ fn print_engine_stats(model: &wl_engine::SemanticModel) {
         "unused-deps: {unused} unused dep(s) across {flagged} crate(s); dev deps judged: {}",
         if deps.dev_deps_judged { "yes" } else { "no" }
     );
-}
-
-/// Load the build-free `FastModel` (`cargo metadata` + parsed manifests +
-/// the lean syntactic module trees). Loud-fail on error: a silent `None`
-/// would mask a broken state in CI.
-fn load_fast_model() -> FastModel {
-    FastModel::load(std::path::Path::new(".")).unwrap_or_else(|e| {
-        util::fail(format!(
-            "failed to load workspace metadata for manifest-backed lints: {e}"
-        ))
-    })
 }
 
 fn report_and_exit(diagnostics: Vec<Diagnostic>, format: Format) {

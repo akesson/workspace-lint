@@ -27,21 +27,24 @@ impl Provisioner {
         }
     }
 
-    /// Repair `err` with the user's consent, or exit the process. Returning
-    /// at all means the remediation command succeeded and the caller should
-    /// retry the operation that failed; every other path diverges through
-    /// [`util::fail`] (exit 2) so no caller can misread a decline as success.
-    pub(crate) fn repair_or_fail(&mut self, err: &EngineError) {
+    /// Repair `err` with the user's consent. [`Repair::Retry`] means the
+    /// remediation command succeeded and the caller should retry the
+    /// operation that failed; [`Repair::GiveUp`] means the error stands —
+    /// the caller decides what still renders before exiting (the fast-tier
+    /// findings must not be swallowed by an engine failure), consulting
+    /// `error_shown` to avoid printing the error twice.
+    pub(crate) fn repair(&mut self, err: &EngineError) -> Repair {
+        let unshown = Repair::GiveUp { error_shown: false };
         let Some(argv) = err.remediation() else {
-            util::fail(err);
+            return unshown;
         };
         // A command that already ran and still yields the same failure is a
         // broken environment, not a prompting opportunity.
         if !self.attempted.insert(argv.clone()) {
-            util::fail(err);
+            return unshown;
         }
         if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
-            util::fail(err);
+            return unshown;
         }
         eprintln!("{err}\n");
         eprint!("workspace-lint can run that for you — proceed? [y/N] ");
@@ -50,10 +53,20 @@ impl Provisioner {
         let _ = std::io::stdin().lock().read_line(&mut answer);
         if !accepted(&answer) {
             // The error and its paste-able command are already on screen.
-            std::process::exit(2);
+            return Repair::GiveUp { error_shown: true };
         }
         run(&argv);
+        Repair::Retry
     }
+}
+
+/// Outcome of one [`Provisioner::repair`] round.
+pub(crate) enum Repair {
+    /// The remediation ran successfully — retry the failed operation.
+    Retry,
+    /// No repair happened; the error stands. `error_shown` is `true` when
+    /// the interactive prompt already printed it verbatim.
+    GiveUp { error_shown: bool },
 }
 
 /// Only an explicit yes provisions; enter, EOF, or anything else declines.

@@ -624,3 +624,39 @@ fn leaked_git_dir_does_not_block_fix() {
         .success()
         .stderr(predicate::str::contains("not a git repository"));
 }
+
+// --- engine failure: the fast tier's findings must survive ---
+
+/// An engine failure (here: a member that doesn't compile) must not swallow
+/// the build-free tier's findings. They render through the normal pipeline
+/// FIRST, then the engine error prints with the did-not-run trailer and the
+/// run exits 2 — regression guard for the campaign dead end where one broken
+/// member hid every fast finding behind the extraction error.
+#[test]
+fn engine_failure_still_renders_fast_findings() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    TestWorkspace::new()
+        .lib_member(
+            "crates/broken",
+            "wl-int-engine-failure",
+            "0.0.1",
+            "pub fn a() {}\npub fn b() {}\ncompile_error!(\"deliberate failure\");\n",
+        )
+        .config("[[file-size.rules]]\nglob = \"**/*.rs\"\nmax-code-lines = 1\n\n[unused-pub]\n")
+        .write(tmp.path());
+    workspace_lint()
+        .current_dir(tmp.path())
+        .assert()
+        .code(2)
+        .stderr(
+            predicate::str::contains("file-size")
+                .and(predicate::str::contains("semantic lints did not run"))
+                .and(predicate::function(|s: &str| {
+                    // The fast finding renders BEFORE the engine error.
+                    match (s.find("file-size"), s.find("semantic lints did not run")) {
+                        (Some(finding), Some(trailer)) => finding < trailer,
+                        _ => false,
+                    }
+                })),
+        );
+}
