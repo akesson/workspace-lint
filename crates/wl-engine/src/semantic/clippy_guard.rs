@@ -79,15 +79,50 @@ pub(super) fn assoc_members_index(
 /// ADT → its field keys, for the dead-field narrow guard. A field's
 /// declaration path is always `Type::field` — declared in the type's body,
 /// so no impl-module rendering applies; an enum variant's field
-/// (`Enum::Variant::field`) hops once more (variants aren't emitted).
-/// Underscore-prefixed fields are `dead_code`-exempt and stay out.
+/// (`Enum::Variant::field`) resolves to the variant fact (schema 13+) and
+/// hops to the owning enum — the guards judge the ADT, matching rustc's
+/// per-ADT `dead_code` grouping. Underscore-prefixed fields are
+/// `dead_code`-exempt and stay out.
 pub(super) fn fields_of_index(
     defs: &DefMap,
     id_key: &FastMap<String, String>,
 ) -> BTreeMap<String, Vec<String>> {
-    let mut fields_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    landings_index(defs, "field", |parent| {
+        let hop = || parent.rfind("::").and_then(|p| id_key.get(&parent[..p]));
+        match id_key.get(parent) {
+            // A variant-owned field's parent is the VARIANT fact — the
+            // guard's owner is the enum, one segment up.
+            Some(k) if defs[k].kind == "variant" => hop(),
+            Some(k) => Some(k),
+            None => hop(),
+        }
+    })
+}
+
+/// Enum → its variant keys, for the unconstructed-variant deletion veto —
+/// [`fields_of_index`]'s twin. A variant's declaration path is always
+/// `Enum::Variant`, declared in the enum's body. Underscore-prefixed
+/// variants are `dead_code`-exempt and stay out, as rustc excludes them.
+pub(super) fn variants_of_index(
+    defs: &DefMap,
+    id_key: &FastMap<String, String>,
+) -> BTreeMap<String, Vec<String>> {
+    landings_index(defs, "variant", |parent| id_key.get(parent))
+}
+
+/// The shared sweep behind the two indexes above: non-underscore defs of
+/// `kind`, grouped under the owner key `owner_of` resolves their declaring
+/// parent path to. Sorted so the enumeration is deterministic regardless of
+/// `defs` (an `IndexMap`) iteration order — the guards only `any()`/probe
+/// these, but keep them order-stable.
+fn landings_index<'k>(
+    defs: &DefMap,
+    kind: &str,
+    owner_of: impl Fn(&str) -> Option<&'k String>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut index: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, def) in defs {
-        if def.kind != "field"
+        if def.kind != kind
             || def
                 .path
                 .rsplit("::")
@@ -97,22 +132,14 @@ pub(super) fn fields_of_index(
             continue;
         }
         let parent = &def.path[..def.path.rfind("::").map_or(0, |p| p)];
-        let owner = id_key
-            .get(parent)
-            .or_else(|| parent.rfind("::").and_then(|p| id_key.get(&parent[..p])));
-        if let Some(owner) = owner {
-            fields_of
-                .entry(owner.clone())
-                .or_default()
-                .push(key.clone());
+        if let Some(owner) = owner_of(parent) {
+            index.entry(owner.clone()).or_default().push(key.clone());
         }
     }
-    // Deterministic order regardless of `defs` (an `IndexMap`) iteration —
-    // `has_unread_field` only `any()`s over these, but keep it order-stable.
-    for fields in fields_of.values_mut() {
-        fields.sort();
+    for landings in index.values_mut() {
+        landings.sort();
     }
-    fields_of
+    index
 }
 
 /// Why a tighten must not be machine-applied: the clippy lint that would fire
@@ -263,6 +290,15 @@ pub enum DeletionUnmask {
         /// The owning type/trait's identity (display path).
         owner: String,
     },
+    /// The deletion removes the last CONSTRUCTION of a surviving enum's
+    /// variant — rustc `dead_code` flags the now-never-constructed variant
+    /// (match arms naming it don't keep it alive).
+    UnconstructedVariant {
+        /// The surviving enum's identity (display path).
+        owner: String,
+        /// The variant's own name.
+        variant: String,
+    },
 }
 
 impl SemanticModel {
@@ -279,6 +315,12 @@ impl SemanticModel {
     ///   Exported fields (pub field of a pub type) are skipped — `dead_code`
     ///   exempts them; pre-existing write-only fields have no `newly` edge to
     ///   attribute and stay the author's business.
+    /// - **Variant constructions** ride the same sweep: variant keys receive
+    ///   only expression-position construction edges (pattern mentions
+    ///   project onto the enum, matching rustc's construction-only variant
+    ///   liveness), so a variant key with zero trial-overlay in-degree on a
+    ///   surviving enum flags the deleters of its last construction sites
+    ///   (ripgrep's `Sorter::ByPath`, 2026-07-10 validation).
     /// - **`len`/`is_empty`** is judged in the first config defining the
     ///   deleted `is_empty`: only a *pub* `is_empty` masks clippy, and only a
     ///   surviving *pub* `len(&self)` re-triggers it. Deleting both together
@@ -296,10 +338,15 @@ impl SemanticModel {
         let covering = super::covering_configs(&self.configs);
 
         for (ci, (_, asm)) in self.configs.iter().enumerate() {
+            // Fields and variants share one landing-point map and one edge
+            // sweep: both are non-tree-item defs whose zero-in-degree under
+            // the trial overlay unmasks `dead_code` on the surviving owner —
+            // fields lose their last READ, variants their last CONSTRUCTION
+            // (the extractor lands only construction edges on variants).
             let mut owner_of: FastMap<&str, &str> = FastMap::default();
-            for (owner, fields) in &asm.fields_of {
-                for f in fields {
-                    owner_of.insert(f.as_str(), owner.as_str());
+            for (owner, landings) in asm.fields_of.iter().chain(asm.variants_of.iter()) {
+                for l in landings {
+                    owner_of.insert(l.as_str(), owner.as_str());
                 }
             }
             if owner_of.is_empty() {
@@ -317,15 +364,16 @@ impl SemanticModel {
                     let Some(&owner_key) = owner_of.get(key) else {
                         continue;
                     };
-                    let fdef = &asm.defs[key];
+                    let ldef = &asm.defs[key];
                     if overlay.in_degree.contains_key(key) {
                         continue;
                     }
                     let odef = &asm.defs[owner_key];
-                    // `dead_code` only exempts a field that is itself
-                    // exported — pub field of a pub type; a pub field of a
-                    // non-pub type is as flaggable as a private one.
-                    if fdef.public && odef.public {
+                    // `dead_code` only exempts a field/variant that is itself
+                    // exported — pub field of a pub type (a variant inherits
+                    // its enum's visibility); a pub field of a non-pub type
+                    // is as flaggable as a private one.
+                    if ldef.public && odef.public {
                         continue;
                     }
                     if covering.get(&odef.krate) != Some(&ci)
@@ -333,7 +381,7 @@ impl SemanticModel {
                     {
                         continue;
                     }
-                    let field = fdef.path.rsplit("::").next().unwrap_or_default();
+                    let name = ldef.path.rsplit("::").next().unwrap_or_default();
                     for (id, segs) in &newly_segs {
                         let covers = e.from.len() >= segs.len()
                             && segs
@@ -342,9 +390,16 @@ impl SemanticModel {
                                 .all(|(a, b)| *a == b.as_str());
                         if covers {
                             out.entry((*id).to_string()).or_insert_with(|| {
-                                DeletionUnmask::UnreadField {
-                                    owner: odef.path.clone(),
-                                    field: field.to_string(),
+                                if ldef.kind == "variant" {
+                                    DeletionUnmask::UnconstructedVariant {
+                                        owner: odef.path.clone(),
+                                        variant: name.to_string(),
+                                    }
+                                } else {
+                                    DeletionUnmask::UnreadField {
+                                        owner: odef.path.clone(),
+                                        field: name.to_string(),
+                                    }
                                 }
                             });
                         }

@@ -706,6 +706,24 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
+        // unused-pub: a deletion the unmask guard vetoed, variant flavor — the
+        // item holds the last CONSTRUCTION of a surviving enum's variant
+        // (match arms don't keep it alive), so deleting it would trip rustc
+        // `dead_code` on the fixed tree.
+        (
+            "unused_pub_delete_unmask_variant",
+            at_line(
+                "workspace-lint::unused-pub",
+                "pub fn `boost` in crate `store` appears unused — consider removing",
+                PathBuf::from("crates/store/src/lib.rs"),
+                19,
+            )
+            .help("remove the item or its `pub` visibility")
+            .note(
+                "deleting this would leave variant `Fast` of surviving `store::Mode` never constructed, tripping `dead_code` on the fixed tree — remove the variant first or delete by hand",
+            )
+            .build(),
+        ),
         // unused-pub: a deletion the unmask guard vetoed, clippy flavor —
         // removing `is_empty` out from under a surviving `len`.
         (
@@ -1606,6 +1624,22 @@ mod tests {
             help: if intentional, silence with:
               |
             14 + workspace_lint::expect!(unused_pub);
+              |
+              = note: `#[warn(workspace_lint::unused_pub)]` on by default
+            ");
+        }
+
+        #[test]
+        fn unused_pub_delete_unmask_variant() {
+            insta::assert_snapshot!(render(&scenario("unused_pub_delete_unmask_variant")), @r"
+            warning: pub fn `boost` in crate `store` appears unused — consider removing
+             --> crates/store/src/lib.rs:19:1
+              |
+              = help: remove the item or its `pub` visibility
+              = note: deleting this would leave variant `Fast` of surviving `store::Mode` never constructed, tripping `dead_code` on the fixed tree — remove the variant first or delete by hand
+            help: if intentional, silence with:
+              |
+            19 + workspace_lint::expect!(unused_pub);
               |
               = note: `#[warn(workspace_lint::unused_pub)]` on by default
             ");

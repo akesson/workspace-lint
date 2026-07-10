@@ -225,6 +225,21 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
                 }
             }
         }
+
+        // Enum variants are the fields' twin for the DELETION veto: rustc
+        // `dead_code` flags a variant that is never *constructed* even while
+        // `match` arms still name it, so deleting a variant's last
+        // construction site unmasks a warning on the surviving enum. Like
+        // fields they are not tree items (the verdict never judges them) —
+        // they exist as landing points for the expression-position
+        // construction edges `record_variant_construction` emits.
+        if kind == "enum" {
+            for v in tcx.adt_def(def_id).variants() {
+                if let Some(vlocal) = v.def_id.as_local() {
+                    items.push(item_fact(tcx, sm, &crate_code, vlocal, "variant"));
+                }
+            }
+        }
     }
 
     let references = collect_references(tcx, &crate_code);
@@ -558,11 +573,60 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
     /// field edge itself carries no import-crediting information.
     fn record_receiver(&mut self, at: HirId, to: DefId, span: RustcSpan) {
         let from_id = self.tcx.hir_get_parent_item(at).to_def_id();
+        // A field READ inside a derived `Clone`/`Debug` impl must not be
+        // recorded: rustc `dead_code` ignores those reads (see
+        // [`in_trivial_field_reads_derive`]), so counting them shields a
+        // field whose only surviving reader is its derive from the dead-field
+        // guards — the fixed tree then warns `field … is never read`
+        // (ripgrep's `Gitignore.num_whitelists`, 2026-07-10 validation).
+        // Field edges exist solely for those guards, so dropping the edge
+        // loses nothing else; method-call edges from derives still record
+        // (they feed reachability, where rustc has no such exemption).
+        if matches!(self.tcx.def_kind(to), DefKind::Field)
+            && in_trivial_field_reads_derive(self.tcx, from_id)
+        {
+            return;
+        }
         let flags = EdgeFlags {
             receiver_resolved: true,
             ..EdgeFlags::default()
         };
         self.record_edge(from_id, to, Some(span), flags);
+    }
+
+    /// Record an expression-position use of an enum variant (or its
+    /// constructor) as a CONSTRUCTION edge targeting the **variant itself** —
+    /// alongside the ADT-projected edge [`record_edge`] emits for the same
+    /// path. rustc `dead_code` judges a variant by its constructions alone
+    /// (`match` arms naming it don't keep it alive), so the deletion veto
+    /// needs construction sites separated from mentions: callers invoke this
+    /// only from expression positions, never from patterns. Skipped inside
+    /// derived `Clone` impls (they construct every variant; rustc ignores
+    /// them — `Sorter::ByPath`, 2026-07-10 validation) and for struct/union
+    /// constructors (a never-constructed struct is dead as a whole — the main
+    /// verdict's business, not the veto's).
+    fn record_variant_construction(&mut self, at: HirId, to: DefId, span: RustcSpan) {
+        let mut variant = to;
+        if matches!(self.tcx.def_kind(variant), DefKind::Ctor(..)) {
+            match self.tcx.opt_parent(variant) {
+                Some(p) => variant = p,
+                None => return,
+            }
+        }
+        if !matches!(self.tcx.def_kind(variant), DefKind::Variant) {
+            return;
+        }
+        let from_id = self.tcx.hir_get_parent_item(at).to_def_id();
+        if in_trivial_field_reads_derive(self.tcx, from_id) {
+            return;
+        }
+        // `receiver_resolved` = "carries no written-path import information":
+        // the ADT-projected twin of this edge carries all of it.
+        let flags = EdgeFlags {
+            receiver_resolved: true,
+            ..EdgeFlags::default()
+        };
+        self.record_edge_unprojected(from_id, variant, Some(span), flags);
     }
 
     /// Record an import (`use`) edge with its declaration-shape metadata
@@ -592,6 +656,19 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
         // would be dropped at assembly and an ADT used only through
         // construction/variants would read unused.
         let to = projected_target(self.tcx, to);
+        self.record_edge_unprojected(from_id, to, span, flags);
+    }
+
+    /// [`record_edge`]'s core, minus the `Ctor|Variant → ADT` projection —
+    /// the entry point for [`record_variant_construction`], whose whole point
+    /// is an edge landing on the variant def itself.
+    fn record_edge_unprojected(
+        &mut self,
+        from_id: DefId,
+        to: DefId,
+        span: Option<RustcSpan>,
+        flags: EdgeFlags,
+    ) {
         if from_id == to {
             return;
         }
@@ -619,7 +696,15 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
         } else {
             local_path(self.tcx, self.crate_code, to)
         };
-        if from == to_path {
+        // Path-level self-edge dedup — the impl-self display collapse
+        // described above — must NOT drop a field or variant landing edge: a
+        // getter named after its field (`fn from(&self) -> … { self.from }`)
+        // renders at the field's exact display path, yet its read is the
+        // field's ONLY liveness evidence — dropping it left the dead-field
+        // deletion veto blind to exactly the same-named-getter shape
+        // (ripgrep's `Glob::from` / `Gitignore::num_whitelists`, 2026-07-10
+        // validation). Same-`DefId` self-edges are already gone above.
+        if from == to_path && !matches!(self.tcx.def_kind(to), DefKind::Field | DefKind::Variant) {
             return;
         }
         let sm = self.tcx.sess.source_map();
@@ -1108,6 +1193,34 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
                             ..EdgeFlags::default()
                         },
                     );
+                    // `Self::V` / `<E>::V` in expression position constructs.
+                    self.record_variant_construction(ex.hir_id, to, ex.span);
+                }
+            }
+            // Expression-position resolved paths (`E::V`, `E::V(x)`'s callee,
+            // an imported `V`) — the variant-construction evidence the
+            // deletion veto needs. The generic `visit_path` hook below still
+            // records the ADT-projected edge for the same path; this arm adds
+            // only the variant-level twin, and only from EXPRESSION position —
+            // patterns walk `visit_pat`/`visit_path` and never come through
+            // here, mirroring rustc's construction-only variant liveness.
+            ExprKind::Path(QPath::Resolved(_, path)) => {
+                if let Some(did) = path.res.opt_def_id() {
+                    self.record_variant_construction(ex.hir_id, did, ex.span);
+                }
+            }
+            // Struct-expression construction of a braced variant
+            // (`E::V { x: 1 }`) — resolved via typeck: the qpath may be
+            // type-relative (`Self::V { .. }`).
+            ExprKind::Struct(qpath, ..) => {
+                let owner = self.tcx.hir_enclosing_body_owner(ex.hir_id);
+                if let Some(did) = self
+                    .tcx
+                    .typeck(owner)
+                    .qpath_res(qpath, ex.hir_id)
+                    .opt_def_id()
+                {
+                    self.record_variant_construction(ex.hir_id, did, ex.span);
                 }
             }
             // A plain assignment's LHS field is a WRITE — mark it so the
@@ -1318,6 +1431,34 @@ fn assoc_self_copy(tcx: TyCtxt<'_>, def_id: DefId) -> Option<bool> {
     let self_ty = tcx.type_of(parent).skip_binder();
     let typing_env = ty::TypingEnv::non_body_analysis(tcx, parent);
     Some(tcx.type_is_copy_modulo_regions(typing_env, self_ty))
+}
+
+/// Is `did` (or an enclosing item of it) a member of an
+/// `#[automatically_derived]` impl whose trait is marked
+/// `#[rustc_trivial_field_reads]` — i.e. a derived `Clone` or `Debug` impl?
+/// Mirror of rustc `dead_code`'s `should_ignore_impl_item` (rust PR #85200):
+/// field reads and variant constructions inside such impls do not count
+/// toward liveness — a field read only by its derives still warns
+/// `field … is never read`, a variant constructed only by derived `Clone`
+/// still warns `variant … is never constructed`. Derives of other traits
+/// (`PartialEq`, `Hash`, …) DO count, exactly as rustc counts them.
+fn in_trivial_field_reads_derive(tcx: TyCtxt<'_>, mut did: DefId) -> bool {
+    use rustc_hir::find_attr;
+    loop {
+        if let DefKind::Impl { of_trait } = tcx.def_kind(did) {
+            return of_trait
+                && tcx.is_automatically_derived(did)
+                && find_attr!(
+                    tcx,
+                    tcx.impl_trait_ref(did).instantiate_identity().def_id,
+                    RustcTrivialFieldReads
+                );
+        }
+        match tcx.opt_parent(did) {
+            Some(parent) => did = parent,
+            None => return false,
+        }
+    }
 }
 
 /// Climb `Ctor → (Variant →) ADT`: constructors and variants aren't tree

@@ -249,6 +249,17 @@ fn fix_unused_pub_delete_unmask_field() {
 }
 
 #[test]
+fn fix_unused_pub_delete_unmask_variant() {
+    // The deletion-unmask veto, variant flavor (ripgrep 2026-07-10,
+    // `Sorter::ByPath`): unused `Engine::boost` holds the ONLY construction
+    // of the surviving `Mode`'s `Fast` variant — the `match` arm naming it
+    // doesn't keep it alive, so deleting `boost` trips rustc `dead_code`
+    // ("variant is never constructed") on the fixed tree. Vetoed, while
+    // `dead_helper` is still deleted in the same run.
+    run_fix_fixture("fix__unused_pub_delete_unmask_variant");
+}
+
+#[test]
 fn fix_unused_pub_delete_unmask_len() {
     // The deletion-unmask veto, clippy flavor (LeaveDates 2026-07-07,
     // `PasswordData::is_empty`): deleting unused `Buf::is_empty` out from

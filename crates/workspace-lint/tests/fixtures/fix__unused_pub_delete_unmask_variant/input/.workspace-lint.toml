@@ -1,0 +1,15 @@
+# The deletion-unmask veto, variant flavor (the 2026-07-10 ripgrep
+# `Sorter::ByPath` incident): `Engine::boost` is unused, but it holds the
+# ONLY construction of `Mode::Fast` — deleting it would trip rustc
+# `dead_code` ("variant is never constructed") on the surviving enum, whose
+# `match` arm in `describe` does NOT keep the variant alive. The veto keeps
+# it (downgraded, with the variant note) while `dead_helper` — no unmask
+# consequence — is still deleted in the same run.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

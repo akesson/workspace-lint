@@ -67,6 +67,10 @@ pub fn exposes_probed() -> Probed {
 // bounds / where-clauses / supertraits / item bounds / field types.
 pub mod sig_exposure;
 
+// dead_code deletion-veto substrate (check 25): variant facts,
+// construction-only variant edges, derived-Clone/Debug liveness discount.
+pub mod dead_veto;
+
 // CRLF-pinned file (see its `//!` doc and the sibling `.gitattributes`):
 // on-disk byte-offset fidelity for spans in `\r\n` sources. Declared last so
 // the line-number assertions above stay put.

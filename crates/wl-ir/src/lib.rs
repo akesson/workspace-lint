@@ -120,7 +120,20 @@ use serde::{Deserialize, Serialize};
 /// (`--fix` then removed it and broke the build: cargo-nextest's `cfg-if`,
 /// 2026-07-10 validation). A pre-12 fragment carries an empty list — the
 /// misleading-absence bump trigger.
-pub const SCHEMA_VERSION: u32 = 12;
+/// 13 — no field change; the fragment's *content* policy changed twice for
+/// the `dead_code` deletion veto (2026-07-10 validation, ripgrep drill):
+/// enums now emit per-variant `"variant"` facts plus expression-position
+/// **construction** edges targeting the variant (pattern mentions still
+/// project to the owning ADT — rustc counts only construction toward a
+/// variant's liveness), and field-read / variant-construction edges from
+/// `#[automatically_derived]` impls of `#[rustc_trivial_field_reads]`
+/// traits (`Clone`, `Debug`) are no longer emitted — rustc's `dead_code`
+/// ignores those reads, so counting them shielded fields whose only
+/// surviving reader was a derive (`Gitignore.num_whitelists` et al.) from
+/// the deletion veto. A pre-13 fragment has no variant facts and carries
+/// the shielding derive edges — the misleading-absence bump trigger,
+/// layout unchanged.
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
