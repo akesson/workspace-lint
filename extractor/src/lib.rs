@@ -362,9 +362,11 @@ fn target_kind(tcx: TyCtxt<'_>) -> &'static str {
 /// references, imports), method calls `x.f()`, and type-relative **value** paths
 /// `Type::assoc_fn` / `Type::CONST` (via the enclosing body's `typeck`). A second
 /// pass ([`RefCollector::collect_signature_projections`]) then adds **type-position
-/// assoc projections** (`<T as Trait>::Item`) from lowered signatures. Remaining
-/// gap: projections that appear *only* in bounds / `where`-clauses (need
-/// `predicates_of`), and opaque/`impl Trait` targets — later increments.
+/// assoc projections** (`<T as Trait>::Item`) and the whole privacy-checked
+/// signature surface — types, generic-parameter defaults, bounds and
+/// `where`-clauses, supertraits, assoc-type/`impl Trait` item bounds, `dyn`
+/// principals, field types — from the lowered signatures and the written
+/// predicate queries.
 fn collect_references(tcx: TyCtxt<'_>, crate_code: &str) -> Vec<RefEdge> {
     let mut collector = RefCollector {
         tcx,
@@ -697,24 +699,33 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
         }
     }
 
-    /// Second pass over each item's *lowered* signature (`fn_sig`/`type_of` —
-    /// cached queries, no empty-env ICE), with two jobs:
+    /// Second pass over each item's *lowered* signature (`fn_sig`/`type_of`/
+    /// predicate queries — all cached, no empty-env ICE), with two jobs:
     ///
     /// 1. Associated-type projections in *type* position (`<S as Tr>::Item`,
     ///    `T::Item`, `Self::Out`) — the one reference class the HIR walk can't
     ///    resolve (their `PathSegment::res` is `Res::Err`; resolution is
     ///    deferred past name-resolution).
-    /// 2. Every *named type* (ADTs, foreign types) in the signature, flagged
+    /// 2. Every def *named* in the signature, flagged
     ///    [`RefEdge::in_signature`] — the substrate of
-    ///    `exposed_in_public_signature` (a type named in a pub signature must
-    ///    not be visibility-tightened: E0446 / `private_interfaces`).
+    ///    `exposed_in_public_signature` (a def named in a pub signature must
+    ///    not be visibility-tightened: E0445/E0446 / `private_interfaces` /
+    ///    `private_bounds`). "Signature" here is the whole privacy-checked
+    ///    surface: parameter/return/field types, generic-parameter defaults,
+    ///    inline bounds and `where`-clauses (`explicit_predicates_of`),
+    ///    supertraits (`explicit_super_predicates_of`), trait-decl assoc-type
+    ///    bounds and `impl Trait` bounds (`explicit_item_bounds`), and `dyn`
+    ///    principals — the *explicit* (written) queries, matching what rustc's
+    ///    privacy pass judges; elaboration would add phantom supertrait
+    ///    closure the source never names.
     fn collect_signature_projections(&mut self) {
         for local in self.tcx.hir_crate_items(()).definitions() {
             let did = local.to_def_id();
-            let mut sig = SigVisitor { out: Vec::new() };
+            let kind = self.tcx.def_kind(did);
+            let mut sig = SigVisitor::default();
             // `skip_binder` (not `instantiate_identity`) keeps aliases *un-normalized*
             // — we want the projection, not what it resolves to.
-            match self.tcx.def_kind(did) {
+            match kind {
                 DefKind::Fn | DefKind::AssocFn => {
                     self.tcx.fn_sig(did).skip_binder().visit_with(&mut sig);
                 }
@@ -726,19 +737,29 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
                 }
                 // A trait-impl `type Out = Resp;` binding IS a signature
                 // position for `Resp` (E0446 if tightened). Only impl-side
-                // assoc types have a `type_of`; a defaultless trait-decl one
-                // would panic the query.
-                DefKind::AssocTy
+                // assoc types have a `type_of` — a defaultless trait-decl one
+                // would panic the query; ITS surface is the written bounds
+                // (`type Item: Bound`), i.e. its item bounds.
+                DefKind::AssocTy => {
                     if matches!(
                         self.tcx.def_kind(self.tcx.parent(did)),
                         DefKind::Impl { .. }
-                    ) =>
-                {
-                    self.tcx.type_of(did).skip_binder().visit_with(&mut sig);
+                    ) {
+                        self.tcx.type_of(did).skip_binder().visit_with(&mut sig);
+                    } else {
+                        sig.collect_clauses(self.tcx.explicit_item_bounds(did).skip_binder());
+                    }
                 }
-                // ADTs/traits carry no lowered signature of their own, but
-                // their generic-parameter *defaults* below are one.
-                DefKind::Struct | DefKind::Enum | DefKind::Union | DefKind::Trait => {}
+                // ADTs carry no lowered signature of their own — their field
+                // types are handled below with the FIELD as the edge's `from`,
+                // and their bounds/defaults through the common tail.
+                DefKind::Struct | DefKind::Enum | DefKind::Union => {}
+                // A trait's own signature surface is its supertrait list
+                // (`pub trait A: B` — narrowing `B` is E0445); where-clauses
+                // ride the common predicate sweep below.
+                DefKind::Trait | DefKind::TraitAlias => {
+                    sig.collect_clauses(self.tcx.explicit_super_predicates_of(did).skip_binder());
+                }
                 _ => continue,
             }
             // Generic-parameter defaults are signature positions too:
@@ -755,42 +776,111 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
                         .visit_with(&mut sig);
                 }
             }
-            // No use-site span: these come from the *lowered* signature, where
-            // a projection may have no single surface token at all.
-            for to in sig.out {
-                self.record_edge(
-                    did,
-                    to,
-                    None,
-                    EdgeFlags {
-                        in_signature: true,
-                        ..EdgeFlags::default()
-                    },
-                );
+            // The written predicates: inline generic bounds (`<R: Bound>` —
+            // the `coalesce<R: ByteRange>` blind spot), `where`-clauses, and
+            // argument-position `impl Trait` (a synthetic param whose bound
+            // lands here). `fn_sig`/`type_of` carry only the param *itself*.
+            sig.collect_clauses(self.tcx.explicit_predicates_of(did).predicates);
+            self.flush_signature_edges(did, sig);
+
+            // Field types: fields are not in `definitions()` and narrowing a
+            // pub field's type is the same E0446 as a return type. The edge's
+            // `from` is the FIELD def, so the stable side can gate exposure on
+            // the field's own visibility (a private field's type stays
+            // legitimately tightenable).
+            if matches!(kind, DefKind::Struct | DefKind::Enum | DefKind::Union) {
+                for f in self.tcx.adt_def(did).all_fields() {
+                    if f.did.is_local() {
+                        let mut fsig = SigVisitor::default();
+                        self.tcx.type_of(f.did).skip_binder().visit_with(&mut fsig);
+                        self.flush_signature_edges(f.did, fsig);
+                    }
+                }
             }
+        }
+    }
+
+    /// Drain a [`SigVisitor`] into `in_signature` edges from `from`. Opaques
+    /// (`impl Trait`) resolve through their *item bounds* — which may surface
+    /// further opaques (`impl Iterator<Item = impl …>`), hence the worklist.
+    /// No use-site span: these come from the *lowered* signature, where a
+    /// projection may have no single surface token at all.
+    fn flush_signature_edges(&mut self, from: DefId, mut sig: SigVisitor) {
+        let mut seen = std::collections::HashSet::new();
+        while let Some(opaque) = sig.opaques.pop() {
+            // Local only: a foreign opaque leaking in through an alias has no
+            // extractable fragment here anyway (its defining crate emits it).
+            if seen.insert(opaque) && opaque.is_local() {
+                sig.collect_clauses(self.tcx.explicit_item_bounds(opaque).skip_binder());
+            }
+        }
+        for to in sig.out {
+            self.record_edge(
+                from,
+                to,
+                None,
+                EdgeFlags {
+                    in_signature: true,
+                    ..EdgeFlags::default()
+                },
+            );
         }
     }
 }
 
-/// Collects the `def_id` of every type *named* in a `ty::Ty` tree: assoc-type
-/// projections (whose `def_id` lives in the `AliasTyKind` variant) and plain
-/// ADTs. Both feed the same edge stream; the ADTs additionally carry the
-/// signature-position flag's meaning for `exposed_in_public_signature`.
+/// Collects the `def_id` of every def *named* in a `ty::Ty` tree: assoc-type
+/// projections (whose `def_id` lives in the `AliasTyKind` variant), plain
+/// ADTs, and `dyn`-type traits. All feed the same edge stream; the named defs
+/// additionally carry the signature-position flag's meaning for
+/// `exposed_in_public_signature`. Opaques (`impl Trait`) are queued instead:
+/// their named surface is their *item bounds*, resolved by the caller
+/// (`flush_signature_edges` — this visitor has no `TyCtxt`).
+#[derive(Default)]
 struct SigVisitor {
     out: Vec<DefId>,
+    opaques: Vec<DefId>,
+}
+
+impl SigVisitor {
+    /// Sweep a written clause list (`explicit_predicates_of` /
+    /// `explicit_super_predicates_of` / `explicit_item_bounds`): the bound
+    /// TRAIT itself is a def named by the signature but is not a `Ty`, so the
+    /// type walk alone can't collect it — pull it off the clause kind, then
+    /// visit the clause for every embedded type (bound arguments like
+    /// `R: AsRef<Named>`, outlives'd types, const-arg types).
+    fn collect_clauses<'tcx>(&mut self, clauses: &[(ty::Clause<'tcx>, RustcSpan)]) {
+        for (clause, _) in clauses {
+            match clause.kind().skip_binder() {
+                ty::ClauseKind::Trait(tp) => self.out.push(tp.trait_ref.def_id),
+                ty::ClauseKind::Projection(pp) => self.out.push(pp.projection_term.def_id),
+                _ => {}
+            }
+            clause.visit_with(self);
+        }
+    }
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for SigVisitor {
     fn visit_ty(&mut self, t: Ty<'tcx>) {
         match t.kind() {
-            ty::Alias(alias) => {
-                if let ty::AliasTyKind::Projection { def_id }
-                | ty::AliasTyKind::Inherent { def_id } = alias.kind
-                {
+            ty::Alias(alias) => match alias.kind {
+                ty::AliasTyKind::Projection { def_id } | ty::AliasTyKind::Inherent { def_id } => {
                     self.out.push(def_id);
                 }
-            }
+                ty::AliasTyKind::Opaque { def_id } => self.opaques.push(def_id),
+                _ => {}
+            },
             ty::Adt(adt, _) => self.out.push(adt.did()),
+            // `dyn Trait` names its traits without any `Ty` node for them.
+            ty::Dynamic(preds, ..) => {
+                for ep in preds.iter() {
+                    match ep.skip_binder() {
+                        ty::ExistentialPredicate::Trait(tr) => self.out.push(tr.def_id),
+                        ty::ExistentialPredicate::Projection(p) => self.out.push(p.def_id),
+                        ty::ExistentialPredicate::AutoTrait(d) => self.out.push(d),
+                    }
+                }
+            }
             _ => {}
         }
         t.super_visit_with(self);
@@ -1409,10 +1499,12 @@ fn write_fragment(fragment: &IrFragment, file_stem: &str) {
     // unsound over a torn buffer, and rename never exposes one.)
     let tmp = format!("{path}.{}.tmp", std::process::id());
     match wl_ir::write_bytes(fragment) {
-        Ok(bytes) => match std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
-            Ok(()) => eprintln!("WL-IR: wrote {} ({} items)", path, fragment.items.len()),
-            Err(e) => eprintln!("WL-IR: write({path}) failed: {e}"),
-        },
+        Ok(bytes) => {
+            match std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+                Ok(()) => eprintln!("WL-IR: wrote {} ({} items)", path, fragment.items.len()),
+                Err(e) => eprintln!("WL-IR: write({path}) failed: {e}"),
+            }
+        }
         Err(e) => eprintln!("WL-IR: serialize failed: {e}"),
     }
 }
