@@ -378,6 +378,30 @@ impl Manifest {
         self.doc.as_table().contains_key("workspace")
     }
 
+    /// Names of `[[bench]]` targets declared with `bench = false` — opted out
+    /// of `--benches` target selection, so cargo never compiles them under a
+    /// `"cargo bench"` engine config and the completeness guard must not
+    /// expect their fragments. Only explicit `[[bench]]` entries can carry the
+    /// flag (auto-discovered `benches/*.rs` default to `bench = true`), so
+    /// this manifest read is the complete source — `cargo metadata` does not
+    /// expose the flag.
+    pub fn disabled_bench_targets(&self) -> BTreeSet<String> {
+        let Some(benches) = self
+            .doc
+            .as_table()
+            .get("bench")
+            .and_then(Item::as_array_of_tables)
+        else {
+            return BTreeSet::new();
+        };
+        benches
+            .iter()
+            .filter(|t| t.get("bench").and_then(Item::as_bool) == Some(false))
+            .filter_map(|t| t.get("name").and_then(Item::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// `[workspace.package] publish` from a workspace *root* manifest — the
     /// inheritance source for members that declare `publish.workspace = true`.
     /// [`Publish::Absent`] if there's no such key.
@@ -655,6 +679,28 @@ mod tests {
             raw: content.to_string(),
             doc: Document::parse(content.to_string()).unwrap(),
         }
+    }
+
+    /// Only explicit `[[bench]]` entries with `bench = false` are reported;
+    /// entries without the flag (or with `bench = true`) and manifests with
+    /// no `[[bench]]` array yield nothing.
+    #[test]
+    fn disabled_bench_targets_reads_the_flag() {
+        let m = parse(
+            "[package]\nname = \"alpha\"\n\n\
+             [[bench]]\nname = \"fast\"\nharness = false\n\n\
+             [[bench]]\nname = \"excluded\"\nbench = false\n\n\
+             [[bench]]\nname = \"kept\"\nbench = true\n",
+        );
+        assert_eq!(
+            m.disabled_bench_targets(),
+            BTreeSet::from(["excluded".to_string()])
+        );
+        assert!(
+            parse("[package]\nname = \"alpha\"\n")
+                .disabled_bench_targets()
+                .is_empty()
+        );
     }
 
     /// The [`DepEntry`] shape view over every TOML form a dep entry takes.

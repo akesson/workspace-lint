@@ -33,6 +33,11 @@ pub(super) struct TargetSet {
     /// Also gated on the `test` flag — `test = false` opts a target out of
     /// `--tests` entirely.
     test_targets: BTreeSet<String>,
+    /// `[[bench]]`-kind targets: compiled (and linted) only under `--benches`.
+    /// Gated on the manifest `bench` flag ([`wl_fast::Manifest::
+    /// disabled_bench_targets`]) — `bench = false` opts a target out of
+    /// `--benches`, and cargo_metadata does not expose the flag.
+    bench_targets: BTreeSet<String>,
     /// `<pkg>@build` stems for members with a build script — keyed by
     /// *package* name (every build script's target is `build-script-build`).
     /// Deliberately NOT part of [`TargetSet::expected_fragments`]: a build
@@ -46,12 +51,10 @@ pub(super) struct TargetSet {
 
 impl TargetSet {
     /// Compute the target set from an already-read `cargo metadata` and a
-    /// package selection. Per-config now: the caller decides whether a
-    /// config's kind is modelable at all (`Benches` isn't — a bench
-    /// fragment's `+test` suffix depends on the harness flag cargo_metadata
-    /// 0.23 no longer exposes); the command parser already rejects every
-    /// other unmodelable target-selection flag (`--lib`, `--all-targets`, …)
-    /// at the config surface.
+    /// package selection. Every config kind is modeled (`Default`/`Tests`/
+    /// `Benches` — see [`Self::expected_fragments`]); the command parser
+    /// already rejects every unmodelable target-selection flag (`--lib`,
+    /// `--all-targets`, …) at the config surface.
     pub(super) fn discover(md: &cargo_metadata::Metadata, packages: &[String]) -> Self {
         let member_ids: BTreeSet<String> = md
             .workspace_members
@@ -84,12 +87,18 @@ impl TargetSet {
             compile_units: BTreeSet::new(),
             harnessed: BTreeSet::new(),
             test_targets: BTreeSet::new(),
+            bench_targets: BTreeSet::new(),
             build_units: BTreeSet::new(),
         };
         for p in &md.packages {
             if !member_ids.contains(&p.id.to_string()) || !want_pkg(p.name.as_str()) {
                 continue;
             }
+            // `[[bench]] bench = false` lives only in the manifest — loaded
+            // lazily (first bench-kind target). An unreadable manifest (the
+            // synthetic-metadata tests) yields no exclusions, the default
+            // (`bench = true`) direction.
+            let mut disabled_benches: Option<BTreeSet<String>> = None;
             for t in &p.targets {
                 if !t.required_features.is_empty() {
                     let ok = enabled
@@ -123,13 +132,23 @@ impl TargetSet {
                         "test" if t.test => {
                             set.test_targets.insert(name.clone());
                         }
+                        "bench" => {
+                            let disabled = disabled_benches.get_or_insert_with(|| {
+                                wl_fast::Manifest::load(p.manifest_path.as_std_path())
+                                    .map(|m| m.disabled_bench_targets())
+                                    .unwrap_or_default()
+                            });
+                            if !disabled.contains(t.name.as_str()) {
+                                set.bench_targets.insert(name.clone());
+                            }
+                        }
                         // The extractor keys build fragments on the PACKAGE
                         // (the target name is always `build-script-build`).
                         "custom-build" => {
                             set.build_units
                                 .insert(format!("{}@build", p.name.replace('-', "_")));
                         }
-                        _ => {} // example/bench — never linted here
+                        _ => {} // example — never linted here
                     }
                 }
             }
@@ -150,15 +169,33 @@ impl TargetSet {
     /// manifest `test` flag, so a `test = false` target never compiles in
     /// test mode (its cross-crate uses are still credited — the assembler's
     /// foreign-reach channel covers configs that lack the defining crate).
+    /// `Benches` deliberately under-expects: only the `[[bench]]`-kind
+    /// targets themselves (as `<name>+test.wlir` — a bench unit compiles
+    /// with `CARGO_TARGET_TMPDIR` set, so emission suffixes it `+test`
+    /// whatever its harness flag). The lib/bin *bench-harness* units cargo
+    /// also builds under `--benches` (their `bench` flag defaults true) are
+    /// tolerated byproducts, never expectations: their flag is manifest-only
+    /// and per-target, and over-expecting a unit cargo won't build is the
+    /// hard-error blocker class. Under-expecting is guard-safe — a forced
+    /// re-lint regenerates every unit, and the prune keep-vocabulary is
+    /// kind-agnostic ([`crate_name_universe`]).
     pub(super) fn expected_fragments(&self, kinds: Kinds) -> BTreeSet<String> {
         let mut expected = BTreeSet::new();
-        if kinds == Kinds::Tests {
-            for name in self.harnessed.iter().chain(&self.test_targets) {
-                expected.insert(format!("{name}+test.wlir"));
+        match kinds {
+            Kinds::Tests => {
+                for name in self.harnessed.iter().chain(&self.test_targets) {
+                    expected.insert(format!("{name}+test.wlir"));
+                }
             }
-        } else {
-            for name in &self.compile_units {
-                expected.insert(format!("{name}.wlir"));
+            Kinds::Benches => {
+                for name in &self.bench_targets {
+                    expected.insert(format!("{name}+test.wlir"));
+                }
+            }
+            Kinds::Default => {
+                for name in &self.compile_units {
+                    expected.insert(format!("{name}.wlir"));
+                }
             }
         }
         expected
@@ -352,6 +389,7 @@ mod tests {
             compile_units: ["alpha".to_string(), "beta".to_string()].into(),
             harnessed: ["beta".to_string()].into(), // alpha: [lib] test = false
             test_targets: BTreeSet::new(),
+            bench_targets: BTreeSet::new(),
             build_units: BTreeSet::new(),
         };
         let default = set.expected_fragments(Kinds::Default);
@@ -378,6 +416,7 @@ mod tests {
             // [[test]] name = "custom" harness = false — cargo_metadata carries
             // no harness field; kind "test" + `test = true` is all we see.
             test_targets: ["custom".to_string()].into(),
+            bench_targets: BTreeSet::new(),
             build_units: BTreeSet::new(),
         };
         let tests = set.expected_fragments(Kinds::Tests);
@@ -387,6 +426,92 @@ mod tests {
             !set.expected_fragments(Kinds::Default)
                 .iter()
                 .any(|f| f.starts_with("custom"))
+        );
+    }
+
+    /// One-member synthetic metadata with a lib and three `[[bench]]`
+    /// targets, `manifest_path` pointing at a real manifest so the
+    /// `bench = false` exclusion is readable.
+    fn bench_metadata(manifest: &std::path::Path) -> cargo_metadata::Metadata {
+        let target = |name: &str, kind: &str| {
+            serde_json::json!({
+                "kind": [kind], "crate_types": ["bin"], "name": name,
+                "src_path": "/w/alpha/x.rs", "edition": "2021",
+                "doc": false, "doctest": false, "test": false,
+                "required-features": [],
+            })
+        };
+        serde_json::from_value(serde_json::json!({
+            "packages": [{
+                "name": "alpha", "version": "0.1.0",
+                "id": "path+file:///w/alpha#0.1.0",
+                "license": null, "license_file": null, "description": null,
+                "source": null,
+                "dependencies": [],
+                "targets": [
+                    target("alpha", "lib"),
+                    target("custom", "bench"),
+                    target("default_harness", "bench"),
+                    target("excluded", "bench"),
+                ],
+                "features": {},
+                "manifest_path": manifest.to_string_lossy(),
+                "metadata": null, "publish": null, "authors": [],
+                "categories": [], "keywords": [], "readme": null,
+                "repository": null, "homepage": null, "documentation": null,
+                "edition": "2021", "links": null, "default_run": null,
+                "rust_version": null,
+            }],
+            "workspace_members": ["path+file:///w/alpha#0.1.0"],
+            "workspace_default_members": ["path+file:///w/alpha#0.1.0"],
+            "resolve": null,
+            "workspace_root": "/w", "target_directory": "/w/target",
+            "version": 1, "metadata": null,
+        }))
+        .expect("synthetic metadata deserializes")
+    }
+
+    /// `cargo bench` configs are guard-modeled: expected = the `[[bench]]`-
+    /// kind targets as `<name>+test.wlir` (bench units compile with
+    /// `CARGO_TARGET_TMPDIR` set, so emission suffixes them `+test` whatever
+    /// their harness flag) — minus targets whose manifest entry opts out with
+    /// `bench = false` (cargo never builds them under `--benches`, and
+    /// cargo_metadata does not carry the flag, so it is read from the
+    /// manifest). Lib/bin bench-harness byproducts are deliberately NOT
+    /// expected — under-expecting is the guard-safe direction.
+    #[test]
+    fn bench_targets_expected_with_manifest_exclusions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n\n\
+             [[bench]]\nname = \"custom\"\nharness = false\n\n\
+             [[bench]]\nname = \"excluded\"\nbench = false\n",
+        )
+        .unwrap();
+        let set = TargetSet::discover(&bench_metadata(&manifest), &[]);
+        let benches = set.expected_fragments(Kinds::Benches);
+        assert_eq!(
+            benches.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["custom+test.wlir", "default_harness+test.wlir"],
+            "declared benches expected, `bench = false` excluded"
+        );
+        // Bench targets never leak into the other kinds' expectations.
+        for kinds in [Kinds::Default, Kinds::Tests] {
+            assert!(
+                !set.expected_fragments(kinds)
+                    .iter()
+                    .any(|f| f.starts_with("custom") || f.starts_with("default_harness")),
+                "bench targets expected only under a bench config"
+            );
+        }
+        // An unreadable manifest degrades to no exclusions (default
+        // bench = true), never to dropping declared benches.
+        let set = TargetSet::discover(&bench_metadata(&tmp.path().join("missing.toml")), &[]);
+        assert!(
+            set.expected_fragments(Kinds::Benches)
+                .contains("excluded+test.wlir")
         );
     }
 

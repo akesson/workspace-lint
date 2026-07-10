@@ -59,7 +59,7 @@ pub struct ConfigRun {
 /// (`None` ⇒ guard skipped for this config only).
 struct ConfigPlan {
     packages: Vec<String>,
-    targets: Option<guard::TargetSet>,
+    targets: guard::TargetSet,
 }
 
 /// The build-fragment sharing key: configs with the same `(target, features)`
@@ -312,20 +312,7 @@ impl Engine {
             } else {
                 closure::member_closure(umd, spec)?
             };
-            // `Benches` stays guard-unmodeled (a bench fragment's `+test`
-            // suffix depends on the harness flag, which cargo_metadata 0.23
-            // no longer exposes) — but the skip is per-config now: one bench
-            // entry no longer disables the guard for the whole matrix.
-            let targets = if spec.kinds == Kinds::Benches {
-                eprintln!(
-                    "workspace-lint: completeness guard skipped — bench harness kinds aren't \
-                     modeled (config `{}`)",
-                    spec.id
-                );
-                None
-            } else {
-                Some(guard::TargetSet::discover(umd, &packages))
-            };
+            let targets = guard::TargetSet::discover(umd, &packages);
             plans.push(ConfigPlan { packages, targets });
         }
         // The keep-vocabulary for the scoped pruner: every crate/target name
@@ -395,8 +382,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let names: std::collections::BTreeSet<String> = group
             .iter()
-            .filter_map(|&i| plans[i].targets.as_ref())
-            .flat_map(|t| t.build_fragments())
+            .flat_map(|&i| plans[i].targets.build_fragments())
             .collect();
         if names.is_empty() {
             return Ok(());
@@ -418,8 +404,9 @@ impl Engine {
             for &i in group {
                 let covers = plans[i]
                     .targets
-                    .as_ref()
-                    .is_some_and(|t| t.build_fragments().iter().any(|n| missing.contains(n)));
+                    .build_fragments()
+                    .iter()
+                    .any(|n| missing.contains(n));
                 if covers {
                     self.run_config(
                         &cfg.configs[i],
@@ -457,7 +444,7 @@ impl Engine {
         valid_crates: &std::collections::BTreeSet<String>,
     ) -> Result<(), EngineError> {
         let packages = &plan.packages;
-        let targets = plan.targets.as_ref();
+        let targets = &plan.targets;
         // SAFETY: single-threaded by the documented contract of `extract`.
         unsafe { std::env::set_var("WL_IR_OUT", ir_dir) };
         // The spawned `cargo check`'s stderr — compile progress, the
@@ -486,9 +473,6 @@ impl Engine {
         };
         run("initial")?;
 
-        let Some(targets) = targets else {
-            return Ok(()); // guard skipped: unmodeled target-selection flag
-        };
         let expected = targets.expected_fragments(selector.kinds);
         // A complete whole-workspace run must produce *exactly* `expected` —
         // anything else in the dir is a leftover from a renamed crate, a

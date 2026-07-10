@@ -42,7 +42,12 @@ Three findings:
 - **used only by test code** → the item ships in the production build with
   nothing production reaching it — dead code the tests embalm. Every test
   unit counts: same-crate `#[cfg(test)]` modules, other crates' test code,
-  integration tests, benches. No fix is machine-applied by plain `--fix`
+  integration tests — and benches, when the `[engine]` matrix has a bench
+  entry (`"cargo bench"`); bench reach classifies as test reach. Without a
+  bench entry the engine never compiles `benches/`, so a bench-mentioned
+  item is instead reported as possibly unused with a note naming the missing
+  config entry, and is never deleted (see the mention veto below). No fix is
+  machine-applied by plain `--fix`
   (narrowing trips `dead_code` on the non-test build; a bare deletion breaks
   the referencing tests) — gate it `#[cfg(test)]`, move it into test code,
   mark a deliberate test-support API with `expect`, or remove it together
@@ -145,11 +150,12 @@ already dead before the fix is the author's, not ours, and private
 structs / enums / fields are never touched. An item stays alive if *any*
 `[engine] configs` entry uses it, if an `expect!` / `allow!` silences it, if
 a `use` naming it is macro-generated or lives in a generated file, or if it
-is **mentioned inside a `#[cfg(...)]` region no declared config compiles** —
+is **mentioned inside a `#[cfg(...)]` region no declared config compiles**,
+or **mentioned in a bench source while no config has bench kind** —
 deletion needs a higher standard of proof than reporting, so a
-possibly-wasm-only (or windows-only, feature-gated, …) item is never
-deleted; the diagnostic names the uncovered cfg and the `[engine]` entry
-that would cover it.
+possibly-wasm-only (or windows-only, feature-gated, bench-only, …) item is
+never deleted; the diagnostic names the uncovered cfg (or the bench file)
+and the `[engine]` entry that would cover it.
 
 A deletion is also vetoed when the fixed tree would newly fail a
 `-D warnings` gate on something that *survives* (e.g. removing the last read

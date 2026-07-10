@@ -1,0 +1,8 @@
+[package]
+name = "blib"
+version = "0.1.0"
+edition = "2021"
+
+[[bench]]
+name = "measure"
+harness = false

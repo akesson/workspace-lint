@@ -1,4 +1,3 @@
-workspace-lint: completeness guard skipped — bench harness kinds aren't modeled (config `benches`)
 error: pub fn `alpha` in crate `blib` is only used by test code
  --> <TMP>/crates/blib/src/lib.rs:1:1
   |

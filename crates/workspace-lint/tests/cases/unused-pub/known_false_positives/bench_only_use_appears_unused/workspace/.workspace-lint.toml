@@ -1,0 +1,14 @@
+# KNOWN FALSE POSITIVE: `blib::bench_only` is used — by blib's bench — but
+# the declared matrix has no bench-kind config, so the reference is invisible
+# to the engine and the item reads unused. The report carries the
+# bench-source note naming the exact remedy ("cargo bench" in configs), and
+# the deletion cascade vetoes removing it. Firing-with-note is the designed
+# behavior until a bench config is declared.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+[engine]
+configs = ["cargo build"]
