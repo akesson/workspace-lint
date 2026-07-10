@@ -24,8 +24,9 @@
 //! loop terminates, bounded by the candidate count.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
-use wl_lint_api::config::{PerCrate, glob_set};
+use wl_lint_api::config::PerCrate;
 
 use wl_engine::coverage::CfgShadow;
 use wl_engine::fast::FastModel;
@@ -40,6 +41,7 @@ use wl_lint_api::LintId;
 
 use super::config::UnusedPubConfig;
 use super::ir::{PubFinding, findings, generated_set};
+use super::scope::{FindingScope, shadow_veto_note};
 use wl_lint_api::surgery::deletion::{DeleteOutcome, delete_suggestion};
 use wl_lint_api::surgery::import_surgery;
 
@@ -75,15 +77,7 @@ pub fn run(
     // losing its `is_empty`). Populated per round from the trial removal set;
     // a vetoed item never seeds again (monotone, so the loop still terminates).
     let mut vetoed: HashMap<String, DeletionUnmask> = HashMap::new();
-    let shadow_note = |id: &str| -> Option<String> {
-        let region = shadow.mention_id(id)?;
-        Some(format!(
-            "mentioned under `cfg({})` ({}), which no declared `[engine]` config compiles — \
-             possibly used on a target the engine never saw; not deleting. Add a matching \
-             command to `[engine] configs`, or remove manually",
-            region.predicate, region.file,
-        ))
-    };
+    let shadow_note = |id: &str| -> Option<String> { shadow.mention_id(id).map(shadow_veto_note) };
 
     // TestOnly-deletion bookkeeping. `test_blocked` (target → veto note) is
     // per-round NON-sticky, unlike `shadowed`/`vetoed`: a blocker referencing
@@ -106,7 +100,7 @@ pub fn run(
     let final_findings = loop {
         let removal = RemovalSet::new(removed.iter());
         let cands = model.pub_candidates_excluding(&removal);
-        let batch = findings(config, fast, cands, true);
+        let batch = findings(config, fast, cands, true, &generated);
         // Seeds for this round: genuinely-removable (Unused + MachineApplicable
         // deletion) findings that aren't already removed, aren't silenced, and
         // aren't macro-import-blocked. TestOnly findings are DIVERTED — even
@@ -151,7 +145,7 @@ pub fn run(
                 shadowed.insert(o.id.clone(), note);
                 continue;
             }
-            let Some(f) = collateral_finding(&o, config, fast) else {
+            let Some(f) = collateral_finding(&o, config, fast, &generated) else {
                 continue;
             };
             if f.removable && !suppressed(&f.diagnostic) {
@@ -167,6 +161,7 @@ pub fn run(
                 model,
                 config,
                 fast,
+                generated: &generated,
                 removed: &removed,
                 blocked: &blocked,
                 vetoed: &vetoed,
@@ -274,7 +269,7 @@ pub fn run(
         if blocked.contains_key(&o.id) {
             continue;
         }
-        if let Some(f) = collateral_finding(&o, config, fast) {
+        if let Some(f) = collateral_finding(&o, config, fast, &generated) {
             let mut d = f.diagnostic;
             if let Some(unmask) = vetoed.get(&o.id) {
                 d.withhold_deletions(&unmask_note(unmask));
@@ -303,6 +298,7 @@ struct GateCtx<'a> {
     model: &'a SemanticModel,
     config: &'a PerCrate<UnusedPubConfig>,
     fast: &'a FastModel,
+    generated: &'a HashSet<PathBuf>,
     removed: &'a HashSet<String>,
     blocked: &'a HashMap<String, ExcisionBlock>,
     vetoed: &'a HashMap<String, DeletionUnmask>,
@@ -362,7 +358,7 @@ fn gate_scaffolding(
         {
             return Err(scaffold_veto_note(s));
         }
-        match scaffold_finding(s, cx.config, cx.fast) {
+        match scaffold_finding(s, cx.config, cx.fast, cx.generated) {
             Some(f) if f.removable && !(cx.suppressed)(&f.diagnostic) => sfindings.push(f),
             _ => return Err(scaffold_veto_note(s)),
         }
@@ -481,6 +477,7 @@ fn scaffold_finding(
     s: &TestScaffold,
     per_crate: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
+    generated: &HashSet<PathBuf>,
 ) -> Option<PubFinding> {
     let span = s.span.as_ref()?;
     let full = s.full_span.as_ref()?;
@@ -495,18 +492,8 @@ fn scaffold_finding(
                 .find(|k| file.starts_with(&k.manifest_dir))
         })?;
     let config = per_crate.for_crate(&krate.name);
-    if config
-        .exclude_crates
-        .iter()
-        .any(|c| c == &krate.name || c == &s.krate)
-        || glob_set(&config.allowlist).is_some_and(|al| al.is_match(&s.id))
-    {
-        return None;
-    }
-    if file.starts_with(fast.target_directory())
-        || glob_set(&config.exclude_paths)
-            .is_some_and(|ex| ex.is_match(file.to_string_lossy().as_ref()))
-    {
+    let scope = FindingScope::new(config, fast, krate, generated, None);
+    if scope.crate_excluded(&s.krate) || scope.skips(&s.id, &s.kind, Some(span)) {
         return None;
     }
     let (suggestion, skip_note, removable) = match delete_suggestion(&file, full) {
@@ -545,24 +532,15 @@ fn collateral_finding(
     o: &PrivateOrphan,
     per_crate: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
+    generated: &HashSet<PathBuf>,
 ) -> Option<PubFinding> {
     let krate = fast.members().iter().find(|k| k.code_name() == o.krate)?;
     let config = per_crate.for_crate(&krate.name);
-    if config
-        .exclude_crates
-        .iter()
-        .any(|c| c == &krate.name || c == &o.krate)
-        || glob_set(&config.allowlist).is_some_and(|al| al.is_match(&o.id))
-    {
-        return None;
-    }
     let span = o.span.as_ref()?;
     let full = o.full_span.as_ref()?;
     let file = fast.root().join(&span.file);
-    if file.starts_with(fast.target_directory())
-        || glob_set(&config.exclude_paths)
-            .is_some_and(|ex| ex.is_match(file.to_string_lossy().as_ref()))
-    {
+    let scope = FindingScope::new(config, fast, krate, generated, None);
+    if scope.crate_excluded(&o.krate) || scope.skips(&o.id, &o.kind, Some(span)) {
         return None;
     }
     let (suggestion, skip_note, removable) = match delete_suggestion(&file, full) {

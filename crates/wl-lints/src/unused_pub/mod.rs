@@ -38,6 +38,7 @@ pub(super) const DEFAULT_PUBLISH_HINT_THRESHOLD: usize = 3;
 pub mod cascade;
 pub mod config;
 mod ir;
+mod scope;
 #[cfg(test)]
 mod tests;
 

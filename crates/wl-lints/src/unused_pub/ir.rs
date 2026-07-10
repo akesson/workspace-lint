@@ -29,7 +29,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use globset::GlobSet;
 use wl_engine::fast::{CrateInfo, FastModel, Publish};
 use wl_engine::semantic::{Category, PubCandidate, PubUsage, SemanticModel};
 use wl_engine::wl_ir;
@@ -37,12 +36,13 @@ use wl_engine::wl_ir;
 use wl_diagnostic::builder::{at_crate, at_line};
 use wl_diagnostic::{Applicability, Diagnostic, PubVerdict};
 use wl_lint_api::LintId;
-use wl_lint_api::config::{PerCrate, glob_set};
+use wl_lint_api::config::PerCrate;
 
 use wl_engine::coverage::CfgShadow;
 
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
+use super::scope::{FindingScope, shadow_report_note};
 use wl_lint_api::surgery::deletion::pick_deletion_fix;
 
 /// One unused-pub finding paired with the two things the `--fix-auto-delete`
@@ -69,13 +69,21 @@ pub(super) fn check(
     model: &SemanticModel,
     shadow: Option<&CfgShadow>,
 ) -> Vec<Diagnostic> {
+    let generated = generated_set(fast);
     // Deletion is a `--fix-auto-delete` concern, and that path replaces this
     // plain-check output with the cascade's — so the plain run always renders
     // the tighten fallback for `Unused` items, never a deletion.
-    findings_with_shadow(config, fast, model.pub_candidates(), false, shadow)
-        .into_iter()
-        .map(|f| f.diagnostic)
-        .collect()
+    findings_with_shadow(
+        config,
+        fast,
+        model.pub_candidates(),
+        false,
+        &generated,
+        shadow,
+    )
+    .into_iter()
+    .map(|f| f.diagnostic)
+    .collect()
 }
 
 /// The candidate-driven core of the lint — shared by the plain [`check`] (fed
@@ -84,13 +92,16 @@ pub(super) fn check(
 /// crate-level publish hints, in the same order [`check`] always emitted them.
 /// `auto_delete` selects the structural fix for `Unused` items: whole-item
 /// deletion (the cascade) vs the shown-but-not-applied tighten fallback.
+/// `generated` is [`generated_set`], computed once by the caller (the cascade
+/// calls this every fixpoint round).
 pub(crate) fn findings(
     config: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
     candidates: Vec<PubCandidate>,
     auto_delete: bool,
+    generated: &HashSet<PathBuf>,
 ) -> Vec<PubFinding> {
-    findings_with_shadow(config, fast, candidates, auto_delete, None)
+    findings_with_shadow(config, fast, candidates, auto_delete, generated, None)
 }
 
 /// [`findings`] with the report-time cfg-shadow index: an `Unused` candidate
@@ -102,9 +113,9 @@ fn findings_with_shadow(
     fast: &FastModel,
     candidates: Vec<PubCandidate>,
     auto_delete: bool,
+    generated: &HashSet<PathBuf>,
     shadow: Option<&CfgShadow>,
 ) -> Vec<PubFinding> {
-    let generated = generated_set(fast);
     let mut by_crate: BTreeMap<&str, Vec<&PubCandidate>> = BTreeMap::new();
     for c in &candidates {
         by_crate.entry(c.krate.as_str()).or_default().push(c);
@@ -123,22 +134,19 @@ fn findings_with_shadow(
     let mut out = Vec::new();
     for krate in fast.members() {
         // A per-crate `[crates.<name>.unused-pub]` wholesale-replaces the
-        // global params for this crate; the glob sets / kind filter are built
-        // from the resolved config, so they're computed per crate.
+        // global params for this crate; the scope's glob sets / kind filter
+        // are built from the resolved config, so they're computed per crate.
         let config = per_crate.for_crate(&krate.name);
         let crate_code = krate.code_name();
-        if config
-            .exclude_crates
-            .iter()
-            .any(|c| c == &krate.name || c == &crate_code)
-        {
+        let kind_filter: Option<HashSet<&'static str>> = (!config.kinds.is_empty())
+            .then(|| config.kinds.iter().map(|k| k.to_ir_kind()).collect());
+        let scope = FindingScope::new(config, fast, krate, generated, kind_filter);
+        if scope.crate_excluded(&crate_code) {
             continue;
         }
         let Some(cands) = by_crate.get(crate_code.as_str()) else {
             continue;
         };
-        let kind_filter: Option<HashSet<&'static str>> = (!config.kinds.is_empty())
-            .then(|| config.kinds.iter().map(|k| k.to_ir_kind()).collect());
         // A crate's library-public items are exempt as "external API surface"
         // only when the crate actually has out-of-workspace consumers — i.e.
         // it declares `publish = true` (or a registry list) — or the user
@@ -149,13 +157,8 @@ fn findings_with_shadow(
                 Publish::ExplicitTrue | Publish::Registries(_)
             );
         let ctx = CheckCtx {
-            root: fast.root(),
-            target_directory: fast.target_directory(),
-            generated: &generated,
+            scope,
             crate_code: &crate_code,
-            kind_filter: kind_filter.as_ref(),
-            allowlist: glob_set(&config.allowlist),
-            exclude_paths: glob_set(&config.exclude_paths),
             suppress_intra_crate: config.suppress_intra_crate,
             auto_delete,
             exempt_external_api,
@@ -203,18 +206,11 @@ pub(crate) fn generated_set(fast: &FastModel) -> HashSet<PathBuf> {
 }
 
 struct CheckCtx<'a> {
-    /// Workspace root — joins the IR's workspace-relative span files into the
-    /// absolute paths diagnostics anchor to (matching the syn backend).
-    root: &'a Path,
-    /// Cargo's target directory — everything under it is build-generated.
-    target_directory: &'a Path,
-    /// Workspace-relative paths of checked-in generated (`include!`d) files —
-    /// analyzed, but never an author-editable finding surface.
-    generated: &'a HashSet<PathBuf>,
+    /// The per-crate scope gates (crate/kind/allowlist/paths/generated) —
+    /// the ONE implementation shared with the cascade's scaffold/collateral
+    /// paths (see `scope.rs`).
+    scope: FindingScope<'a>,
     crate_code: &'a str,
-    kind_filter: Option<&'a HashSet<&'static str>>,
-    allowlist: Option<GlobSet>,
-    exclude_paths: Option<GlobSet>,
     suppress_intra_crate: bool,
     auto_delete: bool,
     /// Whether library-public items in this crate are exempt as external API
@@ -225,10 +221,6 @@ struct CheckCtx<'a> {
 }
 
 impl CheckCtx<'_> {
-    fn abs_file(&self, span: &wl_ir::Span) -> PathBuf {
-        self.root.join(&span.file)
-    }
-
     fn shadow_mention(&self, id: &str) -> Option<&wl_engine::coverage::ShadowRegion> {
         self.shadow.and_then(|s| s.mention_id(id))
     }
@@ -262,8 +254,9 @@ fn check_candidate(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> Option<PubFinding
 }
 
 /// Pure filter cascade — every reason to bail before composing a diagnostic,
-/// mirroring the syn backend's `item_skipped_by_filters` (kind/visibility
-/// pre-filters live in the assembler's candidate set already).
+/// mirroring the syn backend's `item_skipped_by_filters`. The *scope* gates
+/// (kind/allowlist/paths/target-dir/generated) live in [`FindingScope`];
+/// only the candidate-*semantic* guards stay here.
 fn candidate_skipped_by_filters(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> bool {
     // Findings target module-level and inherent-impl items. A trait-impl
     // item's visibility is trait-forced — no tighten surface, deletion breaks
@@ -278,36 +271,7 @@ fn candidate_skipped_by_filters(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> bool
     if cand.name == "main" && cand.id.split("::").count() == 2 {
         return true;
     }
-    // Build-generated code (`OUT_DIR` content spliced via `include!` lands
-    // under cargo's target dir): analyzed, but never an author-editable
-    // finding surface.
-    if let Some(span) = &cand.span
-        && ctx.abs_file(span).starts_with(ctx.target_directory)
-    {
-        return true;
-    }
-    // Same policy for checked-in generated files (`include!`d from the
-    // source tree): the generator owns them, so a finding there isn't
-    // actionable and a deletion would be overwritten.
-    if let Some(span) = &cand.span
-        && ctx.generated.contains(Path::new(&span.file))
-    {
-        return true;
-    }
-    if let Some(kf) = ctx.kind_filter
-        && !kf.contains(cand.kind.as_str())
-    {
-        return true;
-    }
-    if let Some(al) = &ctx.allowlist
-        && al.is_match(&cand.id)
-    {
-        return true;
-    }
-    if let Some(ex) = &ctx.exclude_paths
-        && let Some(span) = &cand.span
-        && ex.is_match(ctx.abs_file(span).to_string_lossy().as_ref())
-    {
+    if ctx.scope.skips(&cand.id, &cand.kind, cand.span.as_ref()) {
         return true;
     }
     // A re-export target is part of the crate's API regardless of publish
@@ -364,7 +328,7 @@ fn build_diagnostic(
         ),
     };
 
-    let file = ctx.abs_file(span);
+    let file = ctx.scope.abs_file(span);
     let builder =
         at_line(LintId::UnusedPub.id(), message, file.clone(), span.line).help(suggestion);
     // The specific blind spot beats the generic disclaimer: a shadowed
@@ -376,13 +340,7 @@ fn build_diagnostic(
         .then(|| ctx.shadow_mention(&cand.id))
         .flatten()
     {
-        Some(region) => builder.note(format!(
-            "possibly used: mentioned under `cfg({})` ({}), which no declared `[engine]` \
-             config compiles — add a matching cargo command to `[engine] configs` to judge \
-             that code",
-            region.predicate,
-            region.file,
-        )),
+        Some(region) => builder.note(shadow_report_note(region)),
         None => builder.note_once(
             "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
         ),
