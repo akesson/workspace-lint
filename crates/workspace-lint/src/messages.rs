@@ -243,6 +243,32 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             .note("instances are identical (differing at most in local names)")
             .build(),
         ),
+        // duplicate-code classifier: a copy with no direct caller that
+        // implements a trait method is never advised dead (deleting it is
+        // E0046) — it is spared with an explanatory note and the group keeps
+        // the merge advice.
+        (
+            "duplicate_code_merge_trait_guard",
+            at_line(
+                "workspace-lint::duplicate-code",
+                "duplicated code: 2 structurally identical instances (~8 lines)",
+                PathBuf::from("crates/alpha/src/report.rs"),
+                42,
+            )
+            .note("also found at: crates/alpha/src/render.rs:88")
+            .note_once("matching ignores local variable names and literal values")
+            .help(
+                "these are copies of the same function — keep one and redirect the other call sites",
+            )
+            .note("instances are identical (differing at most in local names)")
+            .note("2 call sites reference the copies (first at crates/alpha/src/main.rs:15)")
+            .note(
+                "the copy at crates/alpha/src/report.rs:42 implements `Selectable::id` — it is \
+                 reached through the trait despite having no direct caller, so it is not \
+                 reported as dead",
+            )
+            .build(),
+        ),
         // duplicate-code classifier: the same method across impls of one trait —
         // hoist it to a default method on the trait.
         (
@@ -1217,6 +1243,26 @@ mod tests {
         }
 
         #[test]
+        fn duplicate_code_merge_trait_guard() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_merge_trait_guard")), @"
+            warning: duplicated code: 2 structurally identical instances (~8 lines)
+             --> crates/alpha/src/report.rs:42:1
+              |
+              = help: these are copies of the same function — keep one and redirect the other call sites
+              = note: also found at: crates/alpha/src/render.rs:88
+              = note: matching ignores local variable names and literal values
+              = note: instances are identical (differing at most in local names)
+              = note: 2 call sites reference the copies (first at crates/alpha/src/main.rs:15)
+              = note: the copy at crates/alpha/src/report.rs:42 implements `Selectable::id` — it is reached through the trait despite having no direct caller, so it is not reported as dead
+            help: if intentional, silence with:
+              |
+            42 + // workspace-lint: expect(duplicate-code)
+              |
+              = note: `#[warn(workspace_lint::duplicate_code)]` on by default
+            ");
+        }
+
+        #[test]
         fn duplicate_code_default_trait_method() {
             insta::assert_snapshot!(render(&scenario("duplicate_code_default_trait_method")), @r"
             warning: duplicated code: 2 structurally identical instances (~6 lines)
@@ -2084,6 +2130,11 @@ mod tests {
         }
 
         #[test]
+        fn duplicate_code_merge_trait_guard() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_merge_trait_guard")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~8 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"these are copies of the same function — keep one and redirect the other call sites","spans":[]},{"level":"note","message":"also found at: crates/alpha/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]},{"level":"note","message":"2 call sites reference the copies (first at crates/alpha/src/main.rs:15)","spans":[]},{"level":"note","message":"the copy at crates/alpha/src/report.rs:42 implements `Selectable::id` — it is reached through the trait despite having no direct caller, so it is not reported as dead","spans":[]}],"rendered":null}"#);
+        }
+
+        #[test]
         fn duplicate_code_default_trait_method() {
             insta::assert_snapshot!(render(&scenario("duplicate_code_default_trait_method")), @r#"{"level":"warning","message":"duplicated code: 2 structurally identical instances (~6 lines)","code":{"code":"workspace-lint::duplicate-code","explanation":null},"spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/report.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(duplicate-code)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"every copy implements `Formatter::render` — make it a default method on the trait","spans":[]},{"level":"note","message":"also found at: crates/beta/src/render.rs:88","spans":[]},{"level":"note","message":"matching ignores local variable names and literal values","spans":[]},{"level":"note","message":"instances are identical (differing at most in local names)","spans":[]}],"rendered":null}"#);
         }
@@ -2240,6 +2291,11 @@ mod tests {
         #[test]
         fn duplicate_code_delete_dead_copy() {
             insta::assert_snapshot!(render(&scenario("duplicate_code_delete_dead_copy")), @"::warning file=crates/alpha/src/report.rs,line=42,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicated code: 2 structurally identical instances (~8 lines)");
+        }
+
+        #[test]
+        fn duplicate_code_merge_trait_guard() {
+            insta::assert_snapshot!(render(&scenario("duplicate_code_merge_trait_guard")), @"::warning file=crates/alpha/src/report.rs,line=42,col=1,title=workspace-lint%3A%3Aduplicate-code::duplicated code: 2 structurally identical instances (~8 lines)");
         }
 
         #[test]

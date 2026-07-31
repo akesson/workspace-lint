@@ -3749,6 +3749,70 @@ fn enclosing_fn_sees_secondary_config_only_defs() {
 }
 
 #[test]
+fn enclosing_fn_carries_category_and_trait_method() {
+    // The duplicate-code delete guard: a trait-impl fn resolves its category
+    // and — when the trait is workspace-defined — the implemented trait
+    // method's display path; a foreign trait's key misses the defs map.
+    let mut decl = fn_item_at(&["app", "Selectable", "id"], "K_DECL", "src/t.rs", 0, 10);
+    decl.parent_kind = Some("trait".into());
+    let mut trait_impl = fn_item_at(
+        &["app", "<impl Selectable for W>", "id"],
+        "K_TI",
+        "src/t.rs",
+        20,
+        60,
+    );
+    trait_impl.parent_kind = Some("impl".into());
+    trait_impl.trait_item = Some("K_DECL".into());
+    let mut foreign_impl = fn_item_at(
+        &["app", "<impl Display for W>", "fmt"],
+        "K_FI",
+        "src/t.rs",
+        70,
+        110,
+    );
+    foreign_impl.parent_kind = Some("impl".into());
+    foreign_impl.trait_item = Some("K_EXTERNAL_NOWHERE".into());
+    let mut inherent = fn_item_at(&["app", "W", "id"], "K_INHERENT", "src/t.rs", 120, 150);
+    inherent.parent_kind = Some("impl".into());
+    let module_fn = fn_item_at(&["app", "free"], "K_FREE", "src/t.rs", 160, 200);
+
+    let app = frag(
+        "app",
+        vec![decl, trait_impl, foreign_impl, inherent, module_fn],
+        vec![],
+    );
+    let m = model(vec![("default", vec![app])]);
+    let t = std::path::Path::new("src/t.rs");
+
+    let ti = m.enclosing_fn(t, 30).unwrap();
+    assert_eq!(ti.category, Category::TraitImpl);
+    assert_eq!(ti.trait_method.as_deref(), Some("app::Selectable::id"));
+
+    let fi = m.enclosing_fn(t, 80).unwrap();
+    assert_eq!(fi.category, Category::TraitImpl);
+    assert_eq!(fi.trait_method, None, "foreign trait key resolves nothing");
+
+    let inherent_fn = m.enclosing_fn(t, 130).unwrap();
+    assert_eq!(
+        (inherent_fn.category, inherent_fn.trait_method),
+        (Category::InherentImpl, None)
+    );
+
+    let free = m.enclosing_fn(t, 170).unwrap();
+    assert_eq!(
+        (free.category, free.trait_method),
+        (Category::ModuleLevel, None)
+    );
+
+    // The guard's truth table: only module-level and inherent-impl delete.
+    assert!(Category::ModuleLevel.supports_deletion());
+    assert!(Category::InherentImpl.supports_deletion());
+    assert!(!Category::TraitImpl.supports_deletion());
+    assert!(!Category::Other.supports_deletion());
+}
+
+#[test]
 fn callees_union_across_configs_by_identity() {
     // caller calls `a` under default and `b` under test — the union is both.
     let defs = || {

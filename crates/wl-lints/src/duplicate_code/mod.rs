@@ -32,7 +32,7 @@ pub mod config;
 mod measure;
 
 pub use baseline::BaselineFile;
-use classify::{Classifier, RefactoringClass};
+use classify::Classifier;
 pub use config::DuplicateCodeConfig;
 pub use measure::{GroupMeasure, MeasureReport, measure};
 
@@ -321,9 +321,11 @@ fn emit(
             builder = builder.level_explicit(wl_diagnostic::Level::Warn);
         }
     }
-    // The class note is appended after the divergence note (pinned order).
-    if let Some(note) = class.as_ref().and_then(RefactoringClass::note) {
-        builder = builder.note(note);
+    // The class notes are appended after the divergence note (pinned order).
+    if let Some(c) = &class {
+        for note in c.notes() {
+            builder = builder.note(note);
+        }
     }
     builder.build()
 }

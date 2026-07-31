@@ -14,7 +14,11 @@
 //! shadowed name (`let month_short = month_short(m);`) matches by structure but
 //! calls a different def, so a differing callee set withholds the merge
 //! ([`MergeWithheld`](RefactoringClass::MergeWithheld)) rather than advising a
-//! rewrite that would not compile or would change behavior.
+//! rewrite that would not compile or would change behavior. Zero in-degree
+//! alone never marks a copy dead either: only a fn whose category
+//! `supports_deletion` may be advised deleted — a trait-impl method is reached
+//! through dispatch the ref graph doesn't edge, and deleting it is E0046
+//! (issue #141), so such a copy is spared with an explanatory note instead.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -23,6 +27,7 @@ use wl_diagnostic::render::display_path;
 use wl_engine::SemanticModel;
 use wl_engine::fast::clones::meta::{FirstParam, FnMeta, FnOwner, MetaResolver};
 use wl_engine::fast::clones::{CandidateKind, CloneGroup, Region};
+use wl_engine::semantic::Category;
 
 /// The generic help every group falls back to — literally the pre-classifier
 /// message, kept for `MergeWithheld` / `Unclassified` and the no-classify path.
@@ -47,14 +52,34 @@ pub(crate) struct CallSites {
     pub first: Option<Site>,
 }
 
+/// A copy with zero outside in-degree that must NOT be advised dead: its
+/// enclosing fn's category does not support deletion (a trait-impl method is
+/// reached through the trait and required by its `impl` — deleting it is
+/// E0046, issue #141).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SparedCopy {
+    pub site: Site,
+    /// `Trait::method` display when the implemented trait is
+    /// workspace-resolvable; `None` for a foreign trait (`std`'s `Display`, …).
+    pub trait_method: Option<String>,
+}
+
 /// The refactoring a clone group calls for. Classes 1–5 replace the generic
 /// help; the last two keep it (and `MergeWithheld` adds a caution note).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RefactoringClass {
     /// Identical fns confirmed interchangeable — keep one, redirect callers.
-    MergeIdenticalFns { call_sites: Option<CallSites> },
-    /// Some copies have no outside referrer — delete the dead ones.
-    DeleteDeadCopy { dead: Vec<Site> },
+    /// `spared`: copies with zero in-degree the delete guard held back.
+    MergeIdenticalFns {
+        call_sites: Option<CallSites>,
+        spared: Vec<SparedCopy>,
+    },
+    /// Some copies have no outside referrer — delete the dead ones. `spared`
+    /// as above (a mixed group renders both stories).
+    DeleteDeadCopy {
+        dead: Vec<Site>,
+        spared: Vec<SparedCopy>,
+    },
     /// The same method across impls of one trait — hoist to a default method.
     DefaultTraitMethod { trait_name: String, method: String },
     /// Free/inherent fns all taking one workspace type first — make it a method.
@@ -75,7 +100,7 @@ impl RefactoringClass {
                 "these are copies of the same function — keep one and redirect the other call sites"
                     .to_string()
             }
-            Self::DeleteDeadCopy { dead } => dead_copy_help(dead),
+            Self::DeleteDeadCopy { dead, .. } => dead_copy_help(dead),
             Self::DefaultTraitMethod { trait_name, method } => format!(
                 "every copy implements `{trait_name}::{method}` — make it a default method on the trait"
             ),
@@ -89,18 +114,27 @@ impl RefactoringClass {
         }
     }
 
-    /// The note this class appends after the divergence note (if any).
-    pub(crate) fn note(&self) -> Option<String> {
+    /// The notes this class appends after the divergence note (if any):
+    /// call-sites first, then one per delete-guard-spared copy.
+    pub(crate) fn notes(&self) -> Vec<String> {
+        let mut out = Vec::new();
         match self {
-            Self::MergeIdenticalFns {
-                call_sites: Some(cs),
-            } => Some(call_sites_note(cs)),
-            Self::MergeWithheld => Some(
+            Self::MergeIdenticalFns { call_sites, spared } => {
+                if let Some(cs) = call_sites {
+                    out.push(call_sites_note(cs));
+                }
+                out.extend(spared.iter().take(MAX_LISTED).map(spared_copy_note));
+            }
+            Self::DeleteDeadCopy { spared, .. } => {
+                out.extend(spared.iter().take(MAX_LISTED).map(spared_copy_note));
+            }
+            Self::MergeWithheld => out.push(
                 "instances resolve different callees — the copies may not be interchangeable"
                     .to_string(),
             ),
-            _ => None,
+            _ => {}
         }
+        out
     }
 
     /// The kebab-case class name — the `--stats` readout's class column. The
@@ -138,6 +172,20 @@ fn dead_copy_help(dead: &[Site]) -> String {
             "the copies at {}{more} are never referenced — delete them",
             listed.join(", ")
         )
+    }
+}
+
+fn spared_copy_note(s: &SparedCopy) -> String {
+    let loc = format!("{}:{}", display_path(&s.site.file), s.site.line);
+    match &s.trait_method {
+        Some(m) => format!(
+            "the copy at {loc} implements `{m}` — it is reached through the trait \
+             despite having no direct caller, so it is not reported as dead"
+        ),
+        None => format!(
+            "the copy at {loc} has no direct caller but implements a trait method — \
+             deleting it would break the `impl`, so it is not reported as dead"
+        ),
     }
 }
 
@@ -291,35 +339,51 @@ fn method_on_receiver(ms: &[FnMeta], type_names: &BTreeSet<String>) -> Option<St
 
 /// Class 2: the merge family. Every instance is resolved to its fn identity;
 /// differing callee sets withhold; otherwise the copies with no outside
-/// referrer are dead (`DeleteDeadCopy`) and the rest merge (`MergeIdenticalFns`).
+/// referrer are dead (`DeleteDeadCopy`) and the rest merge (`MergeIdenticalFns`)
+/// — except that only a `supports_deletion` category may be advised dead: a
+/// trait-impl copy with zero in-degree is spared with a note (issue #141).
 fn merge_family(
     group: &CloneGroup,
     model: &SemanticModel,
     metas: &[FnMeta],
 ) -> Option<RefactoringClass> {
-    let mut identities = Vec::with_capacity(metas.len());
+    let mut encs = Vec::with_capacity(metas.len());
     for (inst, m) in group.instances.iter().zip(metas) {
-        identities.push(model.enclosing_fn(&inst.file, m.byte_offset)?.identity);
+        encs.push(model.enclosing_fn(&inst.file, m.byte_offset)?);
     }
     // IR-confirm: interchangeable only if the copies call the same things.
-    let sets: Vec<_> = identities.iter().map(|id| model.callees_of(id)).collect();
+    let sets: Vec<_> = encs.iter().map(|e| model.callees_of(&e.identity)).collect();
     if sets.windows(2).any(|w| w[0] != w[1]) {
         return Some(RefactoringClass::MergeWithheld);
     }
     // A referrer that is itself a copy (mutual / self recursion) is not an
     // "outside" caller — the merge subsumes it.
-    let group_ids: BTreeSet<&str> = identities.iter().map(String::as_str).collect();
+    let group_ids: BTreeSet<&str> = encs.iter().map(|e| e.identity.as_str()).collect();
     let mut dead: Vec<Site> = Vec::new();
+    let mut spared: Vec<SparedCopy> = Vec::new();
     let mut total = 0usize;
     let mut sites: Vec<Site> = Vec::new();
-    for (inst, id) in group.instances.iter().zip(&identities) {
+    for (inst, enc) in group.instances.iter().zip(&encs) {
         let outside: Vec<_> = model
-            .references_to(id)
+            .references_to(&enc.identity)
             .into_iter()
             .filter(|r| !r.import && !r.in_signature && !group_ids.contains(r.from.as_str()))
             .collect();
         if outside.is_empty() {
-            dead.push(site_of(inst));
+            if enc.category.supports_deletion() {
+                dead.push(site_of(inst));
+            } else if enc.category == Category::TraitImpl {
+                spared.push(SparedCopy {
+                    site: site_of(inst),
+                    trait_method: enc
+                        .trait_method
+                        .as_deref()
+                        .map(last_two_segments)
+                        .map(str::to_owned),
+                });
+            }
+            // `Category::Other` (a trait-decl default method, a fn-local def)
+            // is spared silently — no delete verdict, no trait-impl story.
         } else {
             total += outside.len();
             sites.extend(outside.iter().filter_map(|r| {
@@ -331,13 +395,13 @@ fn merge_family(
         }
     }
     if !dead.is_empty() && dead.len() < group.instances.len() {
-        return Some(RefactoringClass::DeleteDeadCopy { dead });
+        return Some(RefactoringClass::DeleteDeadCopy { dead, spared });
     }
     let call_sites = (total > 0).then(|| CallSites {
         count: total,
         first: sites.into_iter().min(),
     });
-    Some(RefactoringClass::MergeIdenticalFns { call_sites })
+    Some(RefactoringClass::MergeIdenticalFns { call_sites, spared })
 }
 
 fn site_of(region: &Region) -> Site {
@@ -355,6 +419,15 @@ fn traits_match(a: &str, b: &str) -> bool {
 
 fn last_segment(path: &str) -> &str {
     path.rsplit("::").next().unwrap_or(path)
+}
+
+/// `demo::Selectable::id` → `Selectable::id` — the `Trait::method` display the
+/// default-trait-method help also uses.
+fn last_two_segments(path: &str) -> &str {
+    match path.rmatch_indices("::").nth(1) {
+        Some((i, _)) => &path[i + 2..],
+        None => path,
+    }
 }
 
 #[cfg(test)]
@@ -532,10 +605,21 @@ mod tests {
     fn label_names_every_class() {
         use RefactoringClass::*;
         assert_eq!(
-            MergeIdenticalFns { call_sites: None }.label(),
+            MergeIdenticalFns {
+                call_sites: None,
+                spared: vec![],
+            }
+            .label(),
             "merge-identical-fns"
         );
-        assert_eq!(DeleteDeadCopy { dead: vec![] }.label(), "delete-dead-copy");
+        assert_eq!(
+            DeleteDeadCopy {
+                dead: vec![],
+                spared: vec![],
+            }
+            .label(),
+            "delete-dead-copy"
+        );
         assert_eq!(
             DefaultTraitMethod {
                 trait_name: String::new(),
@@ -557,5 +641,70 @@ mod tests {
         );
         assert_eq!(MergeWithheld.label(), "merge-withheld");
         assert_eq!(Unclassified.label(), "unclassified");
+    }
+
+    #[test]
+    fn last_two_segments_keeps_trait_and_method() {
+        assert_eq!(last_two_segments("demo::Selectable::id"), "Selectable::id");
+        assert_eq!(last_two_segments("a::b::c::Trait::method"), "Trait::method");
+        assert_eq!(last_two_segments("Trait::method"), "Trait::method");
+        assert_eq!(last_two_segments("bare"), "bare");
+    }
+
+    fn spared(trait_method: Option<&str>) -> SparedCopy {
+        SparedCopy {
+            site: Site {
+                file: PathBuf::from("src/lib.rs"),
+                line: 23,
+            },
+            trait_method: trait_method.map(str::to_owned),
+        }
+    }
+
+    /// The delete guard's note names the trait method when the trait is
+    /// workspace-resolvable and stays generic for a foreign trait.
+    #[test]
+    fn spared_copy_note_wordings() {
+        assert_eq!(
+            spared_copy_note(&spared(Some("Selectable::id"))),
+            "the copy at src/lib.rs:23 implements `Selectable::id` — it is reached \
+             through the trait despite having no direct caller, so it is not reported as dead"
+        );
+        assert_eq!(
+            spared_copy_note(&spared(None)),
+            "the copy at src/lib.rs:23 has no direct caller but implements a trait method — \
+             deleting it would break the `impl`, so it is not reported as dead"
+        );
+    }
+
+    /// Both merge-family variants render their spared notes; MergeIdenticalFns
+    /// keeps the call-sites note first.
+    #[test]
+    fn notes_include_spared_copies() {
+        let merge = RefactoringClass::MergeIdenticalFns {
+            call_sites: Some(CallSites {
+                count: 2,
+                first: Some(Site {
+                    file: PathBuf::from("src/main.rs"),
+                    line: 7,
+                }),
+            }),
+            spared: vec![spared(Some("Selectable::id"))],
+        };
+        let notes = merge.notes();
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].starts_with("2 call sites reference the copies"));
+        assert!(notes[1].contains("implements `Selectable::id`"));
+
+        let delete = RefactoringClass::DeleteDeadCopy {
+            dead: vec![Site {
+                file: PathBuf::from("src/lib.rs"),
+                line: 40,
+            }],
+            spared: vec![spared(None)],
+        };
+        let notes = delete.notes();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("deleting it would break the `impl`"));
     }
 }

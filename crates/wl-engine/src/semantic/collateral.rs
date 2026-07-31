@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 
 use wl_ir::Span;
 
-use super::assembly::{Assembly, Category};
+use super::assembly::Assembly;
 use super::removal::RemovalSet;
 
 /// The kinds a collateral deletion may target — see the module docs for why
@@ -81,8 +81,7 @@ pub(super) fn compute(configs: &[(String, Assembly)], removed: &RemovalSet) -> V
             if def.public
                 || def.synthetic
                 || def.export_root
-                || def.trait_item.is_some()
-                || !matches!(def.category, Category::ModuleLevel | Category::InherentImpl)
+                || !def.category.supports_deletion()
                 || !DELETABLE_KINDS.contains(&def.kind.as_str())
                 || !members.contains(&def.krate)
                 || def.span.as_ref().is_none_or(|s| s.from_expansion)
