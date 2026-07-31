@@ -53,7 +53,7 @@ jobs:
           path: ~/.cache/workspace-lint
           key: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-${{ hashFiles('extractor/**', 'crates/wl-ir/**') }}
           restore-keys: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.2
         with:
           tool: nextest
       - name: Full-tier corpus subset
