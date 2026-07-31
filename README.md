@@ -397,6 +397,33 @@ subdir) — a lone `[package]` is rejected. It refuses to overwrite an existing
 config (a standalone file or `[workspace.metadata.workspace-lint]`); pass
 `--force` to replace an existing `.workspace-lint.toml`.
 
+### Provision the full tier
+
+```sh
+workspace-lint provision            # install whatever is missing
+workspace-lint provision --print    # print the commands instead of running them
+```
+
+Installs everything the [semantic engine](#the-semantic-engine) needs on this
+machine: the pinned nightly toolchain (with its `rustc-dev` / `llvm-tools`
+components), the target std for every `--target` declared in `[engine]
+configs`, and the `dylint-link` linker wrapper. The plan is **state-aware and
+idempotent** — only what's actually missing gets installed, and a fully
+provisioned machine is a no-op — so CI can run it unconditionally before
+`workspace-lint`:
+
+```yaml
+- run: workspace-lint provision
+- run: workspace-lint
+```
+
+The toolchain pin lives inside the tool, not in your pipeline config:
+upgrading `workspace-lint` re-provisions the new pin automatically instead of
+silently breaking CI until someone chases the new nightly date. `--print`
+emits the exact `rustup` / `cargo` commands one per line on stdout (nothing
+when already provisioned) for pipelines that want to audit or wrap them.
+Provisioning is only for the full tier — `--fast-only` runs need none of it.
+
 ### Expand markers
 
 ```sh
@@ -520,8 +547,13 @@ cause false positives, and the diagnostics say so.
 
 The extractor builds against a **pinned nightly** (it links `rustc`
 internals; the pin ships inside the binary and moves only with tool
-releases). The first semantic run checks for it and fails with the exact
-commands if anything is missing:
+releases). `workspace-lint provision` installs it — plus the components,
+any `[engine] configs` target stds, and `dylint-link` — in one
+non-interactive, idempotent step (see
+[Provision the full tier](#provision-the-full-tier)); that is the CI path.
+
+Without it, the first semantic run checks for the pin and fails with the
+exact commands if anything is missing:
 
 ```sh
 rustup toolchain install <pin> --profile minimal \
@@ -548,8 +580,11 @@ weaker analysis — the explicit degradation path is `--fast-only`.
 ### Hooks and CI
 
 - **pre-commit**: `workspace-lint --fast-only` — build-free, sub-second.
-- **pre-push / CI**: `workspace-lint` — the full tier; warm runs are
-  cheap, and CI caches the extractor build per toolchain pin.
+- **pre-push / CI**: `workspace-lint provision && workspace-lint` — the
+  full tier; `provision` is a no-op once the pin is installed, warm runs
+  are cheap, and CI caches the extractor build per toolchain pin (cache
+  `~/.rustup` and `~/.cargo` so provisioning is paid once per pin, not
+  per run).
 
 ### Performance
 

@@ -97,6 +97,22 @@ pub(crate) enum Commands {
         #[arg(long, default_value_t = false)]
         auto_stage: bool,
     },
+    /// Install everything the rustc-backed full tier needs: the pinned
+    /// nightly toolchain (with its rustc-dev/llvm-tools components), the std
+    /// for every `--target` in the `[engine] configs` matrix, and the
+    /// `dylint-link` linker wrapper. State-aware and idempotent — only what
+    /// is actually missing gets installed — so CI can run it unconditionally
+    /// before `workspace-lint`: the toolchain pin lives inside the tool, not
+    /// hardcoded in your pipeline config, and upgrading workspace-lint
+    /// re-provisions automatically. Non-interactive by design (invoking it IS
+    /// the consent); `--fast-only` runs need none of this.
+    Provision {
+        /// Print the needed rustup/cargo commands (one per line, on stdout)
+        /// instead of running them. Prints nothing when everything is
+        /// already installed. Exit 0 either way.
+        #[arg(long, default_value_t = false)]
+        print: bool,
+    },
     /// Debug: decode one `.wlir` IR fragment and print it. Reads the rkyv
     /// archive directly (no extraction, no toolchain). `--json` emits serde
     /// JSON (jq-able); otherwise Rust `{:#?}` debug.

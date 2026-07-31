@@ -99,6 +99,8 @@ pub enum EngineError {
              rustup toolchain install {pin} --profile minimal \\\n\
                  --component rustc-dev --component llvm-tools-preview\n\
          \n\
+         hint: `workspace-lint provision` installs everything the full tier needs \
+         in one non-interactive step (`--print` to preview the commands)\n\
          hint: `--fast-only` runs the build-free lints without any toolchain"
     )]
     ToolchainMissing { pin: String },
@@ -213,6 +215,12 @@ impl EngineError {
     }
 }
 
+/// The distinct `--target` triples the config matrix compiles for — the
+/// targets whose std the pinned toolchain must have installed.
+fn declared_triples(configs: &[ConfigSpec]) -> std::collections::BTreeSet<String> {
+    configs.iter().filter_map(|s| s.target.clone()).collect()
+}
+
 /// The Phase-1 engine. Construct with an [`ExtractorSource`] (vendored at user
 /// sites, `Repo` in this repository's own tests) and call [`Engine::extract`].
 pub struct Engine {
@@ -230,6 +238,29 @@ impl Engine {
         env!("WL_EXTRACTOR_TOOLCHAIN")
     }
 
+    /// The `rustup` / `cargo` commands that would make [`Engine::extract`]'s
+    /// preflight pass on this machine, in run order — the non-interactive
+    /// provisioning surface behind `workspace-lint provision`. Empty when the
+    /// full tier is already fully provisioned.
+    ///
+    /// State-aware on purpose: every entry is a command this machine actually
+    /// needs, so the plan is safe to run verbatim (an unconditional
+    /// `cargo install dylint-link` would *fail* on a machine that already has
+    /// it). Each argv is the same command the corresponding `EngineError`'s
+    /// `Display` tells a user to paste — the lockstep test in `toolchain.rs`
+    /// covers both surfaces. Errs only when rustup itself is absent.
+    pub fn provision_plan(&self, configs: &[ConfigSpec]) -> Result<Vec<Vec<String>>, EngineError> {
+        let triples = declared_triples(configs);
+        let plan = toolchain::missing(Self::pinned_toolchain(), &triples)?
+            .iter()
+            .map(|gap| {
+                gap.remediation()
+                    .expect("every preflight gap carries its remediation command")
+            })
+            .collect();
+        Ok(plan)
+    }
+
     /// Run the full Phase-1 flow: preflight → materialize → build the dylib →
     /// one `dylint::run` per config (+ completeness guard).
     ///
@@ -241,11 +272,7 @@ impl Engine {
     /// changes the current directory to the target workspace (restored on
     /// return, including the error paths, via an RAII guard).
     pub fn extract(&self, cfg: &EngineConfig) -> Result<ExtractionRuns, EngineError> {
-        let triples: std::collections::BTreeSet<String> = cfg
-            .configs
-            .iter()
-            .filter_map(|s| s.target.clone())
-            .collect();
+        let triples = declared_triples(&cfg.configs);
         wl_fast::timing::phase("preflight[rustup]", || {
             toolchain::preflight(Self::pinned_toolchain(), &triples)
         })?;

@@ -2443,6 +2443,7 @@ mod engine_errors {
         rustup toolchain install nightly-2026-04-16 --profile minimal \
         --component rustc-dev --component llvm-tools-preview
 
+        hint: `workspace-lint provision` installs everything the full tier needs in one non-interactive step (`--print` to preview the commands)
         hint: `--fast-only` runs the build-free lints without any toolchain
         ");
     }
