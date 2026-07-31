@@ -1,13 +1,17 @@
-//! Interactive remediation for engine preflight failures.
+//! Provisioning the full tier's requirements — two entry points over the
+//! same engine-named repairs.
 //!
 //! The engine layer stays non-interactive: [`wl_engine::EngineError`] *names*
-//! its repair (`remediation()`), and this module — CLI-side, terminal-gated —
-//! offers to run it so a first full-tier run is one keypress instead of a
-//! copy-paste round trip. It never prompts without a terminal on both stdin
-//! and stderr (CI and pipes keep the plain error), never runs anything the
-//! error text didn't show verbatim (a lockstep test in `wl-engine` ties the
-//! two), and never re-runs a command that already ran once — a repair that
-//! didn't repair must fail loudly, not loop.
+//! its repair (`remediation()`), and this module runs those commands in one
+//! of two modes. [`Provisioner`] is the interactive path — terminal-gated, it
+//! offers each repair as a one-keypress install-and-retry when a default run
+//! trips preflight. It never prompts without a terminal on both stdin and
+//! stderr (CI and pipes keep the plain error), never runs anything the error
+//! text didn't show verbatim (a lockstep test in `wl-engine` ties the two),
+//! and never re-runs a command that already ran once — a repair that didn't
+//! repair must fail loudly, not loop. [`run`] is the `provision` subcommand —
+//! the non-interactive CI path over [`wl_engine::Engine::provision_plan`],
+//! where invoking the subcommand is itself the consent.
 
 use std::collections::HashSet;
 use std::io::{BufRead, IsTerminal, Write};
@@ -55,9 +59,66 @@ impl Provisioner {
             // The error and its paste-able command are already on screen.
             return Repair::GiveUp { error_shown: true };
         }
-        run(&argv);
+        execute(&argv);
         Repair::Retry
     }
+}
+
+/// The `provision` subcommand: compute the state-aware plan (missing
+/// toolchain / components / `--target` stds / `dylint-link`) from the pin
+/// baked into this binary plus the `[engine] configs` matrix, then either
+/// print it (`--print`: one command per line on stdout, for CI to audit or
+/// pipe to `sh`) or run it with inherited stdio. The plan lists only what
+/// this machine actually lacks, so the subcommand is idempotent — CI runs it
+/// unconditionally and the toolchain pin never leaks into pipeline config.
+pub(crate) fn run(print: bool, configs: &[wl_engine::ConfigSpec]) -> ! {
+    let engine = wl_engine::Engine::new(wl_engine::ExtractorSource::vendored());
+    let plan = plan_or_fail(&engine, configs);
+    if print {
+        print!("{}", render_plan(&plan));
+    } else {
+        apply(&engine, configs, &plan);
+    }
+    std::process::exit(0);
+}
+
+fn plan_or_fail(engine: &wl_engine::Engine, configs: &[wl_engine::ConfigSpec]) -> Vec<Vec<String>> {
+    engine
+        .provision_plan(configs)
+        .unwrap_or_else(|e| util::fail(e.to_string()))
+}
+
+/// The `--print` surface: one shell-ready command per line, empty when the
+/// machine is fully provisioned — so `provision --print | sh` and a human
+/// audit read the same text.
+fn render_plan(plan: &[Vec<String>]) -> String {
+    plan.iter()
+        .map(|argv| argv.join(" ") + "\n")
+        .collect::<String>()
+}
+
+/// Run the plan with inherited stdio, then re-observe: a command can exit 0
+/// yet not close its gap (a rustup shim resolving to an unexpected home, a
+/// PATH that misses `~/.cargo/bin`), so success is reported only when the
+/// preflight would now pass. Diverges (via [`execute`]/`util::fail`) on any
+/// failure.
+fn apply(engine: &wl_engine::Engine, configs: &[wl_engine::ConfigSpec], plan: &[Vec<String>]) {
+    if plan.is_empty() {
+        eprintln!("workspace-lint: the full tier is already provisioned");
+        return;
+    }
+    for argv in plan {
+        eprintln!("workspace-lint: running `{}`", argv.join(" "));
+        execute(argv);
+    }
+    let unresolved = plan_or_fail(engine, configs);
+    if !unresolved.is_empty() {
+        util::fail(format!(
+            "provisioning commands ran, but the full tier still lacks:\n{}",
+            render_plan(&unresolved)
+        ));
+    }
+    eprintln!("workspace-lint: full tier provisioned");
 }
 
 /// Outcome of one [`Provisioner::repair`] round.
@@ -76,7 +137,7 @@ fn accepted(answer: &str) -> bool {
 
 /// Run one remediation command with inherited stdio — rustup/cargo progress
 /// is the user's feedback that consent did something. Diverges on failure.
-fn run(argv: &[String]) {
+fn execute(argv: &[String]) {
     eprintln!();
     let status = std::process::Command::new(&argv[0])
         .args(&argv[1..])
@@ -116,5 +177,27 @@ mod tests {
         assert!(p.attempted.insert(toolchain.clone()));
         assert!(!p.attempted.insert(toolchain));
         assert!(p.attempted.insert(link));
+    }
+
+    /// `provision --print` output is shell input: one command per line,
+    /// trailing newline, and *nothing at all* (not a blank line) when the
+    /// machine is already provisioned.
+    #[test]
+    fn render_plan_is_one_shell_command_per_line() {
+        assert_eq!(render_plan(&[]), "");
+        let plan = vec![
+            EngineError::ToolchainMissing {
+                pin: "nightly-2026-04-16".into(),
+            }
+            .remediation()
+            .unwrap(),
+            EngineError::DylintLinkMissing.remediation().unwrap(),
+        ];
+        assert_eq!(
+            render_plan(&plan),
+            "rustup toolchain install nightly-2026-04-16 --profile minimal \
+             --component rustc-dev --component llvm-tools-preview\n\
+             cargo install dylint-link --locked\n"
+        );
     }
 }

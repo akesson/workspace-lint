@@ -70,6 +70,17 @@ fn main() {
             let ec = CheckRule::into_expand_config(command, glob, marker, auto_stage);
             expand::run(&ec);
         }
+        Some(Commands::Provision { print }) => {
+            // Same re-rooting as `check`: a config file is optional (the
+            // default matrix declares no `--target`, so it needs no config),
+            // but a configured `[engine]` matrix must be honored from member
+            // dirs too — its `--target` triples decide which stds to install.
+            config::reroot_to_config(false);
+            let configs = config::try_load()
+                .map(|c| c.engine.selectors())
+                .unwrap_or_else(|| config::EngineSection::default().selectors());
+            provision::run(print, &configs);
+        }
         Some(Commands::DumpIr { file, json }) => {
             dump_ir(&file, json);
         }
