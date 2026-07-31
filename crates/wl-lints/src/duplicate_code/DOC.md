@@ -33,7 +33,11 @@ function, which is an author decision.
 refactoring it calls for* and reshapes the help accordingly: two copies of
 one function the call graph confirms are interchangeable → *keep one and
 redirect the callers* (with the outside call-site count); a copy nothing
-references → *delete the dead one*; the same method across impls of one
+references → *delete the dead one* — except a trait-impl method: with no
+direct caller it is still reached through its trait and required by the
+`impl` (deleting it would not compile), so such a copy is spared with a
+note naming the trait method and the group keeps the merge advice; the
+same method across impls of one
 trait → *a default method on the trait*; free functions all taking one
 workspace type first → *a method on that type*; copies built from the same
 UI macro (`rsx!` by default) → *extract a component*. When two

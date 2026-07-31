@@ -10,6 +10,10 @@
 //! IR-confirm contract: two "identical" fns that resolve different callees are
 //! not interchangeable) and partitions their inbound references
 //! ([`CallGraph::references_to`] — merge-and-redirect vs delete-the-dead-copy).
+//! [`EnclosingFn`] also carries the delete guard: the fn's [`Category`] (only
+//! `supports_deletion` categories may be advised dead — a trait-impl fn is
+//! reached through dispatch the ref graph doesn't edge) and, for a trait-impl
+//! fn, the implemented trait method's display path.
 //!
 //! Identity is the same `::`-joined display path the cfg-matrix union keys on
 //! ([`super::DefInfo::path`]): for a local item its `RefEdge::from` renders to
@@ -22,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 use wl_ir::ArchivedRefEdge;
 
-use super::assembly::{Assembly, FastMap};
+use super::assembly::{Assembly, Category, FastMap};
 
 /// The innermost `fn` enclosing a byte offset — see
 /// [`SemanticModel::enclosing_fn`](super::SemanticModel::enclosing_fn).
@@ -35,6 +39,16 @@ pub struct EnclosingFn {
     pub krate: String,
     /// The whole-item span (attrs/doc through the closing brace).
     pub full_span: wl_ir::Span,
+    /// How the fn relates to its container — the delete guard: only a
+    /// [`Category::supports_deletion`] fn may be advised dead on zero
+    /// in-degree (a trait-impl fn is reached through dispatch the ref graph
+    /// doesn't edge, and deleting it breaks the `impl`).
+    pub category: Category,
+    /// For a trait-impl fn: the implemented trait method's display path
+    /// (`demo::Selectable::id`), resolved at build time. `None` when the fn
+    /// is not a trait-impl item or the trait is foreign (std / third-party —
+    /// its declaration is not a workspace def).
+    pub trait_method: Option<String>,
 }
 
 /// One resolved call target of a fn — see
@@ -87,6 +101,8 @@ struct FnSpan {
     span: wl_ir::Span,
     identity: String,
     krate: String,
+    category: Category,
+    trait_method: Option<String>,
 }
 
 /// The lazily-built call-graph indexes (see the module docs).
@@ -127,10 +143,19 @@ impl CallGraph {
                 if !seen_fn.insert((file.clone(), def.path.clone())) {
                     continue;
                 }
+                // A workspace trait resolves through the defs map; a foreign
+                // trait misses it and stays `None` (cf. `Reach::ExternalDispatch`).
+                let trait_method = def
+                    .trait_item
+                    .as_deref()
+                    .and_then(|ti| asm.defs.get(ti))
+                    .map(|tm| tm.path.clone());
                 fns_by_file.entry(file).or_default().push(FnSpan {
                     span: fs.clone(),
                     identity: def.path.clone(),
                     krate: def.krate.clone(),
+                    category: def.category,
+                    trait_method,
                 });
             }
             for (fi, frag) in asm.archived_fragments().enumerate() {
@@ -179,6 +204,8 @@ impl CallGraph {
                 identity: f.identity.clone(),
                 krate: f.krate.clone(),
                 full_span: f.span.clone(),
+                category: f.category,
+                trait_method: f.trait_method.clone(),
             })
     }
 

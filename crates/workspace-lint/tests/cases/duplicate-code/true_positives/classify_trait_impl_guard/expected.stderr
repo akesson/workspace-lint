@@ -1,0 +1,17 @@
+error: duplicated code: 2 structurally identical instances (~8 lines)
+ --> crates/demo/src/lib.rs:15:1
+  |
+  = help: these are copies of the same function — keep one and redirect the other call sites
+  = note: also found at: crates/demo/src/lib.rs:26
+  = note: matching ignores local variable names and literal values
+  = note: instances are identical (differing at most in local names)
+  = note: 1 call site references the copies (first at crates/demo/src/lib.rs:37)
+  = note: the copy at crates/demo/src/lib.rs:15 implements `Selectable::id` — it is reached through the trait despite having no direct caller, so it is not reported as dead
+help: if intentional, silence with:
+  |
+15 + // workspace-lint: expect(duplicate-code)
+  |
+  = note: `#[deny(workspace_lint::duplicate_code)]` on by default
+
+workspace-lint: generated 1 error
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (duplicate-code)

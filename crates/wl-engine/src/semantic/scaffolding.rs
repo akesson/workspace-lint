@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use wl_ir::Span;
 
-use super::assembly::{Assembly, Category};
+use super::assembly::Assembly;
 use super::removal::RemovalSet;
 
 /// The kinds a scaffold deletion may target — same list (and rationale) as
@@ -438,8 +438,7 @@ fn check_member(item: &TestItem<'_>, survives: &dyn Fn(&str) -> bool) -> Option<
     if !DELETABLE_KINDS.contains(&def.kind.as_str())
         || def.synthetic
         || def.export_root
-        || def.trait_item.is_some()
-        || !matches!(def.category, Category::ModuleLevel | Category::InherentImpl)
+        || !def.category.supports_deletion()
         || def.full_span.is_none()
         || def.span.as_ref().is_none_or(|s| s.from_expansion)
     {

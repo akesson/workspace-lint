@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use wl_engine::fast::{CrateInfo, FastModel, Publish};
-use wl_engine::semantic::{Category, PubCandidate, PubUsage, SemanticModel};
+use wl_engine::semantic::{PubCandidate, PubUsage, SemanticModel};
 use wl_engine::wl_ir;
 
 use wl_diagnostic::builder::{at_crate, at_line};
@@ -261,10 +261,7 @@ fn candidate_skipped_by_filters(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> bool
     // Findings target module-level and inherent-impl items. A trait-impl
     // item's visibility is trait-forced — no tighten surface, deletion breaks
     // the `impl` — so it is judged (dispatch reachability) but never flagged.
-    if !matches!(
-        cand.category,
-        Category::ModuleLevel | Category::InherentImpl
-    ) {
+    if !cand.category.supports_deletion() {
         return true;
     }
     // The crate root `main` of a bin target.

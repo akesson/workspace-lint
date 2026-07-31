@@ -41,6 +41,17 @@ impl Category {
             Category::ModuleLevel | Category::InherentImpl | Category::TraitImpl
         )
     }
+
+    /// Is a def of this category independently deletable — removable without
+    /// breaking a surrounding contract? Module-level and inherent-impl items
+    /// are. A trait-impl item is required by its `impl` (deleting it is E0046)
+    /// and stays reachable through trait dispatch with zero direct in-edges;
+    /// `Other` (trait-decl members, fn-local defs) has no independent item
+    /// surface. unused-pub flags, the `--fix` cascades delete, and the
+    /// duplicate-code classifier advises deletion only when this holds.
+    pub fn supports_deletion(self) -> bool {
+        matches!(self, Category::ModuleLevel | Category::InherentImpl)
+    }
 }
 
 /// How a candidate def is reached under *one* config — the per-config
