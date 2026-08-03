@@ -20,6 +20,7 @@ pub mod coverage;
 
 mod closure;
 mod command;
+mod driver;
 mod guard;
 mod hash;
 mod relink;
@@ -474,31 +475,12 @@ impl Engine {
         let targets = &plan.targets;
         // SAFETY: single-threaded by the documented contract of `extract`.
         unsafe { std::env::set_var("WL_IR_OUT", ir_dir) };
-        // The spawned `cargo check`'s stderr — compile progress, the
-        // extractor's per-fragment notes, and any real compile diagnostics —
-        // goes to a log next to the fragments, NOT the user's terminal: a
-        // successful run must stay byte-deterministic for callers that
-        // snapshot stderr. On failure the log is replayed verbatim (the
-        // compile errors ARE the diagnosis). dylint appends, so truncate
-        // between runs.
-        let log = ir_dir.with_extension("log");
-        let run = |what: &str| {
-            let _ = std::fs::write(&log, b"");
-            // Derive the dylib path per invocation: after a bump, the re-run
-            // must hand dylint the NEW generation path or the `DYLINT_LIBS`
-            // env-dep channel never fires.
-            let opts = dylint_opts(&dylib.current(), packages, &selector.cargo_args(), &log);
-            dylint::run(&opts).map_err(|source| {
-                if let Ok(captured) = std::fs::read_to_string(&log) {
-                    eprint!("{captured}");
-                }
-                EngineError::Extraction {
-                    config: format!("{} ({what})", selector.id),
-                    source,
-                }
-            })
-        };
-        run("initial")?;
+        // The wrapped cargo's stderr goes to a log next to the fragments, NOT
+        // the user's terminal — byte-determinism on success, verbatim replay
+        // (or loud driver re-provisioning) on failure. The `driver` module
+        // doc has the full contract.
+        let invocation = driver::Invocation::new(dylib, packages, selector, ir_dir);
+        invocation.run("initial")?;
 
         let expected = targets.expected_fragments(selector.kinds);
         // A complete whole-workspace run must produce *exactly* `expected` —
@@ -538,7 +520,7 @@ impl Engine {
             context: format!("bumping dylib mtime {}", dylib.canonical().display()),
             source,
         })?;
-        run("forced re-lint")?;
+        invocation.run("forced re-lint")?;
         let still = guard::missing_fragments(ir_dir, &expected);
         if !still.is_empty() {
             return Err(EngineError::Incomplete {
@@ -660,46 +642,6 @@ fn dedup_build_fragments(runs: &[ConfigRun], names: &std::collections::BTreeSet<
             );
             let _ = std::fs::remove_file(path);
         }
-    }
-}
-
-/// The `dylint::run` options of the embed flow: load exactly our dylib by
-/// path, workspace members only, config selector forwarded to `cargo check`,
-/// child stderr piped to `log` (surfaced only on failure).
-fn dylint_opts(
-    dylib: &std::path::Path,
-    packages: &[String],
-    cargo_args: &[String],
-    log: &std::path::Path,
-) -> dylint::opts::Dylint {
-    use dylint::opts::{Check, Dylint, LibrarySelection, Operation};
-    Dylint {
-        pipe_stderr: Some(log.to_string_lossy().into_owned()),
-        pipe_stdout: None,
-        // dylint's own orchestrator-process chatter ("Checking with toolchain
-        // `nightly-…-<host triple>`", the pipe-stderr experimental warning)
-        // prints on OUR stderr, not the piped child's — and the triple makes
-        // it platform-dependent. Callers snapshot stderr; keep it silent.
-        quiet: true,
-        operation: Operation::Check(Check {
-            lib_sel: LibrarySelection {
-                lib_paths: vec![dylib.to_string_lossy().into_owned()],
-                ..Default::default()
-            },
-            no_deps: true,
-            packages: packages.to_vec(),
-            // An unscoped run must select EVERY member as a primary package.
-            // In a non-virtual workspace (a root package with `[workspace]
-            // members`, e.g. thiserror) a plain `cargo check` selects only
-            // the root: the member crates compile as mere dependencies, whose
-            // lint units dylint does not dylib-fingerprint — so their
-            // fragments are never regenerated once cargo is warm, and the
-            // completeness guard hard-fails. (This repo's own dogfood never
-            // saw it: a virtual workspace's members are all primary.)
-            workspace: packages.is_empty(),
-            args: cargo_args.to_vec(),
-            ..Default::default()
-        }),
     }
 }
 
