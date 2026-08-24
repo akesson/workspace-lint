@@ -131,7 +131,7 @@ fn landings_index<'k>(
         {
             continue;
         }
-        let parent = &def.path[..def.path.rfind("::").map_or(0, |p| p)];
+        let parent = &def.path[..def.path.rfind("::").unwrap_or(0)];
         if let Some(owner) = owner_of(parent) {
             index.entry(owner.clone()).or_default().push(key.clone());
         }
