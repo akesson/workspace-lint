@@ -27,7 +27,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2.85.2
+      - uses: taiki-e/install-action@v2.86.7
         with:
           tool: cargo-audit
       - name: Format
@@ -170,7 +170,7 @@ jobs:
           key: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-${{ hashFiles('extractor/**', 'crates/wl-ir/**') }}
           restore-keys: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: taiki-e/install-action@v2.85.2
+      - uses: taiki-e/install-action@v2.86.7
         with:
           tool: cargo-crap
       - uses: Swatinem/rust-cache@v2
