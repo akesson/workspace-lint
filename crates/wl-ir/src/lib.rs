@@ -133,7 +133,20 @@ use serde::{Deserialize, Serialize};
 /// the deletion veto. A pre-13 fragment has no variant facts and carries
 /// the shielding derive edges — the misleading-absence bump trigger,
 /// layout unchanged.
-pub const SCHEMA_VERSION: u32 = 13;
+/// 14 — fragments gained [`IrFragment::impls`] (every local `impl` of a
+/// local ADT: its self-type key and whether it is `#[automatically_derived]`)
+/// and edges gained [`RefEdge::from_impl`] (the outermost impl the edge
+/// originates in). A reference from inside the target's OWN impl is part of
+/// the type, not a use of it — pre-14 fragments read every such reference
+/// (a method's `&self`, a derive's expansion) as a real use AND as public
+/// signature exposure, so a `pub` type with any `impl` could never be judged
+/// unused. Same bump: the signature pass now also sweeps every `impl`
+/// block's written bounds (`impl<T: Bound> Pub<T>`), attributed to the
+/// nominal self type — rustc privacy-checks them at the impl's (= the
+/// type's) visibility, so a pre-14 fragment let `--fix` narrow `Bound` into
+/// a `private_bounds` / `private_interfaces` failure (LeaveDates
+/// `BookingMessage`). The misleading-absence bump trigger.
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
@@ -184,6 +197,12 @@ pub struct IrFragment {
     /// driver/dylib). `#[serde(default)]` keeps pre-references fragments loadable.
     #[serde(default)]
     pub references: Vec<RefEdge>,
+    /// Every local `impl` block whose self type is a local ADT, in a stable
+    /// (definition) order — the table [`RefEdge::from_impl`] indexes. Lists
+    /// impls no edge originates in too (an empty `impl Foo {}` still pins
+    /// `Foo`: deleting it alone would orphan the block).
+    #[serde(default)]
+    pub impls: Vec<ImplFact>,
     /// Every source file rustc opened while compiling this unit, restricted to
     /// this crate's `CARGO_MANIFEST_DIR` (registry deps and `OUT_DIR` are
     /// dropped) and stored as absolute, canonicalized paths. Deduped and sorted.
@@ -392,6 +411,62 @@ pub struct RefEdge {
     /// macro-generated `use`s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elem_span: Option<Span>,
+    /// Index into [`IrFragment::impls`] of the OUTERMOST `impl` block this
+    /// reference originates in — the impl header itself, an associated
+    /// item's signature (`&self` lowers to `&Foo`), or anything nested in
+    /// their bodies (serde's `Deserialize` derive defines a `__Visitor`
+    /// inside `deserialize`; its `impl Visitor` is still inside `Foo`'s own
+    /// derived impl). `None` outside any impl, or when that impl's self type
+    /// is not a local ADT. Two derivations hang off it: an edge whose
+    /// impl's self type IS its target is part of the type, not a use of it;
+    /// and deleting a type removes every edge from its impls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_impl: Option<u32>,
+}
+
+/// One local `impl` block of a local ADT — see [`IrFragment::impls`].
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+pub struct ImplFact {
+    /// Stable key of the impl's nominal self type ([`ItemFact::key`]).
+    pub self_key: String,
+    pub origin: ImplOrigin,
+}
+
+/// Where an [`ImplFact`] comes from.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+pub enum ImplOrigin {
+    /// Written in the source: deleting the type alone would orphan it.
+    Written,
+    /// `#[automatically_derived]` (a `#[derive]` expansion): an attribute of
+    /// the type's item, deleted with it.
+    Derived,
 }
 
 /// A single resolved definition.
@@ -760,6 +835,7 @@ mod transport_tests {
                 self_copy: None,
             }],
             references: vec![],
+            impls: vec![],
         }
     }
 
@@ -813,7 +889,7 @@ mod transport_tests {
         use std::mem::size_of;
         assert_eq!(
             size_of::<ArchivedIrFragment>(),
-            56,
+            64,
             "ArchivedIrFragment layout changed"
         );
         assert_eq!(
@@ -823,7 +899,7 @@ mod transport_tests {
         );
         assert_eq!(
             size_of::<ArchivedRefEdge>(),
-            176,
+            184,
             "ArchivedRefEdge layout changed"
         );
         assert_eq!(size_of::<ArchivedSpan>(), 24, "ArchivedSpan layout changed");

@@ -76,6 +76,9 @@ pub struct Assembly {
     /// CONSTRUCTION edges (the extractor projects pattern mentions onto the
     /// enum), so a variant with zero in-degree really is never constructed.
     pub(super) variants_of: BTreeMap<String, Vec<String>>,
+    /// Enum key → all its variant NAMES (underscore-prefixed included) — the
+    /// `enum_variant_names` narrow-unmask replay's input.
+    pub(super) variant_names_of: BTreeMap<String, Vec<String>>,
     /// Keys that are the target of a `pub use` re-export
     /// (`RefEdge::reexport`). Tightening or deleting such a def can break the
     /// re-export (E0364/E0365), so the unused-pub port suppresses these — the
@@ -86,6 +89,19 @@ pub struct Assembly {
     /// enclosing module). The re-export leg of external reachability: a def
     /// `pub use`d in an externally-reachable module is nameable through it.
     reexporters: BTreeMap<String, Vec<String>>,
+    /// Type keys that have at least one **hand-written** `impl` block
+    /// ([`wl_ir::ImplOrigin::Written`] in a fragment's `impls` table).
+    /// Deleting such a type would orphan the impl (the IR models no impl
+    /// deletion surface), so the unused-pub deletion paths veto it.
+    /// Removal-invariant: impl blocks are never deletion candidates.
+    pub(super) written_impls: BTreeSet<String>,
+    /// Keys re-exported through a glob or module re-export (`pub use m::*`,
+    /// `pub use m;`) — the children the expansion in [`Assembly::build`]
+    /// adds to `reexporters`. Not a must-stay-`pub` guard, but narrowing or
+    /// deleting EVERY item behind a glob leaves `pub use m::*` re-exporting
+    /// nothing (rustc `unused_imports`, a `-D warnings` failure), so their
+    /// fixes are shown, never machine-applied.
+    pub(super) glob_reexported: BTreeSet<String>,
     /// `mod` def path (joined) → is-public, for the pub-module-hop
     /// reachability judgement.
     module_vis: BTreeMap<String, bool>,
@@ -294,6 +310,7 @@ impl Assembly {
         let assoc_members = super::clippy_guard::assoc_members_index(&defs, &trait_parent);
         let fields_of = super::clippy_guard::fields_of_index(&defs, &id_key);
         let variants_of = super::clippy_guard::variants_of_index(&defs, &id_key);
+        let variant_names_of = super::clippy_guard::variant_names_index(&defs, &id_key);
         let mut asm = Assembly {
             fragments,
             crates,
@@ -304,9 +321,12 @@ impl Assembly {
             assoc_members,
             fields_of,
             variants_of,
+            variant_names_of,
             trait_parent,
             import_targets: BTreeSet::new(),
             reexporters: BTreeMap::new(),
+            written_impls: BTreeSet::new(),
+            glob_reexported: BTreeSet::new(),
             module_vis,
             path_key,
             name_key,
@@ -316,12 +336,12 @@ impl Assembly {
         let mut fold = asm.fold_edges(None);
 
         // A glob re-export (`pub use m::*`) resolves to the MODULE def, but
-        // it re-exports every public def directly under it — expand so the
-        // re-export guard and reachability see through globs, as syn's
-        // re-export index did. (`pub use m;` is indistinguishable from
-        // `pub use m::*` here; expanding both over-approximates toward
-        // suppression — the safe direction. Plain `use` never lands in
-        // `reexporters`, so a test-mod `use super::*` expands nothing.)
+        // it re-exports every public def directly under it — expand so
+        // external reachability sees through globs. (`pub use m;` is
+        // indistinguishable from `pub use m::*` here; expanding both
+        // over-approximates reachability — the safe direction. Plain `use`
+        // never lands in `reexporters`, so a test-mod `use super::*` expands
+        // nothing.)
         //
         // Index the direct PUBLIC children of every module by their parent
         // path ONCE (O(defs)), so the expansion is O(re-exporting modules +
@@ -356,9 +376,19 @@ impl Assembly {
             };
             // Each child key is distinct and has a single parent, so the visit
             // order never affects a `reexporters` Vec (each is extended once)
-            // nor the `import_targets` set — the expansion stays deterministic.
+            // — the expansion stays deterministic.
+            //
+            // Reachability only: a child is NOT an `import_targets` member.
+            // That set is the E0364/E0365 guard, and only a NAMED re-export
+            // (`pub use m::Item`) can break — a glob silently skips an item
+            // that is no longer visible enough, so narrowing or deleting a
+            // child behind `pub use m::*` compiles. Counting glob children as
+            // re-export targets exempted every item of a `pub use auth::*`
+            // module from unused-pub (LeaveDates `data_model::api`). A
+            // published crate's glob-only API stays exempt through the
+            // reachability leg below (`externally_reachable`).
             for &child_key in children {
-                fold.import_targets.insert(child_key.to_owned());
+                asm.glob_reexported.insert(child_key.to_owned());
                 fold.reexporters
                     .entry(child_key.to_owned())
                     .or_default()
@@ -371,6 +401,7 @@ impl Assembly {
         asm.import_edges = fold.import_edges;
         asm.import_targets = fold.import_targets;
         asm.reexporters = fold.reexporters;
+        asm.written_impls = super::impls::written_impls(&asm);
         asm
     }
 
@@ -456,16 +487,19 @@ impl Assembly {
                     continue;
                 }
                 // The removed item's own use-sites disappear with it.
-                if removed.is_some_and(|r| r.covers(&e.from)) {
+                if removed.is_some_and(|r| self.edge_removed(r, frag, e)) {
                     continue;
                 }
+                let own_impl = Self::is_own_impl_edge(frag, e);
                 let Some(key) = self.resolve_key(e) else {
                     // No landing def anywhere local — but if the GLOBAL index
                     // knows the target, this config never extracted its crate
                     // (harness flag off) and the reach is recorded at identity
                     // level. A genuine out-of-workspace target isn't in the
                     // index and stays ignored.
-                    self.fold_foreign(e, test_unit, &mut f);
+                    if !own_impl {
+                        self.fold_foreign(e, test_unit, &mut f);
+                    }
                     continue;
                 };
                 let def = &self.defs[key];
@@ -481,7 +515,11 @@ impl Assembly {
                         .get(e.from_key.as_str())
                         .and_then(|tk| self.defs.get(tk))
                         .is_some_and(|t| t.public);
-                if e.in_signature && from_public {
+                // A reference from the target's OWN impl (header, `&self`,
+                // `Self { .. }`) is part of the type, not a user of it: it
+                // neither exposes the type (narrowing it still compiles) nor
+                // counts as a use-site below.
+                if e.in_signature && from_public && !own_impl {
                     f.signature_exposed.insert(key.to_string());
                 }
                 // Package-granularity dependency tracking keeps the crate-NAME
@@ -503,6 +541,9 @@ impl Assembly {
                             .push(wl_ir::join_paths(&e.from, "::"));
                     }
                     continue; // import: not a use-site for unused-pub
+                }
+                if own_impl {
+                    continue; // own impl: part of the type, not a use-site
                 }
                 // The VISIBILITY split trusts the extractor's `CrateNum`
                 // comparison, not the name: a sibling target of the same

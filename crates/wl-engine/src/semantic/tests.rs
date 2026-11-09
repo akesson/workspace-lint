@@ -69,6 +69,7 @@ fn edge_ext(from: &[&str], to: &[&str], to_key: &str, import: bool, external: bo
         span: None,
         decl_span: None,
         elem_span: None,
+        from_impl: None,
     }
 }
 
@@ -89,6 +90,7 @@ fn frag_target(
         is_test_cfg: false,
         items,
         references,
+        impls: Vec::new(),
         loaded_files: Vec::new(),
         used_crates: Vec::new(),
     }
@@ -586,6 +588,7 @@ fn build_frag(references: Vec<RefEdge>) -> IrFragment {
         is_test_cfg: false,
         items: Vec::new(),
         references,
+        impls: Vec::new(),
         loaded_files: Vec::new(),
         used_crates: Vec::new(),
     }
@@ -729,6 +732,116 @@ fn signature_exposure_requires_pub_from() {
     let asm = m.primary();
     assert!(asm.exposed_in_public_signature("K_EXPOSED"));
     assert!(!asm.exposed_in_public_signature("K_HIDDEN"));
+}
+
+/// (schema 14) A type's OWN impl is part of the type, not a user of it: an
+/// edge whose `from_impl` is an impl of its own target — even an
+/// `in_signature` one from a pub method (`&self` lowers to `&Foo`) — neither
+/// counts as a use-site nor exposes the type, so a type referenced only by
+/// its own impls is `Unused`. The same reference from ANOTHER def still
+/// counts. Only a `Written` impl marks the type as non-deletable; derives go
+/// with the item.
+#[test]
+fn own_impl_edges_neither_use_nor_expose_the_self_type() {
+    use wl_ir::{ImplFact, ImplOrigin};
+    let dead = item(&["alpha", "Dead"], "K_DEAD", "struct", Some("mod"));
+    let mut method = item(&["alpha", "Dead", "m"], "K_M", "fn", Some("impl"));
+    method.self_type = Some("K_DEAD".into());
+    let derived = item(&["alpha", "Derived"], "K_DER", "struct", Some("mod"));
+    let used = item(&["alpha", "Used"], "K_USED", "struct", Some("mod"));
+    let user = item(&["alpha", "user"], "K_USER", "fn", Some("mod"));
+
+    // `impl Dead { pub fn m(&self) }` (impls[0]) and `#[derive(Debug)]` on
+    // `Derived` (impls[1]).
+    let mut receiver = edge(&["alpha", "Dead", "m"], &["alpha", "Dead"], "K_DEAD", false);
+    receiver.from_key = "K_M".into();
+    receiver.in_signature = true;
+    receiver.from_impl = Some(0);
+    let mut derive = edge(
+        &["alpha", "<Derived as Debug>", "fmt"],
+        &["alpha", "Derived"],
+        "K_DER",
+        false,
+    );
+    derive.from_impl = Some(1);
+    // A genuine use from another def.
+    let real = edge(&["alpha", "user"], &["alpha", "Used"], "K_USED", false);
+
+    let mut f = frag(
+        "alpha",
+        vec![dead, method, derived, used, user],
+        vec![receiver, derive, real],
+    );
+    f.impls = vec![
+        ImplFact {
+            self_key: "K_DEAD".into(),
+            origin: ImplOrigin::Written,
+        },
+        ImplFact {
+            self_key: "K_DER".into(),
+            origin: ImplOrigin::Derived,
+        },
+    ];
+    let m = model(vec![("default", vec![f])]);
+    let asm = m.primary();
+    assert!(
+        !asm.exposed_in_public_signature("K_DEAD"),
+        "a pub method's own `&self` must not expose its type"
+    );
+    let cands = m.pub_candidates();
+    let usage = usage_map(&cands);
+    assert_eq!(usage["alpha::Dead"], PubUsage::Unused);
+    assert_eq!(usage["alpha::Derived"], PubUsage::Unused);
+    assert_eq!(usage["alpha::Used"], PubUsage::IntraCrate);
+    let cand = |id: &str| cands.iter().find(|c| c.id == id).unwrap();
+    assert!(
+        cand("alpha::Dead").has_written_impl,
+        "a hand-written impl vetoes deletion"
+    );
+    assert!(
+        !cand("alpha::Derived").has_written_impl,
+        "derives go with the item"
+    );
+    assert!(!cand("alpha::Used").has_written_impl);
+    // The unreached inherent `m` gates narrowing the type (dead_code would
+    // flag it once `Dead` is no longer exported).
+    assert!(cand("alpha::Dead").dead_members);
+    assert!(!cand("alpha::Used").dead_members);
+}
+
+/// (schema 14) Deleting a type takes its derived impls' edges with it: a
+/// derive's references (here, to a helper the expansion calls) live in
+/// `<Derived as …>` items whose display paths sit OUTSIDE the type's segment
+/// prefix — only `from_impl` ties them to the deleted type. Without it the
+/// helper would stay "used" by a derive that no longer exists.
+#[test]
+fn removing_a_type_removes_its_derive_impl_edges() {
+    use wl_ir::{ImplFact, ImplOrigin};
+    let derived = item(&["alpha", "Derived"], "K_DER", "struct", Some("mod"));
+    let helper = item(&["alpha", "helper"], "K_HELP", "fn", Some("mod"));
+    let mut from_derive = edge(
+        &["alpha", "<Derived as Debug>", "fmt"],
+        &["alpha", "helper"],
+        "K_HELP",
+        false,
+    );
+    from_derive.from_impl = Some(0);
+    let mut f = frag("alpha", vec![derived, helper], vec![from_derive]);
+    f.impls = vec![ImplFact {
+        self_key: "K_DER".into(),
+        origin: ImplOrigin::Derived,
+    }];
+    let m = model(vec![("default", vec![f])]);
+    assert_eq!(
+        usage_map(&m.pub_candidates())["alpha::helper"],
+        PubUsage::IntraCrate
+    );
+    let after = usage_map(&m.pub_candidates_excluding(&RemovalSet::new(["alpha::Derived"])));
+    assert_eq!(
+        after["alpha::helper"],
+        PubUsage::Unused,
+        "the deleted type's derive no longer reaches the helper"
+    );
 }
 
 /// (schema 11) The predicate-surface exposure classes: a TRAIT named by a pub

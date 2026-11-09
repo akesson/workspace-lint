@@ -1,0 +1,13 @@
+# The written-impl deletion veto: a type's own `impl` blocks no longer keep
+# it alive, so a dead type with a hand-written impl is now judged unused —
+# but deleting the type alone would orphan the impl (E0412). Vetoed (shown,
+# not applied). A dead type with only derives IS deleted: the derives are its
+# attributes and go with it. `dead_helper` is deleted alongside.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

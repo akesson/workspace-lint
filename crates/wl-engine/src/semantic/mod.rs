@@ -15,6 +15,7 @@ mod clippy_guard;
 mod collateral;
 mod def_info;
 mod deps;
+mod impls;
 mod import_usage;
 mod imports;
 mod join;

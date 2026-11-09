@@ -56,7 +56,7 @@ pub fn canonicalized(path: &std::path::Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-pub type Result<T> = std::result::Result<T, FastError>;
+pub(crate) type Result<T> = std::result::Result<T, FastError>;
 
 /// Errors produced while loading the fast-tier model.
 ///

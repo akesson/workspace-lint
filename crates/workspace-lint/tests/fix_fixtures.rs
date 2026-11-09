@@ -269,6 +269,16 @@ fn fix_unused_pub_delete_unmask_len() {
 }
 
 #[test]
+fn fix_unused_pub_delete_written_impl_veto() {
+    // A type's own impls no longer keep it alive (schema 14), so a dead type
+    // with a hand-written `impl` is judged unused — but deleting the type
+    // alone would orphan the impl (E0412). Vetoed (shown, not applied), while
+    // a derive-only dead type (its derives go with it) and `dead_helper` are
+    // deleted in the same run.
+    run_fix_fixture("fix__unused_pub_delete_written_impl_veto");
+}
+
+#[test]
 fn fix_unused_pub_collateral() {
     // The cascade's second-order surfaces (LeaveDates 2026-07-05 follow-ups):
     // deleting `dead` strands the private `helper` → `inner` chain (rustc

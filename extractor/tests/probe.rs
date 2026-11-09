@@ -151,12 +151,13 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             );
             // The invocation-site policy: the span lands in whichever probe
             // file WROTE the `#[derive(…)]` (lib.rs, inherent.rs,
-            // dead_veto.rs), never a macro-definition file.
+            // dead_veto.rs, own_impl.rs), never a macro-definition file.
             ck.expect(
                 it.span.as_ref().is_some_and(|s| {
                     s.file.ends_with("lib.rs")
                         || s.file.ends_with("inherent.rs")
                         || s.file.ends_with("dead_veto.rs")
+                        || s.file.ends_with("own_impl.rs")
                 }),
                 it,
                 "derive span must map to the deriving probe file",
@@ -1048,6 +1049,11 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             ("HasSuper", "BoundSuper", "supertrait"),
             ("Item", "BoundAssoc", "trait-decl assoc-type bound"),
             ("takes_dyn", "BoundDyn", "dyn-Trait parameter"),
+            (
+                "BoundedHost",
+                "BoundInherentImpl",
+                "impl's own bound, from = self type",
+            ),
             // Field types: `from` must be the FIELD def, so the assembler can
             // gate exposure on the field's own visibility.
             ("named", "OnlyFieldType", "pub field type, from = field def"),
@@ -1213,6 +1219,103 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             }
             _ => ck.failures.push("[Meter] field facts not emitted".into()),
         }
+    }
+
+    // 26. Own-impl facts (schema 14, `src/own_impl.rs`): the fragment's
+    //     `impls` table lists every local impl of a local ADT with its origin
+    //     (an EMPTY `impl T {}` included — no edge needed), and each edge's
+    //     `from_impl` points at the OUTERMOST impl it originates in — so a
+    //     reference is "own-impl" iff that impl's self type is its target.
+    //     A nested helper type's impl inside the own impl still resolves to
+    //     the outer one (the serde `__Visitor` shape); another type's impl
+    //     naming the target does not.
+    {
+        use wl_ir::ImplOrigin;
+        let last = |v: &[String]| v.last().cloned().unwrap_or_default();
+        let key_of = |ty: &str| {
+            frag.items
+                .iter()
+                .find(|it| it.path.ends_with(&["own_impl".into(), ty.into()]))
+                .map(|it| it.key.clone())
+        };
+        let own = |e: &wl_ir::RefEdge| {
+            e.from_impl
+                .map(|i| &frag.impls[i as usize])
+                .filter(|f| f.self_key == e.to_key)
+                .map(|f| f.origin)
+        };
+        let into = |ty: &str| -> Vec<&wl_ir::RefEdge> {
+            frag.references
+                .iter()
+                .filter(|e| e.to.ends_with(&["own_impl".into(), ty.into()]))
+                .collect()
+        };
+        // (target type, what, expected own-impl origin, edge selector)
+        type Case<'a> = (
+            &'a str,
+            &'a str,
+            Option<ImplOrigin>,
+            &'a dyn Fn(&wl_ir::RefEdge) -> bool,
+        );
+        let cases: [Case; 5] = [
+            (
+                "OwnTarget",
+                "inherent `&self` signature",
+                Some(ImplOrigin::Written),
+                &|e| e.in_signature && last(&e.from) == "by_ref",
+            ),
+            (
+                "OwnTarget",
+                "hand-written trait impl `not`",
+                Some(ImplOrigin::Written),
+                &|e| last(&e.from) == "not",
+            ),
+            (
+                "OwnDerived",
+                "derive expansion",
+                Some(ImplOrigin::Derived),
+                &|_| true,
+            ),
+            (
+                "OwnNested",
+                "nested helper type's impl inside the own impl",
+                Some(ImplOrigin::Written),
+                &|e| last(&e.from) == "build",
+            ),
+            ("OwnTarget", "`impl From<OwnTarget> for Host`", None, &|e| {
+                e.from.iter().any(|s| s.contains("Host"))
+            }),
+        ];
+        for (ty, what, want, select) in cases {
+            let hits: Vec<_> = into(ty).into_iter().filter(|e| select(e)).collect();
+            let ok = !hits.is_empty() && hits.iter().all(|e| own(e) == want);
+            ck.expect_named(
+                ok,
+                ty,
+                &format!(
+                    "{what}: own-impl origin == {want:?} ({} edge(s))",
+                    hits.len()
+                ),
+            );
+        }
+        let table_has = |ty: &str, origin: ImplOrigin| {
+            key_of(ty).is_some_and(|k| {
+                frag.impls
+                    .iter()
+                    .any(|f| f.self_key == k && f.origin == origin)
+            })
+        };
+        ck.expect_named(
+            table_has("OwnEmpty", ImplOrigin::Written),
+            "OwnEmpty",
+            "empty inherent impl listed in `impls` as Written",
+        );
+        ck.expect_named(
+            table_has("OwnDerived", ImplOrigin::Derived)
+                && !table_has("OwnDerived", ImplOrigin::Written),
+            "OwnDerived",
+            "derive-only type has only Derived `impls` entries",
+        );
     }
 
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());
