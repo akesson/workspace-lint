@@ -23,6 +23,7 @@ mod command;
 mod driver;
 mod guard;
 mod hash;
+mod pinned;
 mod relink;
 mod source;
 mod toolchain;
@@ -130,6 +131,11 @@ pub enum EngineError {
 
     #[error("rustup is not installed (or not on PATH) — install it from https://rustup.rs")]
     RustupMissing,
+
+    #[error(
+        "locating the pinned toolchain {pin} (`rustup which --toolchain {pin} cargo`): {detail}"
+    )]
+    ToolchainUnresolved { pin: String, detail: String },
 
     #[error("materializing the vendored extractor into {dir}: {source}")]
     Materialize {
@@ -274,8 +280,9 @@ impl Engine {
     /// return, including the error paths, via an RAII guard).
     pub fn extract(&self, cfg: &EngineConfig) -> Result<ExtractionRuns, EngineError> {
         let triples = declared_triples(&cfg.configs);
-        wl_fast::timing::phase("preflight[rustup]", || {
-            toolchain::preflight(Self::pinned_toolchain(), &triples)
+        let toolchain = wl_fast::timing::phase("preflight[rustup]", || {
+            toolchain::preflight(Self::pinned_toolchain(), &triples)?;
+            pinned::PinnedToolchain::resolve(Self::pinned_toolchain())
         })?;
         let (package_dir, sources_fresh) =
             wl_fast::timing::phase("materialize[vendored src]", || self.source.materialize())?;
@@ -294,7 +301,7 @@ impl Engine {
                 if sources_fresh && let Some(dylib) = source::existing_dylib(&package_dir) {
                     Ok(dylib)
                 } else {
-                    source::build_dylib(&package_dir)
+                    source::build_dylib(&package_dir, &toolchain)
                 }
             },
         )?);
@@ -355,6 +362,10 @@ impl Engine {
         let valid_crates = guard::crate_name_universe(&metadata);
 
         let _cwd = CwdGuard::enter(&cfg.workspace_root)?;
+        // dylint spawns a bare `cargo` (and, on a cold cache, builds its
+        // driver the same way): run them on the pin, never on whatever a
+        // version-manager shim earlier on PATH resolves — see `pinned`.
+        let _path = toolchain.enter();
         let mut runs = Vec::new();
         for (spec, plan) in cfg.configs.iter().zip(&plans) {
             let ir_dir = cfg.ir_root.join(&spec.id);
