@@ -1,0 +1,2 @@
+# Deletion is CLI-opt-in only: the harness's `--fix` alone must never delete.
+args = ["--fix-auto-delete"]

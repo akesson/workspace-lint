@@ -374,8 +374,9 @@ impl SemanticModel {
             for frag in asm.archived_fragments() {
                 for e in frag.references.iter() {
                     let from_crate = e.from.first().map(|s| s.as_str()).unwrap_or_default();
+                    let is_removed = asm.edge_removed(removed, frag, e);
                     if e.trait_scope {
-                        Self::record_trait_scope(&mut usage, asm, e, from_crate, removed);
+                        Self::record_trait_scope(&mut usage, asm, e, from_crate, is_removed);
                     } else if e.import {
                         Self::record_import_decl(&mut usage, asm, e, from_crate);
                     } else if !e.in_signature {
@@ -385,7 +386,7 @@ impl SemanticModel {
                         // `visit_path` edge. Keeping them would phantom-shield
                         // imports of names the source never writes
                         // (`GlobalSignal<T>` reaching `Signal`).
-                        Self::record_resolution(&mut usage, asm, e, from_crate, removed);
+                        Self::record_resolution(&mut usage, asm, e, from_crate, is_removed);
                     }
                 }
             }
@@ -403,10 +404,10 @@ impl SemanticModel {
         asm: &Assembly,
         e: &ArchivedRefEdge,
         from_crate: &str,
-        removed: &RemovalSet,
+        is_removed: bool,
     ) {
         let id = Self::edge_identity(asm, e);
-        let set = if removed.covers(&e.from) {
+        let set = if is_removed {
             &mut usage.trait_scope_removed
         } else {
             &mut usage.trait_scope_survivor
@@ -448,9 +449,8 @@ impl SemanticModel {
         asm: &Assembly,
         e: &ArchivedRefEdge,
         from_crate: &str,
-        removed: &RemovalSet,
+        is_removed: bool,
     ) {
-        let is_removed = removed.covers(&e.from);
         let ids = match Self::resolved_identities(asm, e) {
             Some(ids) => ids,
             None => {
