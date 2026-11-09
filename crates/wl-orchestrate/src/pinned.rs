@@ -1,103 +1,88 @@
-//! The pinned toolchain, resolved to its on-disk install — and the PATH lever
-//! that makes every Phase-1 `cargo` spawn run *that* toolchain.
+//! The PATH lever that makes every Phase-1 `cargo` spawn go through rustup's
+//! proxies — the only `cargo` that honours the toolchain selection the engine
+//! relies on.
 //!
-//! Both Phase-1 builds spawn a bare `cargo` from PATH: our own dylib build,
-//! and `dylint::run`'s wrapped `cargo check` (plus its driver provisioning).
-//! They select the pinned nightly through rustup — the dylib build via the
-//! extractor's `rust-toolchain.toml`, dylint by setting `RUSTUP_TOOLCHAIN` —
-//! which only works if the `cargo` found on PATH is rustup's proxy. A version
-//! manager's shim earlier on PATH breaks that: mise's `cargo` shim re-applies
-//! the *analyzed workspace's* tool env, rewriting `RUSTUP_TOOLCHAIN=nightly…`
-//! back to the project's pin (say `1.99.0`). Cargo then runs on 1.99, and
-//! hands that `RUSTUP_TOOLCHAIN` to dylint's driver, which builds its
-//! `--sysroot` as `$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN` — a nightly
-//! rustc against a 1.99 sysroot: `E0514 found crate std compiled by an
-//! incompatible version of rustc` on the first workspace member.
+//! Every Phase-1 build spawns a bare `cargo` from PATH: our own dylib build,
+//! `dylint::run`'s wrapped `cargo check`, and dylint's on-demand driver build.
+//! Each selects its toolchain through rustup: the dylib build and the driver
+//! build via a `rust-toolchain` file in their package dir, the extraction
+//! check by setting `RUSTUP_TOOLCHAIN` to the pin. That only works when the
+//! `cargo` found on PATH is rustup's proxy. A version manager's shim earlier
+//! on PATH breaks it: mise's `cargo` shim re-applies the *analyzed
+//! workspace's* tool env, rewriting `RUSTUP_TOOLCHAIN=nightly…` back to the
+//! project's pin (say `1.99.0`). Cargo then runs on 1.99 and hands that
+//! `RUSTUP_TOOLCHAIN` to dylint's driver, which builds its `--sysroot` as
+//! `$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN` — a nightly rustc against a
+//! 1.99 sysroot: `E0514 found crate std compiled by an incompatible version
+//! of rustc` on the first workspace member.
 //!
-//! The fix is to stop going through anything resolvable: put the pinned
-//! toolchain's own `bin/` first on PATH, so `cargo` (and the `rustc` cargo
-//! spawns) ARE the pinned binaries, and state `RUSTUP_TOOLCHAIN` explicitly
-//! where no rustup proxy is left to set it.
+//! So the proxy directory (`$CARGO_HOME/bin`) goes first on PATH. Not the
+//! pinned toolchain's own `bin/`: bypassing the proxy also drops the
+//! `RUSTUP_TOOLCHAIN` it exports to its children, which dylint's driver
+//! build script requires (a cold driver provisioning then fails with
+//! `environment variable not found: RUSTUP_TOOLCHAIN`).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::EngineError;
-
-/// The pinned toolchain as installed: its full rustup name (with the host
-/// triple — the form rustup proxies export and dylint keys its driver cache
-/// on) and its `bin/` directory.
+/// rustup's proxy directory, when it can be located. `None` (no `rustup`
+/// next to a `cargo` in `$CARGO_HOME/bin`) leaves PATH untouched — the
+/// behaviour before this lever existed, so an unusual rustup install can't
+/// regress.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PinnedToolchain {
-    name: String,
-    bin: PathBuf,
+pub(super) struct RustupProxies {
+    bin: Option<PathBuf>,
 }
 
-impl PinnedToolchain {
-    /// Ask rustup where the pin's `cargo` lives. `--toolchain` is explicit,
-    /// so neither an inherited `RUSTUP_TOOLCHAIN` nor a shimmed `rustup`
-    /// can redirect the answer. Call after preflight: the pin is installed,
-    /// so this never triggers rustup's auto-install.
-    pub(super) fn resolve(pin: &str) -> Result<Self, EngineError> {
-        let unresolved = |detail: String| EngineError::ToolchainUnresolved {
-            pin: pin.into(),
-            detail,
-        };
-        let output = Command::new("rustup")
-            .args(["which", "--toolchain", pin, "cargo"])
-            .output()
-            .map_err(|_| EngineError::RustupMissing)?;
-        if !output.status.success() {
-            return Err(unresolved(
-                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            ));
+impl RustupProxies {
+    /// `$CARGO_HOME/bin` (default `~/.cargo/bin`) — where rustup installs its
+    /// proxies — if it holds both `rustup` and `cargo`.
+    pub(super) fn locate() -> Self {
+        let cargo_home = std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::home_dir().map(|h| h.join(".cargo")));
+        Self {
+            bin: cargo_home.and_then(|home| Self::proxy_dir(&home.join("bin"))),
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let cargo = Path::new(stdout.trim());
-        Self::from_cargo_path(cargo)
-            .ok_or_else(|| unresolved(format!("unexpected cargo path {}", cargo.display())))
     }
 
-    /// Parse rustup's `<RUSTUP_HOME>/toolchains/<name>/bin/cargo` layout.
-    fn from_cargo_path(cargo: &Path) -> Option<Self> {
-        let bin = cargo.parent()?;
-        let name = bin.parent()?.file_name()?.to_str()?;
-        (bin.file_name()? == "bin").then(|| Self {
-            name: name.to_owned(),
-            bin: bin.to_path_buf(),
-        })
+    fn proxy_dir(bin: &Path) -> Option<PathBuf> {
+        let has =
+            |name: &str| bin.join(name).is_file() || bin.join(format!("{name}.exe")).is_file();
+        (has("rustup") && has("cargo")).then(|| bin.to_path_buf())
     }
 
-    /// `PATH` with this toolchain's `bin/` in front of `inherited`.
-    fn search_path(&self, inherited: Option<OsString>) -> OsString {
-        // No inherited PATH ⇒ just `bin/`: splitting an empty value would
-        // yield one empty entry, which Unix reads as the current directory.
+    /// `PATH` with the proxy dir in front of `inherited` (unchanged when no
+    /// proxy dir was found).
+    fn search_path(&self, inherited: Option<OsString>) -> Option<OsString> {
+        let bin = self.bin.as_ref()?;
+        // No inherited PATH ⇒ just the proxy dir: splitting an empty value
+        // would yield one empty entry, which Unix reads as the current dir.
         let rest: Vec<PathBuf> = inherited
             .map(|p| std::env::split_paths(&p).collect())
             .unwrap_or_default();
-        let dirs = std::iter::once(self.bin.clone()).chain(rest);
-        std::env::join_paths(dirs).expect("a rustup toolchain dir contains no PATH separator")
+        let dirs = std::iter::once(bin.clone()).chain(rest);
+        Some(std::env::join_paths(dirs).expect("a cargo home path contains no PATH separator"))
     }
 
-    /// Pin one spawned command to this toolchain: its `bin/` first on PATH,
-    /// and the `RUSTUP_TOOLCHAIN` a rustup proxy would have exported (the
-    /// `dylint-link` linker wrapper names its output after it).
+    /// Route one spawned command's `cargo` through the proxies.
     pub(super) fn pin(&self, command: &mut Command) {
-        command
-            .env("PATH", self.search_path(std::env::var_os("PATH")))
-            .env("RUSTUP_TOOLCHAIN", &self.name);
+        if let Some(path) = self.search_path(std::env::var_os("PATH")) {
+            command.env("PATH", path);
+        }
     }
 
-    /// Pin the *process* PATH until the guard drops — the lever for spawns we
-    /// don't construct (`dylint::run` has no per-spawn env hook; it sets
-    /// `RUSTUP_TOOLCHAIN` itself). Same single-threaded contract as the other
+    /// Route the *process* PATH through the proxies until the guard drops —
+    /// the lever for spawns we don't construct (`dylint::run` has no
+    /// per-spawn env hook). Same single-threaded contract as the other
     /// process-global effects of `Engine::extract`.
     pub(super) fn enter(&self) -> SearchPathGuard {
         let prev = std::env::var_os("PATH");
-        let pinned = self.search_path(prev.clone());
-        // SAFETY: single-threaded by the documented contract of `extract`.
-        unsafe { std::env::set_var("PATH", pinned) };
+        if let Some(path) = self.search_path(prev.clone()) {
+            // SAFETY: single-threaded by the documented contract of `extract`.
+            unsafe { std::env::set_var("PATH", path) };
+        }
         SearchPathGuard { prev }
     }
 }
@@ -123,44 +108,52 @@ impl Drop for SearchPathGuard {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_rustup_toolchain_layout() {
-        let cargo = Path::new(
-            "/home/u/.rustup/toolchains/nightly-2026-04-16-aarch64-apple-darwin/bin/cargo",
-        );
-        let pinned = PinnedToolchain::from_cargo_path(cargo).unwrap();
-        assert_eq!(pinned.name, "nightly-2026-04-16-aarch64-apple-darwin");
-        assert_eq!(
-            pinned.bin,
-            Path::new("/home/u/.rustup/toolchains/nightly-2026-04-16-aarch64-apple-darwin/bin")
-        );
+    fn proxies(bin: &str) -> RustupProxies {
+        RustupProxies {
+            bin: Some(PathBuf::from(bin)),
+        }
     }
 
+    /// The proxy dir must come FIRST — a shim dir anywhere after it is then
+    /// unreachable for `cargo` (the E0514 regression).
     #[test]
-    fn rejects_paths_outside_a_bin_dir() {
-        assert_eq!(
-            PinnedToolchain::from_cargo_path(Path::new("/usr/local/cargo")),
-            None
-        );
-        assert_eq!(PinnedToolchain::from_cargo_path(Path::new("cargo")), None);
-    }
-
-    /// The pinned `bin/` must come FIRST — a shim dir anywhere after it is
-    /// then unreachable for `cargo`/`rustc` (the E0514 regression).
-    #[test]
-    fn search_path_puts_the_toolchain_bin_first() {
-        let pinned = PinnedToolchain {
-            name: "nightly-x".into(),
-            bin: PathBuf::from("/tc/bin"),
-        };
+    fn search_path_puts_the_proxy_dir_first() {
         let inherited = std::env::join_paths(["/shims", "/usr/bin"]).unwrap();
-        let dirs: Vec<PathBuf> =
-            std::env::split_paths(&pinned.search_path(Some(inherited))).collect();
+        let path = proxies("/home/u/.cargo/bin")
+            .search_path(Some(inherited))
+            .unwrap();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
         assert_eq!(
             dirs,
-            [PathBuf::from("/tc/bin"), "/shims".into(), "/usr/bin".into()]
+            [
+                PathBuf::from("/home/u/.cargo/bin"),
+                "/shims".into(),
+                "/usr/bin".into()
+            ]
         );
-        let alone: Vec<PathBuf> = std::env::split_paths(&pinned.search_path(None)).collect();
-        assert_eq!(alone, [PathBuf::from("/tc/bin")]);
+        let alone = proxies("/p").search_path(None).unwrap();
+        assert_eq!(
+            std::env::split_paths(&alone).collect::<Vec<_>>(),
+            [PathBuf::from("/p")]
+        );
+    }
+
+    #[test]
+    fn no_proxy_dir_leaves_path_alone() {
+        let none = RustupProxies { bin: None };
+        assert_eq!(none.search_path(Some("/usr/bin".into())), None);
+    }
+
+    /// A dir counts as rustup's proxy dir only with BOTH `rustup` and
+    /// `cargo` in it — a stray `cargo` (a shim dir, a distro package) is not.
+    #[test]
+    fn proxy_dir_requires_rustup_and_cargo() {
+        let dir = std::env::temp_dir().join(format!("wl-proxies-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cargo"), b"").unwrap();
+        assert_eq!(RustupProxies::proxy_dir(&dir), None);
+        std::fs::write(dir.join("rustup"), b"").unwrap();
+        assert_eq!(RustupProxies::proxy_dir(&dir), Some(dir.clone()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use super::pinned::PinnedToolchain;
+use super::pinned::RustupProxies;
 use super::{EngineError, hash};
 
 include!(concat!(env!("OUT_DIR"), "/vendored.rs"));
@@ -110,24 +110,27 @@ impl ExtractorSource {
 
 /// Build the extractor dylib with the pinned toolchain and locate it.
 ///
-/// The toolchain is pinned explicitly (its `bin/` first on PATH, its name in
-/// `RUSTUP_TOOLCHAIN`) rather than left to rustup's directory-scoped
-/// resolution of the package's `rust-toolchain.toml`: a version-manager shim
-/// on PATH, or the inherited `RUSTUP_TOOLCHAIN`/`CARGO`/`RUSTC` of a caller
-/// running under `cargo run` / `cargo test`, would otherwise put the
-/// `rustc_private` build on the caller's stable toolchain — see `pinned`.
+/// `rustup`'s directory-scoped resolution applies the package's
+/// `rust-toolchain.toml` — but only if the `cargo` spawned IS rustup's proxy
+/// (a version-manager shim earlier on PATH re-applies its own toolchain; see
+/// `pinned`) and the caller's environment doesn't override it, so the
+/// rustup/cargo selection vars are scrubbed: when this binary itself runs
+/// under `cargo run` / `cargo test`, the inherited
+/// `RUSTUP_TOOLCHAIN`/`CARGO`/`RUSTC` would pin the child to the *caller's*
+/// toolchain and the `rustc_private` build would fail on stable.
 pub(super) fn build_dylib(
     package_dir: &Path,
-    toolchain: &PinnedToolchain,
+    proxies: &RustupProxies,
 ) -> Result<PathBuf, EngineError> {
     // Output is captured, not inherited: a warm no-op build must leave the
     // caller's stderr byte-deterministic (snapshot consumers), and on failure
     // the compile errors are replayed verbatim — they ARE the diagnosis.
     let mut command = Command::new("cargo");
-    toolchain.pin(&mut command);
+    proxies.pin(&mut command);
     let output = command
         .args(["build", "--locked"])
         .current_dir(package_dir)
+        .env_remove("RUSTUP_TOOLCHAIN")
         .env_remove("CARGO")
         .env_remove("RUSTC")
         // Keep the dylib under the package dir even if the caller redirects
