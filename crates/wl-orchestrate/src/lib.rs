@@ -23,6 +23,7 @@ mod command;
 mod driver;
 mod guard;
 mod hash;
+mod pinned;
 mod relink;
 mod source;
 mod toolchain;
@@ -277,6 +278,7 @@ impl Engine {
         wl_fast::timing::phase("preflight[rustup]", || {
             toolchain::preflight(Self::pinned_toolchain(), &triples)
         })?;
+        let proxies = pinned::RustupProxies::locate();
         let (package_dir, sources_fresh) =
             wl_fast::timing::phase("materialize[vendored src]", || self.source.materialize())?;
         let dylib = relink::RelinkedDylib::new(wl_fast::timing::phase(
@@ -294,7 +296,7 @@ impl Engine {
                 if sources_fresh && let Some(dylib) = source::existing_dylib(&package_dir) {
                     Ok(dylib)
                 } else {
-                    source::build_dylib(&package_dir)
+                    source::build_dylib(&package_dir, &proxies)
                 }
             },
         )?);
@@ -355,6 +357,10 @@ impl Engine {
         let valid_crates = guard::crate_name_universe(&metadata);
 
         let _cwd = CwdGuard::enter(&cfg.workspace_root)?;
+        // dylint spawns a bare `cargo` (and, on a cold cache, builds its
+        // driver the same way): route it through rustup's proxies, never a
+        // version-manager shim earlier on PATH — see `pinned`.
+        let _path = proxies.enter();
         let mut runs = Vec::new();
         for (spec, plan) in cfg.configs.iter().zip(&plans) {
             let ir_dir = cfg.ir_root.join(&spec.id);

@@ -66,7 +66,7 @@ impl<'a> Invocation<'a> {
             "workspace-lint: extraction failed before cargo produced any output ({first}) — \
              re-running dylint's driver provisioning with diagnostics visible"
         );
-        reprovision_driver(self.dylib.canonical()).map_err(&err)?;
+        reprovision_driver(self.dylib.canonical()).map_err(err)?;
         self.attempt().map_err(|second| {
             replay_log(&self.log);
             err(second)
