@@ -27,7 +27,7 @@ clap = { version = "4", features = ["derive"] }
 # `library_packages` pulls in the cargo-cli plumbing `run()` needs to build the
 # driver and invoke `cargo check`. Version-locked to the pin in
 # extractor/rust-toolchain.toml — bump both together (SPIKE §12.4).
-dylint = { version = "6.0.1", features = ["library_packages"] }
+dylint = { version = "6.3.2", features = ["library_packages"] }
 # The fixed-seed fast hasher backing the semantic join's hot lookup maps
 # (keyed on DefPathHash / display path) — replaces BTreeMap<String> string
 # compares over ~100k defs on the ~1.65M-edge fold. `FixedState` ⇒ reproducible.
