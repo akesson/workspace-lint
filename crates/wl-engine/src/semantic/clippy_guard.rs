@@ -10,7 +10,7 @@
 //! tighten suggestions to `MaybeIncorrect` (shown, never machine-applied) and
 //! says why.
 //!
-//! The two replayed lints:
+//! The three replayed lints:
 //!
 //! - **`wrong_self_convention`** — clippy's naming table, replayed against
 //!   the extractor-emitted [`DefInfo::self_kind`] / [`DefInfo::self_copy`]:
@@ -22,6 +22,11 @@
 //!   `SelfKind::Ref` semantics.
 //! - **`len_without_is_empty`** — a pub `len(&self)` assoc fn with no
 //!   `is_empty` sibling.
+//! - **`enum_variant_names`** — an enum (≥ 3 variants) whose variants all
+//!   share a camel-case word prefix/postfix, or one starting/ending with the
+//!   enum's own name. Enums carry derives almost universally, so this only
+//!   became reachable once a type's own impls stopped exempting it (schema
+//!   14) — the LeaveDates `ScheduleUpdateError { ValidationError, … }` case.
 //!
 //! Both checks run on the candidate itself (an inherent method being
 //! narrowed) and on a type/trait candidate's assoc-fn members (narrowing the
@@ -87,7 +92,7 @@ pub(super) fn fields_of_index(
     defs: &DefMap,
     id_key: &FastMap<String, String>,
 ) -> BTreeMap<String, Vec<String>> {
-    landings_index(defs, "field", |parent| {
+    landings_index(defs, "field", false, |parent| {
         let hop = || parent.rfind("::").and_then(|p| id_key.get(&parent[..p]));
         match id_key.get(parent) {
             // A variant-owned field's parent is the VARIANT fact — the
@@ -107,27 +112,49 @@ pub(super) fn variants_of_index(
     defs: &DefMap,
     id_key: &FastMap<String, String>,
 ) -> BTreeMap<String, Vec<String>> {
-    landings_index(defs, "variant", |parent| id_key.get(parent))
+    landings_index(defs, "variant", false, |parent| id_key.get(parent))
 }
 
-/// The shared sweep behind the two indexes above: non-underscore defs of
-/// `kind`, grouped under the owner key `owner_of` resolves their declaring
-/// parent path to. Sorted so the enumeration is deterministic regardless of
+/// Enum key → the NAMES of all its variants, underscore-prefixed included:
+/// clippy's `enum_variant_names` counts every variant toward its threshold.
+pub(super) fn variant_names_index(
+    defs: &DefMap,
+    id_key: &FastMap<String, String>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut index = landings_index(defs, "variant", true, |parent| id_key.get(parent));
+    for variants in index.values_mut() {
+        for v in variants.iter_mut() {
+            *v = defs[v.as_str()]
+                .path
+                .rsplit("::")
+                .next()
+                .unwrap_or_default()
+                .to_string();
+        }
+    }
+    index
+}
+
+/// The shared sweep behind the indexes above: defs of `kind` (minus
+/// underscore-prefixed ones unless `keep_underscore`), grouped under the
+/// owner key `owner_of` resolves their declaring parent path to. Sorted so the enumeration is deterministic regardless of
 /// `defs` (an `IndexMap`) iteration order — the guards only `any()`/probe
 /// these, but keep them order-stable.
 fn landings_index<'k>(
     defs: &DefMap,
     kind: &str,
+    keep_underscore: bool,
     owner_of: impl Fn(&str) -> Option<&'k String>,
 ) -> BTreeMap<String, Vec<String>> {
     let mut index: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, def) in defs {
         if def.kind != kind
-            || def
-                .path
-                .rsplit("::")
-                .next()
-                .is_some_and(|n| n.starts_with('_'))
+            || (!keep_underscore
+                && def
+                    .path
+                    .rsplit("::")
+                    .next()
+                    .is_some_and(|n| n.starts_with('_')))
         {
             continue;
         }
@@ -146,9 +173,11 @@ fn landings_index<'k>(
 /// on the narrowed tree, and the method it fires on.
 #[derive(Debug, Clone)]
 pub struct NarrowUnmask {
-    /// The clippy lint name (`wrong_self_convention` / `len_without_is_empty`).
+    /// The clippy lint name (`wrong_self_convention` / `len_without_is_empty`
+    /// / `enum_variant_names`).
     pub lint: &'static str,
-    /// The assoc fn the lint would anchor to.
+    /// The assoc fn (or, for `enum_variant_names`, the enum) the lint would
+    /// anchor to.
     pub member: String,
 }
 
@@ -170,6 +199,25 @@ impl Assembly {
             .iter()
             .filter(|(_, tk)| tk.as_str() == trait_key)
             .any(|(member, _)| !in_degree.contains_key(member))
+    }
+
+    /// Does `adt_key`'s type have an inherent assoc fn no edge reaches under
+    /// `in_degree`? The type twin of
+    /// [`has_unreached_trait_member`](Self::has_unreached_trait_member): the
+    /// `pub` methods of a `pub` type are exported (exempt from `dead_code`);
+    /// narrowing the type to `pub(crate)` un-exports them, and a never-called
+    /// one then fails a `-D warnings` gate on the narrowed tree. Reachable
+    /// only once a type's own impls stopped counting as uses of it (schema
+    /// 14): before that, any type with methods was signature-exposed by its
+    /// own `&self` receivers and never narrowed at all.
+    pub(super) fn has_unreached_inherent_member(
+        &self,
+        adt_key: &str,
+        in_degree: &BTreeMap<String, usize>,
+    ) -> bool {
+        self.assoc_members
+            .get(adt_key)
+            .is_some_and(|members| members.iter().any(|m| !in_degree.contains_key(m)))
     }
 
     /// Does `adt_key`'s type declare a field no READ edge reaches under
@@ -212,8 +260,12 @@ impl Assembly {
         self.member_violation(key, def, owner)
     }
 
-    /// A type/trait being narrowed: every pub assoc-fn member it exports.
+    /// A type/trait being narrowed: the type's own shape (an enum's variant
+    /// names), then every pub assoc-fn member it exports.
     fn owner_unmask(&self, key: &str) -> Option<NarrowUnmask> {
+        if let Some(u) = self.enum_names_unmask(key) {
+            return Some(u);
+        }
         for member in self.assoc_members.get(key)? {
             let mdef = &self.defs[member];
             if !mdef.public {
@@ -224,6 +276,16 @@ impl Assembly {
             }
         }
         None
+    }
+
+    /// `enum_variant_names` on an enum candidate (see [`variant_naming_hit`]).
+    fn enum_names_unmask(&self, key: &str) -> Option<NarrowUnmask> {
+        let variants = self.variant_names_of.get(key)?;
+        let name = self.defs[key].path.rsplit("::").next().unwrap_or_default();
+        variant_naming_hit(name, variants).then(|| NarrowUnmask {
+            lint: "enum_variant_names",
+            member: name.to_string(),
+        })
     }
 
     /// The two replayed checks for one assoc fn. `owner` keys the sibling
@@ -355,7 +417,7 @@ impl SemanticModel {
             let overlay = asm.refold_excluding(trial);
             for frag in asm.archived_fragments() {
                 for e in frag.references.iter() {
-                    if e.import || !trial.covers(&e.from) {
+                    if e.import || !asm.edge_removed(trial, frag, e) {
                         continue;
                     }
                     let Some(key) = asm.resolve_key(e) else {
@@ -453,6 +515,77 @@ impl SemanticModel {
         }
         out
     }
+}
+
+/// Clippy's `enum_variant_names` (`check_variant`), replayed over names:
+/// below the default threshold of 3 variants nothing fires; a variant that
+/// starts or ends with the enum's own name fires; otherwise the camel-case
+/// words common to EVERY variant's start (prefix) or end (postfix) fire —
+/// unless some variant is a single word, which disables the affix check.
+/// Over-detection only costs an auto-fix (the guard's safe direction), so the
+/// splitter need not match clippy's acronym handling exactly.
+fn variant_naming_hit(enum_name: &str, variants: &[String]) -> bool {
+    const THRESHOLD: usize = 3;
+    if variants.len() < THRESHOLD {
+        return false;
+    }
+    let names_itself = |v: &str| {
+        let starts = v
+            .strip_prefix(enum_name)
+            .is_some_and(|rest| rest.starts_with(|c: char| !c.is_lowercase()) && !rest.is_empty());
+        starts || (v != enum_name && v.ends_with(enum_name))
+    };
+    if variants.iter().any(|v| names_itself(v)) {
+        return true;
+    }
+    let words: Vec<Vec<&str>> = variants.iter().map(|v| camel_words(v)).collect();
+    if words.iter().any(|w| w.len() == 1) {
+        return false;
+    }
+    let first = &words[0];
+    let common = |rev: bool| {
+        (0..first.len())
+            .take_while(|&i| {
+                words.iter().all(|w| {
+                    let (a, b) = if rev {
+                        (
+                            first[first.len() - 1 - i],
+                            w.get(w.len().wrapping_sub(1 + i)),
+                        )
+                    } else {
+                        (first[i], w.get(i))
+                    };
+                    b == Some(&a)
+                })
+            })
+            .count()
+            > 0
+    };
+    common(false) || common(true)
+}
+
+/// Split an UpperCamelCase identifier into its words: a new word starts at an
+/// uppercase letter that follows a lowercase letter/digit, or that precedes a
+/// lowercase letter after an uppercase run (`HTTPError` → `HTTP`, `Error`).
+fn camel_words(name: &str) -> Vec<&str> {
+    let chars: Vec<(usize, char)> = name.char_indices().collect();
+    let mut words = Vec::new();
+    let mut start = 0;
+    for i in 1..chars.len() {
+        let (pos, c) = chars[i];
+        let prev = chars[i - 1].1;
+        let next_lower = chars.get(i + 1).is_some_and(|&(_, n)| n.is_lowercase());
+        let boundary = c.is_uppercase()
+            && (prev.is_lowercase()
+                || prev.is_ascii_digit()
+                || (prev.is_uppercase() && next_lower));
+        if boundary {
+            words.push(&name[start..pos]);
+            start = pos;
+        }
+    }
+    words.push(&name[start..]);
+    words
 }
 
 /// Clippy's `wrong_self_convention` table (first matching row wins), reduced

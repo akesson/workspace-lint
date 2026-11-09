@@ -1,0 +1,16 @@
+# A type's own `impl` blocks are part of the type, not users of it. Each dead
+# type below has only self-references — an inherent method's `&self`, a trait
+# impl's header and `&self`, derive expansions — and must be flagged. Before
+# schema 14 every one of them read as used AND signature-exposed (its own
+# `&self` receivers in a "pub" signature), so only impl-less types could ever
+# be judged unused.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# Pinned single-config matrix: this case is not about the engine matrix —
+# keep the fixture single-pass (the absent-table default is build+test).
+[engine]
+configs = ["cargo build"]

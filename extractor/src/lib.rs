@@ -50,7 +50,9 @@ use rustc_session::Session;
 use rustc_span::hygiene::ExpnKind;
 use rustc_span::{FileName, Span as RustcSpan};
 
-use wl_ir::{IrFragment, ItemFact, RefEdge, Span, Visibility};
+use std::collections::HashMap;
+
+use wl_ir::{ImplFact, ImplOrigin, IrFragment, ItemFact, RefEdge, Span, Visibility};
 
 // The dylib entry glue `declare_late_lint!` used to supply: the `dylint_version`
 // export + `extern crate rustc_driver`. Required for the dylib to load.
@@ -242,7 +244,8 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         }
     }
 
-    let references = collect_references(tcx, &crate_code);
+    let (impls, impl_index) = collect_impls(tcx);
+    let references = collect_references(tcx, &crate_code, &impl_index);
     let loaded_files = collect_loaded_files(sm);
 
     IrFragment {
@@ -259,6 +262,7 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         is_test_cfg: tcx.sess.opts.test,
         items,
         references,
+        impls,
         loaded_files,
         used_crates: collect_used_crates(tcx),
     }
@@ -421,10 +425,15 @@ fn target_kind(tcx: TyCtxt<'_>) -> &'static str {
 /// `where`-clauses, supertraits, assoc-type/`impl Trait` item bounds, `dyn`
 /// principals, field types — from the lowered signatures and the written
 /// predicate queries.
-fn collect_references(tcx: TyCtxt<'_>, crate_code: &str) -> Vec<RefEdge> {
+fn collect_references(
+    tcx: TyCtxt<'_>,
+    crate_code: &str,
+    impl_index: &HashMap<DefId, u32>,
+) -> Vec<RefEdge> {
     let mut collector = RefCollector {
         tcx,
         crate_code,
+        impl_index,
         edges: Vec::new(),
         write_fields: std::collections::HashSet::new(),
     };
@@ -521,6 +530,8 @@ struct EdgeFlags {
 struct RefCollector<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     crate_code: &'a str,
+    /// impl `DefId` → its [`IrFragment::impls`] index (see [`collect_impls`]).
+    impl_index: &'a HashMap<DefId, u32>,
     edges: Vec<RefEdge>,
     /// Field exprs in plain-assignment LHS position (`x.f = v`): writes, not
     /// reads. rustc `dead_code` flags a field with writes but no reads, so
@@ -729,6 +740,8 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             span: span.and_then(|s| span_to_ir(sm, s)),
             decl_span: flags.decl_span.and_then(|s| span_to_ir(sm, s)),
             elem_span: flags.elem_span.and_then(|s| span_to_ir(sm, s)),
+            from_impl: outermost_impl(self.tcx, from_id)
+                .and_then(|i| self.impl_index.get(&i).copied()),
         });
     }
 
@@ -883,6 +896,25 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
                 // ride the common predicate sweep below.
                 DefKind::Trait | DefKind::TraitAlias => {
                     sig.collect_clauses(self.tcx.explicit_super_predicates_of(did).skip_binder());
+                }
+                // An impl's written bounds (`impl<T: Bound> Pub<T> { … }`)
+                // are privacy-checked against the IMPL's visibility — its
+                // self type's ("implementation `Pub<T>` is reachable at
+                // visibility `pub`"): narrowing `Bound` below `Pub` is a
+                // `private_bounds`/`private_interfaces` failure. An impl is
+                // not an item fact, so the edges are attributed to the
+                // nominal self type and the stable side gates exposure on
+                // ITS visibility — the field-type pattern below. Non-ADT and
+                // foreign self types carry no local def to hang them on.
+                DefKind::Impl { .. } => {
+                    if let Some(adt) = self.tcx.type_of(did).skip_binder().ty_adt_def()
+                        && adt.did().is_local()
+                    {
+                        let mut isig = SigVisitor::default();
+                        isig.collect_clauses(self.tcx.explicit_predicates_of(did).predicates);
+                        self.flush_signature_edges(adt.did(), isig);
+                    }
+                    continue;
                 }
                 _ => continue,
             }
@@ -1457,6 +1489,58 @@ fn in_trivial_field_reads_derive(tcx: TyCtxt<'_>, mut did: DefId) -> bool {
         match tcx.opt_parent(did) {
             Some(parent) => did = parent,
             None => return false,
+        }
+    }
+}
+
+/// [`IrFragment::impls`]: every local `impl` block whose self type is a
+/// local ADT, with its origin (`#[automatically_derived]` ⇒ derive), plus the
+/// impl `DefId` → table index map [`RefEdge::from_impl`] is resolved through.
+/// Definition order, so the table is stable across identical compilations.
+fn collect_impls(tcx: TyCtxt<'_>) -> (Vec<ImplFact>, HashMap<DefId, u32>) {
+    let mut impls = Vec::new();
+    let mut index = HashMap::new();
+    for local in tcx.hir_crate_items(()).definitions() {
+        let did = local.to_def_id();
+        if !matches!(tcx.def_kind(did), DefKind::Impl { .. }) {
+            continue;
+        }
+        let Some(adt) = tcx.type_of(did).skip_binder().ty_adt_def() else {
+            continue; // `impl Trait for &T`, tuples, primitives: no nominal def
+        };
+        if !adt.did().is_local() {
+            continue; // a foreign type's impl can't pin a local candidate
+        }
+        index.insert(did, impls.len() as u32);
+        impls.push(ImplFact {
+            self_key: def_key(tcx, adt.did()),
+            origin: if tcx.is_automatically_derived(did) {
+                ImplOrigin::Derived
+            } else {
+                ImplOrigin::Written
+            },
+        });
+    }
+    (impls, index)
+}
+
+/// The OUTERMOST `impl` block enclosing `did` (or `did` itself), climbing
+/// parents up to the module — see [`RefEdge::from_impl`] for why outermost:
+/// a derive's helper types nest their own impls inside the type's impl.
+fn outermost_impl(tcx: TyCtxt<'_>, mut did: DefId) -> Option<DefId> {
+    if !did.is_local() {
+        return None;
+    }
+    let mut found = None;
+    loop {
+        match tcx.def_kind(did) {
+            DefKind::Mod => return found,
+            DefKind::Impl { .. } => found = Some(did),
+            _ => {}
+        }
+        match tcx.opt_parent(did) {
+            Some(parent) => did = parent,
+            None => return found,
         }
     }
 }

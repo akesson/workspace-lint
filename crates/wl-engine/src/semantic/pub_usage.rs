@@ -92,9 +92,10 @@ pub struct PubCandidate {
     /// flavor of this used to land here too; it is now the [`PubUsage::TestOnly`]
     /// verdict, judged by unit provenance rather than home-config inference.)
     pub intra_off_home: bool,
-    /// A trait with a member no primary-config edge reaches: narrowing
-    /// un-exempts the trait from rustc `dead_code`, which then flags the
-    /// never-called members — same `-D warnings` consequence, same gating.
+    /// A trait with a member — or a type with an inherent assoc fn — no
+    /// primary-config edge reaches: narrowing un-exempts the members from
+    /// rustc `dead_code`, which then flags the never-called ones — same
+    /// `-D warnings` consequence, same gating.
     pub dead_members: bool,
     /// A type with a field no primary-config READ edge reaches: narrowing
     /// un-exempts its fields from rustc `dead_code`, which flags write-only
@@ -104,6 +105,15 @@ pub struct PubCandidate {
     /// currently suppresses (`avoid-breaking-exported-api`) — same
     /// `-D warnings` consequence, same gating. See [`NarrowUnmask`].
     pub narrow_unmask: Option<NarrowUnmask>,
+    /// The type has a hand-written `impl` block (any config). Deleting the
+    /// type would orphan it — the IR has no impl deletion surface — so the
+    /// unused-pub deletion paths must not propose removing the item alone.
+    pub has_written_impl: bool,
+    /// Re-exported through a glob/module re-export (`pub use m::*`):
+    /// narrowing or deleting every item behind it would leave the glob
+    /// re-exporting nothing (`unused_imports`), so the fix is shown, never
+    /// machine-applied.
+    pub glob_reexported: bool,
 }
 
 /// The per-config fold of one identity: OR-accumulated over every
@@ -131,6 +141,10 @@ struct Fold {
     dead_members: bool,
     /// See [`PubCandidate::dead_fields`] — home-config judgement.
     dead_fields: bool,
+    /// See [`PubCandidate::has_written_impl`].
+    has_written_impl: bool,
+    /// See [`PubCandidate::glob_reexported`].
+    glob_reexported: bool,
 }
 
 pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
@@ -223,6 +237,8 @@ fn compute_impl(
                 }
                 if matches!(def.kind.as_str(), "struct" | "enum" | "union") {
                     fold.dead_fields |= assembly.has_unread_field(key, view.in_degree);
+                    fold.dead_members |=
+                        assembly.has_unreached_inherent_member(key, view.in_degree);
                 }
             }
             fold.dispatch |= matches!(
@@ -232,6 +248,8 @@ fn compute_impl(
             fold.signature_exposed |= view.signature_exposed.contains(key);
             fold.externally_reachable |= assembly.is_externally_reachable(key, def);
             fold.reexport_target |= assembly.is_import_target(key);
+            fold.has_written_impl |= assembly.has_written_impl(key);
+            fold.glob_reexported |= assembly.is_glob_reexported(key);
             display
                 .entry(def.path.clone())
                 .or_insert_with(|| (assembly, key.clone()));
@@ -290,6 +308,8 @@ fn compute_impl(
                 intra_off_home: fold.intra && !fold.intra_home && !fold.cross,
                 dead_members: fold.dead_members,
                 dead_fields: fold.dead_fields,
+                has_written_impl: fold.has_written_impl,
+                glob_reexported: fold.glob_reexported,
                 id,
             }
         })

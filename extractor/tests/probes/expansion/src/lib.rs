@@ -216,3 +216,8 @@ passthrough::passthrough! {
         11
     }
 }
+
+// Own-impl references (check 26, schema 14): every `impl` shape whose self
+// type is the edge target flags `RefEdge::own_impl`; another type's impl
+// naming it does not.
+pub mod own_impl;

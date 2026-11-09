@@ -10,14 +10,18 @@ and the extraction tier; `--fast-only` skips it.
 ## What it checks
 
 Every `pub` item is checked for a reference from elsewhere in the workspace.
-Items re-exported via `pub use` are always skipped (narrowing them would
-break the re-export). So are types that appear in the *public signature* of
-a more-visible item (a `pub fn` return type, a `pub` field, a trait-impl
-associated type, …) — tightening those would not compile
-(E0446 / `private_interfaces`). That exemption also covers a type a builder
-macro promotes into its generated public `build()` signature, recognized
-from the attribute: `typed_builder`'s `#[builder(build_method(into = T))]`
-and `derive_builder`'s `#[builder(build_fn(error = "T"))]`.
+Items re-exported by name (`pub use m::Item`) are always skipped (narrowing
+them would break the re-export); a glob (`pub use m::*`) is not a guard — it
+silently skips items that are no longer visible enough. Types that appear in
+the *public signature* of a more-visible item (a `pub fn` return type, a
+`pub` field, a trait-impl associated type, …) are skipped too — tightening
+those would not compile (E0446 / `private_interfaces`). The engine sees
+macro expansions, so this also covers a type a macro promotes into a
+generated public signature (a builder derive's `build()` returning
+`Result<_, YourError>`). A type's own
+`impl` blocks are part of the type, not users of it: `impl Foo { pub fn
+m(&self) }`, `impl Display for Foo`, and `#[derive(..)]` neither keep `Foo`
+alive nor exempt it.
 
 **Publish-aware.** The lint can't see consumers outside your workspace, so
 it treats a crate's public API as off-limits **only when the crate declares
@@ -167,6 +171,13 @@ under a surviving `len`. Reads and constructions inside derived
 `Clone`/`Debug` impls don't count toward liveness, exactly as rustc's
 `dead_code` discounts them — a field whose only surviving reader is its
 `#[derive(Debug)]` is judged unread.
+
+A type with a **hand-written `impl` block** is never auto-deleted: the
+impl would be orphaned (only the type's derives go with it, being its
+attributes). The finding stays, shown-not-applied, and the note says to
+delete the type together with its impls by hand. Narrowing a type with an
+inherent method nothing calls is likewise shown-not-applied —
+`pub(crate)` un-exports the method and `dead_code` would flag it.
 
 **Re-run to converge.** Deletions cascade within one run, but a *narrowing*'s
 consequences can't: once `pub fn make(opts: CreateOpts)` becomes
