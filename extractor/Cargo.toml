@@ -1,7 +1,8 @@
 # The Phase-1 IR extractor: a Dylint `LateLintPass` compiled as a cdylib and
 # loaded into a nightly rustc driver per crate compilation. Lives OUTSIDE the
-# main (stable) workspace — its `rust-toolchain.toml` pins the nightly that
-# dylint 6.0.1 tracks, and `.cargo/config.toml` links via `dylint-link`.
+# main (stable) workspace — its `rust-toolchain.toml` pins the nightly the
+# extractor is built with (verified against dylint 6.3.2), and
+# `.cargo/config.toml` links via `dylint-link`.
 # The `workspace-lint` binary vendors this whole package and hands it to the
 # embedded dylint orchestrator at user sites (migration decision: vendored
 # source, not a registry package — lockstep with `wl-ir` is structural).
@@ -20,7 +21,7 @@ crate-type = ["cdylib"]
 # NOTE: no clippy_utils — extract() uses raw rustc_middle/rustc_hir, so we skip
 # the clippy_utils<->nightly alignment entirely (SPIKE §12.4). We only need the
 # dylint macro/registration glue.
-dylint_linting = "6.0.1"
+dylint_linting = "6.3.2"
 wl-ir = { path = "../crates/wl-ir" }
 # Write side of the IR transport: serialize each fragment to an rkyv archive
 # (wl_ir::write_bytes). Must build on the pinned nightly (rustc_private cdylib).
@@ -31,7 +32,7 @@ rkyv = "0.8"
 # this dylib over `tests/probes/*` via `dylint::run` and asserts the emitted
 # fragments. `library_packages` pulls in the cargo-cli plumbing `run()` needs
 # to build the driver and invoke `cargo check`.
-dylint = { version = "6.0.1", features = ["library_packages"] }
+dylint = { version = "6.3.2", features = ["library_packages"] }
 anyhow = "1"
 tempfile = "3"
 
