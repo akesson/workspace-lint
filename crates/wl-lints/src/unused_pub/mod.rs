@@ -37,11 +37,13 @@ pub(super) const DEFAULT_PUBLISH_HINT_THRESHOLD: usize = 3;
 
 pub mod cascade;
 pub mod config;
+mod impl_fix;
 mod ir;
 mod scope;
 mod test_only;
 #[cfg(test)]
 mod tests;
+mod veto;
 
 pub use config::{KindFilter, UnusedPubConfig};
 

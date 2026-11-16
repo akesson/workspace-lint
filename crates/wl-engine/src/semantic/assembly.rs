@@ -91,12 +91,6 @@ pub struct Assembly {
     /// enclosing module). The re-export leg of external reachability: a def
     /// `pub use`d in an externally-reachable module is nameable through it.
     reexporters: BTreeMap<String, Vec<String>>,
-    /// Type keys that have at least one **hand-written** `impl` block
-    /// ([`wl_ir::ImplOrigin::Written`] in a fragment's `impls` table).
-    /// Deleting such a type would orphan the impl (the IR models no impl
-    /// deletion surface), so the unused-pub deletion paths veto it.
-    /// Removal-invariant: impl blocks are never deletion candidates.
-    pub(super) written_impls: BTreeSet<String>,
     /// Keys re-exported through a glob or module re-export (`pub use m::*`,
     /// `pub use m;`) — the children the expansion in [`Assembly::build`]
     /// adds to `reexporters`. Not a must-stay-`pub` guard, but narrowing or
@@ -274,7 +268,6 @@ impl Assembly {
             trait_parent,
             import_targets: BTreeSet::new(),
             reexporters: BTreeMap::new(),
-            written_impls: BTreeSet::new(),
             glob_reexported: BTreeSet::new(),
             module_vis,
             path_key,
@@ -350,7 +343,6 @@ impl Assembly {
         asm.import_edges = fold.import_edges;
         asm.import_targets = fold.import_targets;
         asm.reexporters = fold.reexporters;
-        asm.written_impls = super::impls::written_impls(&asm);
         asm
     }
 
@@ -623,9 +615,11 @@ impl Assembly {
     /// deleted: its **outgoing** edges vanish, so a callee it solely reached
     /// drops to zero in-degree. Everything else the verdict reads
     /// (`module_vis`, `reexporters`, `import_targets`, `impls_of`, `defs`) is
-    /// invariant under item deletion — a deletion candidate is, by
-    /// construction, never a module, a `pub use` target, or referenced by a
-    /// surviving item — so those are reused unchanged. The one-pass cascade
+    /// reused unchanged. Deletion can make those stale only for the removed
+    /// items themselves: a deletion candidate is never a module or referenced
+    /// by a surviving item, and an unused `pub use` target's re-export is
+    /// excised with it — and import edges never count as reach — so no
+    /// surviving item's verdict reads a stale entry. The one-pass cascade
     /// substrate; see [`super::SemanticModel::pub_candidates_excluding`].
     ///
     /// Shares [`Assembly::fold_edges`] with the build pass (so the cross-config

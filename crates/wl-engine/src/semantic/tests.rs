@@ -4,7 +4,9 @@
 //! synthetic filtering, cfg-union retirement, boundary classification, facade
 //! closures) precisely enough that a regression names the broken rule.
 
-use wl_ir::{IrFragment, ItemFact, RefEdge, SCHEMA_VERSION, Span, Visibility};
+use wl_ir::{
+    ImplFact, ImplOrigin, IrFragment, ItemFact, RefEdge, SCHEMA_VERSION, Span, Visibility,
+};
 
 use super::meta::test_support::fixture_meta;
 use super::*;
@@ -70,6 +72,18 @@ fn edge_ext(from: &[&str], to: &[&str], to_key: &str, import: bool, external: bo
         decl_span: None,
         elem_span: None,
         from_impl: None,
+    }
+}
+
+/// An impl-table entry with no block span or items — the pre-15 shape the
+/// own-impl-edge tests need; the impl-block deletion tests build full ones.
+fn impl_fact(self_key: &str, origin: ImplOrigin) -> ImplFact {
+    ImplFact {
+        self_key: self_key.into(),
+        origin,
+        of_trait: false,
+        full_span: None,
+        items: Vec::new(),
     }
 }
 
@@ -743,7 +757,6 @@ fn signature_exposure_requires_pub_from() {
 /// with the item.
 #[test]
 fn own_impl_edges_neither_use_nor_expose_the_self_type() {
-    use wl_ir::{ImplFact, ImplOrigin};
     let dead = item(&["alpha", "Dead"], "K_DEAD", "struct", Some("mod"));
     let mut method = item(&["alpha", "Dead", "m"], "K_M", "fn", Some("impl"));
     method.self_type = Some("K_DEAD".into());
@@ -773,14 +786,8 @@ fn own_impl_edges_neither_use_nor_expose_the_self_type() {
         vec![receiver, derive, real],
     );
     f.impls = vec![
-        ImplFact {
-            self_key: "K_DEAD".into(),
-            origin: ImplOrigin::Written,
-        },
-        ImplFact {
-            self_key: "K_DER".into(),
-            origin: ImplOrigin::Derived,
-        },
+        impl_fact("K_DEAD", ImplOrigin::Written),
+        impl_fact("K_DER", ImplOrigin::Derived),
     ];
     let m = model(vec![("default", vec![f])]);
     let asm = m.primary();
@@ -794,15 +801,6 @@ fn own_impl_edges_neither_use_nor_expose_the_self_type() {
     assert_eq!(usage["alpha::Derived"], PubUsage::Unused);
     assert_eq!(usage["alpha::Used"], PubUsage::IntraCrate);
     let cand = |id: &str| cands.iter().find(|c| c.id == id).unwrap();
-    assert!(
-        cand("alpha::Dead").has_written_impl,
-        "a hand-written impl vetoes deletion"
-    );
-    assert!(
-        !cand("alpha::Derived").has_written_impl,
-        "derives go with the item"
-    );
-    assert!(!cand("alpha::Used").has_written_impl);
     // The unreached inherent `m` gates narrowing the type (dead_code would
     // flag it once `Dead` is no longer exported).
     assert!(cand("alpha::Dead").dead_members);
@@ -816,7 +814,6 @@ fn own_impl_edges_neither_use_nor_expose_the_self_type() {
 /// helper would stay "used" by a derive that no longer exists.
 #[test]
 fn removing_a_type_removes_its_derive_impl_edges() {
-    use wl_ir::{ImplFact, ImplOrigin};
     let derived = item(&["alpha", "Derived"], "K_DER", "struct", Some("mod"));
     let helper = item(&["alpha", "helper"], "K_HELP", "fn", Some("mod"));
     let mut from_derive = edge(
@@ -827,10 +824,7 @@ fn removing_a_type_removes_its_derive_impl_edges() {
     );
     from_derive.from_impl = Some(0);
     let mut f = frag("alpha", vec![derived, helper], vec![from_derive]);
-    f.impls = vec![ImplFact {
-        self_key: "K_DER".into(),
-        origin: ImplOrigin::Derived,
-    }];
+    f.impls = vec![impl_fact("K_DER", ImplOrigin::Derived)];
     let m = model(vec![("default", vec![f])]);
     assert_eq!(
         usage_map(&m.pub_candidates())["alpha::helper"],
@@ -1568,6 +1562,82 @@ fn intra_use_only_in_test_cfg_variant_is_test_only() {
     assert_eq!(usage("alpha::prod_used"), PubUsage::IntraCrate);
 }
 
+/// An inherent impl block of a written type, with its delete surface.
+fn written_impl(self_key: &str, of_trait: bool, lo: u32, hi: u32, items: &[&str]) -> ImplFact {
+    ImplFact {
+        of_trait,
+        full_span: Some(Span {
+            file: "src/lib.rs".into(),
+            lo,
+            hi,
+            line: 1,
+            from_expansion: false,
+        }),
+        items: items.iter().map(|s| s.to_string()).collect(),
+        ..impl_fact(self_key, ImplOrigin::Written)
+    }
+}
+
+/// Impl blocks as deletion units (schema 15). `Dead` has an inherent impl
+/// whose item nothing else reaches → may go with it; `Pinned`'s impl item is
+/// still called by a survivor → kept, naming the item; `Shown` has a trait
+/// impl → kept. `Live`'s block is emptied by deleting its only method.
+#[test]
+fn impl_blocks_go_with_their_type_or_when_emptied() {
+    let mut f = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "Dead"], "K_D", "struct", Some("mod")),
+            item(&["alpha", "Dead", "m"], "K_DM", "fn", Some("impl")),
+            item(&["alpha", "Pinned"], "K_P", "struct", Some("mod")),
+            item(&["alpha", "Pinned", "k"], "K_PK", "fn", Some("impl")),
+            item(&["alpha", "Shown"], "K_S", "struct", Some("mod")),
+            item(&["alpha", "Live"], "K_L", "struct", Some("mod")),
+            item(&["alpha", "Live", "gone"], "K_LG", "fn", Some("impl")),
+            item(&["alpha", "user"], "K_U", "fn", Some("mod")),
+        ],
+        vec![edge(
+            &["alpha", "user"],
+            &["alpha", "Pinned", "k"],
+            "K_PK",
+            false,
+        )],
+    );
+    f.impls = vec![
+        written_impl("K_D", false, 10, 20, &["K_DM"]),
+        written_impl("K_P", false, 30, 40, &["K_PK"]),
+        written_impl("K_S", true, 50, 60, &[]),
+        written_impl("K_L", false, 70, 80, &["K_LG"]),
+    ];
+    let m = model(vec![("default", vec![f])]);
+
+    let types = ["alpha::Dead", "alpha::Pinned", "alpha::Shown"].map(String::from);
+    let trial = RemovalSet::new(types.iter());
+    let keep = m.impls_keeping(&m.trial_overlay(&trial), &types);
+    assert!(
+        !keep.contains_key("alpha::Dead"),
+        "unreached impl goes with it"
+    );
+    assert_eq!(
+        keep.get("alpha::Pinned"),
+        Some(&ImplKeep::ItemReached {
+            item: "alpha::Pinned::k".into()
+        })
+    );
+    assert_eq!(keep.get("alpha::Shown"), Some(&ImplKeep::TraitImpl));
+
+    let removed = RemovalSet::new(["alpha::Dead", "alpha::Live::gone"]);
+    let blocks = m.impl_block_deletions(&removed);
+    let summary: Vec<(&str, bool, u32)> = blocks
+        .iter()
+        .map(|b| (b.self_type.as_str(), b.with_type, b.span.lo))
+        .collect();
+    assert_eq!(
+        summary,
+        [("alpha::Dead", true, 10), ("alpha::Live", false, 70)]
+    );
+}
+
 /// `PubCandidate::test_users` answers *which* test code reaches an item —
 /// the split the unused-pub test-only advice turns on: only the defining
 /// crate's own unit tests compile it with `cfg(test)`, so only they survive a
@@ -1581,7 +1651,7 @@ fn intra_use_only_in_test_cfg_variant_is_test_only() {
 /// compiled for production at all.
 #[test]
 fn test_users_split_own_unit_tests_from_other_test_code() {
-    use wl_ir::{ImplFact, ImplOrigin};
+    use wl_ir::ImplOrigin;
     let alpha_plain = frag(
         "alpha",
         vec![
@@ -1616,10 +1686,7 @@ fn test_users_split_own_unit_tests_from_other_test_code() {
             own_impl_edge,
         ],
     );
-    alpha_tests.impls = vec![ImplFact {
-        self_key: "K_F2".into(),
-        origin: ImplOrigin::Written,
-    }];
+    alpha_tests.impls = vec![impl_fact("K_F2", ImplOrigin::Written)];
     let beta_tests = frag_test_cfg(
         "beta",
         vec![],
@@ -3170,7 +3237,10 @@ fn deletion_unmask_flags_last_field_reader() {
     let newly = vec!["alpha::reader".to_string()];
 
     let m = model(vec![("default", vec![mk(true)])]);
-    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::reader"]), &newly);
+    let unmasks = m.deletion_unmasks(
+        &m.trial_overlay(&RemovalSet::new(["alpha::reader"])),
+        &newly,
+    );
     assert!(
         matches!(
             unmasks.get("alpha::reader"),
@@ -3184,16 +3254,22 @@ fn deletion_unmask_flags_last_field_reader() {
     let both = vec!["alpha::reader".to_string(), "alpha::Panel".to_string()];
     let m = model(vec![("default", vec![mk(true)])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::reader", "alpha::Panel"]), &both)
-            .is_empty(),
+        m.deletion_unmasks(
+            &m.trial_overlay(&RemovalSet::new(["alpha::reader", "alpha::Panel"])),
+            &both
+        )
+        .is_empty(),
         "co-deleting the owner clears the veto"
     );
 
     // Pre-existing write-only field: no read edge to kill, nothing to attribute.
     let m = model(vec![("default", vec![mk(false)])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::reader"]), &newly)
-            .is_empty(),
+        m.deletion_unmasks(
+            &m.trial_overlay(&RemovalSet::new(["alpha::reader"])),
+            &newly
+        )
+        .is_empty(),
         "a field that was never read is not this deletion's doing"
     );
 }
@@ -3240,7 +3316,7 @@ fn deletion_unmask_flags_last_variant_constructor() {
     let newly = vec!["alpha::maker".to_string()];
 
     let m = model(vec![("default", vec![mk(false, &["maker"])])]);
-    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly);
+    let unmasks = m.deletion_unmasks(&m.trial_overlay(&RemovalSet::new(["alpha::maker"])), &newly);
     assert!(
         matches!(
             unmasks.get("alpha::maker"),
@@ -3254,15 +3330,18 @@ fn deletion_unmask_flags_last_variant_constructor() {
     let both = vec!["alpha::maker".to_string(), "alpha::State".to_string()];
     let m = model(vec![("default", vec![mk(false, &["maker"])])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::maker", "alpha::State"]), &both)
-            .is_empty(),
+        m.deletion_unmasks(
+            &m.trial_overlay(&RemovalSet::new(["alpha::maker", "alpha::State"])),
+            &both
+        )
+        .is_empty(),
         "co-deleting the enum clears the veto"
     );
 
     // A surviving second construction site: the variant stays constructed.
     let m = model(vec![("default", vec![mk(false, &["maker", "backup"])])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+        m.deletion_unmasks(&m.trial_overlay(&RemovalSet::new(["alpha::maker"])), &newly)
             .is_empty(),
         "a surviving constructor lifts the veto"
     );
@@ -3270,7 +3349,7 @@ fn deletion_unmask_flags_last_variant_constructor() {
     // Never constructed at all (pattern-only): not this deletion's doing.
     let m = model(vec![("default", vec![mk(false, &[])])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+        m.deletion_unmasks(&m.trial_overlay(&RemovalSet::new(["alpha::maker"])), &newly)
             .is_empty(),
         "a variant that was never constructed is not this deletion's doing"
     );
@@ -3278,7 +3357,7 @@ fn deletion_unmask_flags_last_variant_constructor() {
     // Exported exemption: a pub variant of a pub enum is dead_code-exempt.
     let m = model(vec![("default", vec![mk(true, &["maker"])])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+        m.deletion_unmasks(&m.trial_overlay(&RemovalSet::new(["alpha::maker"])), &newly)
             .is_empty(),
         "pub variant of a pub enum is exempt"
     );
@@ -3308,7 +3387,10 @@ fn deletion_unmask_flags_is_empty_leaving_len() {
     };
     let one = vec!["alpha::List::is_empty".to_string()];
     let m = model(vec![("default", vec![mk()])]);
-    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::List::is_empty"]), &one);
+    let unmasks = m.deletion_unmasks(
+        &m.trial_overlay(&RemovalSet::new(["alpha::List::is_empty"])),
+        &one,
+    );
     assert!(
         matches!(
             unmasks.get("alpha::List::is_empty"),
@@ -3324,7 +3406,10 @@ fn deletion_unmask_flags_is_empty_leaving_len() {
     let m = model(vec![("default", vec![mk()])]);
     assert!(
         m.deletion_unmasks(
-            &RemovalSet::new(["alpha::List::is_empty", "alpha::List::len"]),
+            &m.trial_overlay(&RemovalSet::new([
+                "alpha::List::is_empty",
+                "alpha::List::len"
+            ])),
             &both
         )
         .is_empty(),

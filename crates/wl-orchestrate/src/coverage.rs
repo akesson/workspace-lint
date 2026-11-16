@@ -51,6 +51,10 @@ pub struct ShadowRegion {
     /// `target_arch = "wasm32"` — [`ShadowKind::Cfg`] only (empty for
     /// [`ShadowKind::Bench`], where the whole FILE is the region).
     pub predicate: String,
+    /// On-disk byte range of the region in `file` (the whole file for
+    /// [`ShadowKind::Bench`]) — the same coordinates as the IR's spans.
+    pub lo: usize,
+    pub hi: usize,
     text: String,
 }
 
@@ -115,6 +119,8 @@ impl CfgShadow {
                     krate: member.name.replace('-', "_"),
                     file,
                     predicate: render(&region.predicate),
+                    lo: region.lo,
+                    hi: region.hi,
                     text: slice,
                 });
             }
@@ -141,12 +147,15 @@ impl CfgShadow {
                         .map(|c| c.as_os_str().to_string_lossy())
                         .collect::<Vec<_>>()
                         .join("/");
+                    let text = std::fs::read_to_string(path).unwrap_or_default();
                     regions.push(ShadowRegion {
                         kind: ShadowKind::Bench,
                         krate: member.name.replace('-', "_"),
                         file,
                         predicate: String::new(),
-                        text: std::fs::read_to_string(path).unwrap_or_default(),
+                        lo: 0,
+                        hi: text.len(),
+                        text,
                     });
                 }
             }
@@ -180,6 +189,17 @@ impl CfgShadow {
             Some(p) => self.mention(krate, &[p, name]),
             None => self.mention(krate, &[name]),
         }
+    }
+
+    /// A shadowed region inside `file`'s on-disk byte range `lo..hi`
+    /// (`file` workspace-relative, as IR spans record it): code no declared
+    /// config compiles, which the IR therefore never saw — so deleting the
+    /// range would delete it unjudged.
+    pub fn region_within(&self, file: &str, lo: usize, hi: usize) -> Option<&ShadowRegion> {
+        let file = file.replace('\\', "/");
+        self.regions
+            .iter()
+            .find(|r| r.file == file && r.lo < hi && lo < r.hi)
     }
 
     pub(crate) fn mention(
@@ -559,6 +579,8 @@ mod tests {
         .into();
         let shadow = CfgShadow {
             regions: vec![ShadowRegion {
+                lo: 0,
+                hi: 0,
                 kind: ShadowKind::Cfg,
                 krate: "app".into(),
                 file: "src/lib.rs".to_string(),

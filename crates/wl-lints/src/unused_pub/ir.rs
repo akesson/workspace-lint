@@ -308,8 +308,11 @@ fn candidate_skipped_by_filters(cand: &PubCandidate, ctx: &CheckCtx<'_>) -> bool
         return true;
     }
     // A re-export target is part of the crate's API regardless of publish
-    // status — narrowing it would break the `pub use` (E0364 / E0365).
-    if cand.reexport_target {
+    // status — narrowing it would break the `pub use` (E0364 / E0365). But
+    // a use through the re-export resolves to the item itself, so an
+    // `Unused` target is unused under every path: report it, and deletion
+    // takes the now-dangling `pub use` with it (import surgery).
+    if cand.reexport_target && cand.usage != PubUsage::Unused {
         return true;
     }
     // Named in the *public signature* of a more-visible item: tightening
@@ -480,9 +483,10 @@ fn delete_veto(
     if !auto_delete || verdict == PubVerdict::IntraCrate {
         return None;
     }
-    if cand.has_written_impl {
-        Some(WRITTEN_IMPL_NOTE)
-    } else if cand.glob_reexported {
+    // A hand-written impl is NOT vetoed here: the cascade decides on the
+    // trial removal set whether the impls can go with the type
+    // (`SemanticModel::impls_keeping`) and attaches their deletion.
+    if cand.glob_reexported {
         Some(GLOB_REEXPORT_NOTE)
     } else {
         None
@@ -536,11 +540,6 @@ fn intra_crate_narrow_note(cand: &PubCandidate) -> Option<String> {
     Some(note.to_owned())
 }
 
-/// Why a type with a hand-written `impl` keeps its deletion withheld under
-/// `--fix-auto-delete` (see `apply_structural_fix`).
-const WRITTEN_IMPL_NOTE: &str = "not auto-deleted: this type has a hand-written `impl` block \
-     that deleting the type alone would orphan — delete the type together with its impls by hand";
-
 /// Why a glob-re-exported item's deletion is withheld under
 /// `--fix-auto-delete` (see `apply_structural_fix`).
 const GLOB_REEXPORT_NOTE: &str = "not auto-deleted: this item is re-exported through a \
@@ -567,6 +566,11 @@ fn build_tighten_suggestion(
     let vis = cand.vis_span.as_ref()?;
     if vis.from_expansion {
         return None; // the token lives in a macro definition — not editable
+    }
+    // Narrowing a `pub use` target breaks the re-export (E0364); the only
+    // fix for an unused one is deleting it together with the `pub use`.
+    if cand.reexport_target {
+        return None;
     }
     let applicability = match verdict {
         // Reached only off the home config's cfg universe, a trait with

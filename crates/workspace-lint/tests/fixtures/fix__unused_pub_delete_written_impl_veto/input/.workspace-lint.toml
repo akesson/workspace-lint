@@ -1,6 +1,8 @@
 # The written-impl deletion veto: a type's own `impl` blocks no longer keep
-# it alive, so a dead type with a hand-written impl is now judged unused —
-# but deleting the type alone would orphan the impl (E0412). Vetoed (shown,
+# it alive, so a dead type with a hand-written TRAIT impl is judged unused —
+# but trait impls aren't deleted with the type, and deleting the type alone
+# would orphan the impl (E0412). (Inherent impls do go with it — see
+# fix__unused_pub_delete_impl_blocks.) Vetoed (shown,
 # not applied). A dead type with only derives IS deleted: the derives are its
 # attributes and go with it. `dead_helper` is deleted alongside.
 [unused-pub]

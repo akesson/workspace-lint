@@ -183,15 +183,24 @@ fn crlf_standalone_deletes_both_newline_bytes() {
 }
 
 #[test]
-fn macro_generated_and_reexport_imports_are_skipped() {
+fn macro_generated_imports_are_skipped() {
     let src = "use a::{b, c};\n";
     let mut mac = dangling(src, "b", "b");
     mac.decl.from_expansion = true;
-    let mut rex = dangling(src, "c", "c");
-    rex.reexport = true;
-    // Neither is excisable → no deletions emitted, source untouched.
-    let out = apply(src, vec![mac, rex]);
+    // Not excisable → no deletion emitted, source untouched.
+    let out = apply(src, vec![mac]);
     assert_eq!(out, src);
+}
+
+/// A dangling `pub use` (its target deleted) is excised like any import —
+/// leaving it is E0432.
+#[test]
+fn dangling_reexport_is_excised() {
+    let src = "pub use a::Gone;\nuse a::c;\n";
+    let mut rex = dangling(src, "Gone;", "pub use a::Gone;");
+    rex.reexport = true;
+    let out = apply(src, vec![rex]);
+    assert_eq!(out, "use a::c;\n");
 }
 
 #[test]

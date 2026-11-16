@@ -1,0 +1,16 @@
+# Hand-written inherent `impl` blocks are deletion units (schema 15):
+# - a dead type goes TOGETHER with its inherent impls (`Empty` with its empty
+#   `impl Empty {}`, `Gadget` with an impl whose method only it reached);
+# - a surviving type's impl whose every item is deleted goes too, instead of
+#   an `impl Live {}` husk;
+# - a type whose impl item survivors still reach (`Port::DEFAULT`) stays;
+# - a dead type behind `pub use` is deleted, and the dangling re-export
+#   with it.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

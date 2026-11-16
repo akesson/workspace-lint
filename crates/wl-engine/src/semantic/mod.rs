@@ -16,6 +16,7 @@ mod collateral;
 mod def_info;
 mod deps;
 mod edge_fold;
+mod impl_blocks;
 mod impls;
 mod import_usage;
 mod imports;
@@ -33,10 +34,11 @@ pub use callgraph::{Callee, EnclosingFn, InboundRef};
 pub use clippy_guard::{DeletionUnmask, NarrowUnmask};
 pub use collateral::PrivateOrphan;
 pub use deps::{CrateDeps, DepsVerdict, NotJudged, NotJudgedDep, UnusedDep};
+pub use impl_blocks::{ImplBlockDeletion, ImplKeep};
 pub use imports::{DanglingImport, ExcisionBlock};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
 pub use pub_usage::{PubCandidate, PubUsage, TestUser};
-pub use removal::RemovalSet;
+pub use removal::{RemovalSet, TrialOverlay};
 pub use scaffolding::{BlockReason, ScaffoldVerdict, TestBlocker, TestScaffold, TestScaffolding};
 pub use union::{Lead, Retired, UnionVerdict};
 
@@ -95,6 +97,9 @@ pub struct SemanticModel {
     /// Every identity some production (non-test) unit defines, built on
     /// first query — see [`Self::defined_only_under_test`].
     prod_identities: OnceLock<std::collections::BTreeSet<String>>,
+    /// Every hand-written impl block, merged across cfg variants — read by
+    /// each cascade round (see `impl_blocks`).
+    written_blocks: OnceLock<Vec<impl_blocks::Block>>,
 }
 
 impl SemanticModel {
@@ -145,6 +150,7 @@ impl SemanticModel {
             meta,
             call_graph: OnceLock::new(),
             prod_identities: OnceLock::new(),
+            written_blocks: OnceLock::new(),
         })
     }
 
@@ -203,6 +209,11 @@ impl SemanticModel {
     /// config's member crates; ordering is deterministic (by identity).
     pub fn pub_candidates(&self) -> Vec<PubCandidate> {
         pub_usage::compute(&self.configs)
+    }
+
+    /// A [`TrialOverlay`] over `trial` for the cascade's deletion vetoes.
+    pub fn trial_overlay<'a>(&self, trial: &'a RemovalSet) -> TrialOverlay<'a> {
+        TrialOverlay::new(trial, self.configs.len())
     }
 
     /// [`pub_candidates`](Self::pub_candidates) recomputed as if every def in

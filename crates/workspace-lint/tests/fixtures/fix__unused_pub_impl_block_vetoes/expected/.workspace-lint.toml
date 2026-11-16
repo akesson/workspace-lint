@@ -1,0 +1,16 @@
+# When an impl block keeps its type (or itself) — each case once deleted
+# code the fix must not touch:
+# - `Shown::gone` is deleted but the block stays: its other item is
+#   `cfg(feature = "serde")`, which no config compiles (the IR never saw it);
+# - `Hidden` stays: its impl block holds only that uncompiled code;
+# - `Kept` stays: its impl block is in an `exclude-paths` file the fix must
+#   not edit (deleting the type alone orphans the block, E0412).
+[unused-pub]
+exclude-paths = ["**/excluded.rs"]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]
