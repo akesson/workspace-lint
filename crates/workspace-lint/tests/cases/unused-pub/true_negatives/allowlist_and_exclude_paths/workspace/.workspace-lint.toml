@@ -1,6 +1,6 @@
 [unused-pub]
 allowlist = ["*MyHelper"]
-exclude-paths = ["crates/alpha/src/generated/**"]  
+exclude-paths = ["crates/alpha/src/generated/**"]
 
 [lints]
 default = "allow"
