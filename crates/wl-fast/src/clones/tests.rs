@@ -117,6 +117,34 @@ fn path_segments_do_not_rename() {
 }
 
 #[test]
+fn fn_generic_params_rename_with_the_locals() {
+    // A fn's own generic parameter is declared in the candidate, so renaming
+    // it together with a local is α-equivalent — previously this pair had
+    // no match at any level (the body block saw `xs`/`ys` as free names, the
+    // fn candidate saw `T`/`U` as verbatim anchors).
+    let a = "fn fold<T: Copy>(xs: &[T], init: T) -> T {\n    let mut acc: T = init;\n    for x in xs { acc = combine(acc, *x); }\n    acc\n}";
+    let b = "fn fold<U: Copy>(ys: &[U], init: U) -> U {\n    let mut acc: U = init;\n    for y in ys { acc = combine(acc, *y); }\n    acc\n}";
+    let groups = clones_between(a, b, &opts());
+    assert_eq!(groups.len(), 1, "renamed generic + local must match");
+    assert_eq!(groups[0].instances[0].kind, super::CandidateKind::Fn);
+}
+
+#[test]
+fn generic_param_is_not_a_concrete_type() {
+    // Renaming `T` must not erase the generic/concrete distinction: a
+    // concrete type stays a verbatim anchor, a generic becomes `#n`.
+    let a = "fn wrap<T>(x: T) -> Wrapper<T> {\n    let w = Wrapper::new(x);\n    w.tag()\n}";
+    let b = "fn wrap(x: Item) -> Wrapper<Item> {\n    let w = Wrapper::new(x);\n    w.tag()\n}";
+    let groups = clones_between(a, b, &opts());
+    assert!(
+        groups
+            .iter()
+            .all(|g| g.instances[0].kind != super::CandidateKind::Fn),
+        "generic vs concrete signatures must not match at fn level"
+    );
+}
+
+#[test]
 fn literals_are_anchors_when_ignore_literals_is_off() {
     let a = "fn f(x: u32) -> u32 {\n    let y = x + 1;\n    y * 2\n}";
     let b = "fn f(z: u32) -> u32 {\n    let w = z + 5;\n    w * 2\n}";
@@ -797,7 +825,8 @@ fn fingerprint_stability_canary_syn_sensitive() {
     // (see `SYN_SENSITIVE_SRC`). The value was verified identical
     // under syn 2.0.118 and syn 3.0.10 — if a syn bump changes it, the
     // printer drifted and every baseline holding such code is invalidated.
+    // (Re-pinned once, deliberately, when fn generics became α-renamed.)
     let src = SYN_SENSITIVE_SRC;
     let groups = find_clones(&[file("a.rs", "k", src), file("b.rs", "k", src)], &opts());
-    assert_eq!(pair_fingerprint(&groups), 0xee5d_1491_abc0_0d9b);
+    assert_eq!(pair_fingerprint(&groups), 0x6c53_0c26_aa36_8dc6);
 }

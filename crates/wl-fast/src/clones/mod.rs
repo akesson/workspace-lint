@@ -54,8 +54,11 @@
 //!   same candidate is renamed everywhere.
 //! - struct-pattern shorthand (`Point { x }`) renames `x`, erasing the field
 //!   identity in the pattern position.
-//! - generic type parameters are not renamed (they are types, not `PatIdent`
-//!   bindings), so clones differing only in a type-param name don't match.
+//! - a fn's own type/const generic parameters are α-renamed in its fn
+//!   candidate (they are declared there), but block and statement-run
+//!   candidates inside it see them as free names, as do an enclosing
+//!   `impl<T>`'s parameters everywhere — a body that spells `T` differently
+//!   only matches at the whole-fn level.
 //! - macro invocations are normalized as raw token sequences with the same
 //!   rules; binding positions *inside* a macro's own grammar can't be known,
 //!   so names introduced there stay verbatim (the under-matching direction).
@@ -545,9 +548,17 @@ fn collect_binds(block: &syn::Block, binds: &mut HashSet<String>) {
     c.visit_block(block);
 }
 
-/// The binding names a signature introduces (typed param patterns).
+/// The binding names a signature introduces: typed param patterns plus the
+/// fn's own type and const generic parameters. A generic parameter is
+/// declared *inside* the fn candidate and scoped to it, so `fn f<T>(x: T)`
+/// and `fn f<U>(x: U)` are α-equivalent exactly like two renamed locals.
+/// Lifetimes stay verbatim (the encoder never renames after `'`), and an
+/// enclosing `impl<T>`'s parameters are not declared in the candidate, so
+/// they stay verbatim too — the under-matching direction.
 fn collect_binds_sig(sig: &syn::Signature) -> HashSet<String> {
     let mut binds = HashSet::new();
+    binds.extend(sig.generics.type_params().map(|p| p.ident.to_string()));
+    binds.extend(sig.generics.const_params().map(|p| p.ident.to_string()));
     let mut c = BindCollector { binds: &mut binds };
     c.visit_signature(sig);
     binds
