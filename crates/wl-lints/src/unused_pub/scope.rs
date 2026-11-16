@@ -7,7 +7,7 @@
 //! copies silently lacked the generated-file check).
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use globset::GlobSet;
 use wl_engine::coverage::{ShadowKind, ShadowRegion};
@@ -86,7 +86,8 @@ impl<'a> FindingScope<'a> {
 
     /// The per-item scope gate: kind filter (when armed), allowlist glob on
     /// the identity, target-dir prefix, generated-file set, and exclude-paths
-    /// glob on the absolute file.
+    /// glob on the workspace-relative file (the form every other path glob
+    /// in the config matches — `file-size`, `duplicate-code`, …).
     pub(crate) fn skips(&self, id: &str, kind: &str, span: Option<&wl_ir::Span>) -> bool {
         if let Some(kf) = &self.kind_filter
             && !kf.contains(kind)
@@ -113,12 +114,35 @@ impl<'a> FindingScope<'a> {
                 return true;
             }
             if let Some(ex) = &self.exclude_paths
-                && ex.is_match(abs.to_string_lossy().as_ref())
+                && ex.is_match(self.glob_path(&span.file))
             {
                 return true;
             }
         }
         false
+    }
+
+    /// The path `exclude-paths` globs match: the IR span file made
+    /// workspace-relative and lexically normalized. The IR keeps rustc's
+    /// `local_path` as-is — an `include!("../gen/x.rs")` stays
+    /// `crates/a/src/../gen/x.rs`, an absolute `#[path]` stays absolute —
+    /// so matching it raw would leave a pattern like `crates/a/gen/**` inert.
+    /// A file outside the workspace root stays absolute.
+    fn glob_path(&self, file: &str) -> PathBuf {
+        let mut path = PathBuf::new();
+        for c in self.root.join(file).components() {
+            match c {
+                Component::ParentDir => {
+                    path.pop();
+                }
+                Component::CurDir => {}
+                c => path.push(c),
+            }
+        }
+        match path.strip_prefix(self.root) {
+            Ok(rel) => rel.to_path_buf(),
+            Err(_) => path,
+        }
     }
 }
 
@@ -215,7 +239,12 @@ mod tests {
             krate_name: "my-crate",
             exclude_crates,
             allowlist: glob_set(&[GlobPattern::from_cli("allowed::**")]),
-            exclude_paths: glob_set(&[GlobPattern::from_cli("**/skipme/**")]),
+            exclude_paths: glob_set(&[
+                GlobPattern::from_cli("**/skipme/**"),
+                GlobPattern::from_cli("generated/**"),
+                GlobPattern::from_cli("crates/a/src/one.rs"),
+                GlobPattern::from_cli("crates/a/gen/**"),
+            ]),
             kind_filter,
         }
     }
@@ -242,8 +271,17 @@ mod tests {
         assert!(s.skips("c::item", "fn", Some(&span("target/out.rs"))));
         // Allowlisted identity.
         assert!(s.skips("allowed::thing", "fn", Some(&span("src/lib.rs"))));
-        // Excluded path glob (matched on the absolute file).
+        // Excluded path globs, matched workspace-relative: a `**/` pattern,
+        // the documented root-anchored `generated/**`, and an exact path.
         assert!(s.skips("c::item", "fn", Some(&span("src/skipme/x.rs"))));
+        assert!(s.skips("c::item", "fn", Some(&span("generated/api.rs"))));
+        assert!(s.skips("c::item", "fn", Some(&span("crates/a/src/one.rs"))));
+        assert!(!s.skips("c::item", "fn", Some(&span("crates/a/src/two.rs"))));
+        // Un-normalized and absolute IR spans normalize before matching: an
+        // `include!("../gen/x.rs")` keeps `src/../gen/x.rs` in the IR.
+        assert!(s.skips("c::item", "fn", Some(&span("crates/a/src/../gen/x.rs"))));
+        assert!(s.skips("c::item", "fn", Some(&span("/ws/crates/a/gen/x.rs"))));
+        assert!(s.skips("c::item", "fn", Some(&span("./crates/a/src/one.rs"))));
         // In scope.
         assert!(!s.skips("c::item", "fn", Some(&span("src/lib.rs"))));
     }

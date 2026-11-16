@@ -229,7 +229,7 @@ Two findings:
 exclude-crates = ["api"]
 allowlist = ["*Error", "main"]
 kinds = ["function", "struct"]
-exclude-paths = ["generated/**"]
+exclude-paths = ["**/generated/**"]   # workspace-relative globs
 suppress-intra-crate = false
 assume-all-public = false
 publish-hint-threshold = 3
