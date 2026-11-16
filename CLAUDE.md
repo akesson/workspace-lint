@@ -275,8 +275,8 @@ not the newest nightly). The pin must also satisfy every dependency's
 `rust-version`, since the dogfood extracts this repo under it; a dylint
 MSRV bump therefore forces a pin bump.
 
-1. Install the new pin with `rustc-dev` (+ `rust-src`/`rustfmt` locally) and
-   update every pin string: `git grep <old-pin>` (workflows incl. cache
+1. Install the new pin with the `components` listed in
+   `extractor/rust-toolchain.toml` and update every pin string: `git grep <old-pin>` (workflows incl. cache
    keys, `wl-orchestrate` and `workspace-lint` tests/snapshots — not the
    historical `SPIKE-…` doc).
 2. Port `extractor/src/lib.rs`. Cost scales with the jump: ~10 weeks needed
