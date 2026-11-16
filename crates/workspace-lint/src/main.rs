@@ -116,6 +116,9 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     // clean-tree check above. This keeps the default/editor run (e.g.
     // rust-analyzer's `check.overrideCommand`) side-effect-free. It runs
     // before lints so the structural pass measures post-expansion files.
+    // Probed before `--fix`'s first write (`expand` included): only a tree
+    // that was fmt-clean gets `cargo fmt` after the fix (see `tidy`).
+    let tidy = fix.then(tidy::Tidy::probe);
     if fix && let Some(ref ec) = config.expand {
         expand::run(ec);
     }
@@ -184,9 +187,9 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     });
     levels::apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
     levels::mark_marker_availability(fast.as_ref(), &mut diagnostics);
-    if fix && engine_error.is_none() {
+    if let Some(tidy) = tidy.filter(|_| engine_error.is_none()) {
         // `fix::run` also keeps a fmt-clean workspace fmt-clean (`tidy`).
-        let summary = fix::run(&diagnostics);
+        let summary = fix::run(&diagnostics, &tidy);
         // A fix run converges by re-running, not in one pass: a narrowing
         // lowers what its signature exposes (so types it pinned `pub` become
         // tightenable), and a deletion can flip verdicts the *next* compile
@@ -297,7 +300,7 @@ fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
     }
     levels::mark_marker_availability(fast.as_ref(), &mut diagnostics);
     if fix {
-        fix::run(&diagnostics);
+        fix::run(&diagnostics, &tidy::Tidy::probe());
     }
     report_and_exit(diagnostics, format);
 }
