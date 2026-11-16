@@ -1,0 +1,5 @@
+# The third unused item arrives already silenced. Injected after copy so the
+# repo's own dogfood scan never sees the directive.
+[[append]]
+path = "crates/alpha/src/lib.rs"
+text = "\n// workspace-lint: expect(unused-pub)\npub fn silenced() {}\n"

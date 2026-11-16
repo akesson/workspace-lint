@@ -119,6 +119,13 @@ pub struct LintContext<'a> {
     /// `MachineApplicable` only when this is set, withheld-with-reason
     /// otherwise.
     pub auto_delete: bool,
+    /// A **non-mutating** query: would an `expect!`/`allow!`/comment
+    /// directive silence this diagnostic? Suppression itself runs after
+    /// every lint, so a lint that *summarizes* its own findings (unused-pub's
+    /// per-crate rollup) consults this to count only the findings the user
+    /// will actually see. Never filter with it — the pipeline does that, and
+    /// it does `expect` fulfilment accounting this query deliberately skips.
+    pub suppressed: &'a dyn Fn(&Diagnostic) -> bool,
 }
 
 impl<'a> LintContext<'a> {

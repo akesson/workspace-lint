@@ -1,0 +1,14 @@
+# The crate-level publish hint counts only findings that survive directives:
+# three items are unused, one is silenced by an `expect` (injected via
+# setup.toml so this repo's own dogfood scan never sees it), so the rollup
+# must say 2 — it used to say 3 next to just two per-item findings.
+[unused-pub]
+publish-hint-threshold = 2
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+# Pinned single-config matrix: this case is not about the engine matrix.
+[engine]
+configs = ["cargo build"]

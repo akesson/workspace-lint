@@ -70,6 +70,6 @@ impl LintImpl for UnusedPub {
         let Some((fast, semantic)) = cx.semantic_models(Self::ID) else {
             return Vec::new();
         };
-        ir::check(&self.config, fast, semantic, cx.cfg_shadow)
+        ir::check(&self.config, fast, semantic, cx.cfg_shadow, cx.suppressed)
     }
 }

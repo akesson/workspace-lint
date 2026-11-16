@@ -15,6 +15,8 @@ use wl_engine::fast::FastModel;
 use wl_lint_api::{LintContext, LintId, util};
 
 use crate::cli::CheckRule;
+use crate::directives::{self, Directive};
+use crate::suppress::SuppressionMap;
 use crate::{config, provision, registry};
 
 /// One lint pass's outputs: the diagnostic stream plus the shared models the
@@ -32,6 +34,18 @@ pub(crate) struct RunOutput {
     /// not swallow findings that never needed the engine. `ran` excludes
     /// the semantic lints in that case, so their `expect`s can't go stale.
     pub(crate) engine_error: Option<EngineFailure>,
+    /// The workspace's suppression directives, scanned ONCE (with the fast
+    /// model's parse cache) before any lint ran — lints consult them through
+    /// the non-mutating [`LintContext::suppressed`] query, and the caller's
+    /// suppression pass and `--fix-auto-delete` cascade reuse the same list.
+    /// `None` when this run loaded no [`FastModel`]; the caller scans then.
+    pub(crate) directives: Option<Vec<Directive>>,
+}
+
+/// Scan the directives up front when the fast model is loaded (the scan
+/// reuses its parse cache) — see [`RunOutput::directives`].
+fn scan_directives(fast: Option<&FastModel>) -> Option<Vec<Directive>> {
+    fast.map(|fm| wl_engine::timing::phase("scan directives", || directives::scan_with_model(fm)))
 }
 
 /// An extraction/assembly failure carried out of [`run_all`] so the caller
@@ -71,6 +85,9 @@ pub(crate) fn run_all(config: &config::Config, fast_only: bool, auto_delete: boo
     // `needs_semantic ⇒ needs_fast` (every semantic lint declares both), so
     // `fast` is loaded whenever this check runs.
     let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
+    let directives = scan_directives(fast.as_ref());
+    let map = SuppressionMap::from_directives(directives.clone().unwrap_or_default());
+    let suppressed = |d: &Diagnostic| map.would_suppress(d);
     // Fast tier FIRST, semantic tier second: extraction is the step that can
     // fail (toolchain missing, a member that doesn't compile), and its
     // failure must not swallow the findings the build-free lints already
@@ -81,6 +98,7 @@ pub(crate) fn run_all(config: &config::Config, fast_only: bool, auto_delete: boo
         semantic: None,
         cfg_shadow: None,
         auto_delete,
+        suppressed: &suppressed,
     };
     let mut diagnostics: Vec<Diagnostic> = wl_engine::timing::phase("LINTS (fast)", || {
         registry
@@ -108,6 +126,7 @@ pub(crate) fn run_all(config: &config::Config, fast_only: bool, auto_delete: boo
                     cfg_shadow: None,
                     ran,
                     engine_error: Some(failure),
+                    directives,
                 };
             }
         }
@@ -132,6 +151,7 @@ pub(crate) fn run_all(config: &config::Config, fast_only: bool, auto_delete: boo
         semantic: semantic.as_ref(),
         cfg_shadow: shadow.as_ref(),
         auto_delete,
+        suppressed: &suppressed,
     };
     diagnostics.extend(wl_engine::timing::phase("LINTS (semantic)", || {
         registry
@@ -155,6 +175,7 @@ pub(crate) fn run_all(config: &config::Config, fast_only: bool, auto_delete: boo
         cfg_shadow: shadow,
         ran,
         engine_error: None,
+        directives,
     }
 }
 
@@ -179,6 +200,9 @@ pub(crate) fn run_single_check(
     // falls back to its default single-config matrix. A memberless workspace
     // skips the tier entirely (see run_all).
     let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
+    let directives = scan_directives(fast.as_ref());
+    let map = SuppressionMap::from_directives(directives.clone().unwrap_or_default());
+    let suppressed = |d: &Diagnostic| map.would_suppress(d);
     let semantic = (requirements.needs_semantic && has_members).then(|| {
         let engine = config.map(|c| c.engine.clone()).unwrap_or_default();
         load_semantic_model(engine.selectors()).unwrap_or_else(|f| {
@@ -201,6 +225,7 @@ pub(crate) fn run_single_check(
         semantic: semantic.as_ref(),
         cfg_shadow: shadow.as_ref(),
         auto_delete,
+        suppressed: &suppressed,
     };
     let ran = HashSet::from([lint.id()]);
     let diagnostics = lint.check(&cx);
@@ -213,6 +238,7 @@ pub(crate) fn run_single_check(
         cfg_shadow: shadow,
         ran,
         engine_error: None,
+        directives,
     }
 }
 
