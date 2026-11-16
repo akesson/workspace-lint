@@ -34,9 +34,6 @@ use wl_diagnostic::{Applicability, Diagnostic, Suggestion};
 pub(crate) struct FixSummary {
     /// Files actually rewritten.
     pub(crate) modified: usize,
-    /// Some applied suggestion was a deletion (empty replacement) — the
-    /// residue may be valid-but-unformatted, worth a `cargo fmt` hint.
-    pub(crate) deleted_any: bool,
 }
 
 /// Apply machine-applicable structural suggestions to disk. Everything in
@@ -47,7 +44,7 @@ pub(crate) struct FixSummary {
 /// `SilenceAnchor` at render time (`Diagnostic::silence_suggestion`), which is
 /// what keeps "`--fix` never writes a silence directive" structural rather
 /// than filtered.
-pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
+pub(crate) fn run(diagnostics: &[Diagnostic], tidy: &crate::tidy::Tidy) -> FixSummary {
     let mut structural_count = 0usize;
     let mut withheld_count = 0usize;
     let mut candidates: Vec<Suggestion> = Vec::new();
@@ -109,7 +106,6 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
         match apply_to_file(&path, &suggestions) {
             Ok(true) => {
                 summary.modified += 1;
-                summary.deleted_any |= suggestions.iter().any(Suggestion::is_deletion);
             }
             Ok(false) => {}
             Err(e) => {
@@ -127,6 +123,7 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
     } else {
         eprintln!("workspace-lint --fix: no files modified");
     }
+    tidy.after(summary.modified > 0);
     summary
 }
 
@@ -340,7 +337,7 @@ mod tests {
 
     #[test]
     fn fix_with_no_diagnostics_is_a_noop() {
-        let modified = run(&[]).modified;
+        let modified = run(&[], &crate::tidy::Tidy::unclean()).modified;
         assert_eq!(modified, 0);
     }
 
@@ -356,7 +353,7 @@ mod tests {
 
         let d = at_file("workspace-lint::file-size", "file too big", p.clone()).build();
 
-        let modified = run(&[d]).modified;
+        let modified = run(&[d], &crate::tidy::Tidy::unclean()).modified;
         assert_eq!(modified, 0);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
     }
@@ -443,7 +440,7 @@ mod tests {
             byte_end: 10,
         };
         let d = structural_diag(&p, span, "pub(crate)");
-        let modified = run(std::slice::from_ref(&d)).modified;
+        let modified = run(std::slice::from_ref(&d), &crate::tidy::Tidy::unclean()).modified;
         assert_eq!(modified, 0, "no-op fix should not touch the file");
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),

@@ -60,6 +60,10 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # `--fix` runs `cargo fmt` on a fmt-clean workspace — the fix
+          # fixtures' expected trees assume it is installed.
+          components: rustfmt
       # The full tier is live: `unused-deps` runs on the rustc engine, so the
       # dogfood test and the unused-deps case fixtures extract IR during the
       # suite. That needs the pinned nightly (+ rustc-dev), dylint-link, and —
@@ -138,7 +142,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: llvm-tools-preview
+          components: llvm-tools-preview, rustfmt
       # Coverage runs the full suite, and the suite runs the full tier (dogfood
       # + unused-deps cases extract IR) — same provisioning as the test matrix.
       - name: Install pinned nightly (+ rustc-dev) for the extraction engine

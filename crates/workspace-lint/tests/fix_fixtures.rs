@@ -28,7 +28,10 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn run_fix_fixture(name: &str) {
+/// Run one fixture; returns the `--fix` run's stderr for the fixtures that
+/// also pin a message.
+fn run_fix_fixture(name: &str) -> String {
+    require_rustfmt();
     let fixture = manifest_dir().join("tests/fixtures").join(name);
     let input = fixture.join("input");
     let expected = fixture.join("expected");
@@ -59,7 +62,8 @@ fn run_fix_fixture(name: &str) {
     // exit status, so the assertion is dropped here.
     let mut cmd = workspace_lint();
     cmd.current_dir(tmp.path()).arg("--fix").args(&setup_args);
-    let _ = cmd.assert();
+    let out = cmd.output().expect("run workspace-lint --fix");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
 
     if bless_enabled() {
         sync_tree(tmp.path(), &expected).expect("bless expected/");
@@ -67,6 +71,24 @@ fn run_fix_fixture(name: &str) {
     } else {
         assert_trees_equal(tmp.path(), &expected);
     }
+    stderr
+}
+
+/// `--fix` reformats a fmt-clean workspace with `cargo fmt`, so the expected
+/// trees hold rustfmt's output: without rustfmt every such fixture would fail
+/// as a confusing tree mismatch. Fail once, with the remedy, instead.
+fn require_rustfmt() {
+    static CHECKED: std::sync::Once = std::sync::Once::new();
+    CHECKED.call_once(|| {
+        let ok = std::process::Command::new("cargo")
+            .args(["fmt", "--version"])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(
+            ok,
+            "the --fix fixtures need rustfmt (`rustup component add rustfmt`)"
+        );
+    });
 }
 
 /// Wholesale replace `dst` with `src`'s comparison-relevant files — the same set
@@ -101,8 +123,14 @@ fn assert_trees_equal(actual: &Path, expected: &Path) {
     );
 
     for rel in actual_files {
+        // The fixture trees are LF-only (`.gitattributes`), and the fix never
+        // writes a CR. The one CRLF source is `cargo fmt`, which `--fix` runs on
+        // a fmt-clean tree: rustfmt's default `newline_style = "Auto"` falls
+        // back to the platform's native ending for a file with no line ending
+        // to copy — on Windows, a file the fix emptied comes back as "\r\n".
         let a = std::fs::read_to_string(actual.join(&rel))
-            .unwrap_or_else(|e| panic!("read actual {}: {e}", rel.display()));
+            .unwrap_or_else(|e| panic!("read actual {}: {e}", rel.display()))
+            .replace("\r\n", "\n");
         let e = std::fs::read_to_string(expected.join(&rel))
             .unwrap_or_else(|err| panic!("read expected {}: {err}", rel.display()));
         assert_eq!(
@@ -297,6 +325,19 @@ fn fix_unused_pub_impl_block_vetoes() {
     // is unit-tested in `cascade.rs` — a natural workspace rarely reaches an
     // impl item without naming its type.)
     run_fix_fixture("fix__unused_pub_impl_block_vetoes");
+}
+
+#[test]
+fn fix_unused_pub_fmt_unclean() {
+    // `--fix` reformats only a workspace that was fmt-clean before it: here
+    // the input is deliberately unformatted, so the tighten lands and the
+    // author's layout is left exactly as it was — with the by-hand hint.
+    let stderr = run_fix_fixture("fix__unused_pub_fmt_unclean");
+    assert!(
+        stderr.contains("note: run `cargo fmt` to tidy the fixed files")
+            && !stderr.contains("ran `cargo fmt`"),
+        "unclean tree: hint, no reformat — got:\n{stderr}"
+    );
 }
 
 #[test]

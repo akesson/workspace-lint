@@ -340,7 +340,10 @@ workspace-lint
 
 Runs all enabled checks. Any configured `[expand]` rules apply only under
 `--fix` (on a clean git tree), since they rewrite files — a plain run never
-mutates.
+mutates. When the workspace is `cargo fmt`-clean before a `--fix`, the run
+ends with `cargo fmt` so the rewrites (a `pub` → `pub(crate)` pushing a
+signature past `max_width`, deletion residue) keep it clean; a workspace that
+wasn't clean is never reformatted — you get a hint instead.
 
 #### Exit codes
 

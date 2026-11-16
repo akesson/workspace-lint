@@ -212,8 +212,9 @@ tail of tightenings and the third to be clean.
 lints. `--fix` replays the two observed-in-practice ones
 (`wrong_self_convention` and `len_without_is_empty`) and downgrades an
 unmasking tighten to shown-but-not-applied, with a note naming the method.
-On a `-D warnings` codebase, follow a delete run with `cargo clippy --fix`
-and `cargo fmt`.
+On a `-D warnings` codebase, follow a delete run with `cargo clippy --fix`.
+(`cargo fmt` runs automatically when the workspace was fmt-clean before the
+fix.)
 
 ## Silencing
 

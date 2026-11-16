@@ -19,6 +19,7 @@ mod registry;
 mod run;
 mod suggest;
 mod suppress;
+mod tidy;
 
 use clap::Parser;
 use std::collections::{HashMap, HashSet};
@@ -115,6 +116,9 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     // clean-tree check above. This keeps the default/editor run (e.g.
     // rust-analyzer's `check.overrideCommand`) side-effect-free. It runs
     // before lints so the structural pass measures post-expansion files.
+    // Probed before `--fix`'s first write (`expand` included): only a tree
+    // that was fmt-clean gets `cargo fmt` after the fix (see `tidy`).
+    let tidy = fix.then(tidy::Tidy::probe);
     if fix && let Some(ref ec) = config.expand {
         expand::run(ec);
     }
@@ -160,12 +164,11 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     // through directive filtering + stale-expect accounting normally;
     // its own removal decisions consult a non-mutating suppression query
     // so an `expect!`-silenced item — and its callees — stay intact.
-    let mut trimmed_imports = false;
     if cli.fix_auto_delete
         && ran.contains(&LintId::UnusedPub)
         && let (Some(fm), Some(sm)) = (fast.as_ref(), semantic.as_ref())
     {
-        trimmed_imports = run_unused_pub_cascade(
+        run_unused_pub_cascade(
             config.unused_pub.clone().unwrap_or_default(),
             config.unused_pub_overrides(),
             cfg_shadow.as_ref(),
@@ -184,14 +187,9 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     });
     levels::apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
     levels::mark_marker_availability(fast.as_ref(), &mut diagnostics);
-    if fix && engine_error.is_none() {
-        let summary = fix::run(&diagnostics);
-        // Any applied fix can leave fmt-relevant residue (a
-        // `pub`→`pub(crate)` rewrite alone can push a line past the
-        // width limit), deletions especially so.
-        if trimmed_imports || summary.deleted_any || summary.modified > 0 {
-            eprintln!("note: run `cargo fmt` to tidy the fixed files");
-        }
+    if let Some(tidy) = tidy.filter(|_| engine_error.is_none()) {
+        // `fix::run` also keeps a fmt-clean workspace fmt-clean (`tidy`).
+        let summary = fix::run(&diagnostics, &tidy);
         // A fix run converges by re-running, not in one pass: a narrowing
         // lowers what its signature exposes (so types it pinned `pub` become
         // tightenable), and a deletion can flip verdicts the *next* compile
@@ -302,7 +300,7 @@ fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
     }
     levels::mark_marker_availability(fast.as_ref(), &mut diagnostics);
     if fix {
-        fix::run(&diagnostics);
+        fix::run(&diagnostics, &tidy::Tidy::probe());
     }
     report_and_exit(diagnostics, format);
 }
@@ -430,9 +428,6 @@ fn apply_suppression(
 /// `expect!`/`allow!`-silenced deletion never seeds a removal (its callees
 /// stay live); [`apply_suppression`] does the real filtering later with the
 /// same map.
-/// Returns `true` when the cascade emitted import surgery — the caller prints a
-/// `cargo fmt` hint after applying, since trimming `use` leaves valid but
-/// unformatted residue (collapsed blank lines, single-element `{…}` groups).
 fn run_unused_pub_cascade(
     global: wl_lints::unused_pub::UnusedPubConfig,
     per_crate: HashMap<String, wl_lints::unused_pub::UnusedPubConfig>,
@@ -441,7 +436,7 @@ fn run_unused_pub_cascade(
     semantic: &wl_engine::SemanticModel,
     suppression: &suppress::SuppressionMap,
     diagnostics: &mut Vec<Diagnostic>,
-) -> bool {
+) {
     let suppressed = |d: &Diagnostic| suppression.would_suppress(d);
     // The cfg-shadow veto's index, computed by the runner alongside the
     // semantic tier and reused here. `None` only when the runner never built
@@ -468,11 +463,9 @@ fn run_unused_pub_cascade(
     // The cascade output is the authoritative unused-pub picture — swap it in
     // for the plain-check findings, then add the dangling-`use` deletions.
     let unused_pub_id = LintId::UnusedPub.id();
-    let did_surgery = !result.surgery.is_empty();
     diagnostics.retain(|d| d.lint != unused_pub_id);
     diagnostics.extend(result.diagnostics);
     diagnostics.extend(result.surgery);
-    did_surgery
 }
 
 /// The hidden `--engine-dump` debug output: a compact plain-line stats block

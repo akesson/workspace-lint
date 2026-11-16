@@ -1,6 +1,6 @@
 workspace-lint --fix: applying 2 structural fixes
 workspace-lint --fix: modified 1 file
-note: run `cargo fmt` to tidy the fixed files
+workspace-lint --fix: ran `cargo fmt` on the fixed workspace (it was fmt-clean before the fix)
 note: applied fixes can enable further tightenings — commit these changes, then re-run `--fix` until no fixes remain (the clean-tree guard keeps each pass reviewable as its own diff)
 error: crate `alpha` has 2 public items unused within the workspace
  --> crates/alpha/Cargo.toml:1:1
