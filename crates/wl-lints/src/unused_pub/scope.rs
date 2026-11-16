@@ -193,6 +193,21 @@ pub(crate) fn shadow_narrow_note(region: &ShadowRegion) -> String {
     )
 }
 
+/// The impl-block veto note: a dead type's `impl` block holds code no
+/// config compiles, so neither the block nor the type is deleted.
+pub(crate) fn shadow_block_note(region: &ShadowRegion) -> String {
+    let what = match region.kind {
+        ShadowKind::Cfg => format!("code under `cfg({})` ({})", region.predicate, region.file),
+        ShadowKind::Bench => format!("bench source `{}`", region.file),
+    };
+    format!(
+        "not auto-deleted: this type's `impl` block holds {what}, which no declared \
+         `[engine]` config compiles — deleting the block would delete that code unjudged. \
+         {}, or delete by hand",
+        capitalized(shadow_remedy(region)),
+    )
+}
+
 /// The deletion-veto shadow note: the cascade keeps the item.
 pub(crate) fn shadow_veto_note(region: &ShadowRegion) -> String {
     format!(

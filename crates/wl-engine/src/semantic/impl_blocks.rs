@@ -26,12 +26,12 @@
 //! item only the `+test` variant compiles still has to go before the block
 //! can.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use wl_ir::{ArchivedImplOrigin, Span};
 
 use super::SemanticModel;
-use super::removal::RemovalSet;
+use super::removal::{RemovalSet, TrialOverlay};
 
 /// Why a dead type's hand-written impls keep it from being auto-deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +59,7 @@ pub struct ImplBlockDeletion {
 }
 
 /// One written impl block, merged across cfg variants.
-struct Block {
+pub(super) struct Block {
     self_type: String,
     of_trait: bool,
     span: Option<Span>,
@@ -69,8 +69,14 @@ struct Block {
 impl SemanticModel {
     /// Every hand-written impl block of a workspace type, merged across cfg
     /// variants on the block span (a macro-generated block, span `None`, is
-    /// kept separate per variant — it only ever vetoes).
-    fn written_blocks(&self) -> Vec<Block> {
+    /// kept separate per variant — it only ever vetoes). Computed once per
+    /// model: the cascade asks every round.
+    fn written_blocks(&self) -> &[Block] {
+        self.written_blocks
+            .get_or_init(|| self.merge_written_blocks())
+    }
+
+    fn merge_written_blocks(&self) -> Vec<Block> {
         let mut by_span: BTreeMap<(String, u32, u32), Block> = BTreeMap::new();
         let mut spanless: Vec<Block> = Vec::new();
         for (_, asm) in &self.configs {
@@ -129,19 +135,23 @@ impl SemanticModel {
     }
 
     /// For each of `types` (dead types the cascade wants to delete, already
-    /// in `trial`) that has hand-written impls, the reason those impls keep
-    /// it — absent from the map when the type may go together with its
-    /// impls. Reach is judged under `trial`'s overlay: an edge out of the
-    /// type's own impls (or any other trial removal) no longer counts.
+    /// in the overlay's trial) that has hand-written impls, the reason those
+    /// impls keep it — absent from the map when the type may go together
+    /// with its impls. Reach is judged under the trial overlay: an edge out of
+    /// the type's own impls (or any other trial removal) no longer counts.
     pub fn impls_keeping(
         &self,
-        trial: &RemovalSet,
+        overlay: &TrialOverlay<'_>,
         types: &[String],
     ) -> BTreeMap<String, ImplKeep> {
-        let blocks = self.written_blocks();
+        let types: HashSet<&str> = types.iter().map(String::as_str).collect();
         let mut out: BTreeMap<String, ImplKeep> = BTreeMap::new();
         let mut to_check: Vec<&Block> = Vec::new();
-        for b in blocks.iter().filter(|b| types.contains(&b.self_type)) {
+        for b in self
+            .written_blocks()
+            .iter()
+            .filter(|b| types.contains(b.self_type.as_str()))
+        {
             if out.contains_key(&b.self_type) {
                 continue;
             }
@@ -161,9 +171,8 @@ impl SemanticModel {
             .iter()
             .flat_map(|b| b.items.iter().map(String::as_str))
             .collect();
-        for (_, asm) in &self.configs {
-            let overlay = asm.refold_excluding(trial);
-            let view = overlay.view();
+        for (ci, (_, asm)) in self.configs.iter().enumerate() {
+            let view = overlay.degrees(ci, asm).view();
             // This config's keys for the items in question (several cfg
             // variants may each define one).
             let mut keys: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -205,17 +214,17 @@ impl SemanticModel {
             removed.covers(&segs)
         };
         self.written_blocks()
-            .into_iter()
+            .iter()
             .filter(|b| !b.of_trait)
             .filter_map(|b| {
-                let span = b.span?;
+                let span = b.span.clone()?;
                 let with_type = removed.contains_id(&b.self_type);
                 let emptied = !b.items.is_empty() && b.items.iter().all(|it| gone(it));
-                (with_type || emptied).then_some(ImplBlockDeletion {
+                (with_type || emptied).then(|| ImplBlockDeletion {
                     span,
-                    self_type: b.self_type,
+                    self_type: b.self_type.clone(),
                     with_type,
-                    items: b.items,
+                    items: b.items.clone(),
                 })
             })
             .collect()

@@ -113,3 +113,31 @@ pub(super) struct DegreeView<'a> {
     pub(super) foreign_reach: &'a BTreeMap<String, ForeignReach>,
     pub(super) test_users: &'a BTreeMap<String, BTreeSet<super::TestUser>>,
 }
+
+/// One trial removal set plus its per-config degree overlays, each
+/// refolded lazily on first use and then shared — a cascade round's
+/// deletion vetoes ([`super::SemanticModel::deletion_unmasks`],
+/// [`super::SemanticModel::impls_keeping`]) judge the same trial, and a
+/// refold is the expensive step.
+pub struct TrialOverlay<'a> {
+    trial: &'a RemovalSet,
+    maps: Vec<std::cell::OnceCell<DegreeMaps>>,
+}
+
+impl<'a> TrialOverlay<'a> {
+    pub(super) fn new(trial: &'a RemovalSet, configs: usize) -> Self {
+        Self {
+            trial,
+            maps: (0..configs).map(|_| std::cell::OnceCell::new()).collect(),
+        }
+    }
+
+    pub(super) fn trial(&self) -> &RemovalSet {
+        self.trial
+    }
+
+    /// Config `ci`'s overlay (`asm` must be that config's assembly).
+    pub(super) fn degrees(&self, ci: usize, asm: &super::Assembly) -> &DegreeMaps {
+        self.maps[ci].get_or_init(|| asm.refold_excluding(self.trial))
+    }
+}

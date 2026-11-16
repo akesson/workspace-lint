@@ -13,22 +13,10 @@
 //! - **Written impls** — a type with a hand-written impl can't be deleted
 //!   alone (the impl would be orphaned); derives go with the item.
 
-use std::collections::BTreeSet;
-
-use wl_ir::{ArchivedImplFact, ArchivedImplOrigin, ArchivedIrFragment, ArchivedRefEdge};
+use wl_ir::{ArchivedImplFact, ArchivedIrFragment, ArchivedRefEdge};
 
 use super::assembly::Assembly;
 use super::removal::RemovalSet;
-
-/// The self-type keys of every hand-written impl across `asm`'s fragments —
-/// [`Assembly::written_impls`]'s contents.
-pub(super) fn written_impls(asm: &Assembly) -> BTreeSet<String> {
-    asm.archived_fragments()
-        .flat_map(|frag| frag.impls.iter())
-        .filter(|f| matches!(f.origin, ArchivedImplOrigin::Written))
-        .map(|f| f.self_key.as_str().to_owned())
-        .collect()
-}
 
 impl Assembly {
     /// The impl an edge originates in — [`wl_ir::RefEdge::from_impl`]
@@ -71,11 +59,5 @@ impl Assembly {
     /// [`Assembly::glob_reexported`].
     pub(crate) fn is_glob_reexported(&self, key: &str) -> bool {
         self.glob_reexported.contains(key)
-    }
-
-    /// Does `key`'s type have a hand-written `impl` block? See
-    /// [`Assembly::written_impls`].
-    pub(crate) fn has_written_impl(&self, key: &str) -> bool {
-        self.written_impls.contains(key)
     }
 }

@@ -43,6 +43,7 @@ mod scope;
 mod test_only;
 #[cfg(test)]
 mod tests;
+mod veto;
 
 pub use config::{KindFilter, UnusedPubConfig};
 

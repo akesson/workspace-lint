@@ -290,6 +290,16 @@ fn fix_unused_pub_delete_impl_blocks() {
 }
 
 #[test]
+fn fix_unused_pub_impl_block_vetoes() {
+    // When an impl block keeps its type or itself (see the fixture's
+    // `.workspace-lint.toml`): a block holding code no config compiles, and
+    // a block in a file the fix must not edit. (The per-round veto fixpoint
+    // is unit-tested in `cascade.rs` — a natural workspace rarely reaches an
+    // impl item without naming its type.)
+    run_fix_fixture("fix__unused_pub_impl_block_vetoes");
+}
+
+#[test]
 fn fix_unused_pub_collateral() {
     // The cascade's second-order surfaces (LeaveDates 2026-07-05 follow-ups):
     // deleting `dead` strands the private `helper` → `inner` chain (rustc

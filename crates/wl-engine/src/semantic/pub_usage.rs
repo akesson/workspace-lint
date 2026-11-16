@@ -130,10 +130,6 @@ pub struct PubCandidate {
     /// currently suppresses (`avoid-breaking-exported-api`) — same
     /// `-D warnings` consequence, same gating. See [`NarrowUnmask`].
     pub narrow_unmask: Option<NarrowUnmask>,
-    /// The type has a hand-written `impl` block (any config). Deleting the
-    /// type would orphan it — the IR has no impl deletion surface — so the
-    /// unused-pub deletion paths must not propose removing the item alone.
-    pub has_written_impl: bool,
     /// Re-exported through a glob/module re-export (`pub use m::*`):
     /// narrowing or deleting every item behind it would leave the glob
     /// re-exporting nothing (`unused_imports`), so the fix is shown, never
@@ -170,8 +166,6 @@ struct Fold {
     dead_members: bool,
     /// See [`PubCandidate::dead_fields`] — home-config judgement.
     dead_fields: bool,
-    /// See [`PubCandidate::has_written_impl`].
-    has_written_impl: bool,
     /// See [`PubCandidate::glob_reexported`].
     glob_reexported: bool,
     /// See [`PubCandidate::test_users`].
@@ -279,7 +273,6 @@ fn compute_impl(
             fold.signature_exposed |= view.signature_exposed.contains(key);
             fold.externally_reachable |= assembly.is_externally_reachable(key, def);
             fold.reexport_target |= assembly.is_import_target(key);
-            fold.has_written_impl |= assembly.has_written_impl(key);
             fold.glob_reexported |= assembly.is_glob_reexported(key);
             if let Some(users) = view.test_users.get(key) {
                 fold.test_users.extend(users.iter().cloned());
@@ -343,7 +336,6 @@ fn compute_impl(
                 intra_off_home: fold.intra && !fold.intra_home && !fold.cross,
                 dead_members: fold.dead_members,
                 dead_fields: fold.dead_fields,
-                has_written_impl: fold.has_written_impl,
                 glob_reexported: fold.glob_reexported,
                 test_users: if usage == PubUsage::TestOnly {
                     fold.test_users.into_iter().collect()

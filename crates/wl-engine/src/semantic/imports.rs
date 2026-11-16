@@ -79,10 +79,10 @@ pub struct DanglingImport {
     /// excision surface. Covers the whole brace entry, nested path and rename
     /// included.
     pub elem: wl_ir::Span,
-    /// A `pub use` re-export: excising it can break a downstream name
-    /// (E0364/E0365). Surgery skips it — and the target should never be a
-    /// deletion candidate anyway (the candidate filter guards re-export
-    /// targets), so this is belt-and-braces.
+    /// A `pub use` re-export. It dangles only when its target is deleted —
+    /// an `Unused` target, so nothing reaches the re-exported name either
+    /// (any re-export is first-order: a re-export of a re-export keeps the
+    /// inner one's target reached).
     pub reexport: bool,
     /// A whole `use m::*;` statement the removal set orphaned — see the glob
     /// accounting in [`SemanticModel::dangling_imports`]. Surgery deletes the
@@ -588,8 +588,8 @@ impl SemanticModel {
     /// (`decl_span.from_expansion`), or in a **generated file** (surgery must
     /// never edit a file its generator will overwrite). The cascade excludes
     /// these from its removable seeds up front, avoiding a mid-run un-delete
-    /// ripple. (A `pub use` re-export target is already guarded at the
-    /// candidate filter.)
+    /// ripple. (A `pub use` re-export dangles only with its `Unused` target,
+    /// and surgery excises it like any other `use`.)
     pub fn import_excision_blocked(
         &self,
         generated_files: &std::collections::HashSet<PathBuf>,

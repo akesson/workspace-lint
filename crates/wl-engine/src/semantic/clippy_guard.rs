@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 use super::SemanticModel;
 use super::assembly::{Assembly, DefMap, FastMap};
 use super::def_info::DefInfo;
-use super::removal::RemovalSet;
+use super::removal::TrialOverlay;
 
 /// Owner → assoc-fn members: inherent members hang off their nominal self
 /// type, trait-declaration members off the trait. (Trait-impl members carry
@@ -389,9 +389,10 @@ impl SemanticModel {
     ///   is fine (no survivor to fire on).
     pub fn deletion_unmasks(
         &self,
-        trial: &RemovalSet,
+        overlay: &TrialOverlay<'_>,
         newly: &[String],
     ) -> BTreeMap<String, DeletionUnmask> {
+        let trial = overlay.trial();
         let mut out: BTreeMap<String, DeletionUnmask> = BTreeMap::new();
         let newly_segs: Vec<(&str, Vec<&str>)> = newly
             .iter()
@@ -414,7 +415,7 @@ impl SemanticModel {
             if owner_of.is_empty() {
                 continue;
             }
-            let overlay = asm.refold_excluding(trial);
+            let overlay = overlay.degrees(ci, asm);
             for frag in asm.archived_fragments() {
                 for e in frag.references.iter() {
                     if e.import || !asm.edge_removed(trial, frag, e) {

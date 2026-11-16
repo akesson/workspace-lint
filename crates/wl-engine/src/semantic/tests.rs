@@ -801,15 +801,6 @@ fn own_impl_edges_neither_use_nor_expose_the_self_type() {
     assert_eq!(usage["alpha::Derived"], PubUsage::Unused);
     assert_eq!(usage["alpha::Used"], PubUsage::IntraCrate);
     let cand = |id: &str| cands.iter().find(|c| c.id == id).unwrap();
-    assert!(
-        cand("alpha::Dead").has_written_impl,
-        "a hand-written impl vetoes deletion"
-    );
-    assert!(
-        !cand("alpha::Derived").has_written_impl,
-        "derives go with the item"
-    );
-    assert!(!cand("alpha::Used").has_written_impl);
     // The unreached inherent `m` gates narrowing the type (dead_code would
     // flag it once `Dead` is no longer exported).
     assert!(cand("alpha::Dead").dead_members);
@@ -1622,7 +1613,7 @@ fn impl_blocks_go_with_their_type_or_when_emptied() {
 
     let types = ["alpha::Dead", "alpha::Pinned", "alpha::Shown"].map(String::from);
     let trial = RemovalSet::new(types.iter());
-    let keep = m.impls_keeping(&trial, &types);
+    let keep = m.impls_keeping(&m.trial_overlay(&trial), &types);
     assert!(
         !keep.contains_key("alpha::Dead"),
         "unreached impl goes with it"
@@ -3246,7 +3237,10 @@ fn deletion_unmask_flags_last_field_reader() {
     let newly = vec!["alpha::reader".to_string()];
 
     let m = model(vec![("default", vec![mk(true)])]);
-    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::reader"]), &newly);
+    let unmasks = m.deletion_unmasks(
+        &m.trial_overlay(&RemovalSet::new(["alpha::reader"])),
+        &newly,
+    );
     assert!(
         matches!(
             unmasks.get("alpha::reader"),
@@ -3260,16 +3254,22 @@ fn deletion_unmask_flags_last_field_reader() {
     let both = vec!["alpha::reader".to_string(), "alpha::Panel".to_string()];
     let m = model(vec![("default", vec![mk(true)])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::reader", "alpha::Panel"]), &both)
-            .is_empty(),
+        m.deletion_unmasks(
+            &m.trial_overlay(&RemovalSet::new(["alpha::reader", "alpha::Panel"])),
+            &both
+        )
+        .is_empty(),
         "co-deleting the owner clears the veto"
     );
 
     // Pre-existing write-only field: no read edge to kill, nothing to attribute.
     let m = model(vec![("default", vec![mk(false)])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::reader"]), &newly)
-            .is_empty(),
+        m.deletion_unmasks(
+            &m.trial_overlay(&RemovalSet::new(["alpha::reader"])),
+            &newly
+        )
+        .is_empty(),
         "a field that was never read is not this deletion's doing"
     );
 }
@@ -3316,7 +3316,7 @@ fn deletion_unmask_flags_last_variant_constructor() {
     let newly = vec!["alpha::maker".to_string()];
 
     let m = model(vec![("default", vec![mk(false, &["maker"])])]);
-    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly);
+    let unmasks = m.deletion_unmasks(&m.trial_overlay(&RemovalSet::new(["alpha::maker"])), &newly);
     assert!(
         matches!(
             unmasks.get("alpha::maker"),
@@ -3330,15 +3330,18 @@ fn deletion_unmask_flags_last_variant_constructor() {
     let both = vec!["alpha::maker".to_string(), "alpha::State".to_string()];
     let m = model(vec![("default", vec![mk(false, &["maker"])])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::maker", "alpha::State"]), &both)
-            .is_empty(),
+        m.deletion_unmasks(
+            &m.trial_overlay(&RemovalSet::new(["alpha::maker", "alpha::State"])),
+            &both
+        )
+        .is_empty(),
         "co-deleting the enum clears the veto"
     );
 
     // A surviving second construction site: the variant stays constructed.
     let m = model(vec![("default", vec![mk(false, &["maker", "backup"])])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+        m.deletion_unmasks(&m.trial_overlay(&RemovalSet::new(["alpha::maker"])), &newly)
             .is_empty(),
         "a surviving constructor lifts the veto"
     );
@@ -3346,7 +3349,7 @@ fn deletion_unmask_flags_last_variant_constructor() {
     // Never constructed at all (pattern-only): not this deletion's doing.
     let m = model(vec![("default", vec![mk(false, &[])])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+        m.deletion_unmasks(&m.trial_overlay(&RemovalSet::new(["alpha::maker"])), &newly)
             .is_empty(),
         "a variant that was never constructed is not this deletion's doing"
     );
@@ -3354,7 +3357,7 @@ fn deletion_unmask_flags_last_variant_constructor() {
     // Exported exemption: a pub variant of a pub enum is dead_code-exempt.
     let m = model(vec![("default", vec![mk(true, &["maker"])])]);
     assert!(
-        m.deletion_unmasks(&RemovalSet::new(["alpha::maker"]), &newly)
+        m.deletion_unmasks(&m.trial_overlay(&RemovalSet::new(["alpha::maker"])), &newly)
             .is_empty(),
         "pub variant of a pub enum is exempt"
     );
@@ -3384,7 +3387,10 @@ fn deletion_unmask_flags_is_empty_leaving_len() {
     };
     let one = vec!["alpha::List::is_empty".to_string()];
     let m = model(vec![("default", vec![mk()])]);
-    let unmasks = m.deletion_unmasks(&RemovalSet::new(["alpha::List::is_empty"]), &one);
+    let unmasks = m.deletion_unmasks(
+        &m.trial_overlay(&RemovalSet::new(["alpha::List::is_empty"])),
+        &one,
+    );
     assert!(
         matches!(
             unmasks.get("alpha::List::is_empty"),
@@ -3400,7 +3406,10 @@ fn deletion_unmask_flags_is_empty_leaving_len() {
     let m = model(vec![("default", vec![mk()])]);
     assert!(
         m.deletion_unmasks(
-            &RemovalSet::new(["alpha::List::is_empty", "alpha::List::len"]),
+            &m.trial_overlay(&RemovalSet::new([
+                "alpha::List::is_empty",
+                "alpha::List::len"
+            ])),
             &both
         )
         .is_empty(),
