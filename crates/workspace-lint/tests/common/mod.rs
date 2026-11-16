@@ -28,8 +28,31 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::path::{Path, PathBuf};
 
+/// Build-time compiler hooks a test process may inherit but must not hand to
+/// the binary under test. `cargo llvm-cov` instruments through
+/// `RUSTC_WRAPPER=cargo-llvm-cov`, selecting crates by NAME — and its list
+/// includes `build_script_build` and this workspace's own crate names. The
+/// binary's semantic tier runs a nightly `cargo check` of the analyzed
+/// workspace (a fixture, or this repo in the dogfood test), so an inherited
+/// wrapper instruments every build script there on the PINNED NIGHTLY: profraw
+/// in an older raw format that the stable `llvm-profdata` refuses to merge
+/// ("raw profile version mismatch" — the CRAP job's failure once CI's stable
+/// moved past the nightly's LLVM). The `RUSTFLAGS` family covers the plain
+/// `RUSTFLAGS=-Cinstrument-coverage` setup the same way. The binary itself is
+/// already built; its own coverage rides `LLVM_PROFILE_FILE`, which stays.
+const BUILD_HOOK_ENV: &[&str] = &[
+    "RUSTC_WRAPPER",
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_BUILD_RUSTFLAGS",
+];
+
 pub fn workspace_lint() -> assert_cmd::Command {
-    cargo_bin_cmd!("workspace-lint")
+    let mut cmd = cargo_bin_cmd!("workspace-lint");
+    for var in BUILD_HOOK_ENV {
+        cmd.env_remove(var);
+    }
+    cmd
 }
 
 /// Environment variables that pin git to a specific repository, mirroring
