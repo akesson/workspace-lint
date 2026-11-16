@@ -75,7 +75,7 @@ The `[unused-pub]` table is optional (the lint is on by default):
 exclude-crates = ["api"]
 allowlist = ["*Error", "main"]
 kinds = ["function", "struct"]
-exclude-paths = ["generated/**"]
+exclude-paths = ["**/generated/**"]
 suppress-intra-crate = false
 assume-all-public = false
 publish-hint-threshold = 3
@@ -90,7 +90,9 @@ publish-hint-threshold = 3
   error.
 - `exclude-paths` — glob patterns for source file paths to skip, matched
   against the workspace-relative path (`crates/api/src/generated/**`;
-  `**/generated/**` matches at any depth).
+  `**/generated/**` matches at any depth) — also in a per-crate
+  `[crates.<name>.unused-pub]` table, where the path is still
+  workspace-relative, not crate-relative.
 - `suppress-intra-crate` — when `true`, report only items unused *anywhere*
   and drop the "used only inside the crate" findings. Default `false`.
 - `assume-all-public` — when `true`, treat *every* crate as having an

@@ -250,7 +250,9 @@ pub(crate) enum CheckRule {
         /// Kinds of items to check (e.g. function, struct, trait)
         #[arg(long, value_enum)]
         kinds: Vec<KindFilter>,
-        /// Path patterns to exclude (matched against source file paths)
+        /// Path globs to exclude, matched against the workspace-relative
+        /// source path (e.g. `crates/api/src/generated/**`, or
+        /// `**/generated/**` at any depth) — not the current directory
         #[arg(long)]
         exclude_paths: Vec<String>,
         /// Suppress the "only used inside the crate" variant — only report

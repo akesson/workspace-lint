@@ -1,6 +1,7 @@
 [unused-pub]
 allowlist = ["*MyHelper"]
-exclude-paths = ["crates/alpha/src/generated/**"]
+# Workspace-relative globs, both forms: root-anchored and any-depth.
+exclude-paths = ["crates/alpha/src/generated/**", "**/vendor/**"]
 
 [lints]
 default = "allow"
