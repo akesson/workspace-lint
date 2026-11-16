@@ -766,3 +766,38 @@ fn fingerprint_stability_canary() {
     let groups = find_clones(&[file("a.rs", "k", &a), file("b.rs", "k", &b)], &opts());
     assert_eq!(pair_fingerprint(&groups), 0x9930_bf38_35a5_6614);
 }
+
+/// A source spanning every construct whose syn AST shape or printer changed
+/// in syn 3 (receiver kinds, `unsafe` safety, where-clause placement,
+/// raw-pointer mutability, fn-pointer types, match guards as `Pat::Guard`,
+/// attributed statements, closure `|…|` tokens). Fingerprints hash syn's
+/// `to_token_stream()` re-print, so a syn printer drift shows up here first.
+/// Duplicated verbatim (Type-1): this canary pins the printer, not renaming.
+const SYN_SENSITIVE_SRC: &str = "impl Acc {
+    unsafe fn fold<T>(&mut self, xs: *const T, n: usize, f: fn(T, T) -> T) -> Option<T>
+    where
+        T: Copy,
+    {
+        #[allow(unused_mut)]
+        let mut acc = None;
+        for i in 0..n {
+            let v = *xs.add(i);
+            acc = match acc { Some(a) if i > 0 => Some(f(a, v)), _ => Some(v) };
+        }
+        #[allow(unused_must_use)]
+        self.sink(acc);
+        let g = |x: T| f(x, x);
+        acc.map(g)
+    }
+}";
+
+#[test]
+fn fingerprint_stability_canary_syn_sensitive() {
+    // Second canary: pins a fingerprint over the syn-3-changed constructs
+    // (see `SYN_SENSITIVE_SRC`). The value was verified identical
+    // under syn 2.0.118 and syn 3.0.10 — if a syn bump changes it, the
+    // printer drifted and every baseline holding such code is invalidated.
+    let src = SYN_SENSITIVE_SRC;
+    let groups = find_clones(&[file("a.rs", "k", src), file("b.rs", "k", src)], &opts());
+    assert_eq!(pair_fingerprint(&groups), 0xee5d_1491_abc0_0d9b);
+}
