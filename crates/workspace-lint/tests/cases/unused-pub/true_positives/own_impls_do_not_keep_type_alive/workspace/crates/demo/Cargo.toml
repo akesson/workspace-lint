@@ -1,0 +1,9 @@
+# No `publish` field → treated as workspace-internal, so unused `pub` items are
+# flagged (not exempted as external API surface).
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"

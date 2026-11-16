@@ -396,6 +396,18 @@ fn apply_structural_fix(
         );
         return (builder, false);
     }
+    // Only a MachineApplicable deletion is `removable`, so withholding it
+    // here also keeps the cascade from seeding the item.
+    if let Some(note) = delete_veto(cand, auto_delete, verdict) {
+        let builder = builder.note(note);
+        if verdict == PubVerdict::TestOnly {
+            return (builder, false);
+        }
+        let builder = build_tighten_suggestion(cand, file, verdict, shadow_mentioned)
+            .into_iter()
+            .fold(builder, |b, s| b.suggestion(s));
+        return (builder, false);
+    }
     // The deletion surface is the WHOLE item (attrs/doc through body) — `span`
     // is rustc's `def_span`, only the signature, so deleting it would orphan a
     // function's body. `full_span` falls back to `span` only for the
@@ -412,45 +424,96 @@ fn apply_structural_fix(
     let builder = build_tighten_suggestion(cand, file, verdict, shadow_mentioned)
         .into_iter()
         .fold(builder, |b, s| b.suggestion(s));
-    // `pub(crate)` compiles but trips `dead_code` (or a clippy lint the
-    // exported status suppressed) on the plain build — say why `--fix`
-    // won't apply it.
-    let builder = if verdict == PubVerdict::IntraCrate && cand.intra_off_home {
-        builder.note(
-            "every use-site is gated behind a cfg the plain build never compiles \
-             (`--target`-only or feature-gated code): `pub(crate)` would trip `dead_code` \
-             on that build — narrow by hand if the gate doesn't apply to you",
-        )
-    } else if verdict == PubVerdict::IntraCrate && cand.dead_members {
-        builder.note(
-            "this trait declares members nothing calls: `pub(crate)` un-exempts it from \
-             `dead_code`, which will flag them — remove the unused members first",
-        )
-    } else if verdict == PubVerdict::IntraCrate && cand.dead_fields {
-        builder.note(
-            "this type has a field nothing reads: `pub(crate)` un-exempts its fields from \
-             `dead_code`, which will flag it — remove the write-only field first",
-        )
-    } else if verdict == PubVerdict::IntraCrate
-        && let Some(unmask) = &cand.narrow_unmask
-    {
-        builder.note(format!(
+    let builder = tighten_note(cand, auto_delete, verdict)
+        .into_iter()
+        .fold(builder, |b, note| b.note(note));
+    (builder, false)
+}
+
+/// The note withholding an auto-deletion the IR can't perform safely, if any:
+/// a type with a hand-written `impl` block (deleting it alone orphans the
+/// impl, E0412 — the IR has no impl deletion surface; derives are attributes
+/// and go with the item) or a glob-re-exported item. Only applies to the
+/// `--fix-auto-delete` deletion path, never to an `IntraCrate` narrowing.
+fn delete_veto(
+    cand: &PubCandidate,
+    auto_delete: bool,
+    verdict: PubVerdict,
+) -> Option<&'static str> {
+    if !auto_delete || verdict == PubVerdict::IntraCrate {
+        return None;
+    }
+    if cand.has_written_impl {
+        Some(WRITTEN_IMPL_NOTE)
+    } else if cand.glob_reexported {
+        Some(GLOB_REEXPORT_NOTE)
+    } else {
+        None
+    }
+}
+
+/// Why `--fix` won't apply the `pub(crate)` tighten, if it won't: the narrow
+/// compiles but trips `dead_code` (or a clippy lint the exported status
+/// suppressed) on the plain build, or the item is `Unused` and deletion is
+/// `--fix-auto-delete` only.
+fn tighten_note(cand: &PubCandidate, auto_delete: bool, verdict: PubVerdict) -> Option<String> {
+    match verdict {
+        PubVerdict::IntraCrate => intra_crate_narrow_note(cand),
+        // Without this the finding shows a naked `pub(crate)` diff that reads
+        // as "will be auto-fixed" — say up front that `--fix` won't act on it.
+        PubVerdict::Unused if !auto_delete => Some(
+            "not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify \
+             it is truly unused, then delete it or narrow by hand"
+                .to_owned(),
+        ),
+        _ => None,
+    }
+}
+
+/// The first reason an `IntraCrate` narrowing can't be machine-applied.
+fn intra_crate_narrow_note(cand: &PubCandidate) -> Option<String> {
+    let note = if cand.intra_off_home {
+        "every use-site is gated behind a cfg the plain build never compiles \
+         (`--target`-only or feature-gated code): `pub(crate)` would trip `dead_code` \
+         on that build — narrow by hand if the gate doesn't apply to you"
+    } else if cand.dead_members && cand.kind == "trait" {
+        "this trait declares members nothing calls: `pub(crate)` un-exempts it from \
+         `dead_code`, which will flag them — remove the unused members first"
+    } else if cand.dead_members {
+        "this type has methods nothing calls: `pub(crate)` un-exports them, and \
+         `dead_code` will flag them — remove the unused methods first"
+    } else if cand.dead_fields {
+        "this type has a field nothing reads: `pub(crate)` un-exempts its fields from \
+         `dead_code`, which will flag it — remove the write-only field first"
+    } else if let Some(unmask) = &cand.narrow_unmask {
+        return Some(format!(
             "`pub(crate)` would unmask clippy `{}` on `{}` (clippy exempts exported items \
              via `avoid-breaking-exported-api`) — resolve that first or narrow by hand",
             unmask.lint, unmask.member
-        ))
-    } else if verdict == PubVerdict::Unused && !auto_delete {
-        // Without this the finding shows a naked `pub(crate)` diff that reads
-        // as "will be auto-fixed" — say up front that `--fix` won't act on it.
-        builder.note(
-            "not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify \
-             it is truly unused, then delete it or narrow by hand",
-        )
+        ));
+    } else if cand.glob_reexported {
+        GLOB_REEXPORT_NARROW_NOTE
     } else {
-        builder
+        return None;
     };
-    (builder, false)
+    Some(note.to_owned())
 }
+
+/// Why a type with a hand-written `impl` keeps its deletion withheld under
+/// `--fix-auto-delete` (see `apply_structural_fix`).
+const WRITTEN_IMPL_NOTE: &str = "not auto-deleted: this type has a hand-written `impl` block \
+     that deleting the type alone would orphan — delete the type together with its impls by hand";
+
+/// Why a glob-re-exported item's deletion is withheld under
+/// `--fix-auto-delete` (see `apply_structural_fix`).
+const GLOB_REEXPORT_NOTE: &str = "not auto-deleted: this item is re-exported through a \
+     `pub use …::*` glob — removing every item behind it would leave the glob re-exporting \
+     nothing (`unused_imports`); delete it by hand, with the glob if it empties";
+
+/// Why a glob-re-exported item's narrowing is shown, never machine-applied.
+const GLOB_REEXPORT_NARROW_NOTE: &str = "re-exported through a `pub use …::*` glob: if every \
+     item behind it is narrowed, the glob re-exports nothing (`unused_imports`) — narrow by \
+     hand and drop the glob if it empties";
 
 /// Build a suggestion that overwrites the item's visibility token with
 /// `pub(crate)`. The byte range is the extractor's `vis_span` — rustc's own
@@ -478,11 +541,14 @@ fn build_tighten_suggestion(
         // A shadow mention joins the same class: the mention may be a real
         // use from outside the crate (bench source, uncovered cfg), so the
         // narrow could break code the engine never judged.
+        // A glob re-export joins too: narrowing every item behind
+        // `pub use m::*` leaves it re-exporting nothing (`unused_imports`).
         PubVerdict::IntraCrate
             if cand.intra_off_home
                 || cand.dead_members
                 || cand.dead_fields
                 || cand.narrow_unmask.is_some()
+                || cand.glob_reexported
                 || shadow_mentioned =>
         {
             Applicability::MaybeIncorrect

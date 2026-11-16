@@ -1,10 +1,10 @@
-// `BuildErr` is referenced only inside this crate (via the `impl From<String>`
-// self-type that derive_builder requires), so the resolver would class it
-// IntraCrate and tighten it to `pub(crate)`. But derive_builder expands
+// `BuildErr` has no use-site at all — its own `impl From<String>` is part of
+// the type, not a user of it. But derive_builder expands
 // `#[builder(build_fn(error = "…"))]` into
 // `pub fn build(&self) -> Result<Widget, BuildErr>` — a generated public
-// signature exposing `BuildErr`. The builder-attr signature-exposure guard
-// suppresses it.
+// signature exposing `BuildErr` (narrowing it would trip
+// `private_interfaces`). The engine sees that expansion, so the item is
+// signature-exposed and stays silent.
 use derive_builder::Builder;
 
 #[derive(Builder)]

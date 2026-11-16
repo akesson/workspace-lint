@@ -553,6 +553,7 @@ mod dump_ir_tests {
             is_test_cfg: false,
             items: vec![],
             references: vec![],
+            impls: vec![],
             loaded_files: vec![],
             used_crates: vec![],
         })

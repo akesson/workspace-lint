@@ -1,0 +1,80 @@
+error: crate `demo` has 6 public items unused within the workspace
+ --> crates/demo/Cargo.toml:1:1
+  |
+  = help: if `demo` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt)
+  = note: workspace-lint treats a crate as workspace-internal unless it declares `publish = true` (or a registry); see the unused-pub docs
+help: if intentional, silence with:
+  |
+1 + # workspace-lint: expect(unused-pub)
+  |
+  = note: `#[deny(workspace_lint::unused_pub)]` on by default
+
+error: pub struct `DeadInherent` in crate `demo` appears unused — consider removing
+ --> crates/demo/src/lib.rs:4:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
+help: tighten to `pub(crate)`
+  |
+4 - pub
+4 + pub(crate)
+  |
+
+error: pub fn `describe` in crate `demo` appears unused — consider removing
+ --> crates/demo/src/lib.rs:7:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
+help: tighten to `pub(crate)`
+  |
+7 - pub
+7 + pub(crate)
+  |
+
+error: pub struct `DeadTraitImpl` in crate `demo` appears unused — consider removing
+ --> crates/demo/src/lib.rs:13:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
+help: tighten to `pub(crate)`
+  |
+13 - pub
+13 + pub(crate)
+  |
+
+error: pub struct `DeadDerived` in crate `demo` appears unused — consider removing
+ --> crates/demo/src/lib.rs:23:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
+help: tighten to `pub(crate)`
+  |
+23 - pub
+23 + pub(crate)
+  |
+
+error: pub enum `DeadSelfBuilt` in crate `demo` appears unused — consider removing
+ --> crates/demo/src/lib.rs:28:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
+help: tighten to `pub(crate)`
+  |
+28 - pub
+28 + pub(crate)
+  |
+
+error: pub fn `make` in crate `demo` appears unused — consider removing
+ --> crates/demo/src/lib.rs:33:1
+  |
+  = help: remove the item or its `pub` visibility
+  = note: not auto-applied: deleting an unused item is `--fix-auto-delete` only — verify it is truly unused, then delete it or narrow by hand
+help: tighten to `pub(crate)`
+  |
+33 - pub
+33 + pub(crate)
+  |
+
+workspace-lint: generated 7 errors
+workspace-lint: run `workspace-lint explain <lint>` for the full documentation (unused-pub)

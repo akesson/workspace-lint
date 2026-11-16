@@ -110,3 +110,14 @@ pub struct Dyn;
 impl BoundDyn for Dyn {}
 impl BoundInline for u32 {}
 impl BoundWhere for u32 {}
+
+// Class 7: an IMPL's own written bound (`impl<T: Bound> Pub<T>`) — privacy-
+// checked against the impl's visibility, i.e. the self type's (LeaveDates
+// `GroupedBookingMessage<T: BookingMessage>`). Attributed to `BoundedHost`.
+pub trait BoundInherentImpl {}
+pub struct BoundedHost<T>(pub T);
+impl<T: BoundInherentImpl> BoundedHost<T> {
+    pub fn inner(&self) -> &T {
+        &self.0
+    }
+}
