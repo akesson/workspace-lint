@@ -169,7 +169,7 @@ mod tests {
     fn each_remediation_is_attempted_at_most_once() {
         let mut p = Provisioner::new();
         let toolchain = EngineError::ToolchainMissing {
-            pin: "nightly-2026-04-16".into(),
+            pin: "nightly-2026-08-20".into(),
         }
         .remediation()
         .unwrap();
@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(render_plan(&[]), "");
         let plan = vec![
             EngineError::ToolchainMissing {
-                pin: "nightly-2026-04-16".into(),
+                pin: "nightly-2026-08-20".into(),
             }
             .remediation()
             .unwrap(),
@@ -195,7 +195,7 @@ mod tests {
         ];
         assert_eq!(
             render_plan(&plan),
-            "rustup toolchain install nightly-2026-04-16 --profile minimal \
+            "rustup toolchain install nightly-2026-08-20 --profile minimal \
              --component rustc-dev --component llvm-tools-preview\n\
              cargo install dylint-link --locked\n"
         );

@@ -31,28 +31,28 @@ jobs:
       - name: Install pinned nightly (+ rustc-dev) for the extraction engine
         uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: nightly-2026-04-16
+          toolchain: nightly-2026-08-20
           components: rustc-dev, llvm-tools-preview
       - name: Cache dylint-link
         id: cache-dylint-link
         uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/dylint-link*
-          key: ${{ runner.os }}-dylint-link-6.0.1
+          key: ${{ runner.os }}-dylint-link-6.4.0
       - name: Install dylint-link
         if: steps.cache-dylint-link.outputs.cache-hit != 'true'
-        run: cargo install dylint-link --version 6.0.1 --locked
+        run: cargo install dylint-link --version 6.4.0 --locked
       - name: Cache dylint driver
         uses: actions/cache@v6
         with:
           path: ~/.dylint_drivers
-          key: dylint-driver-nightly-2026-04-16-${{ runner.os }}
+          key: dylint-driver-nightly-2026-08-20-${{ runner.os }}
       - name: Cache vendored extractor build
         uses: actions/cache@v6
         with:
           path: ~/.cache/workspace-lint
-          key: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-${{ hashFiles('extractor/**', 'crates/wl-ir/**') }}
-          restore-keys: ${{ runner.os }}-wl-extractor-nightly-2026-04-16-
+          key: ${{ runner.os }}-wl-extractor-nightly-2026-08-20-${{ hashFiles('extractor/**', 'crates/wl-ir/**') }}
+          restore-keys: ${{ runner.os }}-wl-extractor-nightly-2026-08-20-
       - uses: taiki-e/install-action@v2.86.7
         with:
           tool: nextest

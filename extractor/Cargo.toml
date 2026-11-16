@@ -21,7 +21,7 @@ crate-type = ["cdylib"]
 # NOTE: no clippy_utils — extract() uses raw rustc_middle/rustc_hir, so we skip
 # the clippy_utils<->nightly alignment entirely (SPIKE §12.4). We only need the
 # dylint macro/registration glue.
-dylint_linting = "6.3.2"
+dylint_linting = "6.4.0"
 wl-ir = { path = "../crates/wl-ir" }
 # Write side of the IR transport: serialize each fragment to an rkyv archive
 # (wl_ir::write_bytes). Must build on the pinned nightly (rustc_private cdylib).
@@ -32,7 +32,7 @@ rkyv = "0.8"
 # this dylib over `tests/probes/*` via `dylint::run` and asserts the emitted
 # fragments. `library_packages` pulls in the cargo-cli plumbing `run()` needs
 # to build the driver and invoke `cargo check`.
-dylint = { version = "6.3.2", features = ["library_packages"] }
+dylint = { version = "6.4.0", features = ["library_packages"] }
 anyhow = "1"
 tempfile = "3"
 

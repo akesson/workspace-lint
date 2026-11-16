@@ -131,29 +131,29 @@ mod tests {
     #[test]
     fn errors_render_actionable_commands() {
         let e = EngineError::ToolchainMissing {
-            pin: "nightly-2026-04-16".into(),
+            pin: "nightly-2026-08-20".into(),
         };
         let msg = e.to_string();
-        assert!(msg.contains("rustup toolchain install nightly-2026-04-16"));
+        assert!(msg.contains("rustup toolchain install nightly-2026-08-20"));
         assert!(msg.contains("--component rustc-dev"));
         assert!(msg.contains("--fast-only"));
 
         let e = EngineError::ComponentMissing {
-            pin: "nightly-2026-04-16".into(),
+            pin: "nightly-2026-08-20".into(),
             component: "rustc-dev".into(),
         };
         assert!(
             e.to_string()
-                .contains("rustup component add rustc-dev --toolchain nightly-2026-04-16")
+                .contains("rustup component add rustc-dev --toolchain nightly-2026-08-20")
         );
 
         let e = EngineError::TargetMissing {
-            pin: "nightly-2026-04-16".into(),
+            pin: "nightly-2026-08-20".into(),
             triple: "wasm32-unknown-unknown".into(),
         };
         assert!(
             e.to_string().contains(
-                "rustup target add wasm32-unknown-unknown --toolchain nightly-2026-04-16"
+                "rustup target add wasm32-unknown-unknown --toolchain nightly-2026-08-20"
             )
         );
 
@@ -170,17 +170,20 @@ mod tests {
     fn remediation_argv_matches_display_text() {
         let provisionable = [
             EngineError::ToolchainMissing {
-                pin: "nightly-2026-04-16".into(),
+                pin: "nightly-2026-08-20".into(),
             },
             EngineError::ComponentMissing {
-                pin: "nightly-2026-04-16".into(),
+                pin: "nightly-2026-08-20".into(),
                 component: "rustc-dev".into(),
             },
             EngineError::TargetMissing {
-                pin: "nightly-2026-04-16".into(),
+                pin: "nightly-2026-08-20".into(),
                 triple: "wasm32-unknown-unknown".into(),
             },
             EngineError::DylintLinkMissing,
+            EngineError::DylintLinkOutdated {
+                dir: "/cache/extractor/target/debug".into(),
+            },
         ];
         for e in provisionable {
             let argv = e.remediation().expect("preflight errors are provisionable");
@@ -209,7 +212,7 @@ mod tests {
         assert!(!on_path("definitely-not-a-real-binary-xyzzy"));
     }
 
-    const PIN: &str = "nightly-2026-04-16";
+    const PIN: &str = "nightly-2026-08-20";
 
     fn triples(list: &[&str]) -> BTreeSet<String> {
         list.iter().map(|s| s.to_string()).collect()
