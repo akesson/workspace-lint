@@ -1660,7 +1660,7 @@ fn impl_blocks_go_with_their_type_or_when_emptied() {
 /// compiled for production at all.
 #[test]
 fn test_users_split_own_unit_tests_from_other_test_code() {
-    use wl_ir::{ImplFact, ImplOrigin};
+    use wl_ir::ImplOrigin;
     let alpha_plain = frag(
         "alpha",
         vec![
