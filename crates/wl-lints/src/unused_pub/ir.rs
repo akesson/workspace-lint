@@ -43,6 +43,7 @@ use wl_engine::coverage::CfgShadow;
 use super::DEFAULT_PUBLISH_HINT_THRESHOLD;
 use super::config::UnusedPubConfig;
 use super::scope::{FindingScope, shadow_narrow_note, shadow_report_note};
+use super::test_only::TestOnlyAdvice;
 use wl_lint_api::surgery::deletion::pick_deletion_fix;
 
 /// One unused-pub finding paired with the two things the `--fix-auto-delete`
@@ -71,21 +72,37 @@ pub(super) fn check(
     suppressed: &dyn Fn(&Diagnostic) -> bool,
 ) -> Vec<Diagnostic> {
     let generated = generated_set(fast);
+    let inputs = FindingInputs {
+        config,
+        fast,
+        model,
+        generated: &generated,
+        suppressed,
+    };
     // Deletion is a `--fix-auto-delete` concern, and that path replaces this
     // plain-check output with the cascade's — so the plain run always renders
     // the tighten fallback for `Unused` items, never a deletion.
-    findings_with_shadow(
-        config,
-        fast,
-        model.pub_candidates(),
-        false,
-        &generated,
-        shadow,
-        suppressed,
-    )
-    .into_iter()
-    .map(|f| f.diagnostic)
-    .collect()
+    findings_with_shadow(&inputs, model.pub_candidates(), false, shadow)
+        .into_iter()
+        .map(|f| f.diagnostic)
+        .collect()
+}
+
+/// The run-invariant inputs of every findings pass — the plain [`check`]
+/// builds one, the `--fix-auto-delete` cascade builds one and reuses it for
+/// every fixpoint round.
+#[derive(Clone, Copy)]
+pub(crate) struct FindingInputs<'a> {
+    pub(crate) config: &'a PerCrate<UnusedPubConfig>,
+    pub(crate) fast: &'a FastModel,
+    /// Queried per finding for what the candidate list doesn't carry (a
+    /// test-only item's test users).
+    pub(crate) model: &'a SemanticModel,
+    /// [`generated_set`], computed once by the caller.
+    pub(crate) generated: &'a HashSet<PathBuf>,
+    /// The non-mutating directive query: the crate rollup counts only the
+    /// findings it lets through.
+    pub(crate) suppressed: &'a dyn Fn(&Diagnostic) -> bool,
 }
 
 /// The candidate-driven core of the lint — shared by the plain [`check`] (fed
@@ -94,26 +111,12 @@ pub(super) fn check(
 /// crate-level publish hints, in the same order [`check`] always emitted them.
 /// `auto_delete` selects the structural fix for `Unused` items: whole-item
 /// deletion (the cascade) vs the shown-but-not-applied tighten fallback.
-/// `generated` is [`generated_set`], computed once by the caller (the cascade
-/// calls this every fixpoint round). `suppressed` is the non-mutating
-/// directive query: the crate rollup counts only findings it lets through.
 pub(crate) fn findings(
-    config: &PerCrate<UnusedPubConfig>,
-    fast: &FastModel,
+    inputs: &FindingInputs<'_>,
     candidates: Vec<PubCandidate>,
     auto_delete: bool,
-    generated: &HashSet<PathBuf>,
-    suppressed: &dyn Fn(&Diagnostic) -> bool,
 ) -> Vec<PubFinding> {
-    findings_with_shadow(
-        config,
-        fast,
-        candidates,
-        auto_delete,
-        generated,
-        None,
-        suppressed,
-    )
+    findings_with_shadow(inputs, candidates, auto_delete, None)
 }
 
 /// [`findings`] with the report-time cfg-shadow index: an `Unused` candidate
@@ -121,14 +124,18 @@ pub(crate) fn findings(
 /// "possibly used under `cfg(...)`" note instead of the generic blind-spot
 /// one. The cascade passes `None` — its veto handles shadowing itself.
 fn findings_with_shadow(
-    per_crate: &PerCrate<UnusedPubConfig>,
-    fast: &FastModel,
+    inputs: &FindingInputs<'_>,
     candidates: Vec<PubCandidate>,
     auto_delete: bool,
-    generated: &HashSet<PathBuf>,
     shadow: Option<&CfgShadow>,
-    suppressed: &dyn Fn(&Diagnostic) -> bool,
 ) -> Vec<PubFinding> {
+    let FindingInputs {
+        config: per_crate,
+        fast,
+        model,
+        generated,
+        suppressed,
+    } = *inputs;
     let mut by_crate: BTreeMap<&str, Vec<&PubCandidate>> = BTreeMap::new();
     for c in &candidates {
         by_crate.entry(c.krate.as_str()).or_default().push(c);
@@ -176,6 +183,7 @@ fn findings_with_shadow(
             auto_delete,
             exempt_external_api,
             shadow,
+            model,
         };
         let mut crate_findings = Vec::new();
         for cand in cands {
@@ -244,6 +252,8 @@ struct CheckCtx<'a> {
     exempt_external_api: bool,
     /// Report-time cfg-shadow index (`None` in the cascade path).
     shadow: Option<&'a CfgShadow>,
+    /// Queried for a test-only finding's users (see [`TestOnlyAdvice`]).
+    model: &'a SemanticModel,
 }
 
 impl CheckCtx<'_> {
@@ -327,6 +337,8 @@ fn build_diagnostic(
 ) -> (Diagnostic, bool) {
     let kind_str = &cand.kind;
     let crate_code = ctx.crate_code;
+    let test_only = (verdict == PubVerdict::TestOnly)
+        .then(|| TestOnlyAdvice::for_item(ctx.model, &cand.id, crate_code));
     let (message, suggestion) = match verdict {
         PubVerdict::IntraCrate => (
             format!(
@@ -340,7 +352,7 @@ fn build_diagnostic(
                 "pub {kind_str} `{}` in crate `{crate_code}` is only used by test code",
                 cand.name
             ),
-            "gate it `#[cfg(test)]`, move it into test code, or remove it",
+            test_only.as_ref().map_or("", |a| a.help),
         ),
         PubVerdict::Unused => (
             format!(
@@ -359,6 +371,10 @@ fn build_diagnostic(
     let file = PathBuf::from(&span.file);
     let builder =
         at_line(LintId::UnusedPub.id(), message, file.clone(), span.line).help(suggestion);
+    let builder = match test_only.as_ref().and_then(|a| a.users_note.clone()) {
+        Some(users) => builder.note(users),
+        None => builder,
+    };
     // The specific blind spot beats the generic disclaimer: a shadowed
     // mention names the exact uncovered region (and the config entry that
     // would cover it); otherwise the standing caveat applies. TestOnly shares
@@ -377,6 +393,15 @@ fn build_diagnostic(
             "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
         ),
     };
+    // Test-only reach gets NO structural suggestion on the plain path:
+    // resolving it is a human call the help text carries (see
+    // `TestOnlyAdvice`). In auto-delete mode it falls through to the
+    // deletion surface, which ONLY the cascade acts on (gated behind the
+    // exclusive-test-scaffolding proof; a blocked target's suggestion is
+    // downgraded with the blocker).
+    if let Some(advice) = test_only.filter(|_| !ctx.auto_delete) {
+        return (builder.note(advice.no_fix_note).build(), false);
+    }
     let (builder, removable) = apply_structural_fix(
         builder,
         cand,
@@ -408,20 +433,6 @@ fn apply_structural_fix(
     verdict: PubVerdict,
     shadow_mentioned: bool,
 ) -> (wl_diagnostic::builder::DiagnosticBuilder, bool) {
-    // Test-only reach gets NO structural suggestion on the plain path:
-    // tightening trips `dead_code` on the plain build, and a bare deletion
-    // would orphan the referencing tests (E0433/E0425 in `cargo test`) —
-    // resolving it is a three-way human call the help text carries. In
-    // auto-delete mode it falls through to the deletion surface below, which
-    // ONLY the cascade acts on (gated behind the exclusive-test-scaffolding
-    // proof; a blocked target's suggestion is downgraded with the blocker).
-    if verdict == PubVerdict::TestOnly && !auto_delete {
-        let builder = builder.note(
-            "no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test \
-             build, and deleting the item would break the tests that reference it",
-        );
-        return (builder, false);
-    }
     // Only a MachineApplicable deletion is `removable`, so withholding it
     // here also keeps the cascade from seeding the item.
     if let Some(note) = delete_veto(cand, auto_delete, verdict) {

@@ -1568,6 +1568,69 @@ fn intra_use_only_in_test_cfg_variant_is_test_only() {
     assert_eq!(usage("alpha::prod_used"), PubUsage::IntraCrate);
 }
 
+/// `test_users` answers *which* test code reaches an item — the split the
+/// unused-pub test-only advice turns on: only the defining crate's own unit
+/// tests compile it with `cfg(test)`, so only they survive a `#[cfg(test)]`
+/// gate. Another crate's `+test` unit and an integration-test target each
+/// link the plain library. `defined_only_under_test` flags an item that is
+/// already `#[cfg(test)]` (no production unit defines it).
+#[test]
+fn test_users_split_own_unit_tests_from_other_test_code() {
+    let alpha_plain = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "own"], "K_O", "fn", Some("mod")),
+            item(&["alpha", "shared"], "K_S", "fn", Some("mod")),
+        ],
+        vec![],
+    );
+    let alpha_tests = frag_test_cfg(
+        "alpha",
+        vec![
+            item(&["alpha", "own"], "K_O2", "fn", Some("mod")),
+            item(&["alpha", "shared"], "K_S2", "fn", Some("mod")),
+            item(&["alpha", "gated"], "K_G2", "fn", Some("mod")),
+        ],
+        vec![
+            edge(&["alpha", "tests", "t"], &["alpha", "own"], "K_O2", false),
+            edge(&["alpha", "tests", "t"], &["alpha", "gated"], "K_G2", false),
+        ],
+    );
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![],
+        vec![edge(
+            &["beta", "tests", "t"],
+            &["alpha", "shared"],
+            "K_S",
+            false,
+        )],
+    );
+    let it = frag_target(
+        "it",
+        "test",
+        vec![],
+        vec![edge(&["it", "t"], &["alpha", "shared"], "K_S", true)],
+    );
+    let m = model(vec![(
+        "tests",
+        vec![alpha_plain, alpha_tests, beta_tests, it],
+    )]);
+
+    assert_eq!(m.test_users("alpha::own"), vec![TestUser::OwnUnitTests]);
+    assert_eq!(
+        m.test_users("alpha::shared"),
+        vec![
+            TestUser::UnitTests {
+                krate: "beta".into()
+            },
+            TestUser::TestTarget { krate: "it".into() },
+        ]
+    );
+    assert!(m.defined_only_under_test("alpha::gated"));
+    assert!(!m.defined_only_under_test("alpha::own"));
+}
+
 /// Intra reach only under a non-home config's PLAIN units — a caller gated
 /// behind a cfg the home build never compiles (`--target`-only, feature-gated).
 /// Production-used, so `IntraCrate`, but `pub(crate)` would trip `dead_code`

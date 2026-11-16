@@ -1,0 +1,14 @@
+[unused-pub]
+# `alpha::helper` is ALREADY `#[cfg(test)]` and only alpha's own unit tests
+# call it: still `pub` for nothing (no other crate can see a cfg(test) item),
+# but "gate it `#[cfg(test)]`" is no advice — the finding must say it is
+# already test-only and to narrow it instead.
+# `shipped` is the contrast: a production item only the cfg(test) helper
+# calls, so the own-unit-tests flavor (gate it `#[cfg(test)]`) applies.
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+[engine]
+configs = ["cargo build", "cargo test"]

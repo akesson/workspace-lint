@@ -28,7 +28,7 @@ mod store;
 mod union;
 
 pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
-pub use callgraph::{Callee, EnclosingFn, InboundRef};
+pub use callgraph::{Callee, EnclosingFn, InboundRef, TestUser};
 pub use clippy_guard::{DeletionUnmask, NarrowUnmask};
 pub use collateral::PrivateOrphan;
 pub use deps::{CrateDeps, DepsVerdict, NotJudged, NotJudgedDep, UnusedDep};
@@ -91,6 +91,9 @@ pub struct SemanticModel {
     /// The call-graph index (`enclosing_fn` / `callees_of` / `references_to`),
     /// built on first query — nothing pays for it unless a lint asks.
     call_graph: OnceLock<CallGraph>,
+    /// Every identity some production (non-test) unit defines, built on
+    /// first query — see [`Self::defined_only_under_test`].
+    prod_identities: OnceLock<std::collections::BTreeSet<String>>,
 }
 
 impl SemanticModel {
@@ -140,6 +143,7 @@ impl SemanticModel {
             configs,
             meta,
             call_graph: OnceLock::new(),
+            prod_identities: OnceLock::new(),
         })
     }
 
@@ -280,6 +284,20 @@ impl SemanticModel {
     /// the same name resolves to a different def, so the merge is withheld).
     pub fn callees_of(&self, identity: &str) -> BTreeSet<Callee> {
         self.call_graph().callees_of(&self.configs, identity)
+    }
+
+    /// The test code referencing `identity` — see [`TestUser`].
+    pub fn test_users(&self, identity: &str) -> Vec<TestUser> {
+        self.call_graph().test_users(&self.configs, identity)
+    }
+
+    /// `identity` exists only in test units — it is already `#[cfg(test)]`
+    /// (or test-target) code, so "gate it `#[cfg(test)]`" is no advice.
+    pub fn defined_only_under_test(&self, identity: &str) -> bool {
+        !self
+            .prod_identities
+            .get_or_init(|| scaffolding::prod_identities(&self.configs))
+            .contains(identity)
     }
 
     /// Every inbound reference to `identity` (deduped across cfg variants,

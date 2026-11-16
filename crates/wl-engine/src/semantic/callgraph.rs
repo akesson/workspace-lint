@@ -85,6 +85,25 @@ pub struct InboundRef {
     pub in_signature: bool,
 }
 
+/// One kind of test code that references a def — the unused-pub "only used
+/// by test code" finding's *which tests* answer, which decides the fix: only
+/// the defining crate's own unit tests compile it with `cfg(test)` on, so a
+/// `#[cfg(test)]` gate keeps exactly [`TestUser::OwnUnitTests`] working and
+/// breaks every other kind.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TestUser {
+    /// The defining crate's own `+test` unit (`#[cfg(test)]` code, `#[test]`
+    /// fns in the same crate).
+    OwnUnitTests,
+    /// Another crate's unit tests — that crate compiles the defining one as a
+    /// plain dependency, `cfg(test)` off.
+    UnitTests { krate: String },
+    /// An integration-test or bench target (`krate` is the target's crate
+    /// name, i.e. its file stem) — a separate crate even in the same package,
+    /// so the library it links is compiled without `cfg(test)` too.
+    TestTarget { krate: String },
+}
+
 /// A 12-byte locator into `configs[config].fragments[frag].references[edge]`.
 /// The index stores these rather than materialized records, so the whole graph
 /// costs ~three `u32`s per edge and a record is read from the mmap'd archive
@@ -269,6 +288,45 @@ impl CallGraph {
             });
         }
         seen.into_iter().collect()
+    }
+
+    /// The test code referencing `identity` (imports included — a `use` in
+    /// a test breaks just as surely as a call), deduped and sorted. Edges out
+    /// of compiler-synthesized defs (the `--test` harness `main`) are
+    /// plumbing, not authored test code, and are skipped.
+    pub(super) fn test_users(
+        &self,
+        configs: &[(String, Assembly)],
+        identity: &str,
+    ) -> Vec<TestUser> {
+        let Some(locs) = self.in_edges.get(identity) else {
+            return Vec::new();
+        };
+        let mut users: BTreeSet<TestUser> = BTreeSet::new();
+        for &loc in locs {
+            let asm = &configs[loc.config as usize].1;
+            let frag = asm.archived_fragment(loc.frag as usize);
+            if !Assembly::is_test_unit(frag) {
+                continue;
+            }
+            let e = &frag.references[loc.edge as usize];
+            if asm
+                .defs
+                .get(e.from_key.as_str())
+                .is_some_and(|d| d.synthetic)
+            {
+                continue;
+            }
+            let krate = frag.crate_name.as_str().to_owned();
+            users.insert(if frag.target_kind == "test" {
+                TestUser::TestTarget { krate }
+            } else if e.external {
+                TestUser::UnitTests { krate }
+            } else {
+                TestUser::OwnUnitTests
+            });
+        }
+        users.into_iter().collect()
     }
 
     /// A fn's own out-edges plus those of every def nested under it: the exact
