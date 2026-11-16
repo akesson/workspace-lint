@@ -123,8 +123,14 @@ fn assert_trees_equal(actual: &Path, expected: &Path) {
     );
 
     for rel in actual_files {
+        // The fixture trees are LF-only (`.gitattributes`), and the fix never
+        // writes a CR. The one CRLF source is `cargo fmt`, which `--fix` runs on
+        // a fmt-clean tree: rustfmt's default `newline_style = "Auto"` falls
+        // back to the platform's native ending for a file with no line ending
+        // to copy — on Windows, a file the fix emptied comes back as "\r\n".
         let a = std::fs::read_to_string(actual.join(&rel))
-            .unwrap_or_else(|e| panic!("read actual {}: {e}", rel.display()));
+            .unwrap_or_else(|e| panic!("read actual {}: {e}", rel.display()))
+            .replace("\r\n", "\n");
         let e = std::fs::read_to_string(expected.join(&rel))
             .unwrap_or_else(|err| panic!("read expected {}: {err}", rel.display()));
         assert_eq!(
