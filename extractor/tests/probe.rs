@@ -1319,6 +1319,53 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             "OwnDerived",
             "derive-only type has only Derived `impls` entries",
         );
+
+        // Schema 15: each Written block carries its own delete surface, its
+        // trait-ness, and its associated items.
+        let blocks = |ty: &str| -> Vec<&wl_ir::ImplFact> {
+            let k = key_of(ty);
+            frag.impls
+                .iter()
+                .filter(|f| Some(&f.self_key) == k.as_ref() && f.origin == ImplOrigin::Written)
+                .collect()
+        };
+        let block_text = |f: &wl_ir::ImplFact| {
+            f.full_span.as_ref().and_then(|s| {
+                // cwd is the probe workspace root (set above).
+                let src = std::fs::read_to_string(&s.file).ok()?;
+                src.get(s.lo as usize..s.hi as usize).map(str::to_string)
+            })
+        };
+        let empty = blocks("OwnEmpty");
+        ck.expect_named(
+            empty.len() == 1
+                && !empty[0].of_trait
+                && empty[0].items.is_empty()
+                && block_text(empty[0]).as_deref() == Some("impl OwnEmpty {}"),
+            "OwnEmpty",
+            "empty inherent block: no items, span is exactly `impl OwnEmpty {}`",
+        );
+        let target = blocks("OwnTarget");
+        let by_ref = frag
+            .items
+            .iter()
+            .find(|it| it.path.ends_with(&["OwnTarget".into(), "by_ref".into()]))
+            .map(|it| it.key.clone());
+        let inherent = target.iter().find(|f| !f.of_trait);
+        let tr = target.iter().find(|f| f.of_trait);
+        ck.expect_named(
+            inherent.is_some_and(|f| by_ref.as_ref().is_some_and(|k| f.items == [k.clone()]))
+                && inherent
+                    .and_then(|f| block_text(f))
+                    .is_some_and(|t| t.starts_with("impl OwnTarget {") && t.ends_with('}')),
+            "OwnTarget",
+            "inherent block lists exactly `by_ref`, span covers the whole block",
+        );
+        ck.expect_named(
+            tr.is_some_and(|f| f.items.len() == 2),
+            "OwnTarget",
+            "trait impl (`Not`) is `of_trait` with its two assoc items",
+        );
     }
 
     println!("\n{} passed, {} failed", ck.passes, ck.failures.len());

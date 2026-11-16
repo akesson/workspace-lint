@@ -271,11 +271,22 @@ fn fix_unused_pub_delete_unmask_len() {
 #[test]
 fn fix_unused_pub_delete_written_impl_veto() {
     // A type's own impls no longer keep it alive (schema 14), so a dead type
-    // with a hand-written `impl` is judged unused — but deleting the type
-    // alone would orphan the impl (E0412). Vetoed (shown, not applied), while
+    // with a hand-written trait `impl` is judged unused — but the cascade
+    // doesn't delete trait impls, and deleting the type alone would orphan
+    // it (E0412). Vetoed (shown, not applied), while
     // a derive-only dead type (its derives go with it) and `dead_helper` are
     // deleted in the same run.
     run_fix_fixture("fix__unused_pub_delete_written_impl_veto");
+}
+
+#[test]
+fn fix_unused_pub_delete_impl_blocks() {
+    // Hand-written inherent impl blocks as deletion units (schema 15): a dead
+    // type goes with its inherent impls (even an empty one), an impl emptied
+    // by item deletions goes instead of staying as an `impl T {}` husk, a
+    // type whose impl item survivors still reach stays, and a dead
+    // re-exported type takes its `pub use` with it.
+    run_fix_fixture("fix__unused_pub_delete_impl_blocks");
 }
 
 #[test]

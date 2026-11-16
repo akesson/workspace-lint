@@ -194,8 +194,12 @@ impl SemanticModel {
                     };
                     let from_crate = e.from.first().map(|s| s.as_str()).unwrap_or_default();
                     let scope = wl_ir::join_paths(&e.from, "::");
+                    // A `pub use` re-export dangles only first-order: rustc
+                    // never flags a re-export `unused_imports`, so one whose
+                    // target survives stays, whatever its users did.
                     let dangling = removed.contains_id(id)
-                        || (usage.reaches(&usage.by_removed, from_crate, &scope, id)
+                        || (!e.reexport
+                            && usage.reaches(&usage.by_removed, from_crate, &scope, id)
                             && !usage.reaches(&usage.by_survivor, from_crate, &scope, id));
                     if !dangling {
                         continue;

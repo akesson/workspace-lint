@@ -40,6 +40,7 @@ use wl_diagnostic::builder::at_line;
 use wl_lint_api::LintId;
 
 use super::config::UnusedPubConfig;
+use super::impl_fix::{Veto, attach_block_deletions, impl_keep_note};
 use super::ir::{FindingInputs, PubFinding, findings, generated_set};
 use super::scope::{FindingScope, shadow_veto_note};
 use wl_lint_api::surgery::deletion::{DeleteOutcome, delete_suggestion};
@@ -83,7 +84,9 @@ pub fn run(
     // would unmask on a SURVIVING item (a field losing its last read, a `len`
     // losing its `is_empty`). Populated per round from the trial removal set;
     // a vetoed item never seeds again (monotone, so the loop still terminates).
-    let mut vetoed: HashMap<String, DeletionUnmask> = HashMap::new();
+    // A dead type whose hand-written impls can't go with it joins the same
+    // map (`Veto::Impl`).
+    let mut vetoed: HashMap<String, Veto> = HashMap::new();
     let shadow_note = |id: &str| -> Option<String> { shadow.mention_id(id).map(shadow_veto_note) };
 
     // TestOnly-deletion bookkeeping. `test_blocked` (target → veto note) is
@@ -195,7 +198,22 @@ pub fn run(
                 .collect();
             let trial_new: Vec<String> = newly.iter().chain(group_ids.iter()).cloned().collect();
             let trial = RemovalSet::new(removed.iter().chain(trial_new.iter()));
-            vetoed.extend(model.deletion_unmasks(&trial, &trial_new));
+            vetoed.extend(
+                model
+                    .deletion_unmasks(&trial, &trial_new)
+                    .into_iter()
+                    .map(|(id, u)| (id, Veto::Unmask(u))),
+            );
+            // A dead type goes together with its hand-written inherent impls
+            // (the impl-block deletions are attached at render time) — unless
+            // one is a trait impl, macro-generated, or holds an item code
+            // that survives still uses.
+            vetoed.extend(
+                model
+                    .impls_keeping(&trial, &trial_new)
+                    .into_iter()
+                    .map(|(id, k)| (id, Veto::Impl(k))),
+            );
             newly.retain(|id| !vetoed.contains_key(id));
             drop_unmasked_groups(&mut groups, &vetoed, &mut test_blocked);
             commit_groups(groups, &mut newly, &mut cleared_note, &mut scaffold_diags);
@@ -210,12 +228,12 @@ pub fn run(
         round += 1;
     };
 
-    let mut diagnostics: Vec<Diagnostic> = final_findings
+    let mut diagnostics: Vec<(Option<String>, Diagnostic)> = final_findings
         .into_iter()
         .map(|f| {
             let block = f.id.as_deref().and_then(|id| blocked.get(id));
             let shadow_note = f.id.as_deref().and_then(|id| shadowed.get(id));
-            let unmask = f.id.as_deref().and_then(|id| vetoed.get(id));
+            let veto = f.id.as_deref().and_then(|id| vetoed.get(id));
             let transitive = f
                 .id
                 .as_deref()
@@ -241,11 +259,11 @@ pub fn run(
                 // Possibly used under an uncovered cfg — the veto keeps the
                 // item and explains which config would prove it either way.
                 d.withhold_deletions(note);
-            } else if let Some(unmask) = unmask {
+            } else if let Some(veto) = veto {
                 // Deleting it would activate a warning on a SURVIVOR — the
                 // fixed tree would fail a `-D warnings` gate. Keep it, say
                 // exactly what would fire and where.
-                d.withhold_deletions(&unmask_note(unmask));
+                d.withhold_deletions(&veto_note(veto));
             } else if let Some(note) = f.id.as_deref().and_then(|id| test_blocked.get(id)) {
                 // A TestOnly target whose referencing tests aren't exclusive
                 // scaffolding — the deletion stays shown-not-applied, and the
@@ -264,7 +282,7 @@ pub fn run(
                         .into(),
                 );
             }
-            d
+            (f.id, d)
         })
         .collect();
 
@@ -278,17 +296,22 @@ pub fn run(
         }
         if let Some(f) = collateral_finding(&o, config, fast, &generated) {
             let mut d = f.diagnostic;
-            if let Some(unmask) = vetoed.get(&o.id) {
-                d.withhold_deletions(&unmask_note(unmask));
+            if let Some(veto) = vetoed.get(&o.id) {
+                d.withhold_deletions(&veto_note(veto));
             }
-            diagnostics.push(d);
+            diagnostics.push((Some(o.id.clone()), d));
         }
     }
 
     // The test-scaffolding deletions, stashed at seed time (each decision is
     // made exactly once; the items are in `removed`, so the import surgery
     // below already trims their `use`s).
-    diagnostics.extend(scaffold_diags.into_iter().map(|f| f.diagnostic));
+    diagnostics.extend(scaffold_diags.into_iter().map(|f| (f.id, f.diagnostic)));
+
+    // Hand-written inherent impl blocks the removals delete or empty — the
+    // block deletion rides on the findings that cause it.
+    attach_block_deletions(&mut diagnostics, &model.impl_block_deletions(&removal));
+    let diagnostics: Vec<Diagnostic> = diagnostics.into_iter().map(|(_, d)| d).collect();
 
     let dangling = model.dangling_imports(&removal, &generated);
     let surgery = import_surgery(dangling, fast.root());
@@ -308,7 +331,7 @@ struct GateCtx<'a> {
     generated: &'a HashSet<PathBuf>,
     removed: &'a HashSet<String>,
     blocked: &'a HashMap<String, ExcisionBlock>,
-    vetoed: &'a HashMap<String, DeletionUnmask>,
+    vetoed: &'a HashMap<String, Veto>,
     shadow_note: &'a dyn Fn(&str) -> Option<String>,
     suppressed: &'a dyn Fn(&Diagnostic) -> bool,
 }
@@ -378,7 +401,7 @@ fn gate_scaffolding(
 /// record the veto note on the target.
 fn drop_unmasked_groups(
     groups: &mut Vec<(String, Vec<PubFinding>)>,
-    vetoed: &HashMap<String, DeletionUnmask>,
+    vetoed: &HashMap<String, Veto>,
     test_blocked: &mut HashMap<String, String>,
 ) {
     groups.retain(|(target, fs)| {
@@ -581,6 +604,14 @@ fn collateral_finding(
     })
 }
 
+/// The note for a [`Veto`] — what keeps the item, and what to do.
+fn veto_note(veto: &Veto) -> String {
+    match veto {
+        Veto::Unmask(u) => unmask_note(u),
+        Veto::Impl(k) => impl_keep_note(k),
+    }
+}
+
 /// The veto note for a [`DeletionUnmask`] — names the exact warning the
 /// deletion would activate on a survivor, in the style of the narrow-guard
 /// notes (`ir.rs`): what fires, on what, and what the human can do instead.
@@ -665,8 +696,8 @@ mod tests {
             ("a::z".to_string(), vec![finding("b::tests::t3")]),
         ];
         let vetoed = HashMap::from([
-            ("b::tests::t1".to_string(), unmask()),
-            ("a::y".to_string(), unmask()),
+            ("b::tests::t1".to_string(), Veto::Unmask(unmask())),
+            ("a::y".to_string(), Veto::Unmask(unmask())),
         ]);
         let mut test_blocked = HashMap::new();
         drop_unmasked_groups(&mut groups, &vetoed, &mut test_blocked);

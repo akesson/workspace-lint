@@ -10,9 +10,12 @@ and the extraction tier; `--fast-only` skips it.
 ## What it checks
 
 Every `pub` item is checked for a reference from elsewhere in the workspace.
-Items re-exported by name (`pub use m::Item`) are always skipped (narrowing
-them would break the re-export); a glob (`pub use m::*`) is not a guard — it
-silently skips items that are no longer visible enough. Types that appear in
+Items re-exported by name (`pub use m::Item`) are skipped while anything
+uses them (narrowing them would break the re-export) — a use through the
+re-export reaches the item itself, so one nothing reaches under any path is
+reported unused, and `--fix-auto-delete` removes it with its `pub use`; a
+glob (`pub use m::*`) is not a guard — it silently skips items that are no
+longer visible enough. Types that appear in
 the *public signature* of a more-visible item (a `pub fn` return type, a
 `pub` field, a trait-impl associated type, …) are skipped too — tightening
 those would not compile (E0446 / `private_interfaces`). The engine sees
@@ -182,10 +185,14 @@ under a surviving `len`. Reads and constructions inside derived
 `dead_code` discounts them — a field whose only surviving reader is its
 `#[derive(Debug)]` is judged unread.
 
-A type with a **hand-written `impl` block** is never auto-deleted: the
-impl would be orphaned (only the type's derives go with it, being its
-attributes). The finding stays, shown-not-applied, and the note says to
-delete the type together with its impls by hand. Narrowing a type with an
+A dead type with **hand-written inherent `impl` blocks** is deleted
+together with them (even an empty `impl T {}`), as long as nothing that
+survives still uses an item inside one; and an inherent `impl` whose every
+item is deleted goes too, rather than staying as an `impl T {}` husk. A
+type with a hand-written **trait** impl, a macro-generated impl, or an impl
+item survivors still use is never auto-deleted: the finding stays,
+shown-not-applied, and the note says why (derives always go with the type,
+being its attributes). Narrowing a type with an
 inherent method nothing calls is likewise shown-not-applied —
 `pub(crate)` un-exports the method and `dead_code` would flag it.
 

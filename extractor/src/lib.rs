@@ -244,7 +244,7 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         }
     }
 
-    let (impls, impl_index) = collect_impls(tcx);
+    let (impls, impl_index) = collect_impls(tcx, sm);
     let references = collect_references(tcx, &crate_code, &impl_index);
     let loaded_files = collect_loaded_files(sm);
 
@@ -1500,7 +1500,10 @@ fn in_trivial_field_reads_derive(tcx: TyCtxt<'_>, mut did: DefId) -> bool {
 /// local ADT, with its origin (`#[automatically_derived]` ⇒ derive), plus the
 /// impl `DefId` → table index map [`RefEdge::from_impl`] is resolved through.
 /// Definition order, so the table is stable across identical compilations.
-fn collect_impls(tcx: TyCtxt<'_>) -> (Vec<ImplFact>, HashMap<DefId, u32>) {
+fn collect_impls(
+    tcx: TyCtxt<'_>,
+    sm: &rustc_span::source_map::SourceMap,
+) -> (Vec<ImplFact>, HashMap<DefId, u32>) {
     let mut impls = Vec::new();
     let mut index = HashMap::new();
     for local in tcx.hir_crate_items(()).definitions() {
@@ -1522,6 +1525,13 @@ fn collect_impls(tcx: TyCtxt<'_>) -> (Vec<ImplFact>, HashMap<DefId, u32>) {
             } else {
                 ImplOrigin::Written
             },
+            of_trait: matches!(tcx.def_kind(did), DefKind::Impl { of_trait: true }),
+            full_span: full_item_span(tcx, sm, local),
+            items: tcx
+                .associated_item_def_ids(did)
+                .iter()
+                .map(|&item| def_key(tcx, item))
+                .collect(),
         });
     }
     (impls, index)

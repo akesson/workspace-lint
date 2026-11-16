@@ -146,7 +146,15 @@ use serde::{Deserialize, Serialize};
 /// type's) visibility, so a pre-14 fragment let `--fix` narrow `Bound` into
 /// a `private_bounds` / `private_interfaces` failure (LeaveDates
 /// `BookingMessage`). The misleading-absence bump trigger.
-pub const SCHEMA_VERSION: u32 = 14;
+/// 15 — [`ImplFact`] gained the impl block's own delete surface
+/// ([`ImplFact::full_span`]), its trait-ness ([`ImplFact::of_trait`]) and
+/// its associated items ([`ImplFact::items`]). The `--fix-auto-delete`
+/// cascade deletes a dead type together with its inherent impls, and an
+/// inherent impl whose every item it deleted — a pre-15 fragment has no
+/// block span, so the cascade would keep vetoing dead types with an empty
+/// `impl T {}` and leave `impl T {}` husks behind. The misleading-absence
+/// bump trigger.
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// One crate's contribution to the IR, emitted during that crate's compilation
 /// and written to `$WL_IR_OUT/<crate>.wlir`. Phase 2 assembles these.
@@ -443,6 +451,18 @@ pub struct ImplFact {
     /// Stable key of the impl's nominal self type ([`ItemFact::key`]).
     pub self_key: String,
     pub origin: ImplOrigin,
+    /// `impl Trait for T` rather than an inherent `impl T`.
+    #[serde(default)]
+    pub of_trait: bool,
+    /// The whole block — attrs/doc through the closing brace — as the
+    /// `--fix-auto-delete` write surface (cf. [`ItemFact::full_span`]).
+    /// `None` when macro-generated (no editable surface).
+    #[serde(default)]
+    pub full_span: Option<Span>,
+    /// Stable keys ([`ItemFact::key`]) of the block's associated items, in
+    /// definition order — what must all be gone before the block can be.
+    #[serde(default)]
+    pub items: Vec<String>,
 }
 
 /// Where an [`ImplFact`] comes from.

@@ -40,15 +40,17 @@ use crate::LintId;
 use wl_diagnostic::{Applicability, Diagnostic, Span, Suggestion, builder::at_line};
 
 /// Build the coalesced import-deletion diagnostics for a cascade's dangling
-/// imports. `root` joins the workspace-relative span files. Imports that can't
-/// be safely excised (macro-generated, or `pub use` re-exports) are skipped —
-/// the cascade already refused to delete their targets
-/// (`SemanticModel::import_excision_blocked`), so they never dangle here.
+/// imports. `root` joins the workspace-relative span files. Macro-generated
+/// imports can't be excised and are skipped — the cascade already refused to
+/// delete their targets (`SemanticModel::import_excision_blocked`), so they
+/// never dangle here. A `pub use` re-export dangles only when its target is
+/// deleted (an `Unused` re-export target — nothing reaches it through any
+/// path), and goes with it.
 pub fn import_surgery(dangling: Vec<DanglingImport>, root: &Path) -> Vec<Diagnostic> {
     // Group excisable leaves by file.
     let mut by_file: BTreeMap<String, Vec<DanglingImport>> = BTreeMap::new();
     for d in dangling {
-        if d.reexport || d.decl.from_expansion || d.elem.from_expansion {
+        if d.decl.from_expansion || d.elem.from_expansion {
             continue; // un-editable; the target was withheld from removal
         }
         by_file.entry(d.decl.file.clone()).or_default().push(d);

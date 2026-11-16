@@ -4,7 +4,9 @@
 //! synthetic filtering, cfg-union retirement, boundary classification, facade
 //! closures) precisely enough that a regression names the broken rule.
 
-use wl_ir::{IrFragment, ItemFact, RefEdge, SCHEMA_VERSION, Span, Visibility};
+use wl_ir::{
+    ImplFact, ImplOrigin, IrFragment, ItemFact, RefEdge, SCHEMA_VERSION, Span, Visibility,
+};
 
 use super::meta::test_support::fixture_meta;
 use super::*;
@@ -70,6 +72,18 @@ fn edge_ext(from: &[&str], to: &[&str], to_key: &str, import: bool, external: bo
         decl_span: None,
         elem_span: None,
         from_impl: None,
+    }
+}
+
+/// An impl-table entry with no block span or items — the pre-15 shape the
+/// own-impl-edge tests need; the impl-block deletion tests build full ones.
+fn impl_fact(self_key: &str, origin: ImplOrigin) -> ImplFact {
+    ImplFact {
+        self_key: self_key.into(),
+        origin,
+        of_trait: false,
+        full_span: None,
+        items: Vec::new(),
     }
 }
 
@@ -743,7 +757,6 @@ fn signature_exposure_requires_pub_from() {
 /// with the item.
 #[test]
 fn own_impl_edges_neither_use_nor_expose_the_self_type() {
-    use wl_ir::{ImplFact, ImplOrigin};
     let dead = item(&["alpha", "Dead"], "K_DEAD", "struct", Some("mod"));
     let mut method = item(&["alpha", "Dead", "m"], "K_M", "fn", Some("impl"));
     method.self_type = Some("K_DEAD".into());
@@ -773,14 +786,8 @@ fn own_impl_edges_neither_use_nor_expose_the_self_type() {
         vec![receiver, derive, real],
     );
     f.impls = vec![
-        ImplFact {
-            self_key: "K_DEAD".into(),
-            origin: ImplOrigin::Written,
-        },
-        ImplFact {
-            self_key: "K_DER".into(),
-            origin: ImplOrigin::Derived,
-        },
+        impl_fact("K_DEAD", ImplOrigin::Written),
+        impl_fact("K_DER", ImplOrigin::Derived),
     ];
     let m = model(vec![("default", vec![f])]);
     let asm = m.primary();
@@ -816,7 +823,6 @@ fn own_impl_edges_neither_use_nor_expose_the_self_type() {
 /// helper would stay "used" by a derive that no longer exists.
 #[test]
 fn removing_a_type_removes_its_derive_impl_edges() {
-    use wl_ir::{ImplFact, ImplOrigin};
     let derived = item(&["alpha", "Derived"], "K_DER", "struct", Some("mod"));
     let helper = item(&["alpha", "helper"], "K_HELP", "fn", Some("mod"));
     let mut from_derive = edge(
@@ -827,10 +833,7 @@ fn removing_a_type_removes_its_derive_impl_edges() {
     );
     from_derive.from_impl = Some(0);
     let mut f = frag("alpha", vec![derived, helper], vec![from_derive]);
-    f.impls = vec![ImplFact {
-        self_key: "K_DER".into(),
-        origin: ImplOrigin::Derived,
-    }];
+    f.impls = vec![impl_fact("K_DER", ImplOrigin::Derived)];
     let m = model(vec![("default", vec![f])]);
     assert_eq!(
         usage_map(&m.pub_candidates())["alpha::helper"],
@@ -1568,6 +1571,82 @@ fn intra_use_only_in_test_cfg_variant_is_test_only() {
     assert_eq!(usage("alpha::prod_used"), PubUsage::IntraCrate);
 }
 
+/// An inherent impl block of a written type, with its delete surface.
+fn written_impl(self_key: &str, of_trait: bool, lo: u32, hi: u32, items: &[&str]) -> ImplFact {
+    ImplFact {
+        of_trait,
+        full_span: Some(Span {
+            file: "src/lib.rs".into(),
+            lo,
+            hi,
+            line: 1,
+            from_expansion: false,
+        }),
+        items: items.iter().map(|s| s.to_string()).collect(),
+        ..impl_fact(self_key, ImplOrigin::Written)
+    }
+}
+
+/// Impl blocks as deletion units (schema 15). `Dead` has an inherent impl
+/// whose item nothing else reaches → may go with it; `Pinned`'s impl item is
+/// still called by a survivor → kept, naming the item; `Shown` has a trait
+/// impl → kept. `Live`'s block is emptied by deleting its only method.
+#[test]
+fn impl_blocks_go_with_their_type_or_when_emptied() {
+    let mut f = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "Dead"], "K_D", "struct", Some("mod")),
+            item(&["alpha", "Dead", "m"], "K_DM", "fn", Some("impl")),
+            item(&["alpha", "Pinned"], "K_P", "struct", Some("mod")),
+            item(&["alpha", "Pinned", "k"], "K_PK", "fn", Some("impl")),
+            item(&["alpha", "Shown"], "K_S", "struct", Some("mod")),
+            item(&["alpha", "Live"], "K_L", "struct", Some("mod")),
+            item(&["alpha", "Live", "gone"], "K_LG", "fn", Some("impl")),
+            item(&["alpha", "user"], "K_U", "fn", Some("mod")),
+        ],
+        vec![edge(
+            &["alpha", "user"],
+            &["alpha", "Pinned", "k"],
+            "K_PK",
+            false,
+        )],
+    );
+    f.impls = vec![
+        written_impl("K_D", false, 10, 20, &["K_DM"]),
+        written_impl("K_P", false, 30, 40, &["K_PK"]),
+        written_impl("K_S", true, 50, 60, &[]),
+        written_impl("K_L", false, 70, 80, &["K_LG"]),
+    ];
+    let m = model(vec![("default", vec![f])]);
+
+    let types = ["alpha::Dead", "alpha::Pinned", "alpha::Shown"].map(String::from);
+    let trial = RemovalSet::new(types.iter());
+    let keep = m.impls_keeping(&trial, &types);
+    assert!(
+        !keep.contains_key("alpha::Dead"),
+        "unreached impl goes with it"
+    );
+    assert_eq!(
+        keep.get("alpha::Pinned"),
+        Some(&ImplKeep::ItemReached {
+            item: "alpha::Pinned::k".into()
+        })
+    );
+    assert_eq!(keep.get("alpha::Shown"), Some(&ImplKeep::TraitImpl));
+
+    let removed = RemovalSet::new(["alpha::Dead", "alpha::Live::gone"]);
+    let blocks = m.impl_block_deletions(&removed);
+    let summary: Vec<(&str, bool, u32)> = blocks
+        .iter()
+        .map(|b| (b.self_type.as_str(), b.with_type, b.span.lo))
+        .collect();
+    assert_eq!(
+        summary,
+        [("alpha::Dead", true, 10), ("alpha::Live", false, 70)]
+    );
+}
+
 /// `PubCandidate::test_users` answers *which* test code reaches an item —
 /// the split the unused-pub test-only advice turns on: only the defining
 /// crate's own unit tests compile it with `cfg(test)`, so only they survive a
@@ -1616,10 +1695,7 @@ fn test_users_split_own_unit_tests_from_other_test_code() {
             own_impl_edge,
         ],
     );
-    alpha_tests.impls = vec![ImplFact {
-        self_key: "K_F2".into(),
-        origin: ImplOrigin::Written,
-    }];
+    alpha_tests.impls = vec![impl_fact("K_F2", ImplOrigin::Written)];
     let beta_tests = frag_test_cfg(
         "beta",
         vec![],

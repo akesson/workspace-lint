@@ -196,7 +196,8 @@ Detects `pub` items that are never used across the workspace, judged on the
 rustc engine's resolved reference graph — it needs **no** SCIP index and **no**
 `rust-analyzer` subprocess, so it runs the same locally and in CI. Items
 re-exported via `pub use`
-are always skipped (narrowing them would break the re-export). So are types that
+are skipped while anything uses them (narrowing them would break the
+re-export); one nothing reaches is reported, and deleted with its `pub use`. So are types that
 appear in the *public signature* of a more-visible item (a `pub fn` return type,
 a `pub` field, a trait-impl associated type, …) — tightening those would not
 compile (E0446 / `private_interfaces`). That exemption also covers a type a
