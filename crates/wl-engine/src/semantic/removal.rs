@@ -82,6 +82,8 @@ pub(super) struct DegreeMaps {
     /// Reach credited to identities the config has **no def for** (the
     /// defining crate wasn't extracted here at all). See [`ForeignReach`].
     pub(super) foreign_reach: BTreeMap<String, ForeignReach>,
+    /// Key → the test code reaching it (see [`super::TestUser`]).
+    pub(super) test_users: BTreeMap<String, BTreeSet<super::TestUser>>,
 }
 
 impl DegreeMaps {
@@ -93,6 +95,7 @@ impl DegreeMaps {
             test_intra_degree: &self.test_intra_degree,
             signature_exposed: &self.signature_exposed,
             foreign_reach: &self.foreign_reach,
+            test_users: &self.test_users,
         }
     }
 }
@@ -108,4 +111,5 @@ pub(super) struct DegreeView<'a> {
     pub(super) test_intra_degree: &'a BTreeMap<String, usize>,
     pub(super) signature_exposed: &'a BTreeSet<String>,
     pub(super) foreign_reach: &'a BTreeMap<String, ForeignReach>,
+    pub(super) test_users: &'a BTreeMap<String, BTreeSet<super::TestUser>>,
 }

@@ -54,10 +54,15 @@ Three findings:
   config entry, and is never deleted (see the mention veto below). No fix is
   machine-applied by plain `--fix`
   (narrowing trips `dead_code` on the non-test build; a bare deletion breaks
-  the referencing tests) — gate it `#[cfg(test)]`, move it into test code,
-  mark a deliberate test-support API with `expect`, or remove it together
-  with its tests (`--fix-auto-delete` does exactly that when the tests are
-  exclusive scaffolding — see **Fix behavior**).
+  the referencing tests). The finding names the test code using the item,
+  because that decides the fix: only the crate's *own* unit tests compile it
+  with `cfg(test)` on. Used only there → gate it `#[cfg(test)]`. Used by
+  another crate's tests or an integration test (a separate crate, even in
+  the same package) → a `#[cfg(test)]` gate would break them; move it into a
+  test-support crate or feature, or mark a deliberate test-support API with
+  `expect`. Already `#[cfg(test)]` → just narrow it to `pub(crate)`. Or
+  remove it together with its tests (`--fix-auto-delete` does exactly that
+  when the tests are exclusive scaffolding — see **Fix behavior**).
 - **unused anywhere** → suggests `pub(crate)` (or deletion, under
   `--fix-auto-delete`).
 

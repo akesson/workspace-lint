@@ -40,7 +40,7 @@ use wl_diagnostic::builder::at_line;
 use wl_lint_api::LintId;
 
 use super::config::UnusedPubConfig;
-use super::ir::{PubFinding, findings, generated_set};
+use super::ir::{FindingInputs, PubFinding, findings, generated_set};
 use super::scope::{FindingScope, shadow_veto_note};
 use wl_lint_api::surgery::deletion::{DeleteOutcome, delete_suggestion};
 use wl_lint_api::surgery::import_surgery;
@@ -67,6 +67,13 @@ pub fn run(
     // generated file the generator owns): deleting them would dangle an import
     // surgery can't reach, so they never seed a removal.
     let generated = generated_set(fast);
+    let inputs = FindingInputs {
+        config,
+        fast,
+        model,
+        generated: &generated,
+        suppressed,
+    };
     let blocked = model.import_excision_blocked(&generated);
     // Cfg-shadow veto: identity → the note explaining which uncovered cfg
     // mentions it. Populated lazily as candidates surface (the mention query
@@ -100,7 +107,7 @@ pub fn run(
     let final_findings = loop {
         let removal = RemovalSet::new(removed.iter());
         let cands = model.pub_candidates_excluding(&removal);
-        let batch = findings(config, fast, cands, true, &generated, suppressed);
+        let batch = findings(&inputs, cands, true);
         // Seeds for this round: genuinely-removable (Unused + MachineApplicable
         // deletion) findings that aren't already removed, aren't silenced, and
         // aren't macro-import-blocked. TestOnly findings are DIVERTED — even

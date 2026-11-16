@@ -1568,6 +1568,161 @@ fn intra_use_only_in_test_cfg_variant_is_test_only() {
     assert_eq!(usage("alpha::prod_used"), PubUsage::IntraCrate);
 }
 
+/// `PubCandidate::test_users` answers *which* test code reaches an item —
+/// the split the unused-pub test-only advice turns on: only the defining
+/// crate's own unit tests compile it with `cfg(test)`, so only they survive a
+/// `#[cfg(test)]` gate. Another crate's `+test` unit, a bin's unit tests (a
+/// separate crate despite sharing the lib's name) and an integration-test
+/// target each link the plain library. The users come from the verdict's own
+/// edge fold: the type's own impl is not a user, a trait member's reach
+/// credits the trait, and the cascade's removals drop their edges.
+/// `defined_only_under_test` flags an item that is already `#[cfg(test)]`
+/// (no production unit defines it) — but only for a crate the matrix
+/// compiled for production at all.
+#[test]
+fn test_users_split_own_unit_tests_from_other_test_code() {
+    use wl_ir::{ImplFact, ImplOrigin};
+    let alpha_plain = frag(
+        "alpha",
+        vec![
+            item(&["alpha", "own"], "K_O", "fn", Some("mod")),
+            item(&["alpha", "shared"], "K_S", "fn", Some("mod")),
+            item(&["alpha", "Foo"], "K_F", "struct", Some("mod")),
+            item(&["alpha", "Ext"], "K_E", "trait", Some("mod")),
+            item(&["alpha", "Ext", "go"], "K_EG", "fn", Some("trait")),
+        ],
+        vec![],
+    );
+    // alpha's own tests: call `own`, and an `impl Foo` block (the type's
+    // own impl — part of Foo, not a user of it).
+    let mut own_impl_edge = edge(
+        &["alpha", "{impl Foo}", "m"],
+        &["alpha", "Foo"],
+        "K_F2",
+        false,
+    );
+    own_impl_edge.from_impl = Some(0);
+    let mut alpha_tests = frag_test_cfg(
+        "alpha",
+        vec![
+            item(&["alpha", "own"], "K_O2", "fn", Some("mod")),
+            item(&["alpha", "shared"], "K_S2", "fn", Some("mod")),
+            item(&["alpha", "Foo"], "K_F2", "struct", Some("mod")),
+            item(&["alpha", "gated"], "K_G2", "fn", Some("mod")),
+        ],
+        vec![
+            edge(&["alpha", "tests", "t"], &["alpha", "own"], "K_O2", false),
+            edge(&["alpha", "tests", "t"], &["alpha", "gated"], "K_G2", false),
+            own_impl_edge,
+        ],
+    );
+    alpha_tests.impls = vec![ImplFact {
+        self_key: "K_F2".into(),
+        origin: ImplOrigin::Written,
+    }];
+    let beta_tests = frag_test_cfg(
+        "beta",
+        vec![],
+        vec![
+            edge(&["beta", "tests", "t"], &["alpha", "shared"], "K_S", false),
+            edge(&["beta", "tests", "t"], &["alpha", "Foo"], "K_F", false),
+            // A method call lands on the trait member, never the trait.
+            edge(
+                &["beta", "tests", "t"],
+                &["alpha", "Ext", "go"],
+                "K_EG",
+                false,
+            ),
+        ],
+    );
+    // alpha's binary: same crate name, separate crate (`external`).
+    let bin_tests = IrFragment {
+        is_test_cfg: true,
+        ..frag_target(
+            "alpha",
+            "bin",
+            vec![],
+            vec![edge_ext(
+                &["alpha", "tests", "b"],
+                &["alpha", "shared"],
+                "K_S",
+                false,
+                true,
+            )],
+        )
+    };
+    let it = frag_target(
+        "it",
+        "test",
+        vec![],
+        vec![edge(&["it", "t"], &["alpha", "shared"], "K_S", true)],
+    );
+    // A crate the matrix compiles ONLY as its `+test` unit.
+    let solo_tests = frag_test_cfg(
+        "solo",
+        vec![item(&["solo", "helper"], "K_H", "fn", Some("mod"))],
+        vec![edge(
+            &["solo", "tests", "t"],
+            &["solo", "helper"],
+            "K_H",
+            false,
+        )],
+    );
+    let m = model(vec![(
+        "tests",
+        vec![
+            alpha_plain,
+            alpha_tests,
+            beta_tests,
+            bin_tests,
+            it,
+            solo_tests,
+        ],
+    )]);
+    let users = |cands: &[PubCandidate], id: &str| {
+        cands
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("no candidate {id}"))
+            .test_users
+            .clone()
+    };
+    let beta = TestUser::UnitTests {
+        krate: "beta".into(),
+    };
+    let cands = m.pub_candidates();
+    assert_eq!(users(&cands, "alpha::own"), vec![TestUser::OwnUnitTests]);
+    assert_eq!(
+        users(&cands, "alpha::shared"),
+        vec![
+            beta.clone(),
+            TestUser::BinUnitTests {
+                krate: "alpha".into()
+            },
+            TestUser::TestTarget { krate: "it".into() },
+        ]
+    );
+    assert_eq!(
+        users(&cands, "alpha::Foo"),
+        vec![beta.clone()],
+        "own impl is no user"
+    );
+    assert_eq!(
+        users(&cands, "alpha::Ext"),
+        vec![beta.clone()],
+        "member reach credits the trait"
+    );
+    // The cascade removed beta's test: its edges stop naming users.
+    let after = m.pub_candidates_excluding(&RemovalSet::new(["beta::tests::t"]));
+    assert!(!users(&after, "alpha::shared").contains(&beta));
+    assert!(m.defined_only_under_test("alpha::gated"));
+    assert!(!m.defined_only_under_test("alpha::own"));
+    assert!(
+        !m.defined_only_under_test("solo::helper"),
+        "no production unit for `solo` at all: not judgeable"
+    );
+}
+
 /// Intra reach only under a non-home config's PLAIN units — a caller gated
 /// behind a cfg the home build never compiles (`--target`-only, feature-gated).
 /// Production-used, so `IntraCrate`, but `pub(crate)` would trip `dead_code`

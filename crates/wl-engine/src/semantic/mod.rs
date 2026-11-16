@@ -15,6 +15,7 @@ mod clippy_guard;
 mod collateral;
 mod def_info;
 mod deps;
+mod edge_fold;
 mod impls;
 mod import_usage;
 mod imports;
@@ -34,7 +35,7 @@ pub use collateral::PrivateOrphan;
 pub use deps::{CrateDeps, DepsVerdict, NotJudged, NotJudgedDep, UnusedDep};
 pub use imports::{DanglingImport, ExcisionBlock};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
-pub use pub_usage::{PubCandidate, PubUsage};
+pub use pub_usage::{PubCandidate, PubUsage, TestUser};
 pub use removal::RemovalSet;
 pub use scaffolding::{BlockReason, ScaffoldVerdict, TestBlocker, TestScaffold, TestScaffolding};
 pub use union::{Lead, Retired, UnionVerdict};
@@ -91,6 +92,9 @@ pub struct SemanticModel {
     /// The call-graph index (`enclosing_fn` / `callees_of` / `references_to`),
     /// built on first query — nothing pays for it unless a lint asks.
     call_graph: OnceLock<CallGraph>,
+    /// Every identity some production (non-test) unit defines, built on
+    /// first query — see [`Self::defined_only_under_test`].
+    prod_identities: OnceLock<std::collections::BTreeSet<String>>,
 }
 
 impl SemanticModel {
@@ -140,6 +144,7 @@ impl SemanticModel {
             configs,
             meta,
             call_graph: OnceLock::new(),
+            prod_identities: OnceLock::new(),
         })
     }
 
@@ -280,6 +285,24 @@ impl SemanticModel {
     /// the same name resolves to a different def, so the merge is withheld).
     pub fn callees_of(&self, identity: &str) -> BTreeSet<Callee> {
         self.call_graph().callees_of(&self.configs, identity)
+    }
+
+    /// `identity` exists only in test units — it is already `#[cfg(test)]`
+    /// (or test-target) code, so "gate it `#[cfg(test)]`" is no advice.
+    /// Judged only when the matrix compiled the crate for production at all:
+    /// under `configs = ["cargo test"]` a leaf lib may have just its `+test`
+    /// unit, where every item would otherwise read as test-only.
+    pub fn defined_only_under_test(&self, identity: &str) -> bool {
+        let prod = self
+            .prod_identities
+            .get_or_init(|| scaffolding::prod_identities(&self.configs));
+        let krate = identity.split("::").next().unwrap_or(identity);
+        let prefix = format!("{krate}::");
+        let crate_has_prod_unit = prod
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|id| id.starts_with(&prefix));
+        crate_has_prod_unit && !prod.contains(identity)
     }
 
     /// Every inbound reference to `identity` (deduped across cfg variants,

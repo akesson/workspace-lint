@@ -415,7 +415,7 @@ impl<'a> Graph<'a> {
 
 /// Every identity defined by a non-test unit anywhere in the matrix. "Test
 /// item" = defined, but never by a production unit.
-fn prod_identities(configs: &[(String, Assembly)]) -> BTreeSet<String> {
+pub(super) fn prod_identities(configs: &[(String, Assembly)]) -> BTreeSet<String> {
     let mut prod_ids: BTreeSet<String> = BTreeSet::new();
     for (_, asm) in configs {
         for frag in asm.archived_fragments() {

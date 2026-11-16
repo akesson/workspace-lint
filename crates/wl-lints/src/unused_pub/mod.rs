@@ -39,6 +39,7 @@ pub mod cascade;
 pub mod config;
 mod ir;
 mod scope;
+mod test_only;
 #[cfg(test)]
 mod tests;
 

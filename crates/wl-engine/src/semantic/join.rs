@@ -64,7 +64,7 @@ impl IdentityIndex {
 /// reach at identity level instead, and the union / per-candidate
 /// classification layers OR it in (the identity is always defined by whichever
 /// config the global index learned it from).
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub(super) struct ForeignReach {
     /// A real (non-import) use-site in a crate other than the defining one.
     pub(super) cross: bool,
@@ -82,6 +82,8 @@ pub(super) struct ForeignReach {
     pub(super) prod_intra: bool,
     /// Named in a PUB item's signature — the must-stay-`pub` guard.
     pub(super) signature_exposed: bool,
+    /// The test code behind the credit (see [`super::TestUser`]).
+    pub(super) test_users: std::collections::BTreeSet<super::TestUser>,
 }
 
 impl ForeignReach {

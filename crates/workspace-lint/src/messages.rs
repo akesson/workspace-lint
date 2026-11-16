@@ -637,7 +637,7 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
             )
             .build(),
         ),
-        // unused-pub: reached only from test code (any crate) — the
+        // unused-pub: reached only from test code — the
         // dead-family verdict between "unused" and "intra-crate": nothing
         // production reaches it, so neither a tighten (trips `dead_code` on
         // the plain build) nor a bare deletion (orphans the referencing
@@ -650,7 +650,8 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 PathBuf::from("crates/mycrate/src/lib.rs"),
                 42,
             )
-            .help("gate it `#[cfg(test)]`, move it into test code, or remove it")
+            .help("only this crate's own unit tests use it — gate it `#[cfg(test)]` and narrow it to `pub(crate)`, move it into the test module, or remove it")
+            .note("used only by `mycrate`'s own unit tests")
             .note(
                 "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
             )
@@ -671,7 +672,8 @@ pub(crate) fn scenarios() -> Vec<(&'static str, Diagnostic)> {
                 PathBuf::from("crates/alpha/src/lib.rs"),
                 6,
             )
-            .help("gate it `#[cfg(test)]`, move it into test code, or remove it")
+            .help("`#[cfg(test)]` would break the users below: other crates' tests and integration tests compile this crate without `cfg(test)` — move it into a test-support crate or feature, mark it as deliberate test support with `expect`, or remove it together with its tests")
+            .note("used only by `beta`'s unit tests")
             .note(
                 "code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives",
             )
@@ -1646,11 +1648,12 @@ mod tests {
 
         #[test]
         fn unused_pub_test_only() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_test_only")), @r"
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only")), @"
             warning: pub fn `helper` in crate `mycrate` is only used by test code
              --> crates/mycrate/src/lib.rs:42:1
               |
-              = help: gate it `#[cfg(test)]`, move it into test code, or remove it
+              = help: only this crate's own unit tests use it — gate it `#[cfg(test)]` and narrow it to `pub(crate)`, move it into the test module, or remove it
+              = note: used only by `mycrate`'s own unit tests
               = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
               = note: no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it
             help: if intentional, silence with:
@@ -1663,11 +1666,12 @@ mod tests {
 
         #[test]
         fn unused_pub_test_only_blocked() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @r"
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @"
             warning: pub fn `embalmed` in crate `alpha` is only used by test code
              --> crates/alpha/src/lib.rs:6:1
               |
-              = help: gate it `#[cfg(test)]`, move it into test code, or remove it
+              = help: `#[cfg(test)]` would break the users below: other crates' tests and integration tests compile this crate without `cfg(test)` — move it into a test-support crate or feature, mark it as deliberate test support with `expect`, or remove it together with its tests
+              = note: used only by `beta`'s unit tests
               = note: code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives
               = note: only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand
             help: if intentional, silence with:
@@ -2206,12 +2210,12 @@ mod tests {
 
         #[test]
         fn unused_pub_test_only() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_test_only")), @r#"{"level":"warning","message":"pub fn `helper` in crate `mycrate` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"gate it `#[cfg(test)]`, move it into test code, or remove it","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only")), @r#"{"level":"warning","message":"pub fn `helper` in crate `mycrate` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/mycrate/src/lib.rs","byte_start":0,"byte_end":0,"line_start":42,"line_end":42,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"only this crate's own unit tests use it — gate it `#[cfg(test)]` and narrow it to `pub(crate)`, move it into the test module, or remove it","spans":[]},{"level":"note","message":"used only by `mycrate`'s own unit tests","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"no fix is auto-applied: `pub(crate)` would trip `dead_code` on the non-test build, and deleting the item would break the tests that reference it","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
         fn unused_pub_test_only_blocked() {
-            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @r#"{"level":"warning","message":"pub fn `embalmed` in crate `alpha` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"gate it `#[cfg(test)]`, move it into test code, or remove it","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand","spans":[]}],"rendered":null}"#);
+            insta::assert_snapshot!(render(&scenario("unused_pub_test_only_blocked")), @r#"{"level":"warning","message":"pub fn `embalmed` in crate `alpha` is only used by test code","code":{"code":"workspace-lint::unused-pub","explanation":null},"spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":null,"suggestion_applicability":null}],"children":[{"level":"help","message":"if intentional, silence with:","spans":[{"file_name":"crates/alpha/src/lib.rs","byte_start":0,"byte_end":0,"line_start":6,"line_end":6,"column_start":1,"column_end":1,"is_primary":true,"label":null,"suggested_replacement":"// workspace-lint: expect(unused-pub)\n","suggestion_applicability":"MachineApplicable"}]},{"level":"help","message":"`#[cfg(test)]` would break the users below: other crates' tests and integration tests compile this crate without `cfg(test)` — move it into a test-support crate or feature, mark it as deliberate test support with `expect`, or remove it together with its tests","spans":[]},{"level":"note","message":"used only by `beta`'s unit tests","spans":[]},{"level":"note","message":"code compiled under configs outside `[engine] configs` and out-of-workspace consumers may cause false positives","spans":[]},{"level":"note","message":"only test code references it, but test item `beta::tests::covers_both` (crates/beta/src/main.rs:8) also exercises surviving `alpha::kept` — deleting would orphan that test; update or remove the test first, or delete both by hand","spans":[]}],"rendered":null}"#);
         }
 
         #[test]
