@@ -131,16 +131,42 @@ fn fn_generic_params_rename_with_the_locals() {
 
 #[test]
 fn generic_param_is_not_a_concrete_type() {
-    // Renaming `T` must not erase the generic/concrete distinction: a
-    // concrete type stays a verbatim anchor, a generic becomes `#n`.
-    let a = "fn wrap<T>(x: T) -> Wrapper<T> {\n    let w = Wrapper::new(x);\n    w.tag()\n}";
-    let b = "fn wrap(x: Item) -> Wrapper<Item> {\n    let w = Wrapper::new(x);\n    w.tag()\n}";
+    // Renaming `T` must not erase the generic/concrete distinction: with the
+    // generics shape identical, a concrete type in one slot stays a verbatim
+    // anchor — `Item` vs `Other` keeps the pair apart even though `T`/`U`
+    // rename to the same placeholder.
+    let a = "fn wrap<T>(x: T, y: Item) -> Wrapper<T> {\n    let w = Wrapper::new(x, y);\n    w.tag()\n}";
+    let b = "fn wrap<U>(x: U, y: Other) -> Wrapper<U> {\n    let w = Wrapper::new(x, y);\n    w.tag()\n}";
+    let same = "fn wrap<U>(x: U, y: Item) -> Wrapper<U> {\n    let w = Wrapper::new(x, y);\n    w.tag()\n}";
+    let fn_level = |x: &str, y: &str| {
+        clones_between(x, y, &opts())
+            .iter()
+            .any(|g| g.instances[0].kind == super::CandidateKind::Fn)
+    };
+    assert!(
+        fn_level(a, same),
+        "control: renamed generic matches at fn level"
+    );
+    // The identical body block still matches; only the fn level must not.
+    assert!(!fn_level(a, b), "concrete types differ at fn level");
+}
+
+#[test]
+fn nested_item_generics_rename_in_the_enclosing_block() {
+    // A generic declared by a nested item is declared *inside* the block
+    // candidate, so it renames with the block's locals.
+    let a = "fn outer(v: u32) -> u32 {\n    fn helper<T: Copy>(x: T) -> T { x }\n    let a = helper(v);\n    let b = helper(a);\n    a + b\n}";
+    let b = "fn other(v: u32) -> u32 {\n    fn helper<U: Copy>(y: U) -> U { y }\n    let a = helper(v);\n    let b = helper(a);\n    a + b\n}";
+    // `helper` alone and the statement runs after it match regardless; only
+    // the outer fn (line 1), which spans `helper`'s declaration, proves the
+    // rename.
     let groups = clones_between(a, b, &opts());
     assert!(
-        groups
-            .iter()
-            .all(|g| g.instances[0].kind != super::CandidateKind::Fn),
-        "generic vs concrete signatures must not match at fn level"
+        groups.iter().any(|g| {
+            let r = &g.instances[0];
+            r.kind == super::CandidateKind::Fn && r.line_start == 1
+        }),
+        "nested generic must rename"
     );
 }
 
@@ -822,10 +848,11 @@ const SYN_SENSITIVE_SRC: &str = "impl Acc {
 #[test]
 fn fingerprint_stability_canary_syn_sensitive() {
     // Second canary: pins a fingerprint over the syn-3-changed constructs
-    // (see `SYN_SENSITIVE_SRC`). The value was verified identical
-    // under syn 2.0.118 and syn 3.0.10 — if a syn bump changes it, the
-    // printer drifted and every baseline holding such code is invalidated.
-    // (Re-pinned once, deliberately, when fn generics became α-renamed.)
+    // (see `SYN_SENSITIVE_SRC`). If a syn bump changes it, the printer
+    // drifted and every baseline holding such code is invalidated. The
+    // original pin was verified identical under syn 2.0.118 and syn 3.0.10;
+    // this one (re-pinned when declared generics became α-renamed) was
+    // computed under syn 3 only.
     let src = SYN_SENSITIVE_SRC;
     let groups = find_clones(&[file("a.rs", "k", src), file("b.rs", "k", src)], &opts());
     assert_eq!(pair_fingerprint(&groups), 0x6c53_0c26_aa36_8dc6);
