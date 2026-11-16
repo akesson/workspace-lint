@@ -68,6 +68,7 @@ pub(super) fn check(
     fast: &FastModel,
     model: &SemanticModel,
     shadow: Option<&CfgShadow>,
+    suppressed: &dyn Fn(&Diagnostic) -> bool,
 ) -> Vec<Diagnostic> {
     let generated = generated_set(fast);
     // Deletion is a `--fix-auto-delete` concern, and that path replaces this
@@ -80,6 +81,7 @@ pub(super) fn check(
         false,
         &generated,
         shadow,
+        suppressed,
     )
     .into_iter()
     .map(|f| f.diagnostic)
@@ -93,15 +95,25 @@ pub(super) fn check(
 /// `auto_delete` selects the structural fix for `Unused` items: whole-item
 /// deletion (the cascade) vs the shown-but-not-applied tighten fallback.
 /// `generated` is [`generated_set`], computed once by the caller (the cascade
-/// calls this every fixpoint round).
+/// calls this every fixpoint round). `suppressed` is the non-mutating
+/// directive query: the crate rollup counts only findings it lets through.
 pub(crate) fn findings(
     config: &PerCrate<UnusedPubConfig>,
     fast: &FastModel,
     candidates: Vec<PubCandidate>,
     auto_delete: bool,
     generated: &HashSet<PathBuf>,
+    suppressed: &dyn Fn(&Diagnostic) -> bool,
 ) -> Vec<PubFinding> {
-    findings_with_shadow(config, fast, candidates, auto_delete, generated, None)
+    findings_with_shadow(
+        config,
+        fast,
+        candidates,
+        auto_delete,
+        generated,
+        None,
+        suppressed,
+    )
 }
 
 /// [`findings`] with the report-time cfg-shadow index: an `Unused` candidate
@@ -115,6 +127,7 @@ fn findings_with_shadow(
     auto_delete: bool,
     generated: &HashSet<PathBuf>,
     shadow: Option<&CfgShadow>,
+    suppressed: &dyn Fn(&Diagnostic) -> bool,
 ) -> Vec<PubFinding> {
     let mut by_crate: BTreeMap<&str, Vec<&PubCandidate>> = BTreeMap::new();
     for c in &candidates {
@@ -174,15 +187,28 @@ fn findings_with_shadow(
         // likely cause is that it really is published — nudge the author
         // toward the one-line fix. Self-resolving: adding `publish = true`
         // exempts the items, so the findings and this hint both disappear.
+        // Counted AFTER directives: a finding the user silenced with
+        // `expect(unused-pub)` is not "unused" news, and counting it made
+        // the rollup claim N unused items with zero per-item findings shown.
         let threshold = config
             .publish_hint_threshold
             .unwrap_or(DEFAULT_PUBLISH_HINT_THRESHOLD);
-        if !exempt_external_api && threshold > 0 && crate_findings.len() >= threshold {
+        let visible = crate_findings
+            .iter()
+            .filter(|f| !suppressed(&f.diagnostic))
+            .count();
+        if !exempt_external_api && threshold > 0 && visible >= threshold {
             out.push(PubFinding {
                 id: None,
                 removable: false,
                 test_only: false,
-                diagnostic: publish_hint(fast, krate, &crate_code, crate_findings.len()),
+                diagnostic: publish_hint(
+                    fast,
+                    krate,
+                    &crate_code,
+                    visible,
+                    crate_findings.len() - visible,
+                ),
             });
         }
         out.extend(crate_findings);
@@ -585,7 +611,23 @@ fn build_tighten_suggestion(
 
 /// One crate-level hint suggesting `publish = true` for an internal crate
 /// that produced `count` findings.
-fn publish_hint(fast: &FastModel, krate: &CrateInfo, crate_code: &str, count: usize) -> Diagnostic {
+/// `silenced` counts the crate's findings an `expect`/`allow` directive
+/// hides: they don't count toward `count`, but `publish = true` exempts them
+/// too — and turns their `expect`s stale — so the help says so.
+fn publish_hint(
+    fast: &FastModel,
+    krate: &CrateInfo,
+    crate_code: &str,
+    count: usize,
+    silenced: usize,
+) -> Diagnostic {
+    let exempt = match silenced {
+        0 => "these findings become exempt".to_string(),
+        n => format!(
+            "these findings become exempt, plus {n} silenced by a directive \
+             whose `expect` would then go stale"
+        ),
+    };
     at_crate(
         LintId::UnusedPub.id(),
         format!("crate `{crate_code}` has {count} public items unused within the workspace"),
@@ -595,7 +637,7 @@ fn publish_hint(fast: &FastModel, krate: &CrateInfo, crate_code: &str, count: us
     )
     .help(format!(
         "if `{}` is published outside this workspace, set `publish = true` in its Cargo.toml \
-         to treat its public API as external (these findings become exempt)",
+         to treat its public API as external ({exempt})",
         krate.name
     ))
     .note_once(

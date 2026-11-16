@@ -19,7 +19,9 @@ pub(crate) const STALE_EXPECT_LINT: &str = LintId::StaleExpect.id();
 /// would just never match, and an `expect` for it would masquerade as stale).
 /// Anchored at the directive's own line; deduped by origin so a Cargo.toml
 /// comment that fans out to multiple anchors yields a single diagnostic.
-pub(crate) fn unknown_lint_diagnostics(directives: &[Directive]) -> Vec<Diagnostic> {
+pub(crate) fn unknown_lint_diagnostics<'a>(
+    directives: impl IntoIterator<Item = &'a Directive>,
+) -> Vec<Diagnostic> {
     let known: Vec<&str> = LintId::ALL.iter().map(|l| l.short()).collect();
     let mut seen: HashSet<(std::path::PathBuf, u32, String)> = HashSet::new();
     let mut out = Vec::new();
@@ -79,6 +81,11 @@ impl SuppressionMap {
                 })
                 .collect(),
         }
+    }
+
+    /// [`unknown_lint_diagnostics`] over this map's directives.
+    pub(crate) fn unknown_lint_diagnostics(&self) -> Vec<Diagnostic> {
+        unknown_lint_diagnostics(self.entries.iter().map(|e| &e.directive))
     }
 
     /// Would any directive suppress this diagnostic? The read-only twin of

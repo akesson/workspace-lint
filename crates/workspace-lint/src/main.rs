@@ -30,9 +30,7 @@ use wl_diagnostic::render::{Format, render};
 use wl_engine::fast::FastModel;
 use wl_lint_api::{LintId, git, util};
 
-use run::{
-    RunOutput, load_fast_model, load_semantic_model, run_all, run_single_check, try_load_fast_model,
-};
+use run::{RunOutput, load_fast_model, load_semantic_model, run_all, run_single_check};
 
 fn main() {
     let mut cli = Cli::parse();
@@ -127,6 +125,7 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
         cfg_shadow,
         mut ran,
         engine_error,
+        suppression,
     } = wl_engine::timing::phase("run_all", || {
         run_all(&config, cli.fast_only, cli.fix_auto_delete)
     });
@@ -144,11 +143,6 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     if let Some(fm) = fast.as_ref() {
         diagnostics.extend(config::audit_crate_membership(&config, fm));
     }
-    // Backfill the FastModel when no enabled lint required it: the
-    // generated-file drop and the suppression scanner's parse cache
-    // read it. Best-effort — outside a cargo workspace both consumers
-    // degrade gracefully.
-    let fast = fast.or_else(try_load_fast_model);
     // Generated (`include!`d) code participates in analysis but is not a
     // place users can act on; drop findings anchored in it before
     // suppression so they never consume an `expect!` or skew stale-expect.
@@ -177,6 +171,7 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
             cfg_shadow.as_ref(),
             fm,
             sm,
+            &suppression,
             &mut diagnostics,
         );
     }
@@ -184,8 +179,8 @@ fn run_default(cli: &Cli, format: Format, fix: bool) {
     // `unknown-lint` findings; leveling runs last so the appended ones
     // are leveled too and `allow`-ed lints are dropped from the final
     // set before the exit-code tally.
-    wl_engine::timing::phase("apply_suppression[scan expect!/allow!/directives]", || {
-        apply_suppression(fast.as_ref(), ran, &mut diagnostics)
+    wl_engine::timing::phase("apply_suppression", || {
+        apply_suppression(fast.as_ref(), suppression, ran, &mut diagnostics)
     });
     levels::apply_lint_levels(&config, fast.as_ref(), &mut diagnostics);
     levels::mark_marker_availability(fast.as_ref(), &mut diagnostics);
@@ -275,16 +270,13 @@ fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
         // an engine failure already printed and exited inside
         // `run_single_check`.
         engine_error: _,
+        suppression,
     } = run_single_check(
         rule,
         cli.fast_only,
         cli.fix_auto_delete,
         config_for_levels.as_ref(),
     );
-    // Same backfill as the default run: the drop and the directive
-    // scanner's parse cache want the FastModel even when the single
-    // checked rule didn't require one.
-    let fast = fast.or_else(try_load_fast_model);
     drop_generated_anchored(fast.as_ref(), &mut diagnostics);
     // The deletion cascade, exactly as in the default run — without it
     // a `check unused-pub --fix-auto-delete` would delete items but
@@ -300,10 +292,11 @@ fn run_check(rule: CheckRule, cli: &Cli, format: Format, fix: bool) {
             cfg_shadow.as_ref(),
             fm,
             sm,
+            &suppression,
             &mut diagnostics,
         );
     }
-    apply_suppression(fast.as_ref(), ran, &mut diagnostics);
+    apply_suppression(fast.as_ref(), suppression, ran, &mut diagnostics);
     if let Some(cfg) = &config_for_levels {
         levels::apply_lint_levels(cfg, fast.as_ref(), &mut diagnostics);
     }
@@ -399,30 +392,19 @@ fn drop_generated_anchored(fast: Option<&FastModel>, diagnostics: &mut Vec<Diagn
     });
 }
 
-/// Scan the workspace for `allow!`/`expect!` directives and use them to
-/// filter the diagnostic stream. Stale `expect` directives are appended as
-/// new diagnostics — these pass back through the suppression map so an
-/// `allow(stale-expect)` directive silences them (e.g. README example code
-/// that mentions an expect directive without intending to fire one).
-///
-/// When a [`FastModel`] is available, the scanner uses its known module list
-/// to parse each backing `.rs` file exactly once up front (the model itself
-/// stores only file *paths*, not ASTs — it re-parses on demand to stay
-/// `Send + Sync`). Without one (a non-cargo directory), we fall back to the
-/// per-file on-demand parse path.
+/// Filter the diagnostic stream through the run's directives. Stale
+/// `expect` directives are appended as new diagnostics — these pass back
+/// through the suppression map so an `allow(stale-expect)` directive
+/// silences them (e.g. README example code that mentions an expect
+/// directive without intending to fire one).
 fn apply_suppression(
     fast: Option<&FastModel>,
+    mut map: suppress::SuppressionMap,
     ran: HashSet<LintId>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let directives_list = match fast {
-        Some(fm) => directives::scan_with_model(fm),
-        None => directives::scan(std::path::Path::new(".")),
-    };
-    // Validate the lint names referenced by directives before consuming the
-    // list — a typo'd `expect!(file_siz)` is otherwise a silent no-op.
-    let mut unknown = suppress::unknown_lint_diagnostics(&directives_list);
-    let mut map = suppress::SuppressionMap::from_directives(directives_list);
+    // A typo'd `expect!(file_siz)` is otherwise a silent no-op.
+    let mut unknown = map.unknown_lint_diagnostics();
     suppress::apply(&mut map, diagnostics);
     // This function itself produces `stale-expect` / `unknown-lint`, so
     // expects targeting them are always judgeable, whatever the caller ran.
@@ -444,10 +426,10 @@ fn apply_suppression(
 
 /// The `--fix-auto-delete` unused-pub cascade: replace the plain unused-pub
 /// findings with the transitively-converged set and append the import surgery.
-/// Builds a read-only [`suppress::SuppressionMap`] so an `expect!`/`allow!`-
-/// silenced deletion never seeds a removal (its callees stay live) — the map
-/// is scanned again by [`apply_suppression`] for the real filtering, a cheap
-/// re-scan paid only under `--fix-auto-delete`.
+/// Queries the run's [`suppress::SuppressionMap`] read-only so an
+/// `expect!`/`allow!`-silenced deletion never seeds a removal (its callees
+/// stay live); [`apply_suppression`] does the real filtering later with the
+/// same map.
 /// Returns `true` when the cascade emitted import surgery — the caller prints a
 /// `cargo fmt` hint after applying, since trimming `use` leaves valid but
 /// unformatted residue (collapsed blank lines, single-element `{…}` groups).
@@ -457,11 +439,10 @@ fn run_unused_pub_cascade(
     cfg_shadow: Option<&wl_engine::coverage::CfgShadow>,
     fast: &FastModel,
     semantic: &wl_engine::SemanticModel,
+    suppression: &suppress::SuppressionMap,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
-    let directives_list = directives::scan_with_model(fast);
-    let map = suppress::SuppressionMap::from_directives(directives_list);
-    let suppressed = |d: &Diagnostic| map.would_suppress(d);
+    let suppressed = |d: &Diagnostic| suppression.would_suppress(d);
     // The cfg-shadow veto's index, computed by the runner alongside the
     // semantic tier and reused here. `None` only when the runner never built
     // one (a run path without the semantic tier can't reach this cascade);

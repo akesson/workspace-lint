@@ -100,7 +100,7 @@ pub fn run(
     let final_findings = loop {
         let removal = RemovalSet::new(removed.iter());
         let cands = model.pub_candidates_excluding(&removal);
-        let batch = findings(config, fast, cands, true, &generated);
+        let batch = findings(config, fast, cands, true, &generated, suppressed);
         // Seeds for this round: genuinely-removable (Unused + MachineApplicable
         // deletion) findings that aren't already removed, aren't silenced, and
         // aren't macro-import-blocked. TestOnly findings are DIVERTED — even
