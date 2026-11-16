@@ -15,6 +15,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
+use common::find_dylib;
 use dylint::opts::{Check, Dylint, LibrarySelection, Operation};
 use wl_ir::{IrFragment, ItemFact, Visibility};
 
@@ -1333,22 +1336,6 @@ fn file_name(path: &str) -> &str {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(path)
-}
-
-/// Locate the toolchain-suffixed dylib dylint_linting's build script produced.
-/// Prefix and extension are per-OS (`libwl_extractor@….dylib`/`.so`,
-/// `wl_extractor@….dll`); the extension filter keeps Windows' sibling
-/// `.dll.lib`/`.pdb` artifacts out.
-fn find_dylib(dir: &Path) -> anyhow::Result<PathBuf> {
-    for entry in std::fs::read_dir(dir)?.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let prefixed = name.starts_with("libwl_extractor@") || name.starts_with("wl_extractor@");
-        let dylib_ext = name.ends_with(".dylib") || name.ends_with(".so") || name.ends_with(".dll");
-        if prefixed && dylib_ext {
-            return Ok(entry.path());
-        }
-    }
-    anyhow::bail!("no wl_extractor@<toolchain> dylib under {}", dir.display());
 }
 
 struct Checker {
