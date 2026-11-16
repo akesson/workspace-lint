@@ -222,7 +222,7 @@ impl<'ast> Visit<'ast> for FnWalker {
     fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
         self.ctx.push(OwnerCtx::Impl {
             self_ty: type_base(&i.self_ty),
-            trait_path: i.trait_.as_ref().map(|(_, path, _)| path_string(path)),
+            trait_path: i.trait_.as_ref().map(|(path, _)| path_string(path)),
         });
         visit::visit_item_impl(self, i);
         self.ctx.pop();
