@@ -159,7 +159,11 @@ pub(super) fn build_dylib(
             dir: package_dir.to_path_buf(),
         });
     }
-    find_dylib(&package_dir.join("target/debug")).inspect_err(|err| {
+    find_dylib(
+        &package_dir.join("target/debug"),
+        super::Engine::pinned_toolchain(),
+    )
+    .inspect_err(|err| {
         // Only the link step writes the toolchain-suffixed copy, and cargo
         // won't re-link for a `dylint-link` upgrade (`-C linker=dylint-link`
         // is unchanged, so the build stays fresh). Drop the build so the
@@ -175,23 +179,31 @@ pub(super) fn build_dylib(
 /// mtime is the relink generation key). Returns the same path [`build_dylib`]
 /// produces, so a warm run can skip the rebuild and reuse it directly.
 pub(super) fn existing_dylib(package_dir: &Path) -> Option<PathBuf> {
-    find_dylib(&package_dir.join("target/debug")).ok()
+    find_dylib(
+        &package_dir.join("target/debug"),
+        super::Engine::pinned_toolchain(),
+    )
+    .ok()
 }
 
-/// Locate the toolchain-suffixed dylib dylint_linting's build script produced.
-/// Prefix and extension are per-OS (`libwl_extractor@….dylib`/`.so`,
-/// `wl_extractor@….dll`); the extension filter keeps Windows' sibling
-/// `.dll.lib`/`.pdb` artifacts out.
-fn find_dylib(dir: &Path) -> Result<PathBuf, EngineError> {
+/// Locate the dylib dylint-link copied for the `pin` toolchain
+/// (`libwl_extractor@nightly-2026-08-20-aarch64-apple-darwin.dylib`).
+/// Matching the pin, not just any `@` suffix, matters because a target dir
+/// outlives pin bumps: the old `@<previous pin>` copy is still there, and
+/// taking it would run a stale build under the wrong toolchain. Prefix and
+/// extension are per-OS (`lib…`/`.so`/`.dylib`, bare `….dll`); the extension
+/// filter keeps Windows' sibling `.dll.lib`/`.pdb` artifacts out.
+fn find_dylib(dir: &Path, pin: &str) -> Result<PathBuf, EngineError> {
     let entries = std::fs::read_dir(dir).map_err(|source| EngineError::Io {
         context: format!("reading {}", dir.display()),
         source,
     })?;
+    let stem = format!("wl_extractor@{pin}-");
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let prefixed = name.starts_with("libwl_extractor@") || name.starts_with("wl_extractor@");
+        let pinned = name.strip_prefix("lib").unwrap_or(&name).starts_with(&stem);
         let dylib_ext = name.ends_with(".dylib") || name.ends_with(".so") || name.ends_with(".dll");
-        if prefixed && dylib_ext {
+        if pinned && dylib_ext {
             return Ok(entry.path());
         }
     }
@@ -269,6 +281,43 @@ fn evict_stale(cache_root: &Path, keep: &str, now: SystemTime, ttl: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A target dir outlives pin bumps, so the previous pin's dylib sits
+    /// next to the current one. Taking it once let the probe suite "pass" a
+    /// bump by running the stale build under the old toolchain.
+    #[test]
+    fn find_dylib_takes_only_the_pinned_toolchains_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let touch = |name: &str| std::fs::write(tmp.path().join(name), b"").unwrap();
+        touch("libwl_extractor@nightly-2026-04-16-aarch64-apple-darwin.dylib");
+        touch("wl_extractor@nightly-2026-08-20-x86_64-pc-windows-msvc.dll.lib");
+        // Only stale/non-dylib artifacts: the current pin's link copy is
+        // missing, which is the outdated-dylint-link diagnosis.
+        assert!(matches!(
+            find_dylib(tmp.path(), "nightly-2026-08-20"),
+            Err(EngineError::DylintLinkOutdated { .. })
+        ));
+        // A pin that is a string prefix of another must not alias it.
+        assert!(find_dylib(tmp.path(), "nightly-2026-04-1").is_err());
+
+        touch("libwl_extractor@nightly-2026-08-20-aarch64-apple-darwin.dylib");
+        let found = find_dylib(tmp.path(), "nightly-2026-08-20").unwrap();
+        assert_eq!(
+            found.file_name().unwrap(),
+            "libwl_extractor@nightly-2026-08-20-aarch64-apple-darwin.dylib"
+        );
+        touch("wl_extractor@nightly-2026-08-20-x86_64-pc-windows-msvc.dll");
+        std::fs::remove_file(
+            tmp.path()
+                .join("libwl_extractor@nightly-2026-08-20-aarch64-apple-darwin.dylib"),
+        )
+        .unwrap();
+        assert!(
+            find_dylib(tmp.path(), "nightly-2026-08-20")
+                .unwrap()
+                .ends_with("wl_extractor@nightly-2026-08-20-x86_64-pc-windows-msvc.dll")
+        );
+    }
 
     #[test]
     fn cache_key_is_deterministic_and_content_sensitive() {

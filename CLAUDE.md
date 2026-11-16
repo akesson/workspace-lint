@@ -270,11 +270,24 @@ replays cargo's diagnostics; the tier never silently degrades — the explicit
 degradation is `--fast-only`.
 
 **Bumping the pinned nightly** (`extractor/rust-toolchain.toml`; track
-*dylint's* pin, not the newest nightly): update the pin file, expect the
-`register_late_pass` signature edit in `extractor/src/lib.rs` (documented
-inline at the call), run the probe suite (`cd extractor && cargo test`), and
-update the CI pin strings (`ci.yml`, `corpus.yml`, `extractor.yml` cache
-keys). Verified cadence: a ~10-week jump needed exactly one edit.
+*dylint's* pin — `examples/*/rust-toolchain.toml` at the dylint release tag —
+not the newest nightly). The pin must also satisfy every dependency's
+`rust-version`, since the dogfood extracts this repo under it; a dylint
+MSRV bump therefore forces a pin bump.
+
+1. Install the new pin with `rustc-dev` (+ `rust-src`/`rustfmt` locally) and
+   update every pin string: `git grep <old-pin>` (workflows incl. cache
+   keys, `wl-orchestrate` and `workspace-lint` tests/snapshots — not the
+   historical `SPIKE-…` doc).
+2. Port `extractor/src/lib.rs`. Cost scales with the jump: ~10 weeks needed
+   one edit, 18 weeks (04-16 → 08-20) needed eleven. **Verify every
+   compiler rename hint** against `rustc-src` under the toolchain dir — the
+   hint for `explicit_predicates_of` named a trait-only query.
+3. Bump the `dylint-link` CI pin to the dylint release; an old `dylint-link`
+   can misplace the `@<toolchain>` copy under newer cargo layouts
+   (`EngineError::DylintLinkOutdated`). Reinstall it locally too.
+4. Run the probe suite (`cd extractor && cargo test`) and confirm it prints
+   `Checking with toolchain <new pin>`.
 
 ## Adding a new lint
 

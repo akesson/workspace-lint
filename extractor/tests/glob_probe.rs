@@ -23,6 +23,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
+use common::find_dylib;
 use dylint::opts::{Check, Dylint, LibrarySelection, Operation};
 use wl_ir::{IrFragment, RefEdge};
 
@@ -235,18 +238,4 @@ fn glob_probe_accounting_facts() -> anyhow::Result<()> {
     );
 
     Ok(())
-}
-
-/// Same discovery as `probe.rs`: dylint_linting's build script emits the
-/// `@<toolchain>`-suffixed dylib next to the plain debug artifacts.
-fn find_dylib(dir: &Path) -> anyhow::Result<PathBuf> {
-    for entry in std::fs::read_dir(dir)?.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let prefixed = name.starts_with("libwl_extractor@") || name.starts_with("wl_extractor@");
-        let dylib_ext = name.ends_with(".dylib") || name.ends_with(".so") || name.ends_with(".dll");
-        if prefixed && dylib_ext {
-            return Ok(entry.path());
-        }
-    }
-    anyhow::bail!("no wl_extractor@<toolchain> dylib under {}", dir.display());
 }
