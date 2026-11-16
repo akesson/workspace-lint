@@ -88,7 +88,9 @@ publish-hint-threshold = 3
   `union`, `trait`, `type`, `const`, `static`, `module` (alias `mod`),
   `macro`. Omit (empty) to check all kinds. An unrecognized kind is a config
   error.
-- `exclude-paths` — glob patterns for source file paths to skip.
+- `exclude-paths` — glob patterns for source file paths to skip, matched
+  against the workspace-relative path (`crates/api/src/generated/**`;
+  `**/generated/**` matches at any depth).
 - `suppress-intra-crate` — when `true`, report only items unused *anywhere*
   and drop the "used only inside the crate" findings. Default `false`.
 - `assume-all-public` — when `true`, treat *every* crate as having an

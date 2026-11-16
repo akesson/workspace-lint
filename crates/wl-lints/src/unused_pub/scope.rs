@@ -86,7 +86,8 @@ impl<'a> FindingScope<'a> {
 
     /// The per-item scope gate: kind filter (when armed), allowlist glob on
     /// the identity, target-dir prefix, generated-file set, and exclude-paths
-    /// glob on the absolute file.
+    /// glob on the workspace-relative file (the form every other path glob
+    /// in the config matches — `file-size`, `duplicate-code`, …).
     pub(crate) fn skips(&self, id: &str, kind: &str, span: Option<&wl_ir::Span>) -> bool {
         if let Some(kf) = &self.kind_filter
             && !kf.contains(kind)
@@ -112,8 +113,11 @@ impl<'a> FindingScope<'a> {
             if self.generated.contains(Path::new(&span.file)) {
                 return true;
             }
+            // Workspace-relative, like every other path glob in the config:
+            // matched against the absolute path, the documented
+            // `exclude-paths = ["generated/**"]` silently matched nothing.
             if let Some(ex) = &self.exclude_paths
-                && ex.is_match(abs.to_string_lossy().as_ref())
+                && ex.is_match(&span.file)
             {
                 return true;
             }
@@ -215,7 +219,11 @@ mod tests {
             krate_name: "my-crate",
             exclude_crates,
             allowlist: glob_set(&[GlobPattern::from_cli("allowed::**")]),
-            exclude_paths: glob_set(&[GlobPattern::from_cli("**/skipme/**")]),
+            exclude_paths: glob_set(&[
+                GlobPattern::from_cli("**/skipme/**"),
+                GlobPattern::from_cli("generated/**"),
+                GlobPattern::from_cli("crates/a/src/one.rs"),
+            ]),
             kind_filter,
         }
     }
@@ -242,8 +250,12 @@ mod tests {
         assert!(s.skips("c::item", "fn", Some(&span("target/out.rs"))));
         // Allowlisted identity.
         assert!(s.skips("allowed::thing", "fn", Some(&span("src/lib.rs"))));
-        // Excluded path glob (matched on the absolute file).
+        // Excluded path globs, matched workspace-relative: a `**/` pattern,
+        // the documented root-anchored `generated/**`, and an exact path.
         assert!(s.skips("c::item", "fn", Some(&span("src/skipme/x.rs"))));
+        assert!(s.skips("c::item", "fn", Some(&span("generated/api.rs"))));
+        assert!(s.skips("c::item", "fn", Some(&span("crates/a/src/one.rs"))));
+        assert!(!s.skips("c::item", "fn", Some(&span("crates/a/src/two.rs"))));
         // In scope.
         assert!(!s.skips("c::item", "fn", Some(&span("src/lib.rs"))));
     }
