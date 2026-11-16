@@ -2491,12 +2491,12 @@ mod engine_errors {
     #[test]
     fn toolchain_missing() {
         let e = EngineError::ToolchainMissing {
-            pin: "nightly-2026-04-16".into(),
+            pin: "nightly-2026-08-20".into(),
         };
         insta::assert_snapshot!(e.to_string(), @r"
         the full tier extracts IR inside a rustc build and needs the pinned toolchain
 
-        rustup toolchain install nightly-2026-04-16 --profile minimal \
+        rustup toolchain install nightly-2026-08-20 --profile minimal \
         --component rustc-dev --component llvm-tools-preview
 
         hint: `workspace-lint provision` installs everything the full tier needs in one non-interactive step (`--print` to preview the commands)
@@ -2507,13 +2507,13 @@ mod engine_errors {
     #[test]
     fn component_missing() {
         let e = EngineError::ComponentMissing {
-            pin: "nightly-2026-04-16".into(),
+            pin: "nightly-2026-08-20".into(),
             component: "rustc-dev".into(),
         };
         insta::assert_snapshot!(e.to_string(), @r"
-        the pinned toolchain nightly-2026-04-16 is installed but misses the `rustc-dev` component
+        the pinned toolchain nightly-2026-08-20 is installed but misses the `rustc-dev` component
 
-        rustup component add rustc-dev --toolchain nightly-2026-04-16
+        rustup component add rustc-dev --toolchain nightly-2026-08-20
         ");
     }
 

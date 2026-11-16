@@ -10,7 +10,7 @@ the facts channel of workspace-lint's two-phase engine
 
 This package lives **outside** the main (stable) workspace:
 
-- `rust-toolchain.toml` pins the nightly that dylint 6.0.1 tracks
+- `rust-toolchain.toml` pins the nightly that dylint 6.4.0 tracks
   (`rustc_private` has no stability guarantee — the pin *is* the contract).
   Bump procedure: SPIKE §12.4 (the WS2 drill measured ~1 edit per 10 weeks).
 - `.cargo/config.toml` links via `dylint-link` (`cargo install dylint-link`),

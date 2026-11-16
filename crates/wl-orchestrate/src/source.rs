@@ -159,7 +159,15 @@ pub(super) fn build_dylib(
             dir: package_dir.to_path_buf(),
         });
     }
-    find_dylib(&package_dir.join("target/debug"))
+    find_dylib(&package_dir.join("target/debug")).inspect_err(|err| {
+        // Only the link step writes the toolchain-suffixed copy, and cargo
+        // won't re-link for a `dylint-link` upgrade (`-C linker=dylint-link`
+        // is unchanged, so the build stays fresh). Drop the build so the
+        // retry after the remediation's reinstall re-links from cold.
+        if matches!(err, EngineError::DylintLinkOutdated { .. }) {
+            let _ = std::fs::remove_dir_all(package_dir.join("target"));
+        }
+    })
 }
 
 /// The extractor dylib already built in `package_dir`'s target dir, if present
@@ -187,7 +195,7 @@ fn find_dylib(dir: &Path) -> Result<PathBuf, EngineError> {
             return Ok(entry.path());
         }
     }
-    Err(EngineError::DylibNotFound {
+    Err(EngineError::DylintLinkOutdated {
         dir: dir.to_path_buf(),
     })
 }

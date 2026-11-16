@@ -89,16 +89,16 @@ rustc_session::declare_lint! {
 pub fn register_lints(sess: &Session, lint_store: &mut LintStore) {
     dylint_linting::init_config(sess);
     lint_store.register_lints(&[WL_IR_EXTRACT]);
-    // NOTE (WS2 treadmill, SPIKE §12.4): on the 04-16 pin `register_late_pass` takes
-    // a bare `impl Fn(TyCtxt) -> LateLintPassObject`, so the closure's `Box::new(..)`
-    // return coerces to `Box<dyn LateLintPass>`. On nightly-2026-06-25 the param
-    // became a boxed `LateLintPassFactory`, needing `register_late_pass(Box::new(|_|
-    // Box::new(WlIrExtract) as _))` — a real, toolchain-specific edit (no single
-    // spelling straddles both pins: the plain closure fails to box on 06-25; the
-    // boxed form's concrete return type fails to coerce on 04-16). This was the ONLY
-    // extractor breakage across the ~10-week jump; dylint_linting 6.0.1 itself
-    // compiled unchanged. Keep the 04-16 form here (the production pin).
-    lint_store.register_late_pass(|_| Box::new(WlIrExtract));
+    // NOTE (pin-bump treadmill, SPIKE §12.4): the late-pass registration is
+    // the one call every nightly bump has touched. On nightly-2026-08-20 it is
+    // `register_late_lint_pass`, taking a boxed `LateLintPassFactory`; the
+    // inner `as _` coerces the concrete `Box<WlIrExtract>` to the pass object.
+    // History: 04-16 → 08-20 also renamed the predicate queries
+    // (`explicit_{,super_}predicates_of` → `explicit_{clauses,super_clauses}_of`
+    // — NOT `explicit_implied_clauses_of`, which is trait-only), wrapped
+    // `ty::Alias` with `IsRigid`, `Restricted` visibility in `ModId`, and
+    // `impl_trait_ref` in `Unnormalized`.
+    lint_store.register_late_lint_pass(Box::new(|_| Box::new(WlIrExtract) as _));
 }
 
 rustc_session::declare_lint_pass!(WlIrExtract => [WL_IR_EXTRACT]);
@@ -363,10 +363,10 @@ fn item_fact(
     let visibility = match tcx.visibility(def_id) {
         ty::Visibility::Public => Visibility::Public,
         ty::Visibility::Restricted(m) => {
-            if m == CRATE_DEF_ID.to_def_id() {
+            if m.to_def_id() == CRATE_DEF_ID.to_def_id() {
                 Visibility::Restricted("crate".to_string())
             } else {
-                Visibility::Restricted(tcx.def_path_str(m))
+                Visibility::Restricted(tcx.def_path_str(m.to_def_id()))
             }
         }
     };
@@ -849,8 +849,8 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
     ///    not be visibility-tightened: E0445/E0446 / `private_interfaces` /
     ///    `private_bounds`). "Signature" here is the whole privacy-checked
     ///    surface: parameter/return/field types, generic-parameter defaults,
-    ///    inline bounds and `where`-clauses (`explicit_predicates_of`),
-    ///    supertraits (`explicit_super_predicates_of`), trait-decl assoc-type
+    ///    inline bounds and `where`-clauses (`explicit_clauses_of`),
+    ///    supertraits (`explicit_super_clauses_of`), trait-decl assoc-type
     ///    bounds and `impl Trait` bounds (`explicit_item_bounds`), and `dyn`
     ///    principals — the *explicit* (written) queries, matching what rustc's
     ///    privacy pass judges; elaboration would add phantom supertrait
@@ -895,7 +895,7 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
                 // (`pub trait A: B` — narrowing `B` is E0445); where-clauses
                 // ride the common predicate sweep below.
                 DefKind::Trait | DefKind::TraitAlias => {
-                    sig.collect_clauses(self.tcx.explicit_super_predicates_of(did).skip_binder());
+                    sig.collect_clauses(self.tcx.explicit_super_clauses_of(did).skip_binder());
                 }
                 // An impl's written bounds (`impl<T: Bound> Pub<T> { … }`)
                 // are privacy-checked against the IMPL's visibility — its
@@ -911,7 +911,7 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
                         && adt.did().is_local()
                     {
                         let mut isig = SigVisitor::default();
-                        isig.collect_clauses(self.tcx.explicit_predicates_of(did).predicates);
+                        isig.collect_clauses(self.tcx.explicit_clauses_of(did).clauses);
                         self.flush_signature_edges(adt.did(), isig);
                     }
                     continue;
@@ -936,7 +936,7 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
             // the `coalesce<R: ByteRange>` blind spot), `where`-clauses, and
             // argument-position `impl Trait` (a synthetic param whose bound
             // lands here). `fn_sig`/`type_of` carry only the param *itself*.
-            sig.collect_clauses(self.tcx.explicit_predicates_of(did).predicates);
+            sig.collect_clauses(self.tcx.explicit_clauses_of(did).clauses);
             self.flush_signature_edges(did, sig);
 
             // Field types: fields are not in `definitions()` and narrowing a
@@ -998,8 +998,8 @@ struct SigVisitor {
 }
 
 impl SigVisitor {
-    /// Sweep a written clause list (`explicit_predicates_of` /
-    /// `explicit_super_predicates_of` / `explicit_item_bounds`): the bound
+    /// Sweep a written clause list (`explicit_clauses_of` /
+    /// `explicit_super_clauses_of` / `explicit_item_bounds`): the bound
     /// TRAIT itself is a def named by the signature but is not a `Ty`, so the
     /// type walk alone can't collect it — pull it off the clause kind, then
     /// visit the clause for every embedded type (bound arguments like
@@ -1008,7 +1008,7 @@ impl SigVisitor {
         for (clause, _) in clauses {
             match clause.kind().skip_binder() {
                 ty::ClauseKind::Trait(tp) => self.out.push(tp.trait_ref.def_id),
-                ty::ClauseKind::Projection(pp) => self.out.push(pp.projection_term.def_id),
+                ty::ClauseKind::Projection(pp) => self.out.push(pp.def_id()),
                 _ => {}
             }
             clause.visit_with(self);
@@ -1019,7 +1019,7 @@ impl SigVisitor {
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for SigVisitor {
     fn visit_ty(&mut self, t: Ty<'tcx>) {
         match t.kind() {
-            ty::Alias(alias) => match alias.kind {
+            ty::Alias(_, alias) => match alias.kind {
                 ty::AliasTyKind::Projection { def_id } | ty::AliasTyKind::Inherent { def_id } => {
                     self.out.push(def_id);
                 }
@@ -1439,7 +1439,7 @@ fn assoc_self_kind(tcx: TyCtxt<'_>, local_id: LocalDefId) -> Option<String> {
     }
     let sig = tcx.hir_node_by_def_id(local_id).fn_sig()?;
     use rustc_hir::ImplicitSelfKind as Isk;
-    let s = match sig.decl.implicit_self {
+    let s = match sig.decl.implicit_self() {
         Isk::None => "none",
         Isk::Imm | Isk::Mut => "value",
         Isk::RefImm => "ref",
@@ -1482,7 +1482,10 @@ fn in_trivial_field_reads_derive(tcx: TyCtxt<'_>, mut did: DefId) -> bool {
                 && tcx.is_automatically_derived(did)
                 && find_attr!(
                     tcx,
-                    tcx.impl_trait_ref(did).instantiate_identity().def_id,
+                    tcx.impl_trait_ref(did)
+                        .instantiate_identity()
+                        .skip_normalization()
+                        .def_id,
                     RustcTrivialFieldReads
                 );
         }
@@ -1613,9 +1616,9 @@ fn export_attrs(tcx: TyCtxt<'_>, local_id: LocalDefId) -> Vec<String> {
     // their only in-crate referrer is the compiler-synthesized `_DECLS`
     // registration — without this root the unused-pub verdict reads that
     // phantom edge as "only used inside the crate" and narrows illegally.
-    if find_attr!(attrs, AttributeKind::ProcMacro(_))
+    if find_attr!(attrs, AttributeKind::ProcMacro)
         || find_attr!(attrs, AttributeKind::ProcMacroDerive { .. })
-        || find_attr!(attrs, AttributeKind::ProcMacroAttribute(_))
+        || find_attr!(attrs, AttributeKind::ProcMacroAttribute)
     {
         out.push("proc_macro".to_string());
     }

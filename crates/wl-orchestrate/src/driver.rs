@@ -174,16 +174,16 @@ mod tests {
     fn dylib_toolchain_is_the_at_segment() {
         assert_eq!(
             dylib_toolchain(Path::new(
-                "/t/libwl_extractor@nightly-2026-04-16-aarch64-apple-darwin.dylib"
+                "/t/libwl_extractor@nightly-2026-08-20-aarch64-apple-darwin.dylib"
             )),
-            Some("nightly-2026-04-16-aarch64-apple-darwin"),
+            Some("nightly-2026-08-20-aarch64-apple-darwin"),
         );
         // Windows naming: no `lib` prefix, `.dll` extension.
         assert_eq!(
             dylib_toolchain(Path::new(
-                "wl_extractor@nightly-2026-04-16-x86_64-pc-windows-msvc.dll"
+                "wl_extractor@nightly-2026-08-20-x86_64-pc-windows-msvc.dll"
             )),
-            Some("nightly-2026-04-16-x86_64-pc-windows-msvc"),
+            Some("nightly-2026-08-20-x86_64-pc-windows-msvc"),
         );
         assert_eq!(dylib_toolchain(Path::new("/t/no_toolchain.dylib")), None);
     }

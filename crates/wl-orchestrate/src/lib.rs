@@ -141,8 +141,17 @@ pub enum EngineError {
     #[error("building the extractor dylib in {dir} failed (see cargo output above)")]
     ExtractorBuild { dir: PathBuf },
 
-    #[error("no wl_extractor@<toolchain> dylib under {dir} after a successful build")]
-    DylibNotFound { dir: PathBuf },
+    /// The build succeeded but left no `wl_extractor@<toolchain>` dylib: that
+    /// copy is `dylint-link`'s job, and a `dylint-link` older than the pinned
+    /// toolchain's cargo writes it next to rustc's `-o` path — which cargo's
+    /// build-dir layout moved under `target/debug/build/<pkg>/<hash>/out/`.
+    #[error(
+        "the extractor built, but no `wl_extractor@<toolchain>` dylib appeared under {dir}: \
+         the installed `dylint-link` predates the pinned toolchain's cargo build-dir layout\n\
+         \n\
+             cargo install dylint-link --locked --force"
+    )]
+    DylintLinkOutdated { dir: PathBuf },
 
     #[error("extraction under config `{config}` failed: {source}")]
     Extraction {
@@ -188,8 +197,9 @@ impl EngineError {
     /// the `Display` text tells the user to paste (a lockstep test in
     /// `toolchain.rs` keeps the two from drifting). `None` for failures with
     /// no safe auto-remediation: installing rustup itself is a shell pipe
-    /// from the network, and everything past preflight (compile failures,
-    /// IO) is not a provisioning problem.
+    /// from the network, and everything else past preflight (compile
+    /// failures, IO) is not a provisioning problem. The one post-build
+    /// exception is an outdated `dylint-link`, detectable only by its output.
     pub fn remediation(&self) -> Option<Vec<String>> {
         let argv: Vec<&str> = match self {
             Self::ToolchainMissing { pin } => vec![
@@ -211,6 +221,10 @@ impl EngineError {
                 vec!["rustup", "target", "add", triple, "--toolchain", pin]
             }
             Self::DylintLinkMissing => vec!["cargo", "install", "dylint-link", "--locked"],
+            // `--force`: the outdated binary is installed, so a plain install no-ops.
+            Self::DylintLinkOutdated { .. } => {
+                vec!["cargo", "install", "dylint-link", "--locked", "--force"]
+            }
             _ => return None,
         };
         Some(argv.into_iter().map(String::from).collect())
