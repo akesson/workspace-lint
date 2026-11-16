@@ -15,7 +15,7 @@ use wl_engine::fast::FastModel;
 use wl_lint_api::{LintContext, LintId, util};
 
 use crate::cli::CheckRule;
-use crate::directives::{self, Directive};
+use crate::directives;
 use crate::suppress::SuppressionMap;
 use crate::{config, provision, registry};
 
@@ -34,18 +34,29 @@ pub(crate) struct RunOutput {
     /// not swallow findings that never needed the engine. `ran` excludes
     /// the semantic lints in that case, so their `expect`s can't go stale.
     pub(crate) engine_error: Option<EngineFailure>,
-    /// The workspace's suppression directives, scanned ONCE (with the fast
-    /// model's parse cache) before any lint ran — lints consult them through
-    /// the non-mutating [`LintContext::suppressed`] query, and the caller's
-    /// suppression pass and `--fix-auto-delete` cascade reuse the same list.
-    /// `None` when this run loaded no [`FastModel`]; the caller scans then.
-    pub(crate) directives: Option<Vec<Directive>>,
+    /// The workspace's suppression directives, scanned ONCE before any lint
+    /// ran. Lints consult it through the non-mutating
+    /// [`LintContext::suppressed`] query; the caller's `--fix-auto-delete`
+    /// cascade borrows it the same way, and its suppression pass consumes it.
+    pub(crate) suppression: SuppressionMap,
 }
 
-/// Scan the directives up front when the fast model is loaded (the scan
-/// reuses its parse cache) — see [`RunOutput::directives`].
-fn scan_directives(fast: Option<&FastModel>) -> Option<Vec<Directive>> {
-    fast.map(|fm| wl_engine::timing::phase("scan directives", || directives::scan_with_model(fm)))
+/// The FastModel and the run's one [`SuppressionMap`]. The model loads
+/// strictly when a lint needs it (failure is fatal), else best-effort: the
+/// directive scan reuses its parse cache, and the caller's generated-file
+/// drop and leveling read it. Outside a cargo workspace the scan falls back
+/// to a plain path walk.
+fn fast_and_suppression(needs_fast: bool) -> (Option<FastModel>, SuppressionMap) {
+    let fast = if needs_fast {
+        Some(wl_engine::timing::phase("FastModel::load", load_fast_model))
+    } else {
+        try_load_fast_model()
+    };
+    let directives = wl_engine::timing::phase("scan directives", || match &fast {
+        Some(fm) => directives::scan_with_model(fm),
+        None => directives::scan(std::path::Path::new(".")),
+    });
+    (fast, SuppressionMap::from_directives(directives))
 }
 
 /// An extraction/assembly failure carried out of [`run_all`] so the caller
@@ -78,16 +89,14 @@ pub(crate) fn run_all(config: &config::Config, fast_only: bool, auto_delete: boo
     // The rustc-backed tier runs only when some (still-enabled) lint asks
     // for it — never under `--fast-only` (the retain above emptied those).
     let needs_semantic = registry.iter().any(|l| l.requirements().needs_semantic);
-    let fast = needs_fast.then(|| wl_engine::timing::phase("FastModel::load", load_fast_model));
+    let (fast, suppression) = fast_and_suppression(needs_fast);
     // A memberless workspace (a bare virtual manifest) has nothing to extract
     // or judge — cargo would just error "the workspace has no members" — so
     // the tier is skipped; semantic lints see zero members and emit nothing.
     // `needs_semantic ⇒ needs_fast` (every semantic lint declares both), so
     // `fast` is loaded whenever this check runs.
     let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
-    let directives = scan_directives(fast.as_ref());
-    let map = SuppressionMap::from_directives(directives.clone().unwrap_or_default());
-    let suppressed = |d: &Diagnostic| map.would_suppress(d);
+    let suppressed = |d: &Diagnostic| suppression.would_suppress(d);
     // Fast tier FIRST, semantic tier second: extraction is the step that can
     // fail (toolchain missing, a member that doesn't compile), and its
     // failure must not swallow the findings the build-free lints already
@@ -126,7 +135,7 @@ pub(crate) fn run_all(config: &config::Config, fast_only: bool, auto_delete: boo
                     cfg_shadow: None,
                     ran,
                     engine_error: Some(failure),
-                    directives,
+                    suppression,
                 };
             }
         }
@@ -175,7 +184,7 @@ pub(crate) fn run_all(config: &config::Config, fast_only: bool, auto_delete: boo
         cfg_shadow: shadow,
         ran,
         engine_error: None,
-        directives,
+        suppression,
     }
 }
 
@@ -195,14 +204,12 @@ pub(crate) fn run_single_check(
             lint.id().short()
         ));
     }
-    let fast = requirements.needs_fast.then(load_fast_model);
+    let (fast, suppression) = fast_and_suppression(requirements.needs_fast);
     // Outside a configured workspace (`config::try_load` → None) the engine
     // falls back to its default single-config matrix. A memberless workspace
     // skips the tier entirely (see run_all).
     let has_members = fast.as_ref().is_some_and(|f| !f.members().is_empty());
-    let directives = scan_directives(fast.as_ref());
-    let map = SuppressionMap::from_directives(directives.clone().unwrap_or_default());
-    let suppressed = |d: &Diagnostic| map.would_suppress(d);
+    let suppressed = |d: &Diagnostic| suppression.would_suppress(d);
     let semantic = (requirements.needs_semantic && has_members).then(|| {
         let engine = config.map(|c| c.engine.clone()).unwrap_or_default();
         load_semantic_model(engine.selectors()).unwrap_or_else(|f| {
@@ -238,7 +245,7 @@ pub(crate) fn run_single_check(
         cfg_shadow: shadow,
         ran,
         engine_error: None,
-        directives,
+        suppression,
     }
 }
 
@@ -306,10 +313,10 @@ pub(crate) fn load_fast_model() -> FastModel {
 /// Best-effort [`FastModel`] load used when no enabled lint required one: the
 /// generated-file drop and the suppression scanner's parse cache still want it.
 /// Non-fatal: a directory that isn't a loadable cargo workspace yields `None`
-/// (the drop is skipped; the directive scan parses on demand). Lints that
+/// (the drop is skipped; the directive scan walks paths instead). Lints that
 /// DECLARE `needs_fast` — since the measurement-sweep port that includes
 /// `check file-size` — instead go through the loud-fail load: they are
 /// workspace-rooted by design and exit 2 outside one.
-pub(crate) fn try_load_fast_model() -> Option<FastModel> {
+fn try_load_fast_model() -> Option<FastModel> {
     FastModel::load(std::path::Path::new(".")).ok()
 }

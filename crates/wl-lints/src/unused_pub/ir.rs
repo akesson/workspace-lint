@@ -202,7 +202,13 @@ fn findings_with_shadow(
                 id: None,
                 removable: false,
                 test_only: false,
-                diagnostic: publish_hint(fast, krate, &crate_code, visible),
+                diagnostic: publish_hint(
+                    fast,
+                    krate,
+                    &crate_code,
+                    visible,
+                    crate_findings.len() - visible,
+                ),
             });
         }
         out.extend(crate_findings);
@@ -605,7 +611,23 @@ fn build_tighten_suggestion(
 
 /// One crate-level hint suggesting `publish = true` for an internal crate
 /// that produced `count` findings.
-fn publish_hint(fast: &FastModel, krate: &CrateInfo, crate_code: &str, count: usize) -> Diagnostic {
+/// `silenced` counts the crate's findings an `expect`/`allow` directive
+/// hides: they don't count toward `count`, but `publish = true` exempts them
+/// too — and turns their `expect`s stale — so the help says so.
+fn publish_hint(
+    fast: &FastModel,
+    krate: &CrateInfo,
+    crate_code: &str,
+    count: usize,
+    silenced: usize,
+) -> Diagnostic {
+    let exempt = match silenced {
+        0 => "these findings become exempt".to_string(),
+        n => format!(
+            "these findings become exempt, plus {n} silenced by a directive \
+             whose `expect` would then go stale"
+        ),
+    };
     at_crate(
         LintId::UnusedPub.id(),
         format!("crate `{crate_code}` has {count} public items unused within the workspace"),
@@ -615,7 +637,7 @@ fn publish_hint(fast: &FastModel, krate: &CrateInfo, crate_code: &str, count: us
     )
     .help(format!(
         "if `{}` is published outside this workspace, set `publish = true` in its Cargo.toml \
-         to treat its public API as external (these findings become exempt)",
+         to treat its public API as external ({exempt})",
         krate.name
     ))
     .note_once(

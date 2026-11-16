@@ -1,0 +1,10 @@
+# Same workspace as `publish_hint_counts_only_unsilenced`, through the
+# `--fix-auto-delete` cascade — which REPLACES the plain findings and so
+# computes its own rollup; it must count only unsilenced findings too.
+args = ["--fix-auto-delete"]
+
+# The third unused item arrives already silenced. Injected after copy so the
+# repo's own dogfood scan never sees the directive.
+[[append]]
+path = "crates/alpha/src/lib.rs"
+text = "\n// workspace-lint: expect(unused-pub)\npub fn silenced() {}\n"

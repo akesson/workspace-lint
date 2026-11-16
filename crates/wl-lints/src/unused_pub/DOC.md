@@ -34,10 +34,11 @@ workspace level — over-exposed internal APIs get caught. So: **mark
 genuinely-published crates with `publish = true`**, and leave internal
 crates as they are.
 
-If a crate accumulates several findings, the lint emits a one-line hint
-suggesting `publish = true` — in case the flood means the crate really is
-published. Set `assume-all-public = true` to opt out entirely and treat
-every crate as having an external API (the pre-publish-aware behavior).
+If a crate accumulates several (unsilenced) findings, the lint emits a
+one-line hint suggesting `publish = true` — in case the flood means the
+crate really is published. Set `assume-all-public = true` to opt out
+entirely and treat every crate as having an external API (the
+pre-publish-aware behavior).
 
 Three findings:
 
@@ -99,8 +100,8 @@ publish-hint-threshold = 3
   external public API. The conservative pre-publish-aware behavior. Default
   `false`.
 - `publish-hint-threshold` — emit the "set `publish = true`" hint once a
-  workspace-internal crate reaches this many findings. `0` disables it.
-  Default `3`.
+  workspace-internal crate reaches this many findings, counting only those
+  no `expect`/`allow` directive silences. `0` disables it. Default `3`.
 
 Any of these can be set per-crate via `[crates.<name>.unused-pub]`, which
 wholesale-replaces the global `[unused-pub]` for that crate.

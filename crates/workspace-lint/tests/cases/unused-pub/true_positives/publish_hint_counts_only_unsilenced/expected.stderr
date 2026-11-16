@@ -1,7 +1,7 @@
 error: crate `alpha` has 2 public items unused within the workspace
  --> crates/alpha/Cargo.toml:1:1
   |
-  = help: if `alpha` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt)
+  = help: if `alpha` is published outside this workspace, set `publish = true` in its Cargo.toml to treat its public API as external (these findings become exempt, plus 1 silenced by a directive whose `expect` would then go stale)
   = note: workspace-lint treats a crate as workspace-internal unless it declares `publish = true` (or a registry); see the unused-pub docs
 help: if intentional, silence with:
   |
