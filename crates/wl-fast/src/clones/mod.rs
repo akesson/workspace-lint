@@ -20,7 +20,9 @@
 //! match meaningful rather than merely isomorphic:
 //! - free identifiers: called functions, types, field and method names, enum
 //!   variants, path segments. Two blocks that call different functions are
-//!   not clones.
+//!   not clones. A generic parameter declared *inside* the candidate (the
+//!   fn's own `<T>`, a nested item's) is a binding, not a free name — it is
+//!   α-renamed like a local, so it never counts toward `min-distinct-anchors`.
 //! - `true`/`false` (idents at token level) and lifetime names.
 //!
 //! Two noise metrics, computed on the same normalized stream, gate every
@@ -49,13 +51,16 @@
 //! Known approximations (all lean toward *missing* a clone or the
 //! `known_false_positives` bucket, never toward unsoundness):
 //! - "local" is judged by a flat per-candidate binding set (every `PatIdent`
-//!   in the region plus the fn's own name), not a real scope stack — a name
+//!   and type/const generic parameter declared in the region, plus the fn's
+//!   own name), not a real scope stack — a name
 //!   that is a binding in one inner scope and a free item elsewhere in the
 //!   same candidate is renamed everywhere.
 //! - struct-pattern shorthand (`Point { x }`) renames `x`, erasing the field
 //!   identity in the pattern position.
-//! - generic type parameters are not renamed (they are types, not `PatIdent`
-//!   bindings), so clones differing only in a type-param name don't match.
+//! - generic parameters declared *outside* a candidate stay verbatim: block
+//!   and statement-run candidates inside a fn see its `<T>` as a free name,
+//!   as does everything under an enclosing `impl<T>` — a body that spells
+//!   `T` differently only matches at the whole-fn level.
 //! - macro invocations are normalized as raw token sequences with the same
 //!   rules; binding positions *inside* a macro's own grammar can't be known,
 //!   so names introduced there stay verbatim (the under-matching direction).
@@ -545,7 +550,8 @@ fn collect_binds(block: &syn::Block, binds: &mut HashSet<String>) {
     c.visit_block(block);
 }
 
-/// The binding names a signature introduces (typed param patterns).
+/// The binding names a signature introduces: typed param patterns plus the
+/// fn's own type and const generic parameters (see [`BindCollector`]).
 fn collect_binds_sig(sig: &syn::Signature) -> HashSet<String> {
     let mut binds = HashSet::new();
     let mut c = BindCollector { binds: &mut binds };
@@ -560,6 +566,14 @@ fn collect_binds_stmt(stmt: &syn::Stmt, binds: &mut HashSet<String>) {
     c.visit_stmt(stmt);
 }
 
+/// Collects every name a syntax subtree *declares*: `PatIdent` bindings and
+/// type/const generic parameters. A generic parameter is scoped to the item
+/// that declares it, so `fn f<T>(x: T)` and `fn f<U>(x: U)` — or a nested
+/// `fn helper<T>` against `fn helper<U>` inside two blocks — are
+/// α-equivalent exactly like two renamed locals. Lifetimes stay verbatim
+/// (the encoder never renames after `'`), and a parameter declared outside
+/// the visited subtree (an enclosing `impl<T>`) is never seen, so it stays
+/// verbatim too — the under-matching direction.
 struct BindCollector<'a> {
     binds: &'a mut HashSet<String>,
 }
@@ -568,5 +582,15 @@ impl<'ast> Visit<'ast> for BindCollector<'_> {
     fn visit_pat_ident(&mut self, p: &'ast syn::PatIdent) {
         self.binds.insert(p.ident.to_string());
         visit::visit_pat_ident(self, p);
+    }
+
+    fn visit_type_param(&mut self, p: &'ast syn::TypeParam) {
+        self.binds.insert(p.ident.to_string());
+        visit::visit_type_param(self, p);
+    }
+
+    fn visit_const_param(&mut self, p: &'ast syn::ConstParam) {
+        self.binds.insert(p.ident.to_string());
+        visit::visit_const_param(self, p);
     }
 }
