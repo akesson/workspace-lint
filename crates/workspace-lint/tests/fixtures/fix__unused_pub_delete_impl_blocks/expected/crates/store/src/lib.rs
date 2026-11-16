@@ -9,7 +9,6 @@ impl Mixed {
     pub fn kept(&self) -> u32 {
         3
     }
-
 }
 
 /// Reached only through its associated const — stays.

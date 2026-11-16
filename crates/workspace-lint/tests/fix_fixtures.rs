@@ -300,6 +300,14 @@ fn fix_unused_pub_impl_block_vetoes() {
 }
 
 #[test]
+fn fix_unused_pub_fmt_unclean() {
+    // `--fix` reformats only a workspace that was fmt-clean before it: here
+    // the input is deliberately unformatted, so the tighten lands and the
+    // author's layout is left exactly as it was.
+    run_fix_fixture("fix__unused_pub_fmt_unclean");
+}
+
+#[test]
 fn fix_unused_pub_collateral() {
     // The cascade's second-order surfaces (LeaveDates 2026-07-05 follow-ups):
     // deleting `dead` strands the private `helper` → `inner` chain (rustc

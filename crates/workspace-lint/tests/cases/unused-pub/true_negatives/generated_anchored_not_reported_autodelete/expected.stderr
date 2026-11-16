@@ -1,6 +1,6 @@
 workspace-lint --fix: applying 1 structural fix
 workspace-lint --fix: modified 1 file
-note: run `cargo fmt` to tidy the fixed files
+workspace-lint --fix: ran `cargo fmt` on the fixed workspace (it was fmt-clean before the fix)
 note: applied fixes can enable further tightenings — commit these changes, then re-run `--fix` until no fixes remain (the clean-tree guard keeps each pass reviewable as its own diff)
 warning: pub fn `real_unused` in crate `demo` appears unused — consider removing
  --> crates/demo/src/lib.rs:7:1

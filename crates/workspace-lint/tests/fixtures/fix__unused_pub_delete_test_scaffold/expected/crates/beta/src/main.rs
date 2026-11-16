@@ -6,7 +6,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-        #[test]
+    #[test]
     fn exercises_kept() {
         assert_eq!(alpha::kept(), 2);
     }

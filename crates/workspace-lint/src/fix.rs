@@ -34,9 +34,6 @@ use wl_diagnostic::{Applicability, Diagnostic, Suggestion};
 pub(crate) struct FixSummary {
     /// Files actually rewritten.
     pub(crate) modified: usize,
-    /// Some applied suggestion was a deletion (empty replacement) — the
-    /// residue may be valid-but-unformatted, worth a `cargo fmt` hint.
-    pub(crate) deleted_any: bool,
 }
 
 /// Apply machine-applicable structural suggestions to disk. Everything in
@@ -104,12 +101,14 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
         );
     }
 
+    // Probed before the first write: only a tree that was fmt-clean gets
+    // `cargo fmt` afterwards (see `tidy`).
+    let tidy = crate::tidy::Tidy::probe();
     let mut summary = FixSummary::default();
     for (path, suggestions) in by_file {
         match apply_to_file(&path, &suggestions) {
             Ok(true) => {
                 summary.modified += 1;
-                summary.deleted_any |= suggestions.iter().any(Suggestion::is_deletion);
             }
             Ok(false) => {}
             Err(e) => {
@@ -127,6 +126,7 @@ pub(crate) fn run(diagnostics: &[Diagnostic]) -> FixSummary {
     } else {
         eprintln!("workspace-lint --fix: no files modified");
     }
+    tidy.after(summary.modified > 0);
     summary
 }
 

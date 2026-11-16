@@ -1,0 +1,12 @@
+# `--fix` runs `cargo fmt` afterwards only when the workspace was fmt-clean
+# BEFORE the fix: here `lib.rs` is deliberately unformatted, so the fix must
+# apply the `pub(crate)` tighten and touch nothing else — no reformat of the
+# author's code (the fixed-file `cargo fmt` hint is printed instead).
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "deny"
+
+[engine]
+configs = ["cargo build"]
