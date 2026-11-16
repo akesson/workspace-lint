@@ -30,8 +30,10 @@ pub(super) type DefMap = IndexMap<String, DefInfo, FixedState>;
 /// keys (`DefPathHash` / display path → key). Fixed seed ⇒ reproducible; only
 /// ever `get`/`insert`, never iterated in an output-visible order.
 pub(super) type FastMap<K, V> = std::collections::HashMap<K, V, FixedState>;
-use super::join::{ForeignReach, IdentityIndex};
+use super::edge_fold::EdgeFold;
+use super::join::IdentityIndex;
 use super::meta::WorkspaceMeta;
+use super::pub_usage::TestUser;
 use super::removal::{DegreeMaps, DegreeView, RemovalSet};
 use super::store::FragmentBytes;
 
@@ -128,59 +130,6 @@ pub struct Assembly {
     /// so every degree stays keyed by a def in `defs`. First fragment wins;
     /// deterministic because `load_fragments` sorts.
     id_key: FastMap<String, String>,
-}
-
-/// The edge-derived indexes produced by one pass of
-/// [`Assembly::fold_edges`] — the reverse index the reachability verdicts read.
-#[derive(Default)]
-struct EdgeFold {
-    in_degree: BTreeMap<String, usize>,
-    intra_degree: BTreeMap<String, usize>,
-    /// The subset of `in_degree` contributed by **test** units (a `+test` cfg
-    /// variant, an integration test, or a bench — see
-    /// [`Assembly::is_test_unit`]). `in_degree - test_in_degree` is the
-    /// production reach unused-pub's test-only classification judges.
-    test_in_degree: BTreeMap<String, usize>,
-    /// The subset of `intra_degree` contributed by test units.
-    test_intra_degree: BTreeMap<String, usize>,
-    referenced: BTreeSet<String>,
-    import_edges: usize,
-    signature_exposed: BTreeSet<String>,
-    import_targets: BTreeSet<String>,
-    reexporters: BTreeMap<String, Vec<String>>,
-    foreign_reach: BTreeMap<String, ForeignReach>,
-}
-
-impl EdgeFold {
-    /// Count one real use-site of `key` — the single write point of the four
-    /// degree maps, so the visibility (cross/intra) and provenance
-    /// (test/production) splits can never drift apart.
-    fn count_use(&mut self, key: String, cross: bool, test_unit: bool) {
-        if test_unit {
-            *self.test_in_degree.entry(key.clone()).or_insert(0) += 1;
-            if !cross {
-                *self.test_intra_degree.entry(key.clone()).or_insert(0) += 1;
-            }
-        }
-        *self.in_degree.entry(key.clone()).or_insert(0) += 1;
-        if !cross {
-            *self.intra_degree.entry(key).or_insert(0) += 1;
-        }
-    }
-
-    /// Move the removal-sensitive subset out of the fold — the one
-    /// [`DegreeMaps`] construction site, shared by the build pass and
-    /// [`Assembly::refold_excluding`].
-    fn take_degrees(&mut self) -> DegreeMaps {
-        DegreeMaps {
-            in_degree: std::mem::take(&mut self.in_degree),
-            intra_degree: std::mem::take(&mut self.intra_degree),
-            test_in_degree: std::mem::take(&mut self.test_in_degree),
-            test_intra_degree: std::mem::take(&mut self.test_intra_degree),
-            signature_exposed: std::mem::take(&mut self.signature_exposed),
-            foreign_reach: std::mem::take(&mut self.foreign_reach),
-        }
-    }
 }
 
 impl Assembly {
@@ -491,6 +440,10 @@ impl Assembly {
                     continue;
                 }
                 let own_impl = Self::is_own_impl_edge(frag, e);
+                // Recorded with the reach (plus on imports, below) — so the
+                // edges the verdict skips (own impl, removed, trait scope)
+                // never name a test user either.
+                let user = test_unit.then(|| self.test_user(frag, e)).flatten();
                 let Some(key) = self.resolve_key(e) else {
                     // No landing def anywhere local — but if the GLOBAL index
                     // knows the target, this config never extracted its crate
@@ -498,7 +451,7 @@ impl Assembly {
                     // level. A genuine out-of-workspace target isn't in the
                     // index and stays ignored.
                     if !own_impl {
-                        self.fold_foreign(e, test_unit, &mut f);
+                        self.fold_foreign(e, test_unit, user.as_ref(), &mut f);
                     }
                     continue;
                 };
@@ -531,6 +484,9 @@ impl Assembly {
                 }
                 if e.import {
                     f.import_edges += 1;
+                    // Not a use-site, but a test's `use` of an item a
+                    // `#[cfg(test)]` gate hides breaks that test: a user.
+                    f.record_test_user(key, user.as_ref());
                     // Only a `pub use` (re-export) pins its target `pub`
                     // (E0364/E0365) or exposes it through the importing module.
                     if e.reexport {
@@ -552,6 +508,7 @@ impl Assembly {
                 // reach it, so its edges must count as cross-crate.
                 let cross = e.external;
                 f.count_use(key.to_string(), cross, test_unit);
+                f.record_test_user(key, user.as_ref());
                 // A method-call edge lands on a trait *member* — the decl
                 // (`parent_kind == "trait"`) or an impl's method (whose
                 // `trait_item` names the decl) — never on the trait itself.
@@ -561,6 +518,7 @@ impl Assembly {
                 let member = def.trait_item.as_deref().unwrap_or(key);
                 if let Some(trait_key) = self.trait_parent.get(member) {
                     f.count_use(trait_key.clone(), cross, test_unit);
+                    f.record_test_user(trait_key, user.as_ref());
                 }
             }
         }
@@ -578,6 +536,30 @@ impl Assembly {
         frag.target_kind == "test" || frag.is_test_cfg
     }
 
+    /// Which [`TestUser`] a test unit's edge `e` is. `None` for an edge out of
+    /// a compiler-synthesized def (the `--test` harness `main`): plumbing,
+    /// not authored test code. The own/other split trusts the extractor's
+    /// `CrateNum` comparison ([`RefEdge::external`]), like the verdict's.
+    fn test_user(&self, frag: &ArchivedIrFragment, e: &ArchivedRefEdge) -> Option<TestUser> {
+        if self
+            .defs
+            .get(e.from_key.as_str())
+            .is_some_and(|d| d.synthetic)
+        {
+            return None;
+        }
+        let krate = frag.crate_name.as_str().to_owned();
+        Some(if frag.target_kind == "test" {
+            TestUser::TestTarget { krate }
+        } else if !e.external {
+            TestUser::OwnUnitTests
+        } else if frag.target_kind == "bin" {
+            TestUser::BinUnitTests { krate }
+        } else {
+            TestUser::UnitTests { krate }
+        })
+    }
+
     /// Credit an edge whose target the global index knows but this config has
     /// no def for (see [`ForeignReach`]). Mirrors the fold's own policies:
     /// signature exposure gated on a pub `from`, imports discounted from the
@@ -587,11 +569,20 @@ impl Assembly {
     /// referring unit's provenance. Trait-member reach is not folded onto the
     /// parent trait here: an identity-only target has no `parent_kind`, and
     /// the config that extracted the trait credits it.
-    fn fold_foreign(&self, e: &ArchivedRefEdge, test_unit: bool, f: &mut EdgeFold) {
+    fn fold_foreign(
+        &self,
+        e: &ArchivedRefEdge,
+        test_unit: bool,
+        user: Option<&TestUser>,
+        f: &mut EdgeFold,
+    ) {
         let Some(id) = self.ids.identity_of(e.to_key.as_str()) else {
             return;
         };
         let fr = f.foreign_reach.entry(id.to_string()).or_default();
+        if let Some(user) = user {
+            fr.test_users.insert(user.clone());
+        }
         if e.in_signature && self.defs.get(e.from_key.as_str()).is_some_and(|d| d.public) {
             fr.signature_exposed = true;
         }

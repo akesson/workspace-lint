@@ -7,7 +7,7 @@
 //!   dependency with `cfg(test)` OFF, so a `#[cfg(test)]` gate breaks them;
 //! - the item is already `#[cfg(test)]` → gating is no advice at all.
 
-use wl_engine::semantic::{SemanticModel, TestUser};
+use wl_engine::semantic::{PubCandidate, SemanticModel, TestUser};
 
 /// Help line + "used by" note for one test-only finding.
 pub(super) struct TestOnlyAdvice {
@@ -19,9 +19,9 @@ pub(super) struct TestOnlyAdvice {
 }
 
 impl TestOnlyAdvice {
-    pub(super) fn for_item(model: &SemanticModel, id: &str, crate_code: &str) -> Self {
-        let users = model.test_users(id);
-        let already_test_only = model.defined_only_under_test(id);
+    pub(super) fn for_item(model: &SemanticModel, cand: &PubCandidate, crate_code: &str) -> Self {
+        let users = &cand.test_users;
+        let already_test_only = model.defined_only_under_test(&cand.id);
         let own_only = users.iter().all(|u| *u == TestUser::OwnUnitTests);
         let help = match (already_test_only, users.is_empty(), own_only) {
             (true, _, _) => {
@@ -31,7 +31,8 @@ impl TestOnlyAdvice {
             (false, true, _) => "gate it `#[cfg(test)]`, move it into test code, or remove it",
             (false, false, true) => {
                 "only this crate's own unit tests use it — gate it `#[cfg(test)]` and narrow \
-                 it to `pub(crate)`, move it into the test module, or remove it"
+                 it to `pub(crate)`, move it into the test module, or remove it (doctests are \
+                 not analyzed: a doc example using it would break)"
             }
             (false, false, false) => {
                 "`#[cfg(test)]` would break the users below: other crates' tests and \
@@ -62,6 +63,7 @@ fn describe(user: &TestUser, crate_code: &str) -> String {
     match user {
         TestUser::OwnUnitTests => format!("`{crate_code}`'s own unit tests"),
         TestUser::UnitTests { krate } => format!("`{krate}`'s unit tests"),
+        TestUser::BinUnitTests { krate } => format!("binary `{krate}`'s unit tests"),
         TestUser::TestTarget { krate } => format!("test target `{krate}`"),
     }
 }

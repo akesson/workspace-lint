@@ -338,7 +338,7 @@ fn build_diagnostic(
     let kind_str = &cand.kind;
     let crate_code = ctx.crate_code;
     let test_only = (verdict == PubVerdict::TestOnly)
-        .then(|| TestOnlyAdvice::for_item(ctx.model, &cand.id, crate_code));
+        .then(|| TestOnlyAdvice::for_item(ctx.model, cand, crate_code));
     let (message, suggestion) = match verdict {
         PubVerdict::IntraCrate => (
             format!(

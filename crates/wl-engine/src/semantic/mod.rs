@@ -15,6 +15,7 @@ mod clippy_guard;
 mod collateral;
 mod def_info;
 mod deps;
+mod edge_fold;
 mod impls;
 mod import_usage;
 mod imports;
@@ -28,13 +29,13 @@ mod store;
 mod union;
 
 pub use assembly::{Assembly, Category, DefInfo, Reach, ResolvedRef};
-pub use callgraph::{Callee, EnclosingFn, InboundRef, TestUser};
+pub use callgraph::{Callee, EnclosingFn, InboundRef};
 pub use clippy_guard::{DeletionUnmask, NarrowUnmask};
 pub use collateral::PrivateOrphan;
 pub use deps::{CrateDeps, DepsVerdict, NotJudged, NotJudgedDep, UnusedDep};
 pub use imports::{DanglingImport, ExcisionBlock};
 pub use meta::{DepDecl, DepKind, WorkspaceMeta};
-pub use pub_usage::{PubCandidate, PubUsage};
+pub use pub_usage::{PubCandidate, PubUsage, TestUser};
 pub use removal::RemovalSet;
 pub use scaffolding::{BlockReason, ScaffoldVerdict, TestBlocker, TestScaffold, TestScaffolding};
 pub use union::{Lead, Retired, UnionVerdict};
@@ -286,18 +287,22 @@ impl SemanticModel {
         self.call_graph().callees_of(&self.configs, identity)
     }
 
-    /// The test code referencing `identity` — see [`TestUser`].
-    pub fn test_users(&self, identity: &str) -> Vec<TestUser> {
-        self.call_graph().test_users(&self.configs, identity)
-    }
-
     /// `identity` exists only in test units — it is already `#[cfg(test)]`
     /// (or test-target) code, so "gate it `#[cfg(test)]`" is no advice.
+    /// Judged only when the matrix compiled the crate for production at all:
+    /// under `configs = ["cargo test"]` a leaf lib may have just its `+test`
+    /// unit, where every item would otherwise read as test-only.
     pub fn defined_only_under_test(&self, identity: &str) -> bool {
-        !self
+        let prod = self
             .prod_identities
-            .get_or_init(|| scaffolding::prod_identities(&self.configs))
-            .contains(identity)
+            .get_or_init(|| scaffolding::prod_identities(&self.configs));
+        let krate = identity.split("::").next().unwrap_or(identity);
+        let prefix = format!("{krate}::");
+        let crate_has_prod_unit = prod
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|id| id.starts_with(&prefix));
+        crate_has_prod_unit && !prod.contains(identity)
     }
 
     /// Every inbound reference to `identity` (deduped across cfg variants,

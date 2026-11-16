@@ -11,7 +11,7 @@
 //! the fact union — no config knowledge lives here; kind/allowlist/path
 //! filters and publish policy belong to the lint layer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use wl_ir::Span;
 
@@ -50,6 +50,31 @@ pub enum PubUsage {
     TestOnly,
     /// No reaching edge under any config — the "appears unused" verdict.
     Unused,
+}
+
+/// One kind of test code that references a def — the unused-pub "only used
+/// by test code" finding's *which tests* answer, which decides the fix: only
+/// the defining crate's own unit tests compile it with `cfg(test)` on, so a
+/// `#[cfg(test)]` gate keeps exactly [`TestUser::OwnUnitTests`] working and
+/// breaks every other kind. Recorded by the same edge fold that produces the
+/// [`PubUsage::TestOnly`] verdict (own-impl edges skipped, trait-member reach
+/// folded onto the trait, the cascade's removals honored), plus import edges:
+/// a test's `use` of a gated item breaks as surely as a call.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TestUser {
+    /// The defining crate's own `+test` unit (`#[cfg(test)]` code, `#[test]`
+    /// fns in the same crate).
+    OwnUnitTests,
+    /// Another lib crate's unit tests — it compiles the defining one as a
+    /// plain dependency, `cfg(test)` off.
+    UnitTests { krate: String },
+    /// A binary's unit tests (`krate` is the bin's crate name, which may
+    /// equal the defining lib's: same package, still a separate crate).
+    BinUnitTests { krate: String },
+    /// An integration-test or bench target (`krate` is the target's crate
+    /// name, i.e. its file stem) — a separate crate even in the same package,
+    /// so the library it links is compiled without `cfg(test)` too.
+    TestTarget { krate: String },
 }
 
 /// One pub candidate with everything the lint needs to filter, classify, and
@@ -114,6 +139,10 @@ pub struct PubCandidate {
     /// re-exporting nothing (`unused_imports`), so the fix is shown, never
     /// machine-applied.
     pub glob_reexported: bool,
+    /// The test code reaching the item, sorted — filled only for a
+    /// [`PubUsage::TestOnly`] verdict (it decides that finding's advice),
+    /// empty otherwise.
+    pub test_users: Vec<TestUser>,
 }
 
 /// The per-config fold of one identity: OR-accumulated over every
@@ -145,6 +174,8 @@ struct Fold {
     has_written_impl: bool,
     /// See [`PubCandidate::glob_reexported`].
     glob_reexported: bool,
+    /// See [`PubCandidate::test_users`].
+    test_users: BTreeSet<TestUser>,
 }
 
 pub(super) fn compute(configs: &[(String, Assembly)]) -> Vec<PubCandidate> {
@@ -250,6 +281,9 @@ fn compute_impl(
             fold.reexport_target |= assembly.is_import_target(key);
             fold.has_written_impl |= assembly.has_written_impl(key);
             fold.glob_reexported |= assembly.is_glob_reexported(key);
+            if let Some(users) = view.test_users.get(key) {
+                fold.test_users.extend(users.iter().cloned());
+            }
             display
                 .entry(def.path.clone())
                 .or_insert_with(|| (assembly, key.clone()));
@@ -268,6 +302,7 @@ fn compute_impl(
                 fold.prod_cross |= fr.prod_cross;
                 fold.prod_intra |= fr.prod_intra;
                 fold.signature_exposed |= fr.signature_exposed;
+                fold.test_users.extend(fr.test_users.iter().cloned());
             }
         }
     }
@@ -310,6 +345,11 @@ fn compute_impl(
                 dead_fields: fold.dead_fields,
                 has_written_impl: fold.has_written_impl,
                 glob_reexported: fold.glob_reexported,
+                test_users: if usage == PubUsage::TestOnly {
+                    fold.test_users.into_iter().collect()
+                } else {
+                    Vec::new()
+                },
                 id,
             }
         })
