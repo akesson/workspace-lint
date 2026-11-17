@@ -3,7 +3,9 @@
 #   glob still re-exports something — deleted;
 # - every public item of `crud` is dead: deleting them all would leave
 #   `pub use crud::*` re-exporting nothing (`unused_imports`), so they stay,
-#   shown-not-applied, with a note saying so.
+#   shown-not-applied, with a note saying so;
+# - in `audit`, `Audited` is kept by its trait impl, so it keeps the glob
+#   non-empty and the dead `Stale` beside it is deleted.
 [unused-pub]
 
 [lints]

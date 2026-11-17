@@ -4937,3 +4937,50 @@ fn test_scaffolding_shared_scaffold_clears_sibling_targets() {
         }
     }
 }
+
+/// `pub use m::*` with a `#[cfg(test)]`-only public sibling: deleting
+/// `Dead` empties the glob in the `build` config even though `test` keeps
+/// it non-empty — judged per config, never on the pooled children. A plain
+/// `pub use m;` names the module and never empties.
+#[test]
+fn glob_emptied_is_judged_per_config_and_only_for_globs() {
+    let glob_use = |glob: bool| RefEdge {
+        reexport: true,
+        glob,
+        ..edge(&["alpha"], &["alpha", "m"], "K_M", true)
+    };
+    let config = |with_fixture: bool, glob: bool| {
+        let mut items = vec![
+            item(&["alpha", "m"], "K_M", "mod", Some("mod")),
+            item(&["alpha", "m", "Dead"], "K_D", "struct", Some("mod")),
+            item(&["alpha", "m", "Live"], "K_L", "struct", Some("mod")),
+        ];
+        if with_fixture {
+            items.push(item(&["alpha", "m", "fixture"], "K_F", "fn", Some("mod")));
+        }
+        frag("alpha", items, vec![glob_use(glob)])
+    };
+    let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let emptied = |m: &SemanticModel, trial: &[&str], new: &[&str]| {
+        m.glob_emptied(&RemovalSet::new(trial), &ids(new))
+    };
+
+    let per_config = model(vec![
+        ("build", vec![config(false, true)]),
+        ("test", vec![config(true, true)]),
+    ]);
+    // `Live` survives: the glob keeps re-exporting it everywhere.
+    assert!(emptied(&per_config, &["alpha::m::Dead"], &["alpha::m::Dead"]).is_empty());
+    // `Dead` + `Live` go: only `test`'s `fixture` survives — `build` empties.
+    let both = ["alpha::m::Dead", "alpha::m::Live"];
+    let got = emptied(&per_config, &both, &["alpha::m::Live"]);
+    assert_eq!(
+        got.into_iter().collect::<Vec<_>>(),
+        vec![("alpha::m::Live".to_string(), "alpha::m".to_string())],
+        "only the trial's NEW items are reported, against the emptied glob"
+    );
+
+    // `pub use m;` (no glob flag): nothing ever empties.
+    let module_use = model(vec![("build", vec![config(false, false)])]);
+    assert!(emptied(&module_use, &both, &both).is_empty());
+}

@@ -52,7 +52,8 @@ impl VetoOracle for VetoCtx<'_> {
         // One overlay shared by both engine queries (a refold per config is
         // the expensive step).
         let overlay = self.model.trial_overlay(&trial);
-        self.model
+        let mut vetoes: Vec<(String, Veto)> = self
+            .model
             .deletion_unmasks(&overlay, trial_new)
             .into_iter()
             .map(|(id, u)| (id, Veto::Unmask(u)))
@@ -62,14 +63,26 @@ impl VetoOracle for VetoCtx<'_> {
                     .into_iter()
                     .map(|(id, k)| (id, Veto::Impl(k))),
             )
-            .chain(
-                self.model
-                    .glob_emptied(&trial, trial_new)
-                    .into_iter()
-                    .map(|(id, module)| (id, Veto::Glob { module })),
-            )
             .chain(self.block_vetoes(&trial, trial_new))
-            .collect()
+            .collect();
+        // The glob check last, on the trial WITHOUT the items just kept: a
+        // kept sibling keeps the glob non-empty. (The fixpoint never takes a
+        // veto back, so judging it on the full trial would keep — and
+        // mis-note — a sibling that may go.)
+        let kept: HashSet<&str> = vetoes.iter().map(|(id, _)| id.as_str()).collect();
+        let glob_new: Vec<String> = trial_new
+            .iter()
+            .filter(|id| !kept.contains(id.as_str()))
+            .cloned()
+            .collect();
+        let glob_trial = RemovalSet::new(removed.iter().chain(glob_new.iter()));
+        let globs = self.model.glob_emptied(&glob_trial, &glob_new);
+        vetoes.extend(
+            globs
+                .into_iter()
+                .map(|(id, module)| (id, Veto::Glob { module })),
+        );
+        vetoes
     }
 }
 
