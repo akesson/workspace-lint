@@ -1,3 +1,5 @@
+mod report;
+
 use derives::Stringify;
 
 /// Dead: only derives, one of them custom — deleted with them.

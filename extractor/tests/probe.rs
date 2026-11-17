@@ -1335,6 +1335,36 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             "OwnVictim",
             "impl emitted by ANOTHER type's derive is Written",
         );
+        for (ty, what) in [
+            ("OwnSpannedDerived", "input-spanned custom derive"),
+            (
+                "OwnViaMacroDerived",
+                "custom derive emitting through a helper macro",
+            ),
+        ] {
+            ck.expect_named(
+                table_has(ty, ImplOrigin::Derived) && !table_has(ty, ImplOrigin::Written),
+                ty,
+                &format!("{what}: only Derived `impls` entries"),
+            );
+        }
+        for (ty, what) in [
+            (
+                "OwnWrapVictim",
+                "impl from a derive re-emitted onto a macro-made type",
+            ),
+            (
+                "OwnAutoMarked",
+                "hand-written `#[automatically_derived] impl`",
+            ),
+            ("OwnMacroMade", "built-in derive on a macro-made type"),
+        ] {
+            ck.expect_named(
+                table_has(ty, ImplOrigin::Written) && !table_has(ty, ImplOrigin::Derived),
+                ty,
+                &format!("{what}: Written, never Derived"),
+            );
+        }
 
         // Schema 15: each Written block carries its own delete surface, its
         // trait-ness, and its associated items.

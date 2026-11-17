@@ -12,7 +12,7 @@ pub fn stringify(item: TokenStream) -> TokenStream {
     .unwrap()
 }
 
-/// The identifier after `struct` / `enum` (no `syn` dep).
+/// The identifier after `struct` / `enum` / `union` (no `syn` dep).
 fn adt_name(item: TokenStream) -> String {
     let mut after_kw = false;
     for tt in item {
@@ -21,7 +21,7 @@ fn adt_name(item: TokenStream) -> String {
             if after_kw {
                 return s;
             }
-            after_kw = s == "struct" || s == "enum";
+            after_kw = matches!(s.as_str(), "struct" | "enum" | "union");
         }
     }
     panic!("derive input has no type name")
