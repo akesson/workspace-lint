@@ -189,12 +189,15 @@ A dead type with **hand-written inherent `impl` blocks** is deleted
 together with them (even an empty `impl T {}`), as long as nothing that
 survives still uses an item inside one; and an inherent `impl` whose every
 item is deleted goes too, rather than staying as an `impl T {}` husk. A
-type with a hand-written **trait** impl, a macro-generated impl, an impl
-item survivors still use, or an impl block the fix can't safely delete
-(in a dirty, untracked, generated or `exclude-paths` file, or holding code
-under a `#[cfg(...)]` no declared config compiles) is never auto-deleted:
-the finding stays, shown-not-applied, and the note says why (derives
-always go with the type, being its attributes). An emptied block holding
+type with a hand-written **trait** impl, a macro-generated impl its own
+source item doesn't carry (`impl_x!(T)`, another type's derive, or any
+impl of a macro-made type), an impl item survivors still use, or an impl
+block the fix can't safely delete (in a dirty, untracked, generated or
+`exclude-paths` file, or holding code under a `#[cfg(...)]` no declared
+config compiles) is never auto-deleted: the finding stays,
+shown-not-applied, and the note says why. A `#[derive]` written on the
+type itself, built-in or custom, goes with it (it is an attribute of the
+item), and so does an import only its derives used. An emptied block holding
 such uncompiled code stays too — the engine never saw those items.
 Narrowing a type with an inherent method nothing calls is likewise
 shown-not-applied — `pub(crate)` un-exports the method and `dead_code`

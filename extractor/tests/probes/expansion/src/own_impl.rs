@@ -25,6 +25,62 @@ impl core::ops::Not for OwnTarget {
 #[derive(Clone, PartialEq)]
 pub struct OwnDerived;
 
+/// Custom-derive-only (the `EnumStringify` shape) — `Derived`.
+#[derive(procmacro::ProbeInherent)]
+pub struct OwnCustomDerived;
+
+/// Carries a derive whose impl is for `OwnVictim`, not for itself.
+#[derive(procmacro::ProbeElsewhere)]
+pub struct OwnDeriveHost;
+
+/// Gets its only impl from `OwnDeriveHost`'s derive — `Written`: deleting
+/// this type leaves that derive emitting an impl of a missing type.
+pub struct OwnVictim;
+
+/// Custom derive spanning its output with the input's tokens — `Derived`.
+#[derive(procmacro::ProbeSpanned)]
+pub struct OwnSpannedDerived;
+
+/// Custom derive emitting its impl through a helper macro — `Derived`.
+#[derive(procmacro::ProbeViaMacro)]
+pub struct OwnViaMacroDerived;
+
+/// Re-emits its attributes onto a macro-made struct: the derive path is
+/// source text, but the item it lands on is not.
+macro_rules! wrap {
+    ($(#[$m:meta])* $name:ident) => {
+        $(#[$m])* pub struct $name;
+    };
+}
+
+wrap!(#[derive(procmacro::ProbeNext)] OwnWrapped);
+
+/// The first SOURCE ADT after the wrapped derive's path, and the self type
+/// of the impl that derive emits — `Written`: the derive is not its own.
+pub struct OwnWrapVictim;
+
+/// Hand-written, merely carrying the marker — `Written`.
+pub struct OwnAutoMarked;
+
+#[automatically_derived]
+impl core::ops::Neg for OwnAutoMarked {
+    type Output = u32;
+    fn neg(self) -> u32 {
+        0
+    }
+}
+
+/// A built-in derive on a macro-made type: no source item to delete with
+/// it — `Written`.
+macro_rules! make_derived {
+    ($name:ident) => {
+        #[derive(Clone)]
+        pub struct $name;
+    };
+}
+
+make_derived!(OwnMacroMade);
+
 /// An EMPTY inherent impl: its header is the only evidence the impl exists.
 /// The pre-14 display-path dedup dropped exactly this edge.
 pub struct OwnEmpty;

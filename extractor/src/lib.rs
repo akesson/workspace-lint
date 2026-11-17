@@ -47,7 +47,7 @@ use rustc_lint::{LateContext, LateLintPass, LintStore};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitor};
 use rustc_session::Session;
-use rustc_span::hygiene::ExpnKind;
+use rustc_span::hygiene::{ExpnKind, MacroKind};
 use rustc_span::{FileName, Span as RustcSpan};
 
 use std::collections::HashMap;
@@ -244,8 +244,9 @@ fn extract(tcx: TyCtxt<'_>) -> IrFragment {
         }
     }
 
-    let (impls, impl_index) = collect_impls(tcx, sm);
-    let references = collect_references(tcx, &crate_code, &impl_index);
+    let derives = DeriveOwners::new(tcx);
+    let (impls, impl_index) = collect_impls(tcx, sm, &derives);
+    let references = collect_references(tcx, &crate_code, &impl_index, &derives);
     let loaded_files = collect_loaded_files(sm);
 
     IrFragment {
@@ -425,15 +426,17 @@ fn target_kind(tcx: TyCtxt<'_>) -> &'static str {
 /// `where`-clauses, supertraits, assoc-type/`impl Trait` item bounds, `dyn`
 /// principals, field types — from the lowered signatures and the written
 /// predicate queries.
-fn collect_references(
-    tcx: TyCtxt<'_>,
+fn collect_references<'tcx>(
+    tcx: TyCtxt<'tcx>,
     crate_code: &str,
     impl_index: &HashMap<DefId, u32>,
+    derives: &DeriveOwners<'tcx>,
 ) -> Vec<RefEdge> {
     let mut collector = RefCollector {
         tcx,
         crate_code,
         impl_index,
+        derives,
         edges: Vec::new(),
         write_fields: std::collections::HashSet::new(),
     };
@@ -532,6 +535,8 @@ struct RefCollector<'a, 'tcx> {
     crate_code: &'a str,
     /// impl `DefId` → its [`IrFragment::impls`] index (see [`collect_impls`]).
     impl_index: &'a HashMap<DefId, u32>,
+    /// Which items a source `#[derive]` generated, and for which type.
+    derives: &'a DeriveOwners<'tcx>,
     edges: Vec<RefEdge>,
     /// Field exprs in plain-assignment LHS position (`x.f = v`): writes, not
     /// reads. rustc `dead_code` flags a field with writes but no reads, so
@@ -554,14 +559,17 @@ impl<'a, 'tcx> RefCollector<'a, 'tcx> {
     /// expansion: `a!` expanding solely to `b!` must credit `a` too — the
     /// outer macro is what the source names (and what its glob import
     /// supplies), while only `b` appears in the innermost `ExpnData`.
-    fn record_macro_expansion(&mut self, span: RustcSpan, at: HirId) {
+    ///
+    /// `from` is the def the edge is recorded from: the enclosing item for an
+    /// expression, see [`visit_item`](Self::visit_item) for an item.
+    fn record_macro_expansion(&mut self, span: RustcSpan, from: DefId) {
         let mut ctxt = span.ctxt();
         while !ctxt.is_root() {
             let data = ctxt.outer_expn_data();
             if let ExpnKind::Macro(_, _) = data.kind
                 && let Some(mac) = data.macro_def_id
             {
-                self.record(at, mac, span);
+                self.record_edge(from, mac, Some(span), EdgeFlags::default());
             }
             let parent = data.call_site.ctxt();
             if parent == ctxt {
@@ -1156,8 +1164,18 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
 
     fn visit_item(&mut self, item: &'tcx Item<'tcx>) {
         // A module-level macro invocation leaves no HIR node of its own —
-        // only generated items whose spans carry the expansion context.
-        self.record_macro_expansion(item.span, item.hir_id());
+        // only generated items whose spans carry the expansion context. An
+        // item a source `#[derive]` generated (its impl, a `const _` wrapper,
+        // a helper type) records the derive's credit FROM THE DERIVING TYPE:
+        // it is part of that type's item, so deleting the type must take the
+        // credit with it — recorded from the enclosing module instead, it
+        // kept `use derives::Stringify;` alive after its last user went
+        // (`unused_imports` on the fixed tree).
+        let from = self
+            .derives
+            .owner(item.owner_id.to_def_id())
+            .unwrap_or_else(|| self.tcx.hir_get_parent_item(item.hir_id()).to_def_id());
+        self.record_macro_expansion(item.span, from);
         intravisit::walk_item(self, item);
     }
 
@@ -1182,7 +1200,8 @@ impl<'a, 'tcx> Visitor<'tcx> for RefCollector<'a, 'tcx> {
     }
 
     fn visit_expr(&mut self, ex: &'tcx Expr<'tcx>) {
-        self.record_macro_expansion(ex.span, ex.hir_id);
+        let from = self.tcx.hir_get_parent_item(ex.hir_id).to_def_id();
+        self.record_macro_expansion(ex.span, from);
         // Type-dependent resolutions path `Res` can't see — both read the
         // enclosing body's typeck results:
         //   * method calls `x.f()`                    (MethodCall)
@@ -1497,12 +1516,13 @@ fn in_trivial_field_reads_derive(tcx: TyCtxt<'_>, mut did: DefId) -> bool {
 }
 
 /// [`IrFragment::impls`]: every local `impl` block whose self type is a
-/// local ADT, with its origin (`#[automatically_derived]` ⇒ derive), plus the
-/// impl `DefId` → table index map [`RefEdge::from_impl`] is resolved through.
-/// Definition order, so the table is stable across identical compilations.
+/// local ADT, with its origin (see [`DeriveOwners`]), plus the impl `DefId` →
+/// table index map [`RefEdge::from_impl`] is resolved through. Definition
+/// order, so the table is stable across identical compilations.
 fn collect_impls(
     tcx: TyCtxt<'_>,
     sm: &rustc_span::source_map::SourceMap,
+    derives: &DeriveOwners<'_>,
 ) -> (Vec<ImplFact>, HashMap<DefId, u32>) {
     let mut impls = Vec::new();
     let mut index = HashMap::new();
@@ -1520,7 +1540,9 @@ fn collect_impls(
         index.insert(did, impls.len() as u32);
         impls.push(ImplFact {
             self_key: def_key(tcx, adt.did()),
-            origin: if tcx.is_automatically_derived(did) {
+            // `Derived` iff a source `#[derive]` on the impl's OWN self type
+            // generated it (see [`DeriveOwners`]).
+            origin: if derives.owner(did) == Some(adt.did()) {
                 ImplOrigin::Derived
             } else {
                 ImplOrigin::Written
@@ -1535,6 +1557,111 @@ fn collect_impls(
         });
     }
     (impls, index)
+}
+
+/// Which local items a `#[derive(..)]` generated — built-in or a custom
+/// proc-macro derive alike — and on which type it is written. Such an item
+/// (the derive's impl, a `const _` wrapper, a helper type) is part of that
+/// type's item: the attribute goes when the type is deleted, and so does
+/// everything it generated. An impl it generated for its own type is
+/// `ImplOrigin::Derived`; anything else is `Written`, including a
+/// `#[derive]` on one type that emits an impl for another (deleting the
+/// target would leave the derive regenerating an impl of a missing type), a
+/// derive inside a macro expansion (no source item to delete), and a
+/// hand-written `#[automatically_derived] impl`.
+///
+/// Judged on the expansion that DEFINED the item (`expn_that_defined`), not
+/// on token spans: a derive may span its output with the input's tokens
+/// (`quote_spanned!`), and may emit items through a helper macro. That
+/// expansion's ancestry must be the derive, then only the `#[derive]`
+/// attribute itself, then the crate root — so the derive sits on a source
+/// item. Which item: the derive path inside `#[derive(..)]` (the derive's
+/// call site, rustc's `InvocationKind::Derive` span) is owned by the first
+/// ADT item starting after it, since an attribute immediately precedes its
+/// item.
+struct DeriveOwners<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    /// Built on the first derive-made item only (most crates have few).
+    adts: std::cell::OnceCell<AdtStarts>,
+}
+
+impl<'tcx> DeriveOwners<'tcx> {
+    fn new(tcx: TyCtxt<'tcx>) -> Self {
+        Self {
+            tcx,
+            adts: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The type whose source `#[derive]` generated `did`, if any.
+    fn owner(&self, did: DefId) -> Option<DefId> {
+        let derive = source_derive(self.tcx.expn_that_defined(did))?;
+        if derive.call_site.from_expansion() {
+            return None;
+        }
+        self.adts
+            .get_or_init(|| AdtStarts::new(self.tcx))
+            .owner_of(derive.call_site)
+    }
+}
+
+/// The nearest `#[derive(..)]` expansion at or above `expn`, provided that
+/// derive was written in source: above it there is only the `#[derive]`
+/// attribute's own expansion before the root. `None` for anything else —
+/// root (hand-written), a bang/attribute macro's output, or a derive nested
+/// inside another macro's expansion.
+fn source_derive(mut expn: rustc_span::ExpnId) -> Option<rustc_span::ExpnData> {
+    let derive = loop {
+        if expn == rustc_span::ExpnId::root() {
+            return None;
+        }
+        let data = expn.expn_data();
+        if matches!(data.kind, ExpnKind::Macro(MacroKind::Derive, _)) {
+            break data;
+        }
+        expn = data.parent;
+    };
+    let mut up = derive.parent;
+    while up != rustc_span::ExpnId::root() {
+        let data = up.expn_data();
+        if !matches!(data.kind, ExpnKind::Macro(MacroKind::Attr, name) if name == rustc_span::sym::derive)
+        {
+            return None;
+        }
+        up = data.parent;
+    }
+    Some(derive)
+}
+
+/// Every source-written local ADT item by start position, to find which item
+/// a `#[derive]` attribute belongs to (see [`DeriveOwners`]). `BytePos` is
+/// global across the source map's files, so one sorted list serves them all.
+struct AdtStarts(Vec<(rustc_span::BytePos, DefId)>);
+
+impl AdtStarts {
+    fn new(tcx: TyCtxt<'_>) -> Self {
+        let mut starts: Vec<_> = tcx
+            .hir_crate_items(())
+            .definitions()
+            .filter(|l| {
+                matches!(
+                    tcx.def_kind(*l),
+                    DefKind::Struct | DefKind::Enum | DefKind::Union
+                )
+            })
+            .map(|l| (tcx.hir_span(tcx.local_def_id_to_hir_id(l)), l.to_def_id()))
+            .filter(|(span, _)| !span.from_expansion())
+            .map(|(span, did)| (span.lo(), did))
+            .collect();
+        starts.sort_by_key(|(lo, _)| *lo);
+        Self(starts)
+    }
+
+    /// The first ADT item starting at or after `attr`'s end.
+    fn owner_of(&self, attr: RustcSpan) -> Option<DefId> {
+        let i = self.0.partition_point(|(lo, _)| *lo < attr.hi());
+        self.0.get(i).map(|(_, did)| *did)
+    }
 }
 
 /// The OUTERMOST `impl` block enclosing `did` (or `did` itself), climbing

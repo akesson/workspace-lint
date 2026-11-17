@@ -102,7 +102,8 @@ fn impl_keep_note(keep: &ImplKeep) -> String {
              delete the type together with its impls by hand"
             .to_owned(),
         ImplKeep::NoEditableSurface => "not auto-deleted: this type has a macro-generated `impl` \
-             block no edit can remove — delete the type and the macro input by hand"
+             that deleting the type's own source item wouldn't remove — delete the type \
+             and the macro input by hand"
             .to_owned(),
         ImplKeep::ItemReached { item } => format!(
             "not auto-deleted: `{item}`, in this type's `impl`, is still used by code that \
