@@ -15,3 +15,9 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+
+# GitHub retired the `macos-14` image dist 0.32 assigns to Apple Silicon
+# ("The configuration 'macos-14-arm64-us-default' is not supported" cancelled
+# the v0.4.0 aarch64-apple-darwin build twice).
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
