@@ -16,6 +16,7 @@ mod collateral;
 mod def_info;
 mod deps;
 mod edge_fold;
+mod glob_reexports;
 mod impl_blocks;
 mod impls;
 mod import_usage;

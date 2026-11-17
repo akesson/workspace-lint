@@ -436,18 +436,6 @@ fn apply_structural_fix(
     verdict: PubVerdict,
     shadow_mentioned: bool,
 ) -> (wl_diagnostic::builder::DiagnosticBuilder, bool) {
-    // Only a MachineApplicable deletion is `removable`, so withholding it
-    // here also keeps the cascade from seeding the item.
-    if let Some(note) = delete_veto(cand, auto_delete, verdict) {
-        let builder = builder.note(note);
-        if verdict == PubVerdict::TestOnly {
-            return (builder, false);
-        }
-        let builder = build_tighten_suggestion(cand, file, verdict, shadow_mentioned)
-            .into_iter()
-            .fold(builder, |b, s| b.suggestion(s));
-        return (builder, false);
-    }
     // The deletion surface is the WHOLE item (attrs/doc through body) — `span`
     // is rustc's `def_span`, only the signature, so deleting it would orphan a
     // function's body. `full_span` falls back to `span` only for the
@@ -468,29 +456,6 @@ fn apply_structural_fix(
         .into_iter()
         .fold(builder, |b, note| b.note(note));
     (builder, false)
-}
-
-/// The note withholding an auto-deletion the IR can't perform safely, if any:
-/// a type with a hand-written `impl` block (deleting it alone orphans the
-/// impl, E0412 — the IR has no impl deletion surface; derives are attributes
-/// and go with the item) or a glob-re-exported item. Only applies to the
-/// `--fix-auto-delete` deletion path, never to an `IntraCrate` narrowing.
-fn delete_veto(
-    cand: &PubCandidate,
-    auto_delete: bool,
-    verdict: PubVerdict,
-) -> Option<&'static str> {
-    if !auto_delete || verdict == PubVerdict::IntraCrate {
-        return None;
-    }
-    // A hand-written impl is NOT vetoed here: the cascade decides on the
-    // trial removal set whether the impls can go with the type
-    // (`SemanticModel::impls_keeping`) and attaches their deletion.
-    if cand.glob_reexported {
-        Some(GLOB_REEXPORT_NOTE)
-    } else {
-        None
-    }
 }
 
 /// Why `--fix` won't apply the `pub(crate)` tighten, if it won't: the narrow
@@ -539,12 +504,6 @@ fn intra_crate_narrow_note(cand: &PubCandidate) -> Option<String> {
     };
     Some(note.to_owned())
 }
-
-/// Why a glob-re-exported item's deletion is withheld under
-/// `--fix-auto-delete` (see `apply_structural_fix`).
-const GLOB_REEXPORT_NOTE: &str = "not auto-deleted: this item is re-exported through a \
-     `pub use …::*` glob — removing every item behind it would leave the glob re-exporting \
-     nothing (`unused_imports`); delete it by hand, with the glob if it empties";
 
 /// Why a glob-re-exported item's narrowing is shown, never machine-applied.
 const GLOB_REEXPORT_NARROW_NOTE: &str = "re-exported through a `pub use …::*` glob: if every \

@@ -23,6 +23,9 @@ pub(super) enum Veto {
     /// file is dirty/untracked or generated/excluded, or it holds code no
     /// config compiles. The note is the reason.
     Block(String),
+    /// Deleting it together with the rest of the trial would leave the
+    /// `pub use …::*` glob re-exporting this module re-exporting nothing.
+    Glob { module: String },
 }
 
 /// What a cascade round's veto stage asks: which of `trial_new` — deleted
@@ -59,6 +62,12 @@ impl VetoOracle for VetoCtx<'_> {
                     .into_iter()
                     .map(|(id, k)| (id, Veto::Impl(k))),
             )
+            .chain(
+                self.model
+                    .glob_emptied(&trial, trial_new)
+                    .into_iter()
+                    .map(|(id, module)| (id, Veto::Glob { module })),
+            )
             .chain(self.block_vetoes(&trial, trial_new))
             .collect()
     }
@@ -72,6 +81,12 @@ impl Veto {
             Self::Unmask(u) => unmask_note(u),
             Self::Impl(k) => impl_keep_note(k),
             Self::Block(note) => note.clone(),
+            Self::Glob { module } => format!(
+                "not auto-deleted: `{module}` is re-exported through a `pub use …::*` glob, \
+                 and this fix would delete every public item in it — the glob would \
+                 re-export nothing (`unused_imports`); delete them by hand together with \
+                 the glob"
+            ),
         }
     }
 }

@@ -15,7 +15,10 @@ uses them (narrowing them would break the re-export) — a use through the
 re-export reaches the item itself, so one nothing reaches under any path is
 reported unused, and `--fix-auto-delete` removes it with its `pub use`; a
 glob (`pub use m::*`) is not a guard — it silently skips items that are no
-longer visible enough. Types that appear in
+longer visible enough. `--fix-auto-delete` deletes dead items behind a glob
+as long as some public item in `m` survives; it never deletes the last one,
+since a glob re-exporting nothing is `unused_imports` (delete those by hand,
+with the glob). Types that appear in
 the *public signature* of a more-visible item (a `pub fn` return type, a
 `pub` field, a trait-impl associated type, …) are skipped too — tightening
 those would not compile (E0446 / `private_interfaces`). The engine sees

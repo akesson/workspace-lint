@@ -1,0 +1,14 @@
+# Items behind a `pub use m::*` glob (LeaveDates `data_model::api`):
+# - `ProrateData` is dead but `allowance` keeps a live public item, so the
+#   glob still re-exports something — deleted;
+# - every public item of `crud` is dead: deleting them all would leave
+#   `pub use crud::*` re-exporting nothing (`unused_imports`), so they stay,
+#   shown-not-applied, with a note saying so.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

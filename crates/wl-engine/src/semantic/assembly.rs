@@ -98,6 +98,11 @@ pub struct Assembly {
     /// nothing (rustc `unused_imports`, a `-D warnings` failure), so their
     /// fixes are shown, never machine-applied.
     pub(super) glob_reexported: BTreeSet<String>,
+    /// The same expansion by module: re-exported module path → the paths of
+    /// its direct public children — what the glob re-exports, as far as
+    /// this config sees. The substrate of
+    /// [`SemanticModel::glob_emptied`](super::SemanticModel::glob_emptied).
+    pub(super) glob_children: BTreeMap<String, Vec<String>>,
     /// `mod` def path (joined) → is-public, for the pub-module-hop
     /// reachability judgement.
     module_vis: BTreeMap<String, bool>,
@@ -269,6 +274,7 @@ impl Assembly {
             import_targets: BTreeSet::new(),
             reexporters: BTreeMap::new(),
             glob_reexported: BTreeSet::new(),
+            glob_children: BTreeMap::new(),
             module_vis,
             path_key,
             name_key,
@@ -329,6 +335,10 @@ impl Assembly {
             // module from unused-pub (LeaveDates `data_model::api`). A
             // published crate's glob-only API stays exempt through the
             // reachability leg below (`externally_reachable`).
+            asm.glob_children.insert(
+                mod_path,
+                children.iter().map(|k| asm.defs[*k].path.clone()).collect(),
+            );
             for &child_key in children {
                 asm.glob_reexported.insert(child_key.to_owned());
                 fold.reexporters

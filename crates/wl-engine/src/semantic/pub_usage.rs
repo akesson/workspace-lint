@@ -131,9 +131,10 @@ pub struct PubCandidate {
     /// `-D warnings` consequence, same gating. See [`NarrowUnmask`].
     pub narrow_unmask: Option<NarrowUnmask>,
     /// Re-exported through a glob/module re-export (`pub use m::*`):
-    /// narrowing or deleting every item behind it would leave the glob
-    /// re-exporting nothing (`unused_imports`), so the fix is shown, never
-    /// machine-applied.
+    /// narrowing every item behind it would leave the glob re-exporting
+    /// nothing (`unused_imports`), so a narrowing is shown, never
+    /// machine-applied. (Deletion is judged on the whole removal set
+    /// instead: [`SemanticModel::glob_emptied`](super::SemanticModel::glob_emptied).)
     pub glob_reexported: bool,
     /// The test code reaching the item, sorted — filled only for a
     /// [`PubUsage::TestOnly`] verdict (it decides that finding's advice),
