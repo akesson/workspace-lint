@@ -91,13 +91,19 @@ pub struct Assembly {
     /// enclosing module). The re-export leg of external reachability: a def
     /// `pub use`d in an externally-reachable module is nameable through it.
     reexporters: BTreeMap<String, Vec<String>>,
-    /// Keys re-exported through a glob or module re-export (`pub use m::*`,
-    /// `pub use m;`) — the children the expansion in [`Assembly::build`]
-    /// adds to `reexporters`. Not a must-stay-`pub` guard, but narrowing or
+    /// Keys re-exported through a `pub use m::*` glob — the glob subset of
+    /// the children the expansion in [`Assembly::build`] adds to
+    /// `reexporters`. Not a must-stay-`pub` guard, but narrowing or
     /// deleting EVERY item behind a glob leaves `pub use m::*` re-exporting
     /// nothing (rustc `unused_imports`, a `-D warnings` failure), so their
     /// fixes are shown, never machine-applied.
     pub(super) glob_reexported: BTreeSet<String>,
+    /// The same glob expansion by module: glob-re-exported module path → the
+    /// paths of its direct public children — what the glob re-exports, as
+    /// far as this config sees. Filled in the same step as
+    /// `glob_reexported`, so the two never disagree. The substrate of
+    /// [`SemanticModel::glob_emptied`](super::SemanticModel::glob_emptied).
+    pub(super) glob_children: BTreeMap<String, Vec<String>>,
     /// `mod` def path (joined) → is-public, for the pub-module-hop
     /// reachability judgement.
     module_vis: BTreeMap<String, bool>,
@@ -269,6 +275,7 @@ impl Assembly {
             import_targets: BTreeSet::new(),
             reexporters: BTreeMap::new(),
             glob_reexported: BTreeSet::new(),
+            glob_children: BTreeMap::new(),
             module_vis,
             path_key,
             name_key,
@@ -279,9 +286,9 @@ impl Assembly {
 
         // A glob re-export (`pub use m::*`) resolves to the MODULE def, but
         // it re-exports every public def directly under it — expand so
-        // external reachability sees through globs. (`pub use m;` is
-        // indistinguishable from `pub use m::*` here; expanding both
-        // over-approximates reachability — the safe direction. Plain `use`
+        // external reachability sees through globs. (`pub use m;` makes them
+        // nameable as `m::Item` through the re-export too, so it expands
+        // the same way for reachability. Plain `use`
         // never lands in `reexporters`, so a test-mod `use super::*` expands
         // nothing.)
         //
@@ -306,13 +313,16 @@ impl Assembly {
                     .push(child_key.as_str());
             }
         }
-        let module_imports: Vec<(String, Vec<String>)> = fold
+        let module_imports: Vec<(String, bool, Vec<String>)> = fold
             .reexporters
             .iter()
             .filter(|(key, _)| asm.defs.get(*key).is_some_and(|d| d.kind == "mod"))
-            .map(|(key, importers)| (asm.defs[key].path.clone(), importers.clone()))
+            .map(|(key, importers)| {
+                let glob = fold.glob_reexported_mods.contains(key);
+                (asm.defs[key].path.clone(), glob, importers.clone())
+            })
             .collect();
-        for (mod_path, importers) in module_imports {
+        for (mod_path, glob, importers) in module_imports {
             let Some(children) = children_by_parent.get(mod_path.as_str()) else {
                 continue;
             };
@@ -329,8 +339,20 @@ impl Assembly {
             // module from unused-pub (LeaveDates `data_model::api`). A
             // published crate's glob-only API stays exempt through the
             // reachability leg below (`externally_reachable`).
+            //
+            // Only a GLOB can empty (`unused_imports`): `pub use m;` keeps
+            // naming `m` whatever happens to its items, so its children are
+            // expanded for reachability but are not glob-re-exported.
+            if glob {
+                asm.glob_children.insert(
+                    mod_path,
+                    children.iter().map(|k| asm.defs[*k].path.clone()).collect(),
+                );
+            }
             for &child_key in children {
-                asm.glob_reexported.insert(child_key.to_owned());
+                if glob {
+                    asm.glob_reexported.insert(child_key.to_owned());
+                }
                 fold.reexporters
                     .entry(child_key.to_owned())
                     .or_default()
@@ -487,6 +509,9 @@ impl Assembly {
                             .entry(key.to_string())
                             .or_default()
                             .push(wl_ir::join_paths(&e.from, "::"));
+                        if e.glob {
+                            f.glob_reexported_mods.insert(key.to_string());
+                        }
                     }
                     continue; // import: not a use-site for unused-pub
                 }

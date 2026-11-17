@@ -326,6 +326,18 @@ fn fix_unused_pub_delete_custom_derive() {
 }
 
 #[test]
+fn fix_unused_pub_delete_glob_reexport() {
+    // A dead item behind `pub use m::*` is deleted while the glob keeps
+    // re-exporting something; the module whose every public item is dead
+    // keeps them (an empty glob is `unused_imports`), saying why.
+    let stderr = run_fix_fixture("fix__unused_pub_delete_glob_reexport");
+    assert!(
+        stderr.contains("`store::crud` is re-exported through a `pub use …::*` glob"),
+        "the kept `crud` items must name the glob that would empty:\n{stderr}"
+    );
+}
+
+#[test]
 fn fix_unused_pub_impl_block_vetoes() {
     // When an impl block keeps its type or itself (see the fixture's
     // `.workspace-lint.toml`): a block holding code no config compiles, and

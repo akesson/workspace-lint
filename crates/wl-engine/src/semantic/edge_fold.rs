@@ -27,6 +27,9 @@ pub(super) struct EdgeFold {
     pub(super) signature_exposed: BTreeSet<String>,
     pub(super) import_targets: BTreeSet<String>,
     pub(super) reexporters: BTreeMap<String, Vec<String>>,
+    /// Module keys some `pub use m::*` GLOB re-exports (a plain `pub use m;`
+    /// re-exports the module's name, never empties, and isn't one).
+    pub(super) glob_reexported_mods: BTreeSet<String>,
     pub(super) foreign_reach: BTreeMap<String, ForeignReach>,
     /// Key → the kinds of test code reaching it (use-sites AND imports) —
     /// see [`TestUser`].

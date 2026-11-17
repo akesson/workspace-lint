@@ -23,6 +23,9 @@ pub(super) enum Veto {
     /// file is dirty/untracked or generated/excluded, or it holds code no
     /// config compiles. The note is the reason.
     Block(String),
+    /// Deleting it together with the rest of the trial would leave the
+    /// `pub use …::*` glob re-exporting this module re-exporting nothing.
+    Glob { module: String },
 }
 
 /// What a cascade round's veto stage asks: which of `trial_new` — deleted
@@ -49,7 +52,8 @@ impl VetoOracle for VetoCtx<'_> {
         // One overlay shared by both engine queries (a refold per config is
         // the expensive step).
         let overlay = self.model.trial_overlay(&trial);
-        self.model
+        let mut vetoes: Vec<(String, Veto)> = self
+            .model
             .deletion_unmasks(&overlay, trial_new)
             .into_iter()
             .map(|(id, u)| (id, Veto::Unmask(u)))
@@ -60,7 +64,25 @@ impl VetoOracle for VetoCtx<'_> {
                     .map(|(id, k)| (id, Veto::Impl(k))),
             )
             .chain(self.block_vetoes(&trial, trial_new))
-            .collect()
+            .collect();
+        // The glob check last, on the trial WITHOUT the items just kept: a
+        // kept sibling keeps the glob non-empty. (The fixpoint never takes a
+        // veto back, so judging it on the full trial would keep, with a
+        // false note, a sibling that may go.)
+        let kept: HashSet<&str> = vetoes.iter().map(|(id, _)| id.as_str()).collect();
+        let glob_new: Vec<String> = trial_new
+            .iter()
+            .filter(|id| !kept.contains(id.as_str()))
+            .cloned()
+            .collect();
+        let glob_trial = RemovalSet::new(removed.iter().chain(glob_new.iter()));
+        let globs = self.model.glob_emptied(&glob_trial, &glob_new);
+        vetoes.extend(
+            globs
+                .into_iter()
+                .map(|(id, module)| (id, Veto::Glob { module })),
+        );
+        vetoes
     }
 }
 
@@ -72,6 +94,12 @@ impl Veto {
             Self::Unmask(u) => unmask_note(u),
             Self::Impl(k) => impl_keep_note(k),
             Self::Block(note) => note.clone(),
+            Self::Glob { module } => format!(
+                "not auto-deleted: `{module}` is re-exported through a `pub use …::*` glob, \
+                 and this fix would delete every public item in it — the glob would \
+                 re-export nothing (`unused_imports`); delete them by hand together with \
+                 the glob"
+            ),
         }
     }
 }
