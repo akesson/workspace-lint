@@ -67,8 +67,8 @@ impl VetoOracle for VetoCtx<'_> {
             .collect();
         // The glob check last, on the trial WITHOUT the items just kept: a
         // kept sibling keeps the glob non-empty. (The fixpoint never takes a
-        // veto back, so judging it on the full trial would keep — and
-        // mis-note — a sibling that may go.)
+        // veto back, so judging it on the full trial would keep, with a
+        // false note, a sibling that may go.)
         let kept: HashSet<&str> = vetoes.iter().map(|(id, _)| id.as_str()).collect();
         let glob_new: Vec<String> = trial_new
             .iter()
