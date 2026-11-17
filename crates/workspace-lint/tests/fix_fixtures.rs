@@ -318,6 +318,14 @@ fn fix_unused_pub_delete_impl_blocks() {
 }
 
 #[test]
+fn fix_unused_pub_delete_custom_derive() {
+    // A custom proc-macro derive's impl is an attribute of the type's item,
+    // like a built-in derive: a dead type deriving it is deleted with it (and
+    // with an empty hand-written impl), while a used one keeps the import.
+    run_fix_fixture("fix__unused_pub_delete_custom_derive");
+}
+
+#[test]
 fn fix_unused_pub_impl_block_vetoes() {
     // When an impl block keeps its type or itself (see the fixture's
     // `.workspace-lint.toml`): a block holding code no config compiles, and

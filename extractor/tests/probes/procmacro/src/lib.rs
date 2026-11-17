@@ -9,6 +9,38 @@ pub fn probe_derive(_item: TokenStream) -> TokenStream {
     TokenStream::new()
 }
 
+/// The custom-derive shape (`EnumStringify`): an inherent impl of the
+/// annotated type — `ImplOrigin::Derived`, deleted with the type (probe.rs
+/// check 26).
+#[proc_macro_derive(ProbeInherent)]
+pub fn probe_inherent(item: TokenStream) -> TokenStream {
+    format!("impl {} {{ pub fn derived_probe() -> u32 {{ 0 }} }}", adt_name(item))
+        .parse()
+        .unwrap()
+}
+
+/// A derive emitting an impl of ANOTHER type: deleting that type leaves the
+/// derive regenerating an impl of a missing type, so it stays `Written`.
+#[proc_macro_derive(ProbeElsewhere)]
+pub fn probe_elsewhere(_item: TokenStream) -> TokenStream {
+    "impl crate::own_impl::OwnVictim {}".parse().unwrap()
+}
+
+/// The identifier after `struct` / `enum` / `union` (no `syn` dep).
+fn adt_name(item: TokenStream) -> String {
+    let mut after_kw = false;
+    for tt in item {
+        if let proc_macro::TokenTree::Ident(id) = tt {
+            let s = id.to_string();
+            if after_kw {
+                return s;
+            }
+            after_kw = matches!(s.as_str(), "struct" | "enum" | "union");
+        }
+    }
+    panic!("derive input has no ADT name")
+}
+
 #[proc_macro]
 pub fn probe_bang(item: TokenStream) -> TokenStream {
     item

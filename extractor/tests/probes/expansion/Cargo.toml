@@ -19,6 +19,9 @@ shim = { package = "probe-shim", path = "../shim" }
 # graph must record no edge to it while `used_crates` still names it
 # (probe.rs check 24).
 passthrough = { package = "probe-passthrough", path = "../passthrough" }
+# Custom proc-macro derives for the own-impl origin probe (check 26) — see
+# ../procmacro/src/lib.rs.
+procmacro = { package = "probe-procmacro", path = "../procmacro" }
 
 [build-dependencies]
 # Build-script-extraction stub (§17) — see ../buildstub/Cargo.toml.

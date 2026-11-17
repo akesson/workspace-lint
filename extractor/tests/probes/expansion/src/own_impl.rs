@@ -25,6 +25,18 @@ impl core::ops::Not for OwnTarget {
 #[derive(Clone, PartialEq)]
 pub struct OwnDerived;
 
+/// Custom-derive-only (the `EnumStringify` shape) — `Derived`.
+#[derive(procmacro::ProbeInherent)]
+pub struct OwnCustomDerived;
+
+/// Carries a derive whose impl is for `OwnVictim`, not for itself.
+#[derive(procmacro::ProbeElsewhere)]
+pub struct OwnDeriveHost;
+
+/// Gets its only impl from `OwnDeriveHost`'s derive — `Written`: deleting
+/// this type leaves that derive emitting an impl of a missing type.
+pub struct OwnVictim;
+
 /// An EMPTY inherent impl: its header is the only evidence the impl exists.
 /// The pre-14 display-path dedup dropped exactly this edge.
 pub struct OwnEmpty;

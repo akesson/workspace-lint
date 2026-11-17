@@ -484,8 +484,9 @@ pub struct ImplFact {
 pub enum ImplOrigin {
     /// Written in the source: deleting the type alone would orphan it.
     Written,
-    /// `#[automatically_derived]` (a `#[derive]` expansion): an attribute of
-    /// the type's item, deleted with it.
+    /// Output of a `#[derive(..)]` on the impl's own self type — built-in or
+    /// a custom proc-macro derive: an attribute of the type's item, deleted
+    /// with it.
     Derived,
 }
 

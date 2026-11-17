@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 /// `rust-toolchain.toml`, so it never holds two pins and needs no such
 /// match.)
 pub fn find_dylib(dir: &Path) -> anyhow::Result<PathBuf> {
-    let toolchain = std::env::var("RUSTUP_TOOLCHAIN")
-        .map_err(|_| anyhow::anyhow!("RUSTUP_TOOLCHAIN unset: run the probes via rustup's cargo"))?;
+    let toolchain = std::env::var("RUSTUP_TOOLCHAIN").map_err(|_| {
+        anyhow::anyhow!("RUSTUP_TOOLCHAIN unset: run the probes via rustup's cargo")
+    })?;
     let stem = format!("wl_extractor@{toolchain}.");
     for entry in std::fs::read_dir(dir)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();

@@ -1,0 +1,15 @@
+# A custom proc-macro derive's impl goes with the annotated type, exactly
+# like a built-in derive (LeaveDates `EnumStringify`/`EnumIterize`: those
+# impls were classed hand-written and macro-spanned, so every such dead type
+# survived `--fix-auto-delete` with a "macro-generated impl" veto):
+# - `Size` (custom + built-in derives only) is deleted with its derives;
+# - `ReportType` also has an empty hand-written `impl ReportType {}` — both go;
+# - `FileType` is used by `app` and stays, and so does the `derives` import.
+[unused-pub]
+
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+[engine]
+configs = ["cargo build"]

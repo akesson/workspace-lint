@@ -47,7 +47,7 @@ use rustc_lint::{LateContext, LateLintPass, LintStore};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitor};
 use rustc_session::Session;
-use rustc_span::hygiene::ExpnKind;
+use rustc_span::hygiene::{ExpnKind, MacroKind};
 use rustc_span::{FileName, Span as RustcSpan};
 
 use std::collections::HashMap;
@@ -1497,13 +1497,14 @@ fn in_trivial_field_reads_derive(tcx: TyCtxt<'_>, mut did: DefId) -> bool {
 }
 
 /// [`IrFragment::impls`]: every local `impl` block whose self type is a
-/// local ADT, with its origin (`#[automatically_derived]` ⇒ derive), plus the
-/// impl `DefId` → table index map [`RefEdge::from_impl`] is resolved through.
-/// Definition order, so the table is stable across identical compilations.
+/// local ADT, with its origin (see [`impl_origin`]), plus the impl `DefId` →
+/// table index map [`RefEdge::from_impl`] is resolved through. Definition
+/// order, so the table is stable across identical compilations.
 fn collect_impls(
     tcx: TyCtxt<'_>,
     sm: &rustc_span::source_map::SourceMap,
 ) -> (Vec<ImplFact>, HashMap<DefId, u32>) {
+    let adts = AdtStarts::new(tcx);
     let mut impls = Vec::new();
     let mut index = HashMap::new();
     for local in tcx.hir_crate_items(()).definitions() {
@@ -1520,11 +1521,7 @@ fn collect_impls(
         index.insert(did, impls.len() as u32);
         impls.push(ImplFact {
             self_key: def_key(tcx, adt.did()),
-            origin: if tcx.is_automatically_derived(did) {
-                ImplOrigin::Derived
-            } else {
-                ImplOrigin::Written
-            },
+            origin: impl_origin(tcx, did, adt.did(), &adts),
             of_trait: matches!(tcx.def_kind(did), DefKind::Impl { of_trait: true }),
             full_span: full_item_span(tcx, sm, local),
             items: tcx
@@ -1535,6 +1532,61 @@ fn collect_impls(
         });
     }
     (impls, index)
+}
+
+/// `Derived` iff the impl is the output of a `#[derive(..)]` — built-in or a
+/// custom proc-macro derive alike — written on the impl's OWN self type:
+/// that attribute is part of the type's item, so deleting the item deletes
+/// the impl. Everything else is `Written`, including a `#[derive]` on one
+/// type that emits an impl for another (deleting the target would leave the
+/// derive regenerating an impl of a missing type) and a hand-written
+/// `#[automatically_derived] impl`.
+///
+/// The impl is matched to its derive through the expansion's call site — the
+/// derive path inside `#[derive(..)]` (rustc's `InvocationKind::Derive`
+/// span) — whose owner is the first ADT item starting after it: an
+/// attribute always immediately precedes its item. A derive written inside
+/// a macro expansion has no source owner and stays `Written`.
+fn impl_origin(tcx: TyCtxt<'_>, did: DefId, adt: DefId, adts: &AdtStarts) -> ImplOrigin {
+    let data = tcx.def_span(did).ctxt().outer_expn_data();
+    let from_derive = matches!(data.kind, ExpnKind::Macro(MacroKind::Derive, _));
+    if from_derive && !data.call_site.from_expansion() && adts.owner_of(data.call_site) == Some(adt)
+    {
+        ImplOrigin::Derived
+    } else {
+        ImplOrigin::Written
+    }
+}
+
+/// Every source-written local ADT item by start position, to find which item
+/// a `#[derive]` attribute belongs to (see [`impl_origin`]). `BytePos` is
+/// global across the source map's files, so one sorted list serves them all.
+struct AdtStarts(Vec<(rustc_span::BytePos, DefId)>);
+
+impl AdtStarts {
+    fn new(tcx: TyCtxt<'_>) -> Self {
+        let mut starts: Vec<_> = tcx
+            .hir_crate_items(())
+            .definitions()
+            .filter(|l| {
+                matches!(
+                    tcx.def_kind(*l),
+                    DefKind::Struct | DefKind::Enum | DefKind::Union
+                )
+            })
+            .map(|l| (tcx.hir_span(tcx.local_def_id_to_hir_id(l)), l.to_def_id()))
+            .filter(|(span, _)| !span.from_expansion())
+            .map(|(span, did)| (span.lo(), did))
+            .collect();
+        starts.sort_by_key(|(lo, _)| *lo);
+        Self(starts)
+    }
+
+    /// The first ADT item starting at or after `attr`'s end.
+    fn owner_of(&self, attr: RustcSpan) -> Option<DefId> {
+        let i = self.0.partition_point(|(lo, _)| *lo < attr.hi());
+        self.0.get(i).map(|(_, did)| *did)
+    }
 }
 
 /// The OUTERMOST `impl` block enclosing `did` (or `did` itself), climbing

@@ -1319,6 +1319,22 @@ fn expansion_probe_span_policy() -> anyhow::Result<()> {
             "OwnDerived",
             "derive-only type has only Derived `impls` entries",
         );
+        // A custom proc-macro derive's impl goes with the annotated type just
+        // like a built-in one (LeaveDates `EnumStringify`: classed `Written`
+        // + spanless, it vetoed every such dead type). A derive emitting an
+        // impl of ANOTHER type must not make that type deletable.
+        ck.expect_named(
+            table_has("OwnCustomDerived", ImplOrigin::Derived)
+                && !table_has("OwnCustomDerived", ImplOrigin::Written),
+            "OwnCustomDerived",
+            "custom-derive-only type has only Derived `impls` entries",
+        );
+        ck.expect_named(
+            table_has("OwnVictim", ImplOrigin::Written)
+                && !table_has("OwnVictim", ImplOrigin::Derived),
+            "OwnVictim",
+            "impl emitted by ANOTHER type's derive is Written",
+        );
 
         // Schema 15: each Written block carries its own delete surface, its
         // trait-ness, and its associated items.
