@@ -55,7 +55,7 @@ shell-words = "1"
 strip-ansi-escapes = "0.2"
 syn = { version = "3", features = ["full", "visit"] }
 thiserror = "2"
-tokei = { version = "14", default-features = false }
+tokei = { version = "15", default-features = false }
 toml = "1"
 toml_edit = "0.25"
 
