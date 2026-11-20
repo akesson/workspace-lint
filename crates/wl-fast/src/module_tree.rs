@@ -343,8 +343,9 @@ fn resolve_include_site(
 /// than failing the load. Known cold-checkout limit: an absent file's own
 /// syntactic facts (`mod` decls, cfg feature names, doc-test crate refs,
 /// nested includes) are invisible until a compile has written it, so the
-/// build-free lints can see less on a fresh checkout than on a warm tree. Cyclic and *fan-out* cyclic includes are broken by the
-/// `inc.ancestry` chain set (with `MAX_INCLUDE_DEPTH` as a backstop); a file
+/// build-free lints can see less on a fresh checkout than on a warm tree.
+/// Cyclic and *fan-out* cyclic includes are broken by the `inc.ancestry`
+/// chain set (with `MAX_INCLUDE_DEPTH` as a backstop); a file
 /// included twice into the same module is spliced once.
 fn splice_includes(
     include_sites: Vec<PathBuf>,
@@ -370,14 +371,14 @@ fn splice_includes(
         // Descend with `canon` appended to the chain; `None` at the depth cap.
         let mut child_ancestry = inc.ancestry.clone();
         child_ancestry.insert(canon);
+        let Some(child) = inc.descend(&child_ancestry) else {
+            continue;
+        };
         // Generated whether or not it can be spliced: a file a build script
         // writes during the compile is absent now (nothing to splice) but its
         // items reach the semantic tier all the same, and must be recognized
         // as generated there.
         merged.generated_files.push(included_path.clone());
-        let Some(child) = inc.descend(&child_ancestry) else {
-            continue;
-        };
         let Ok((_, parsed)) = read_parse(&included_path) else {
             continue;
         };

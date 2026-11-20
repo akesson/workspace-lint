@@ -98,8 +98,8 @@ pub(crate) enum Commands {
         auto_stage: bool,
     },
     /// Install everything the rustc-backed full tier needs: the pinned
-    /// nightly toolchain (with its rustc-dev/llvm-tools/rustfmt components), the std
-    /// for every `--target` in the `[engine] configs` matrix, and the
+    /// nightly toolchain (with its rustc-dev/llvm-tools/rustfmt components),
+    /// the std for every `--target` in the `[engine] configs` matrix, and the
     /// `dylint-link` linker wrapper. State-aware and idempotent — only what
     /// is actually missing gets installed — so CI can run it unconditionally
     /// before `workspace-lint`: the toolchain pin lives inside the tool, not

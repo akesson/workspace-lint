@@ -1,5 +1,5 @@
 # The generated file does NOT exist before the compile: `build.rs` writes
-# `src/generated.rs` (the fluent-typed shape — generated code written into the
+# `gen/generated.rs` (the fluent-typed shape — generated code written into the
 # source tree and gitignored, so a fresh checkout lacks it). The build-free
 # FastModel loads before extraction, so the include-target must enter the
 # generated set lexically, without requiring the file to exist; otherwise
