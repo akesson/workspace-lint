@@ -98,11 +98,17 @@ pub(crate) fn macro_is(path: &syn::Path, name: &str) -> bool {
     }
 }
 
-/// Resolve an `include!` invocation to a real, existing file path, or `None` if
-/// its argument can't be const-folded to an existing path.
+/// Resolve an `include!` invocation to the file path it names, or `None` if
+/// its argument can't be const-folded.
 ///
 /// `base_dir` is the directory of the file that contains the `include!` token —
 /// Rust resolves a relative include path relative to that file.
+///
+/// Purely lexical: the file need not exist. A build script may write it
+/// during the compile (fluent-typed writes `gen/i18n.rs` into the source
+/// tree, gitignored), long after this build-free tier ran — and the path is
+/// still exactly the one rustc will read, so it must still be recognized as
+/// generated. Callers that need the contents check existence themselves.
 pub(crate) fn resolve_include_path(
     mac: &syn::Macro,
     base_dir: &Path,
@@ -111,12 +117,11 @@ pub(crate) fn resolve_include_path(
     let expr: syn::Expr = syn::parse2(mac.tokens.clone()).ok()?;
     let folded = fold_str_expr(&expr, env)?;
     let folded = Path::new(&folded);
-    let candidate = if folded.is_absolute() {
+    Some(if folded.is_absolute() {
         folded.to_path_buf()
     } else {
         base_dir.join(folded)
-    };
-    candidate.exists().then_some(candidate)
+    })
 }
 
 /// Const-fold a string-valued expression as used in an `include!` argument:
@@ -260,10 +265,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_nonexistent_or_unresolvable_is_none() {
+    fn resolve_nonexistent_is_lexical() {
+        // A file a build script has yet to write still resolves: the path is
+        // what rustc will read once it exists.
         let dir = tempfile::tempdir().unwrap();
-        let mac = include_macro(r#""does_not_exist.rs""#);
-        assert_eq!(resolve_include_path(&mac, dir.path(), &env(&[])), None);
+        let mac = include_macro(r#""../gen/not_yet.rs""#);
+        let got = resolve_include_path(&mac, dir.path(), &env(&[]));
+        assert_eq!(got, Some(dir.path().join("../gen/not_yet.rs")));
+    }
+
+    #[test]
+    fn resolve_unresolvable_is_none() {
+        let dir = tempfile::tempdir().unwrap();
         let mac = include_macro(r#"env!("UNSET_VAR")"#);
         assert_eq!(resolve_include_path(&mac, dir.path(), &env(&[])), None);
     }

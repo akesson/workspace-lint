@@ -410,7 +410,8 @@ workspace-lint provision --print    # print the commands instead of running them
 
 Installs everything the [semantic engine](#the-semantic-engine) needs on this
 machine: the pinned nightly toolchain (with its `rustc-dev` / `llvm-tools`
-components), the target std for every `--target` declared in `[engine]
+components, plus `rustfmt` for build scripts that format generated code),
+the target std for every `--target` declared in `[engine]
 configs`, and the `dylint-link` linker wrapper. The plan is **state-aware and
 idempotent** — only what's actually missing gets installed, and a fully
 provisioned machine is a no-op — so CI can run it unconditionally before
@@ -561,7 +562,7 @@ exact commands if anything is missing:
 
 ```sh
 rustup toolchain install <pin> --profile minimal \
-    --component rustc-dev --component llvm-tools-preview
+    --component rustc-dev --component llvm-tools-preview --component rustfmt
 cargo install dylint-link --locked
 ```
 

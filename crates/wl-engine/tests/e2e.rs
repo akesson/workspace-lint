@@ -2,7 +2,7 @@
 //! on the pinned nightly → extract via the embedded `dylint::run` → guard.
 //!
 //! Gated behind `WL_ENGINE_E2E=1` because it needs the pinned nightly
-//! (+ rustc-dev + llvm-tools) and `dylint-link` installed — plain
+//! (+ rustc-dev + llvm-tools + rustfmt) and `dylint-link` installed — plain
 //! `cargo test --workspace` must stay green on a stable-only machine. CI runs
 //! it on Linux in `.github/workflows/extractor.yml`; locally:
 //!

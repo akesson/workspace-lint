@@ -32,7 +32,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-08-20
-          components: rustc-dev, llvm-tools-preview
+          components: rustc-dev, llvm-tools-preview, rustfmt
       - name: Cache dylint-link
         id: cache-dylint-link
         uses: actions/cache@v6

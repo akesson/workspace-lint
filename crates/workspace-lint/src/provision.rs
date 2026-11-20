@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(
             render_plan(&plan),
             "rustup toolchain install nightly-2026-08-20 --profile minimal \
-             --component rustc-dev --component llvm-tools-preview\n\
+             --component rustc-dev --component llvm-tools-preview --component rustfmt\n\
              cargo install dylint-link --locked\n"
         );
     }

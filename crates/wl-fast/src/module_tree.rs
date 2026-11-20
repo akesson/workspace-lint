@@ -177,6 +177,7 @@ fn named_macro_files(parsed: &syn::File, parent_file: &Path, inc: IncludeCtx<'_>
                 .any(|n| include_resolve::macro_is(&mac.path, n))
                 && let Some(path) =
                     include_resolve::resolve_include_path(mac, self.base_dir, self.env)
+                && path.exists()
             {
                 self.found.push(path);
             }
@@ -232,8 +233,9 @@ fn collect_module_contents(
             scan_cfg_tokens(item_macro.mac.tokens.clone(), &mut cfg_features);
             if let Some(path) = resolve_include_site(item_macro, parent_file, inc) {
                 // Queue the resolved generated file for splicing after the
-                // main loop. An argument we can't const-fold to an existing
-                // path yields `None` and is left un-spliced.
+                // main loop. The path is lexical — the file may not exist
+                // yet (a build script writes it during the compile); an
+                // argument we can't const-fold yields `None`.
                 include_sites.push(path);
             }
         }
@@ -312,9 +314,10 @@ fn collect_module_contents(
 }
 
 /// Resolve an item-position `include!(...)` to the generated file it pulls in, or
-/// `None` if the macro isn't `include!` or its argument can't be const-folded to
-/// an existing path. A relative path resolves against the directory of the
-/// including file (`parent_file`).
+/// `None` if the macro isn't `include!` or its argument can't be const-folded.
+/// The file need not exist yet (a build script may write it during the
+/// compile). A relative path resolves against the directory of the including
+/// file (`parent_file`).
 fn resolve_include_site(
     item_macro: &syn::ItemMacro,
     parent_file: &Path,
@@ -335,9 +338,14 @@ fn resolve_include_site(
 /// itself, so a broken `mod` decl inside it is anchored there — the key the
 /// diagnostic pipeline uses to recognize generated code.
 ///
-/// Best-effort: an unreadable / unparsable generated file is skipped rather than
-/// failing the load. Cyclic and *fan-out* cyclic includes are broken by the
-/// `inc.ancestry` chain set (with `MAX_INCLUDE_DEPTH` as a backstop); a file
+/// Best-effort: an absent (not yet build-script-written) / unreadable /
+/// unparsable generated file is recorded as generated but not spliced, rather
+/// than failing the load. Known cold-checkout limit: an absent file's own
+/// syntactic facts (`mod` decls, cfg feature names, doc-test crate refs,
+/// nested includes) are invisible until a compile has written it, so the
+/// build-free lints can see less on a fresh checkout than on a warm tree.
+/// Cyclic and *fan-out* cyclic includes are broken by the `inc.ancestry`
+/// chain set (with `MAX_INCLUDE_DEPTH` as a backstop); a file
 /// included twice into the same module is spliced once.
 fn splice_includes(
     include_sites: Vec<PathBuf>,
@@ -366,6 +374,11 @@ fn splice_includes(
         let Some(child) = inc.descend(&child_ancestry) else {
             continue;
         };
+        // Generated whether or not it can be spliced: a file a build script
+        // writes during the compile is absent now (nothing to splice) but its
+        // items reach the semantic tier all the same, and must be recognized
+        // as generated there.
+        merged.generated_files.push(included_path.clone());
         let Ok((_, parsed)) = read_parse(&included_path) else {
             continue;
         };
@@ -374,7 +387,6 @@ fn splice_includes(
         else {
             continue;
         };
-        merged.generated_files.push(included_path);
         merged.absorb(spliced);
     }
     Some(merged)
@@ -787,6 +799,23 @@ mod tests {
         assert_eq!(root.generated_files.len(), 1);
         assert!(root.generated_files[0].ends_with("generated.rs"));
         assert_eq!(root.cfg_features, ["genfeat"]);
+    }
+
+    #[test]
+    fn include_of_a_not_yet_written_file_is_still_generated() {
+        // A build script writes `gen/i18n.rs` during the compile (fluent-typed);
+        // the build-free walk runs first. Nothing to splice, but the path must
+        // still be marked generated — the semantic tier sees its items.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "include!(\"../gen/i18n.rs\");\n").unwrap();
+
+        let root = build(&src, "lib.rs");
+        assert_eq!(root.generated_files, [src.join("../gen/i18n.rs")]);
+        assert!(root.submodules.is_empty());
+        // Not a named file: those record only files that exist.
+        assert!(root.named_files.is_empty());
     }
 
     #[test]

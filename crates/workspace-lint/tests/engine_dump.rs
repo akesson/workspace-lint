@@ -4,7 +4,7 @@
 //! stats block reaches stdout with exit 0.
 //!
 //! Gated behind `WL_ENGINE_E2E=1` like `crates/wl-engine/tests/e2e.rs`: it
-//! needs the pinned nightly (+ rustc-dev + llvm-tools) and `dylint-link`
+//! needs the pinned nightly (+ rustc-dev + llvm-tools + rustfmt) and `dylint-link`
 //! installed — plain `cargo test --workspace` must stay green on a
 //! stable-only machine. Locally:
 //!

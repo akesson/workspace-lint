@@ -1,0 +1,13 @@
+# The generated file does NOT exist before the compile: `build.rs` writes
+# `gen/generated.rs` (the fluent-typed shape — generated code written into the
+# source tree and gitignored, so a fresh checkout lacks it). The build-free
+# FastModel loads before extraction, so the include-target must enter the
+# generated set lexically, without requiring the file to exist; otherwise
+# `gen_unused` is judged as handwritten code once the compile writes it.
+[lints]
+default = "allow"
+unused-pub = "warn"
+
+# Single-config matrix: this case is not about the engine matrix.
+[engine]
+configs = ["cargo build"]

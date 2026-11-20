@@ -276,7 +276,9 @@ not the newest nightly). The pin must also satisfy every dependency's
 MSRV bump therefore forces a pin bump.
 
 1. Install the new pin with the `components` listed in
-   `extractor/rust-toolchain.toml` and update every pin string: `git grep <old-pin>` (workflows incl. cache
+   `extractor/rust-toolchain.toml` (each must be published for every dist
+   host — check the nightly's `channel-rust-nightly.toml`) and update every
+   pin string: `git grep <old-pin>` (workflows incl. cache
    keys, `wl-orchestrate` and `workspace-lint` tests/snapshots — not the
    historical `SPIKE-…` doc).
 2. Port `extractor/src/lib.rs`. Cost scales with the jump: ~10 weeks needed
