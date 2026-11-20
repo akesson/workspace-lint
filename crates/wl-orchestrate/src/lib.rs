@@ -99,11 +99,12 @@ pub enum EngineError {
         "the full tier extracts IR inside a rustc build and needs the pinned toolchain\n\
          \n\
              rustup toolchain install {pin} --profile minimal \\\n\
-                 --component rustc-dev --component llvm-tools-preview\n\
+                 {flags}\n\
          \n\
          hint: `workspace-lint provision` installs everything the full tier needs \
          in one non-interactive step (`--print` to preview the commands)\n\
-         hint: `--fast-only` runs the build-free lints without any toolchain"
+         hint: `--fast-only` runs the build-free lints without any toolchain",
+        flags = toolchain::component_flags().join(" ")
     )]
     ToolchainMissing { pin: String },
 
@@ -202,18 +203,18 @@ impl EngineError {
     /// exception is an outdated `dylint-link`, detectable only by its output.
     pub fn remediation(&self) -> Option<Vec<String>> {
         let argv: Vec<&str> = match self {
-            Self::ToolchainMissing { pin } => vec![
-                "rustup",
-                "toolchain",
-                "install",
-                pin,
-                "--profile",
-                "minimal",
-                "--component",
-                "rustc-dev",
-                "--component",
-                "llvm-tools-preview",
-            ],
+            Self::ToolchainMissing { pin } => {
+                let mut argv = vec![
+                    "rustup",
+                    "toolchain",
+                    "install",
+                    pin,
+                    "--profile",
+                    "minimal",
+                ];
+                argv.extend(toolchain::component_flags());
+                argv
+            }
             Self::ComponentMissing { pin, component } => {
                 vec!["rustup", "component", "add", component, "--toolchain", pin]
             }

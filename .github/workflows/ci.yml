@@ -73,7 +73,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-08-20
-          components: rustc-dev, llvm-tools-preview
+          components: rustc-dev, llvm-tools-preview, rustfmt
       # dtolnay/rust-toolchain sets the LAST installed toolchain as default;
       # the workspace builds on stable, so restore it explicitly.
       - name: Restore stable as default
@@ -149,7 +149,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-08-20
-          components: rustc-dev, llvm-tools-preview
+          components: rustc-dev, llvm-tools-preview, rustfmt
       - name: Restore stable as default
         run: rustup default stable
       # Same cached provisioning as the test matrix (see the comments there).

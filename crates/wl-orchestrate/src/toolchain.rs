@@ -1,7 +1,7 @@
 //! Preflight: fail with the exact remediation *before* any build starts.
 //!
-//! The full tier needs (a) the pinned nightly with `rustc-dev` +
-//! `llvm-tools-preview` (the dylib links `rustc_private`), (b) the
+//! The full tier needs (a) the pinned nightly with its
+//! [`REQUIRED_COMPONENTS`], (b) the
 //! `dylint-link` linker wrapper on PATH, and (c) — for every `--target`
 //! declared in the config matrix — that target's std installed for the pin
 //! (the extraction `cargo check` runs on the pinned nightly). All checks are
@@ -18,6 +18,49 @@ use std::collections::BTreeSet;
 use std::process::Command;
 
 use super::EngineError;
+
+/// A rustup component the pinned toolchain must carry.
+pub(super) struct Component {
+    /// The name `rustup component add` / `--component` takes.
+    install: &'static str,
+    /// The prefix `rustup component list --installed` prints it under —
+    /// differs from [`Self::install`] for `-preview`-aliased components.
+    listed: &'static str,
+}
+
+/// Every component the full tier needs on the pinned nightly — the ONE list
+/// behind the install command, its `Display` text, and the preflight gap
+/// check. `extractor/rust-toolchain.toml` lists the same names (a test keeps
+/// them in lockstep).
+///
+/// - `rustc-dev` + `llvm-tools-preview`: the extractor dylib links
+///   `rustc_private`.
+/// - `rustfmt`: the extraction compiles the *linted* workspace on the pin,
+///   build scripts included, and build scripts commonly format their
+///   generated code by spawning `rustfmt` (fluent-typed, bindgen) — rustup's
+///   proxy resolves it on the pin, where `--profile minimal` leaves it out.
+pub(super) const REQUIRED_COMPONENTS: [Component; 3] = [
+    Component {
+        install: "rustc-dev",
+        listed: "rustc-dev",
+    },
+    Component {
+        install: "llvm-tools-preview",
+        listed: "llvm-tools",
+    },
+    Component {
+        install: "rustfmt",
+        listed: "rustfmt",
+    },
+];
+
+/// `--component <name>` for every [`REQUIRED_COMPONENTS`] entry, as argv.
+pub(super) fn component_flags() -> Vec<&'static str> {
+    REQUIRED_COMPONENTS
+        .iter()
+        .flat_map(|c| ["--component", c.install])
+        .collect()
+}
 
 pub(super) fn preflight(pin: &str, triples: &BTreeSet<String>) -> Result<(), EngineError> {
     match missing(pin, triples)?.into_iter().next() {
@@ -77,11 +120,11 @@ fn gaps(pin: &str, triples: &BTreeSet<String>, observed: &Observed) -> Vec<Engin
         gaps.push(EngineError::ToolchainMissing { pin: pin.into() });
     }
     if let Some(components) = &observed.components {
-        for component in ["rustc-dev", "llvm-tools"] {
-            if !components.lines().any(|l| l.starts_with(component)) {
+        for component in &REQUIRED_COMPONENTS {
+            if !components.lines().any(|l| l.starts_with(component.listed)) {
                 gaps.push(EngineError::ComponentMissing {
                     pin: pin.into(),
-                    component: component.into(),
+                    component: component.install.into(),
                 });
             }
         }
@@ -224,7 +267,9 @@ mod tests {
         let observed = Observed {
             toolchain_installed: true,
             components: Some(
-                "rustc-dev-aarch64-apple-darwin\nllvm-tools-aarch64-apple-darwin".into(),
+                "rustc-dev-aarch64-apple-darwin\nllvm-tools-aarch64-apple-darwin\n\
+                 rustfmt-aarch64-apple-darwin"
+                    .into(),
             ),
             targets: Some("aarch64-apple-darwin\nwasm32-unknown-unknown".into()),
             dylint_link: true,
@@ -265,7 +310,9 @@ mod tests {
     fn installed_toolchain_reports_only_missing_components_and_targets() {
         let observed = Observed {
             toolchain_installed: true,
-            components: Some("llvm-tools-aarch64-apple-darwin".into()),
+            components: Some(
+                "llvm-tools-aarch64-apple-darwin\nrustfmt-aarch64-apple-darwin".into(),
+            ),
             targets: Some("aarch64-apple-darwin".into()),
             dylint_link: true,
         };
@@ -279,6 +326,50 @@ mod tests {
             &plan[1],
             EngineError::TargetMissing { triple, .. } if triple == "wasm32-unknown-unknown"
         ));
+    }
+
+    /// A pin installed before rustfmt joined the required set (or by hand
+    /// with `--profile minimal`) gets exactly the one `component add` —
+    /// without it, a linted build script spawning `rustfmt` fails mid-build.
+    #[test]
+    fn pin_without_rustfmt_plans_adding_it() {
+        let observed = Observed {
+            toolchain_installed: true,
+            components: Some(
+                "rustc-dev-aarch64-unknown-linux-gnu\nllvm-tools-aarch64-unknown-linux-gnu".into(),
+            ),
+            targets: None,
+            dylint_link: true,
+        };
+        let plan = gaps(PIN, &BTreeSet::new(), &observed);
+        let argv: Vec<_> = plan.iter().filter_map(EngineError::remediation).collect();
+        assert_eq!(
+            argv,
+            [["rustup", "component", "add", "rustfmt", "--toolchain", PIN]]
+        );
+    }
+
+    /// `extractor/rust-toolchain.toml` (what the extractor build and the
+    /// probe suite install) and [`REQUIRED_COMPONENTS`] (what preflight and
+    /// `provision` demand) name one set.
+    #[test]
+    fn required_components_match_the_extractor_toolchain_file() {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../extractor/rust-toolchain.toml");
+        let text = std::fs::read_to_string(&file).unwrap();
+        let line = text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("components = "))
+            .expect("the toolchain file lists its components");
+        let mut listed: Vec<&str> = line
+            .trim_matches(['[', ']'])
+            .split(',')
+            .map(|c| c.trim().trim_matches('"'))
+            .collect();
+        listed.sort_unstable();
+        let mut required: Vec<&str> = REQUIRED_COMPONENTS.iter().map(|c| c.install).collect();
+        required.sort_unstable();
+        assert_eq!(listed, required);
     }
 
     /// Every gap `gaps` can emit must carry a remediation argv — the

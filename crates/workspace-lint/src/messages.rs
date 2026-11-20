@@ -2501,7 +2501,7 @@ mod engine_errors {
         the full tier extracts IR inside a rustc build and needs the pinned toolchain
 
         rustup toolchain install nightly-2026-08-20 --profile minimal \
-        --component rustc-dev --component llvm-tools-preview
+        --component rustc-dev --component llvm-tools-preview --component rustfmt
 
         hint: `workspace-lint provision` installs everything the full tier needs in one non-interactive step (`--print` to preview the commands)
         hint: `--fast-only` runs the build-free lints without any toolchain

@@ -54,7 +54,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-08-20
-          components: rustc-dev, llvm-tools-preview
+          components: rustc-dev, llvm-tools-preview, rustfmt
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
 
