@@ -39,7 +39,8 @@ pub struct Module {
     /// "spliced source; do not edit".
     pub named_files: Vec<PathBuf>,
     /// Absolute paths of files spliced into this module via `include!(...)`
-    /// (generated code). The included items live directly in this module (an
+    /// (generated code) — including a target not yet on disk, which a build
+    /// script writes during the compile (recorded, nothing spliced). The included items live directly in this module (an
     /// `include!` is not a submodule), so these files are *not* the `file` of
     /// any node; recording them here lets the module-tree integrity check
     /// treat them as reached and the diagnostic pipeline mark findings

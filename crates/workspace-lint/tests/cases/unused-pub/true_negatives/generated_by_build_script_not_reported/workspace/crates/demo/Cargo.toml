@@ -1,0 +1,8 @@
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2024"
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"

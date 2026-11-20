@@ -209,6 +209,8 @@ impl FastModel {
     /// generated code participates in analysis but is not a place users can
     /// act on. Only literal / `CARGO_*`-resolvable includes are in the set —
     /// the fast tier runs no build scripts, so `OUT_DIR` output never appears.
+    /// A resolvable target need not exist yet: a build script that writes it
+    /// into the source tree during the compile still has it in the set.
     pub fn generated_files(&self) -> impl Iterator<Item = &Path> {
         self.members
             .iter()
