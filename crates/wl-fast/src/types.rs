@@ -40,12 +40,12 @@ pub struct Module {
     pub named_files: Vec<PathBuf>,
     /// Absolute paths of files spliced into this module via `include!(...)`
     /// (generated code) — including a target not yet on disk, which a build
-    /// script writes during the compile (recorded, nothing spliced). The included items live directly in this module (an
-    /// `include!` is not a submodule), so these files are *not* the `file` of
-    /// any node; recording them here lets the module-tree integrity check
-    /// treat them as reached and the diagnostic pipeline mark findings
-    /// anchored in them as generated. Empty for the overwhelmingly common
-    /// no-`include!` module.
+    /// script writes during the compile (recorded, nothing spliced). The
+    /// included items live directly in this module (an `include!` is not a
+    /// submodule), so these files are *not* the `file` of any node; recording
+    /// them here lets the module-tree integrity check treat them as reached
+    /// and the diagnostic pipeline mark findings anchored in them as
+    /// generated. Empty for the overwhelmingly common no-`include!` module.
     pub generated_files: Vec<PathBuf>,
     /// Crate names referenced inside this module's rust-compiling doc-test
     /// fences (see `doc_fences`). A dep used only in a doc example is

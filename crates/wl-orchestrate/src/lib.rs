@@ -104,7 +104,7 @@ pub enum EngineError {
          hint: `workspace-lint provision` installs everything the full tier needs \
          in one non-interactive step (`--print` to preview the commands)\n\
          hint: `--fast-only` runs the build-free lints without any toolchain",
-        flags = toolchain::component_flags().join(" ")
+        flags = toolchain::Component::install_flags().join(" ")
     )]
     ToolchainMissing { pin: String },
 
@@ -212,7 +212,7 @@ impl EngineError {
                     "--profile",
                     "minimal",
                 ];
-                argv.extend(toolchain::component_flags());
+                argv.extend(toolchain::Component::install_flags());
                 argv
             }
             Self::ComponentMissing { pin, component } => {

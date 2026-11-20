@@ -233,8 +233,9 @@ fn collect_module_contents(
             scan_cfg_tokens(item_macro.mac.tokens.clone(), &mut cfg_features);
             if let Some(path) = resolve_include_site(item_macro, parent_file, inc) {
                 // Queue the resolved generated file for splicing after the
-                // main loop. An argument we can't const-fold to an existing
-                // path yields `None` and is left un-spliced.
+                // main loop. The path is lexical — the file may not exist
+                // yet (a build script writes it during the compile); an
+                // argument we can't const-fold yields `None`.
                 include_sites.push(path);
             }
         }
@@ -339,7 +340,10 @@ fn resolve_include_site(
 ///
 /// Best-effort: an absent (not yet build-script-written) / unreadable /
 /// unparsable generated file is recorded as generated but not spliced, rather
-/// than failing the load. Cyclic and *fan-out* cyclic includes are broken by the
+/// than failing the load. Known cold-checkout limit: an absent file's own
+/// syntactic facts (`mod` decls, cfg feature names, doc-test crate refs,
+/// nested includes) are invisible until a compile has written it, so the
+/// build-free lints can see less on a fresh checkout than on a warm tree. Cyclic and *fan-out* cyclic includes are broken by the
 /// `inc.ancestry` chain set (with `MAX_INCLUDE_DEPTH` as a backstop); a file
 /// included twice into the same module is spliced once.
 fn splice_includes(

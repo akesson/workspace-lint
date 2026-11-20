@@ -224,7 +224,9 @@ fn findings_with_shadow(
     out
 }
 
-/// Workspace-relative paths of checked-in generated (`include!`d) files.
+/// Workspace-relative paths of generated (`include!`d) files — checked in, or
+/// written by a build script during the compile (lexical paths, so a file
+/// absent when the build-free model loaded is still in the set).
 /// Candidates there are excluded at the source of every finding path — inside
 /// [`findings`] rather than by the binary's stream-level
 /// `drop_generated_anchored`, which runs *before* the cascade replaces the

@@ -33,6 +33,10 @@ pub(super) struct Component {
 /// check. `extractor/rust-toolchain.toml` lists the same names (a test keeps
 /// them in lockstep).
 ///
+/// A pin bump must find every entry published for every dist host (the
+/// nightly's `channel-rust-nightly.toml`): rustup refuses to install a pin
+/// that lacks one, and there is no fallback.
+///
 /// - `rustc-dev` + `llvm-tools-preview`: the extractor dylib links
 ///   `rustc_private`.
 /// - `rustfmt`: the extraction compiles the *linted* workspace on the pin,
@@ -54,12 +58,19 @@ pub(super) const REQUIRED_COMPONENTS: [Component; 3] = [
     },
 ];
 
-/// `--component <name>` for every [`REQUIRED_COMPONENTS`] entry, as argv.
-pub(super) fn component_flags() -> Vec<&'static str> {
-    REQUIRED_COMPONENTS
-        .iter()
-        .flat_map(|c| ["--component", c.install])
-        .collect()
+impl Component {
+    /// `--component <name>` for every [`REQUIRED_COMPONENTS`] entry, as argv.
+    pub(super) fn install_flags() -> Vec<&'static str> {
+        REQUIRED_COMPONENTS
+            .iter()
+            .flat_map(|c| ["--component", c.install])
+            .collect()
+    }
+
+    /// Whether `rustup component list --installed` output carries it.
+    fn is_listed_in(&self, installed: &str) -> bool {
+        installed.lines().any(|l| l.starts_with(self.listed))
+    }
 }
 
 pub(super) fn preflight(pin: &str, triples: &BTreeSet<String>) -> Result<(), EngineError> {
@@ -121,7 +132,7 @@ fn gaps(pin: &str, triples: &BTreeSet<String>, observed: &Observed) -> Vec<Engin
     }
     if let Some(components) = &observed.components {
         for component in &REQUIRED_COMPONENTS {
-            if !components.lines().any(|l| l.starts_with(component.listed)) {
+            if !component.is_listed_in(components) {
                 gaps.push(EngineError::ComponentMissing {
                     pin: pin.into(),
                     component: component.install.into(),
@@ -356,15 +367,12 @@ mod tests {
     fn required_components_match_the_extractor_toolchain_file() {
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../extractor/rust-toolchain.toml");
-        let text = std::fs::read_to_string(&file).unwrap();
-        let line = text
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("components = "))
-            .expect("the toolchain file lists its components");
-        let mut listed: Vec<&str> = line
-            .trim_matches(['[', ']'])
-            .split(',')
-            .map(|c| c.trim().trim_matches('"'))
+        let parsed: toml::Table = std::fs::read_to_string(&file).unwrap().parse().unwrap();
+        let mut listed: Vec<&str> = parsed["toolchain"]["components"]
+            .as_array()
+            .expect("the toolchain file lists its components")
+            .iter()
+            .map(|c| c.as_str().unwrap())
             .collect();
         listed.sort_unstable();
         let mut required: Vec<&str> = REQUIRED_COMPONENTS.iter().map(|c| c.install).collect();
